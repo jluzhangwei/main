@@ -27,11 +27,14 @@ SCRIPT_PATH = APP_DIR / "healthcheck.py"
 INTENTS_PATH = PROJECT_ROOT / "data" / "intents.txt"
 REPORT_DIR = PROJECT_ROOT / "output" / "reports"
 GPT_CONFIG_PATH = PROJECT_ROOT / "state" / "gpt_config.json"
+TOKEN_STATS_PATH = PROJECT_ROOT / "state" / "token_stats.json"
 TMP_DIR = PROJECT_ROOT / "runtime" / "tmp"
 COMMAND_MAP_PATH = PROJECT_ROOT / "config" / "command_map.yaml"
 PROMPTS_DIR = PROJECT_ROOT / "prompts"
-DEFAULT_PROMPTS_DIR = PROMPTS_DIR / "default"
-CUSTOM_PROMPTS_DIR = PROMPTS_DIR / "custom"
+SYSTEM_DEFAULT_PROMPTS_DIR = PROMPTS_DIR / "system_default"
+SYSTEM_CUSTOM_PROMPTS_DIR = PROMPTS_DIR / "system_custom"
+TASK_DEFAULT_PROMPTS_DIR = PROMPTS_DIR / "task_default"
+TASK_CUSTOM_PROMPTS_DIR = PROMPTS_DIR / "task_custom"
 DEFAULT_GPT_MODEL = "gpt-4.1-mini"
 DEFAULT_LOCAL_BASE_URL = "http://192.168.0.99:1234"
 DEFAULT_LOCAL_MODEL = "qwen/qwen3-coder-30b"
@@ -65,56 +68,89 @@ MAX_HISTORY_REPORT_BYTES = 2 * 1024 * 1024
 JOBS: Dict[str, Dict] = {}
 JOBS_LOCK = threading.Lock()
 
-DEFAULT_NETWORK_PROMPTS: Dict[str, str] = {
+DEFAULT_SYSTEM_PROMPTS: Dict[str, str] = {
+    "网络工程师-严格模式": (
+        "你是资深企业网络工程师审计助手。你的输出必须严谨、可执行、可复核。\n"
+        "强制规则：\n"
+        "1. 仅基于输入报告与日志做判断，不得臆测，不得编造设备状态。\n"
+        "2. 每条结论必须给证据：设备/IP + 检查项/命令 + 原始片段摘要。\n"
+        "3. 证据不足时必须明确写“证据不足/需补采集”。\n"
+        "4. 风险分级仅允许：高/中/低；置信度仅允许：高/中/低。\n"
+        "5. 优先给可执行步骤，先止血再根治；避免破坏性建议作为第一步。\n"
+        "6. 输出中文，术语专业，避免空泛套话。\n"
+        "输出结构固定：\n"
+        "【总体结论】\n"
+        "【关键异常】\n"
+        "【证据链】\n"
+        "【根因判断】\n"
+        "【处置计划（优先级）】\n"
+        "【复核命令与通过标准】\n"
+    ),
+    "网络工程师-变更评审模式": (
+        "你是网络变更评审工程师。请重点识别变更相关风险，并给出回退友好建议。\n"
+        "要求：\n"
+        "1. 区分“现网告警”与“疑似变更引入”两类问题。\n"
+        "2. 每条问题必须有证据引用；无证据则标记待确认。\n"
+        "3. 建议中必须包含：变更前检查、变更后验证、回退触发条件。\n"
+        "4. 不提供高风险操作的一步到位命令，必须先做验证步骤。\n"
+    ),
+}
+
+DEFAULT_TASK_PROMPTS: Dict[str, str] = {
     "基础巡检诊断": (
-        "你是企业网络运维专家。请基于巡检日志和结构化报告做健康诊断，并严格按以下结构输出：\n"
-        "【1. 总体结论】\n"
-        "- 健康等级：健康/一般/高风险\n"
-        "- 结论摘要：不超过120字\n"
-        "【2. 关键异常】\n"
-        "- 列出最重要的3~8个异常，格式：设备/IP | 检查项 | 现象 | 影响等级(高/中/低)\n"
-        "【3. 可能根因】\n"
-        "- 针对每个高/中风险异常给出可能根因（配置、链路、协议邻居、资源瓶颈、时钟、硬件）\n"
-        "【4. 处置建议】\n"
-        "- 给出按优先级排序的可执行步骤（先止血、后根治），每步包含命令建议或检查点\n"
-        "【5. 复核与监控建议】\n"
-        "- 给出修复后需复核的命令与关键指标阈值\n"
-        "要求：结论要具体，避免空泛表述；如果信息不足，明确指出缺失数据。"
+        "请对本次巡检结果做全量健康评估：\n"
+        "1. 汇总高风险问题 TopN\n"
+        "2. 给出每个问题的业务影响\n"
+        "3. 给出排障优先级与执行顺序\n"
+        "4. 给出修复后复核项与阈值"
     ),
     "接口与链路诊断": (
-        "你是网络接口与链路故障专家。请聚焦接口与链路稳定性，输出结构如下：\n"
-        "【1. 异常接口清单】\n"
-        "- 逐条列出：设备/IP | 接口名 | Physical/Protocol 状态 | 错误/丢包/抖动迹象 | 风险等级\n"
-        "【2. 影响范围评估】\n"
-        "- 识别上联/核心链路/业务口，判断是否可能影响生产业务\n"
-        "【3. 根因判断】\n"
-        "- 从配置问题、速率双工不一致、光模块/光功率异常、链路抖动、聚合状态异常等角度判断\n"
-        "【4. 排查顺序（最少5步）】\n"
-        "- 按优先级给出可执行排查流程，包含建议命令\n"
-        "【5. 修复建议】\n"
-        "- 提供短期缓解与长期整改两类建议\n"
-        "如果接口数量很多，请先汇总高风险接口TOP N，再给总体结论。"
+        "请聚焦接口与链路：\n"
+        "1. 列出异常接口（Physical/Protocol不一致、error/丢包/抖动）\n"
+        "2. 判断是否涉及上联/核心路径\n"
+        "3. 给出逐步排查命令顺序（至少5步）"
     ),
     "路由与协议诊断": (
-        "你是路由与控制平面诊断专家。请重点分析路由、BGP/OSPF、NTP、STP 等协议状态：\n"
-        "【1. 协议健康概览】\n"
-        "- 分协议给出健康状态：正常/告警/异常\n"
-        "【2. 潜在协议异常】\n"
-        "- 列出邻居抖动、路由收敛异常、路由缺失/泄漏、时钟不同步、环路风险等现象\n"
-        "【3. 业务影响判断】\n"
-        "- 说明是否可能导致中断、绕路、时延抖动或安全风险\n"
-        "【4. 修复与优化建议】\n"
-        "- 给出具体操作建议（优先修复项、回退建议、观察指标）\n"
-        "【5. 后续观察清单】\n"
-        "- 列出建议持续监控的关键KPI（邻居稳定性、路由条目变化、CPU/内存、时钟偏差）\n"
-        "输出应偏工程落地，避免泛化描述。"
+        "请聚焦路由与协议：\n"
+        "1. 分析 BGP/OSPF/NTP/STP 的健康度\n"
+        "2. 指出邻居抖动、收敛异常、路由缺失/泄漏风险\n"
+        "3. 给出可执行修复建议与观察指标"
+    ),
+    "性能与资源诊断": (
+        "请聚焦资源瓶颈：\n"
+        "1. 识别 CPU/内存/温度/风扇/电源异常\n"
+        "2. 评估是否影响控制平面或转发稳定性\n"
+        "3. 给出处置优先级与容量优化建议"
     ),
 }
 
 
 def ensure_prompt_dirs() -> None:
-    DEFAULT_PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
-    CUSTOM_PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+    SYSTEM_DEFAULT_PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+    SYSTEM_CUSTOM_PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+    TASK_DEFAULT_PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+    TASK_CUSTOM_PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def migrate_legacy_prompt_dirs() -> None:
+    legacy_default = PROMPTS_DIR / "default"
+    legacy_custom = PROMPTS_DIR / "custom"
+    if legacy_default.is_dir():
+        for src in legacy_default.glob("*.txt"):
+            target = TASK_DEFAULT_PROMPTS_DIR / src.name
+            if not target.exists():
+                try:
+                    target.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+                except Exception:
+                    pass
+    if legacy_custom.is_dir():
+        for src in legacy_custom.glob("*.txt"):
+            target = TASK_CUSTOM_PROMPTS_DIR / src.name
+            if not target.exists():
+                try:
+                    target.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+                except Exception:
+                    pass
 
 
 def prompt_file_name(name: str) -> str:
@@ -152,8 +188,13 @@ def load_prompt_dir(prompt_dir: Path) -> Dict[str, str]:
 
 def initialize_default_prompt_files() -> None:
     ensure_prompt_dirs()
-    for name, content in DEFAULT_NETWORK_PROMPTS.items():
-        target = DEFAULT_PROMPTS_DIR / prompt_file_name(name)
+    migrate_legacy_prompt_dirs()
+    for name, content in DEFAULT_SYSTEM_PROMPTS.items():
+        target = SYSTEM_DEFAULT_PROMPTS_DIR / prompt_file_name(name)
+        if not target.is_file():
+            target.write_text(str(content).strip() + "\n", encoding="utf-8")
+    for name, content in DEFAULT_TASK_PROMPTS.items():
+        target = TASK_DEFAULT_PROMPTS_DIR / prompt_file_name(name)
         if not target.is_file():
             target.write_text(str(content).strip() + "\n", encoding="utf-8")
 
@@ -236,7 +277,8 @@ def load_gpt_config() -> Dict:
             "local_base_url": DEFAULT_LOCAL_BASE_URL,
             "local_model": DEFAULT_LOCAL_MODEL,
             "deepseek_model": DEFAULT_DEEPSEEK_MODEL,
-            "selected_prompt": "",
+            "selected_task_prompt": "",
+            "selected_system_prompt": "",
         }
     try:
         data = json.loads(GPT_CONFIG_PATH.read_text(encoding="utf-8"))
@@ -250,7 +292,8 @@ def load_gpt_config() -> Dict:
                 "local_base_url": DEFAULT_LOCAL_BASE_URL,
                 "local_model": DEFAULT_LOCAL_MODEL,
                 "deepseek_model": DEFAULT_DEEPSEEK_MODEL,
-                "selected_prompt": "",
+                "selected_task_prompt": "",
+                "selected_system_prompt": "",
             }
         # Backward compatibility: old "api_key" is treated as chatgpt_api_key.
         chatgpt_api_key = data.get("chatgpt_api_key", data.get("api_key", ""))
@@ -263,7 +306,8 @@ def load_gpt_config() -> Dict:
         local_base_url = str(data.get("local_base_url", DEFAULT_LOCAL_BASE_URL) or DEFAULT_LOCAL_BASE_URL).strip()
         local_model = str(data.get("local_model", DEFAULT_LOCAL_MODEL) or DEFAULT_LOCAL_MODEL).strip()
         deepseek_model = str(data.get("deepseek_model", DEFAULT_DEEPSEEK_MODEL) or DEFAULT_DEEPSEEK_MODEL).strip()
-        selected_prompt = str(data.get("selected_prompt", "") or "").strip()
+        selected_task_prompt = str(data.get("selected_task_prompt", data.get("selected_prompt", "")) or "").strip()
+        selected_system_prompt = str(data.get("selected_system_prompt", "网络工程师-严格模式") or "").strip()
         if not isinstance(custom_prompts, dict):
             custom_prompts = {}
         return {
@@ -275,7 +319,8 @@ def load_gpt_config() -> Dict:
             "local_base_url": local_base_url,
             "local_model": local_model,
             "deepseek_model": deepseek_model,
-            "selected_prompt": selected_prompt,
+            "selected_task_prompt": selected_task_prompt,
+            "selected_system_prompt": selected_system_prompt,
         }
     except Exception:
         return {
@@ -287,7 +332,8 @@ def load_gpt_config() -> Dict:
             "local_base_url": DEFAULT_LOCAL_BASE_URL,
             "local_model": DEFAULT_LOCAL_MODEL,
             "deepseek_model": DEFAULT_DEEPSEEK_MODEL,
-            "selected_prompt": "",
+            "selected_task_prompt": "",
+            "selected_system_prompt": "",
         }
 
 
@@ -304,7 +350,10 @@ def save_gpt_config(config: Dict) -> None:
         "local_base_url": str(config.get("local_base_url", DEFAULT_LOCAL_BASE_URL) or DEFAULT_LOCAL_BASE_URL).strip(),
         "local_model": str(config.get("local_model", DEFAULT_LOCAL_MODEL) or DEFAULT_LOCAL_MODEL).strip(),
         "deepseek_model": str(config.get("deepseek_model", DEFAULT_DEEPSEEK_MODEL) or DEFAULT_DEEPSEEK_MODEL).strip(),
-        "selected_prompt": str(config.get("selected_prompt", "") or "").strip(),
+        "selected_task_prompt": str(
+            config.get("selected_task_prompt", config.get("selected_prompt", "")) or ""
+        ).strip(),
+        "selected_system_prompt": str(config.get("selected_system_prompt", "网络工程师-严格模式") or "").strip(),
     }
     GPT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     GPT_CONFIG_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -319,16 +368,96 @@ def sanitize_prompt_name(name: str) -> str:
     return cleaned.strip()
 
 
-def merged_prompt_catalog() -> Dict[str, str]:
+def load_token_stats() -> Dict:
+    default = {"total_tokens": 0, "providers": {"chatgpt": 0, "deepseek": 0, "local": 0}}
+    if not TOKEN_STATS_PATH.is_file():
+        return default
+    try:
+        data = json.loads(TOKEN_STATS_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return default
+        total_tokens = int(data.get("total_tokens", 0) or 0)
+        providers = data.get("providers", {})
+        if not isinstance(providers, dict):
+            providers = {}
+        return {
+            "total_tokens": max(0, total_tokens),
+            "providers": {
+                "chatgpt": int(providers.get("chatgpt", 0) or 0),
+                "deepseek": int(providers.get("deepseek", 0) or 0),
+                "local": int(providers.get("local", 0) or 0),
+            },
+        }
+    except Exception:
+        return default
+
+
+def save_token_stats(stats: Dict) -> None:
+    TOKEN_STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    TOKEN_STATS_PATH.write_text(json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def add_token_usage(provider: str, used_tokens: int) -> Dict:
+    stats = load_token_stats()
+    used = max(0, int(used_tokens or 0))
+    p = provider if provider in {"chatgpt", "deepseek", "local"} else "local"
+    stats["total_tokens"] = int(stats.get("total_tokens", 0) or 0) + used
+    providers = stats.get("providers", {})
+    if not isinstance(providers, dict):
+        providers = {}
+    providers[p] = int(providers.get(p, 0) or 0) + used
+    stats["providers"] = providers
+    save_token_stats(stats)
+    return stats
+
+
+def extract_token_usage(payload: Dict) -> Dict[str, int]:
+    usage = payload.get("usage", {})
+    if not isinstance(usage, dict):
+        usage = {}
+    prompt_tokens = (
+        usage.get("prompt_tokens")
+        if usage.get("prompt_tokens") is not None
+        else usage.get("input_tokens", 0)
+    )
+    completion_tokens = (
+        usage.get("completion_tokens")
+        if usage.get("completion_tokens") is not None
+        else usage.get("output_tokens", 0)
+    )
+    total_tokens = usage.get("total_tokens")
+    try:
+        p = int(prompt_tokens or 0)
+    except Exception:
+        p = 0
+    try:
+        c = int(completion_tokens or 0)
+    except Exception:
+        c = 0
+    if total_tokens is None:
+        t = p + c
+    else:
+        try:
+            t = int(total_tokens or 0)
+        except Exception:
+            t = p + c
+    return {"prompt_tokens": max(0, p), "completion_tokens": max(0, c), "total_tokens": max(0, t)}
+
+
+def merged_prompt_catalog(
+    default_prompts: Dict[str, str],
+    default_dir: Path,
+    custom_dir: Path,
+) -> Dict[str, str]:
     config = load_gpt_config()
     ensure_prompt_dirs()
 
     # 1) Default templates: prefer files, fallback to built-ins.
-    default_from_files = load_prompt_dir(DEFAULT_PROMPTS_DIR)
-    merged = dict(default_from_files) if default_from_files else dict(DEFAULT_NETWORK_PROMPTS)
+    default_from_files = load_prompt_dir(default_dir)
+    merged = dict(default_from_files) if default_from_files else dict(default_prompts)
 
     # 2) Custom templates from files.
-    custom_from_files = load_prompt_dir(CUSTOM_PROMPTS_DIR)
+    custom_from_files = load_prompt_dir(custom_dir)
     for key, value in custom_from_files.items():
         if key and value.strip():
             merged[key] = value.strip()
@@ -340,13 +469,25 @@ def merged_prompt_catalog() -> Dict[str, str]:
             clean_key = sanitize_prompt_name(str(key))
             merged[clean_key] = value.strip()
             # Best-effort migration to prompts/custom directory.
-            write_prompt_file(CUSTOM_PROMPTS_DIR, clean_key, value.strip())
+            write_prompt_file(TASK_CUSTOM_PROMPTS_DIR, clean_key, value.strip())
 
     # Clean legacy in-config templates after migration.
     if custom:
         config["custom_prompts"] = {}
         save_gpt_config(config)
     return merged
+
+
+def merged_task_prompt_catalog() -> Dict[str, str]:
+    return merged_prompt_catalog(DEFAULT_TASK_PROMPTS, TASK_DEFAULT_PROMPTS_DIR, TASK_CUSTOM_PROMPTS_DIR)
+
+
+def merged_system_prompt_catalog() -> Dict[str, str]:
+    return merged_prompt_catalog(DEFAULT_SYSTEM_PROMPTS, SYSTEM_DEFAULT_PROMPTS_DIR, SYSTEM_CUSTOM_PROMPTS_DIR)
+
+
+def prompt_catalog_by_kind(kind: str) -> Dict[str, str]:
+    return merged_system_prompt_catalog() if kind == "system" else merged_task_prompt_catalog()
 
 
 def parse_openai_response_text(payload: Dict) -> str:
@@ -385,20 +526,26 @@ def build_openai_ssl_context() -> ssl.SSLContext:
         return ssl_ctx
 
 
-def call_openai_analysis(api_key: str, prompt_text: str, report_text: str, model: str = DEFAULT_GPT_MODEL) -> str:
+def call_openai_analysis(
+    api_key: str,
+    system_prompt: str,
+    task_prompt: str,
+    report_text: str,
+    model: str = DEFAULT_GPT_MODEL,
+) -> tuple:
     body = {
         "model": model,
         "input": [
             {
                 "role": "system",
-                "content": [{"type": "input_text", "text": "你是资深网络运维专家，输出要结构化、可落地。"}],
+                "content": [{"type": "input_text", "text": system_prompt or "你是资深网络运维专家，输出要结构化、可落地。"}],
             },
             {
                 "role": "user",
                 "content": [
                     {
                         "type": "input_text",
-                        "text": f"诊断要求：\n{prompt_text}\n\n巡检数据：\n{report_text}",
+                        "text": f"任务要求：\n{task_prompt}\n\n巡检数据：\n{report_text}",
                     }
                 ],
             },
@@ -438,7 +585,7 @@ def call_openai_analysis(api_key: str, prompt_text: str, report_text: str, model
     text = parse_openai_response_text(payload)
     if not text:
         raise RuntimeError("OpenAI API returned empty analysis text")
-    return text
+    return text, extract_token_usage(payload)
 
 
 def test_openai_connection(api_key: str) -> str:
@@ -470,13 +617,19 @@ def test_openai_connection(api_key: str) -> str:
         return "OpenAI 连接成功"
 
 
-def call_deepseek_analysis(api_key: str, prompt_text: str, report_text: str, model: str = DEFAULT_DEEPSEEK_MODEL) -> str:
+def call_deepseek_analysis(
+    api_key: str,
+    system_prompt: str,
+    task_prompt: str,
+    report_text: str,
+    model: str = DEFAULT_DEEPSEEK_MODEL,
+) -> tuple:
     body = {
         "model": model,
         "temperature": 0.2,
         "messages": [
-            {"role": "system", "content": "你是资深网络运维专家，输出要结构化、可落地。"},
-            {"role": "user", "content": f"诊断要求：\n{prompt_text}\n\n巡检数据：\n{report_text}"},
+            {"role": "system", "content": system_prompt or "你是资深网络运维专家，输出要结构化、可落地。"},
+            {"role": "user", "content": f"任务要求：\n{task_prompt}\n\n巡检数据：\n{report_text}"},
         ],
     }
     req = urlrequest.Request(
@@ -500,7 +653,7 @@ def call_deepseek_analysis(api_key: str, prompt_text: str, report_text: str, mod
             msg = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
             content = msg.get("content", "") if isinstance(msg, dict) else ""
             if isinstance(content, str) and content.strip():
-                return content.strip()
+                return content.strip(), extract_token_usage(payload)
     except Exception:
         pass
     raise RuntimeError("DeepSeek API returned empty analysis text")
@@ -525,7 +678,13 @@ def test_deepseek_connection(api_key: str) -> str:
         return "DeepSeek 连接成功"
 
 
-def call_local_lmstudio_analysis(base_url: str, model: str, prompt_text: str, report_text: str) -> str:
+def call_local_lmstudio_analysis(
+    base_url: str,
+    model: str,
+    system_prompt: str,
+    task_prompt: str,
+    report_text: str,
+) -> tuple:
     base = (base_url or "").strip().rstrip("/")
     if not base:
         raise RuntimeError("LM Studio base_url is empty")
@@ -536,8 +695,8 @@ def call_local_lmstudio_analysis(base_url: str, model: str, prompt_text: str, re
         "model": model.strip(),
         "temperature": 0.2,
         "messages": [
-            {"role": "system", "content": "你是资深网络运维专家，输出要结构化、可落地。"},
-            {"role": "user", "content": f"诊断要求：\n{prompt_text}\n\n巡检数据：\n{report_text}"},
+            {"role": "system", "content": system_prompt or "你是资深网络运维专家，输出要结构化、可落地。"},
+            {"role": "user", "content": f"任务要求：\n{task_prompt}\n\n巡检数据：\n{report_text}"},
         ],
     }
     req = urlrequest.Request(
@@ -565,7 +724,7 @@ def call_local_lmstudio_analysis(base_url: str, model: str, prompt_text: str, re
         msg = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
         content = msg.get("content", "") if isinstance(msg, dict) else ""
         if isinstance(content, str) and content.strip():
-            return content.strip()
+            return content.strip(), extract_token_usage(payload)
     raise RuntimeError("LM Studio returned empty analysis text")
 
 
@@ -783,6 +942,29 @@ def build_html(values: Dict[str, str], selected_checks: List[str], output_text: 
       border: 1px solid;
       font-weight: 700;
     }}
+    .topbar {{
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 10px;
+    }}
+    .help-link {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: #334155;
+      text-decoration: none;
+      font-weight: 800;
+      font-size: 18px;
+      line-height: 1;
+      margin-top: 2px;
+    }}
+    .help-link:hover {{ background: #f8fafc; }}
     .ok {{ color: var(--ok); border-color: #99f6e4; background: var(--brand-weak); }}
     .err {{ color: var(--err); border-color: #fecaca; background: #fef2f2; }}
     pre {{
@@ -802,8 +984,13 @@ def build_html(values: Dict[str, str], selected_checks: List[str], output_text: 
 <body>
   <div class="wrap">
     <div class="card">
-      <h1>HealthCheck Web Runner</h1>
-      <p class="sub">输入设备地址、勾选检查项、上传 command_map 文件后，点击执行 `healthcheck.py`。</p>
+      <div class="topbar">
+        <div>
+          <h1>HealthCheck Web Runner</h1>
+          <p class="sub">输入设备地址、勾选检查项、上传 command_map 文件后，点击执行 `healthcheck.py`。</p>
+        </div>
+        <a class="help-link" href="/guide" title="查看说明文档">?</a>
+      </div>
       {status_block}
       <form id="run_form" method="post" action="/run" enctype="multipart/form-data">
         <div class="grid row">
@@ -1062,15 +1249,23 @@ def build_html(values: Dict[str, str], selected_checks: List[str], output_text: 
 
 def build_job_html(job_id: str) -> str:
     gpt_config = load_gpt_config()
-    prompts = merged_prompt_catalog()
-    selected_prompt = str(gpt_config.get("selected_prompt", "") or "")
-    prompt_options = "".join(
+    task_prompts = merged_task_prompt_catalog()
+    system_prompts = merged_system_prompt_catalog()
+    selected_task_prompt = str(gpt_config.get("selected_task_prompt", gpt_config.get("selected_prompt", "")) or "")
+    selected_system_prompt = str(gpt_config.get("selected_system_prompt", "网络工程师-严格模式") or "")
+    task_prompt_options = "".join(
         [
-            f'<option value="" {"selected" if not selected_prompt else ""}>不使用模板</option>'
+            f'<option value="" {"selected" if not selected_task_prompt else ""}>不使用模板</option>'
         ]
         + [
-            f'<option value="{html.escape(name)}" {"selected" if selected_prompt == name else ""}>{html.escape(name)}</option>'
-            for name in prompts.keys()
+            f'<option value="{html.escape(name)}" {"selected" if selected_task_prompt == name else ""}>{html.escape(name)}</option>'
+            for name in task_prompts.keys()
+        ]
+    )
+    system_prompt_options = "".join(
+        [
+            f'<option value="{html.escape(name)}" {"selected" if selected_system_prompt == name else ""}>{html.escape(name)}</option>'
+            for name in system_prompts.keys()
         ]
     )
     has_chatgpt_key = bool((gpt_config.get("chatgpt_api_key") or "").strip())
@@ -1234,6 +1429,53 @@ def build_job_html(job_id: str) -> str:
       color: #1e293b;
       margin: 0 0 8px;
     }}
+    .modal-mask {{
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.45);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+      padding: 16px;
+    }}
+    .modal-box {{
+      width: min(760px, 100%);
+      background: #fff;
+      border: 1px solid #cbd5e1;
+      border-radius: 12px;
+      padding: 12px;
+      box-shadow: 0 20px 35px rgba(15, 23, 42, 0.25);
+    }}
+    .modal-head {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }}
+    .modal-title {{ font-weight: 700; }}
+    .modal-close {{
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: #fff;
+      padding: 4px 8px;
+      cursor: pointer;
+      font-weight: 700;
+    }}
+    .modal-body textarea {{
+      width: 100%;
+      min-height: 260px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      padding: 10px;
+      font-family: Menlo, Consolas, monospace;
+      box-sizing: border-box;
+    }}
+    .danger {{
+      border-color: #ef4444;
+      color: #991b1b;
+    }}
     .ai-brand svg {{
       width: 18px;
       height: 18px;
@@ -1327,20 +1569,34 @@ def build_job_html(job_id: str) -> str:
           <div class="gpt-section-title">提示词设置</div>
           <div class="gpt-grid gpt-row" style="margin-top:0;">
             <div>
-              <label>提示词模板</label>
-              <select id="prompt_select">{prompt_options}</select>
-              <div class="gpt-hint">建议先选模板，再填写“追加分析要求”。可选择“不使用模板”。</div>
+              <label>系统提示词模板（严格约束）</label>
+              <select id="system_prompt_select">{system_prompt_options}</select>
+              <div class="gpt-hint">系统提示词用于约束 AI 行为与输出规范，建议固定使用“网络工程师-严格模式”。</div>
+            </div>
+            <div>
+              <label>系统模板查看</label>
+              <div class="gpt-actions" style="margin-top:0;">
+                <button class="gpt-btn" id="review_system_template_btn" type="button">Review 系统提示词</button>
+              </div>
+              <div class="gpt-hint">点击弹窗查看当前系统模板内容。</div>
+            </div>
+          </div>
+          <div class="gpt-grid gpt-row">
+            <div>
+              <label>任务提示词模板</label>
+              <select id="task_prompt_select">{task_prompt_options}</select>
+              <div class="gpt-hint">任务提示词描述本次分析目标；可选择“不使用模板”。</div>
             </div>
             <div>
               <label>模板查看</label>
               <div class="gpt-actions" style="margin-top:0;">
-                <button class="gpt-btn" id="review_template_btn" type="button">Review 提示词模板</button>
+                <button class="gpt-btn" id="review_task_template_btn" type="button">Review 任务提示词</button>
               </div>
-              <div class="gpt-hint">点击弹窗查看当前选择模板的完整内容。</div>
+              <div class="gpt-hint">点击弹窗查看当前任务模板内容。</div>
             </div>
           </div>
           <details class="gpt-details gpt-row">
-            <summary>模板管理（可选）</summary>
+            <summary>提示词管理（可选）</summary>
             <div class="gpt-grid" style="margin-top:8px;">
               <div>
                 <label>导入提示词文件（txt）</label>
@@ -1348,18 +1604,35 @@ def build_job_html(job_id: str) -> str:
                 <div class="gpt-hint">留空名称时自动使用文件名。</div>
               </div>
               <div>
+                <label>导入到</label>
+                <select id="prompt_kind_select">
+                  <option value="task" selected>任务提示词</option>
+                  <option value="system">系统提示词</option>
+                </select>
+              </div>
+            </div>
+            <div class="gpt-grid" style="margin-top:8px;">
+              <div>
                 <label>导入时命名（可选）</label>
                 <input id="prompt_name" type="text" placeholder="例如：核心链路专项诊断（不填自动用文件名）">
               </div>
+              <div></div>
             </div>
             <div class="gpt-actions" style="margin-top:8px;">
-              <button class="gpt-btn" id="import_prompt_btn" type="button">导入提示词为模板</button>
+              <button class="gpt-btn" id="import_prompt_btn" type="button">导入提示词</button>
             </div>
           </details>
           <div class="gpt-grid gpt-row">
             <div class="gpt-row">
-              <label>追加分析要求（可选）</label>
-              <textarea id="custom_prompt" placeholder="会追加在模板后面；例如：请重点关注核心上联、邻居抖动和高风险接口"></textarea>
+              <label>系统补充约束（可选）</label>
+              <textarea id="system_prompt_extra" placeholder="可追加系统级约束，例如：每条结论必须给证据链，无证据必须输出证据不足。"></textarea>
+            </div>
+            <div></div>
+          </div>
+          <div class="gpt-grid gpt-row">
+            <div class="gpt-row">
+              <label>任务补充要求（可选）</label>
+              <textarea id="custom_prompt" placeholder="会追加在任务模板后面；例如：请重点关注核心上联、邻居抖动和高风险接口"></textarea>
             </div>
             <div></div>
           </div>
@@ -1378,17 +1651,34 @@ def build_job_html(job_id: str) -> str:
         </div>
         <div class="gpt-actions">
           <button class="gpt-btn" id="test_llm_btn" type="button">连接测试</button>
-          <button class="gpt-btn gpt-primary" id="analyze_btn" type="button">AI 分析本次结果</button>
-          <button class="gpt-btn gpt-primary" id="analyze_history_btn" type="button">AI 分析历史报告</button>
+          <button class="gpt-btn gpt-primary" id="analyze_btn" type="button">AI 分析</button>
         </div>
         <div id="gpt_status" class="gpt-hint"></div>
         <div id="gpt_result">分析结果会显示在这里。</div>
       </div>
     </div>
   </div>
+  <div id="prompt_editor_modal" class="modal-mask">
+    <div class="modal-box">
+      <div class="modal-head">
+        <div id="prompt_editor_title" class="modal-title">编辑提示词</div>
+        <button id="close_prompt_editor_btn" class="modal-close" type="button">关闭</button>
+      </div>
+      <div class="modal-body">
+        <textarea id="prompt_editor_text"></textarea>
+      </div>
+      <div class="gpt-actions">
+        <button class="gpt-btn gpt-primary" id="save_prompt_edit_btn" type="button">保存修改</button>
+        <button class="gpt-btn danger" id="delete_prompt_btn" type="button">删除模板</button>
+        <button class="gpt-btn" id="cancel_prompt_edit_btn" type="button">取消修改</button>
+      </div>
+      <div class="gpt-hint">删除仅对自定义模板生效；默认模板会保留。</div>
+    </div>
+  </div>
   <script>
     const jobId = {json.dumps(job_id)};
-    let promptMap = {json.dumps(prompts, ensure_ascii=False)};
+    let taskPromptMap = {json.dumps(task_prompts, ensure_ascii=False)};
+    let systemPromptMap = {json.dumps(system_prompts, ensure_ascii=False)};
     const stateEl = document.getElementById("state");
     const outputEl = document.getElementById("output");
     const reportEl = document.getElementById("reports");
@@ -1410,13 +1700,20 @@ def build_job_html(job_id: str) -> str:
     const chatgptSettingsEl = document.getElementById("chatgpt_settings");
     const localSettingsEl = document.getElementById("local_settings");
     const deepseekSettingsEl = document.getElementById("deepseek_settings");
-    const promptSelectEl = document.getElementById("prompt_select");
+    const systemPromptSelectEl = document.getElementById("system_prompt_select");
+    const taskPromptSelectEl = document.getElementById("task_prompt_select");
     const promptFileEl = document.getElementById("prompt_file");
+    const promptKindSelectEl = document.getElementById("prompt_kind_select");
     const promptNameEl = document.getElementById("prompt_name");
     const historyReportFileEl = document.getElementById("history_report_file");
+    const systemPromptExtraEl = document.getElementById("system_prompt_extra");
     const customPromptEl = document.getElementById("custom_prompt");
     const gptStatusEl = document.getElementById("gpt_status");
     const gptResultEl = document.getElementById("gpt_result");
+    let latestJobData = null;
+    const promptEditorModalEl = document.getElementById("prompt_editor_modal");
+    const promptEditorTitleEl = document.getElementById("prompt_editor_title");
+    const promptEditorTextEl = document.getElementById("prompt_editor_text");
 
     function setState(status, exitCode) {{
       if (status === "running") {{
@@ -1448,6 +1745,58 @@ def build_job_html(job_id: str) -> str:
 
     function setGptStatus(msg) {{
       if (gptStatusEl) gptStatusEl.textContent = msg || "";
+    }}
+
+    function refreshPromptSelect(kind, prompts, selectedName) {{
+      if (kind === "system") {{
+        while (systemPromptSelectEl.firstChild) systemPromptSelectEl.removeChild(systemPromptSelectEl.firstChild);
+        Object.keys(prompts || {{}}).forEach((k) => {{
+          const opt = document.createElement("option");
+          opt.value = k;
+          opt.textContent = k;
+          systemPromptSelectEl.appendChild(opt);
+        }});
+        if (selectedName) systemPromptSelectEl.value = selectedName;
+      }} else {{
+        while (taskPromptSelectEl.firstChild) taskPromptSelectEl.removeChild(taskPromptSelectEl.firstChild);
+        const emptyOpt = document.createElement("option");
+        emptyOpt.value = "";
+        emptyOpt.textContent = "不使用模板";
+        taskPromptSelectEl.appendChild(emptyOpt);
+        Object.keys(prompts || {{}}).forEach((k) => {{
+          const opt = document.createElement("option");
+          opt.value = k;
+          opt.textContent = k;
+          taskPromptSelectEl.appendChild(opt);
+        }});
+        taskPromptSelectEl.value = selectedName || "";
+      }}
+    }}
+
+    function openPromptEditor(kind) {{
+      const key = kind === "system" ? (systemPromptSelectEl.value || "").trim() : (taskPromptSelectEl.value || "").trim();
+      if (!key) {{
+        window.alert(kind === "system" ? "当前未选择系统模板。" : "当前未选择任务模板（不使用模板）。");
+        return;
+      }}
+      const map = kind === "system" ? systemPromptMap : taskPromptMap;
+      const content = (map && map[key]) ? String(map[key]) : "";
+      if (!content) {{
+        window.alert("当前模板无内容或不存在。");
+        return;
+      }}
+      promptEditorModalEl.dataset.kind = kind;
+      promptEditorModalEl.dataset.name = key;
+      promptEditorTitleEl.textContent = (kind === "system" ? "编辑系统提示词: " : "编辑任务提示词: ") + key;
+      promptEditorTextEl.value = content;
+      promptEditorModalEl.style.display = "flex";
+    }}
+
+    function closePromptEditor() {{
+      promptEditorModalEl.style.display = "none";
+      promptEditorModalEl.dataset.kind = "";
+      promptEditorModalEl.dataset.name = "";
+      promptEditorTextEl.value = "";
     }}
 
     function selectedModel(selectEl, customEl) {{
@@ -1593,18 +1942,84 @@ def build_job_html(job_id: str) -> str:
       return await resp.json();
     }}
 
-    document.getElementById("review_template_btn").addEventListener("click", () => {{
-      const key = (promptSelectEl.value || "").trim();
-      if (!key) {{
-        window.alert("当前未选择模板（不使用模板）。");
+    document.getElementById("review_system_template_btn").addEventListener("click", () => openPromptEditor("system"));
+    document.getElementById("review_task_template_btn").addEventListener("click", () => openPromptEditor("task"));
+    document.getElementById("close_prompt_editor_btn").addEventListener("click", closePromptEditor);
+    document.getElementById("cancel_prompt_edit_btn").addEventListener("click", closePromptEditor);
+    if (promptEditorModalEl) {{
+      promptEditorModalEl.addEventListener("click", (e) => {{
+        if (e.target === promptEditorModalEl) closePromptEditor();
+      }});
+    }}
+
+    document.getElementById("save_prompt_edit_btn").addEventListener("click", async () => {{
+      const kind = (promptEditorModalEl.dataset.kind || "").trim();
+      const name = (promptEditorModalEl.dataset.name || "").trim();
+      const text = (promptEditorTextEl.value || "").trim();
+      if (!kind || !name) {{
+        setGptStatus("未选择模板。");
         return;
       }}
-      const content = (promptMap && promptMap[key]) ? String(promptMap[key]) : "";
-      if (!content) {{
-        window.alert("当前模板无内容或不存在。");
+      if (!text) {{
+        setGptStatus("提示词内容不能为空。");
         return;
       }}
-      window.alert("模板名称: " + key + "\\n\\n" + content);
+      const ok = window.confirm("确认保存修改吗？");
+      if (!ok) return;
+      try {{
+        const data = await postForm("/update_prompt", {{
+          prompt_kind: kind,
+          prompt_name: name,
+          prompt_text: text,
+        }});
+        if (!data.ok) {{
+          setGptStatus("保存失败: " + (data.error || "unknown"));
+          return;
+        }}
+        if (data.prompt_kind === "system") {{
+          systemPromptMap = data.prompts || {{}};
+          refreshPromptSelect("system", systemPromptMap, data.selected_prompt || name);
+        }} else {{
+          taskPromptMap = data.prompts || {{}};
+          refreshPromptSelect("task", taskPromptMap, data.selected_prompt || name);
+        }}
+        closePromptEditor();
+        setGptStatus("提示词修改已保存。");
+      }} catch (e) {{
+        setGptStatus("保存失败: " + e);
+      }}
+    }});
+
+    document.getElementById("delete_prompt_btn").addEventListener("click", async () => {{
+      const kind = (promptEditorModalEl.dataset.kind || "").trim();
+      const name = (promptEditorModalEl.dataset.name || "").trim();
+      if (!kind || !name) {{
+        setGptStatus("未选择模板。");
+        return;
+      }}
+      const ok = window.confirm("确认删除模板【" + name + "】吗？");
+      if (!ok) return;
+      try {{
+        const data = await postForm("/delete_prompt", {{
+          prompt_kind: kind,
+          prompt_name: name,
+        }});
+        if (!data.ok) {{
+          setGptStatus("删除失败: " + (data.error || "unknown"));
+          return;
+        }}
+        if (data.prompt_kind === "system") {{
+          systemPromptMap = data.prompts || {{}};
+          refreshPromptSelect("system", systemPromptMap, data.selected_prompt || "网络工程师-严格模式");
+        }} else {{
+          taskPromptMap = data.prompts || {{}};
+          refreshPromptSelect("task", taskPromptMap, data.selected_prompt || "");
+        }}
+        closePromptEditor();
+        setGptStatus("模板已删除。");
+      }} catch (e) {{
+        setGptStatus("删除失败: " + e);
+      }}
     }});
 
     document.getElementById("save_llm_btn").addEventListener("click", async () => {{
@@ -1613,7 +2028,8 @@ def build_job_html(job_id: str) -> str:
       const localBaseUrl = (localBaseEl.value || "").trim();
       const localModel = selectedModel(localModelSelectEl, localModelCustomEl);
       const deepseekModelResolved = selectedModel(deepseekModelSelectEl, deepseekModelCustomEl);
-      const selectedPrompt = promptSelectEl.value || "";
+      const selectedSystemPrompt = systemPromptSelectEl.value || "";
+      const selectedTaskPrompt = taskPromptSelectEl.value || "";
       if (provider === "chatgpt" && !chatgptModel) {{
         setGptStatus("ChatGPT 模式下请选择模型或输入自定义模型。");
         return;
@@ -1634,7 +2050,8 @@ def build_job_html(job_id: str) -> str:
           local_base_url: localBaseUrl,
           local_model: localModel,
           deepseek_model: deepseekModelResolved,
-          selected_prompt: selectedPrompt,
+          selected_system_prompt: selectedSystemPrompt,
+          selected_task_prompt: selectedTaskPrompt,
         }});
         setGptStatus(data.ok ? "已保存模型配置：来源/模型/地址/提示词模板，下次会自动带出。" : ("保存失败: " + (data.error || "unknown")));
       }} catch (e) {{
@@ -1669,9 +2086,11 @@ def build_job_html(job_id: str) -> str:
         setGptStatus("请先选择提示词文件。");
         return;
       }}
+      const promptKind = (promptKindSelectEl && promptKindSelectEl.value) ? String(promptKindSelectEl.value) : "task";
       const fallbackName = (file.name || "").replace(/\.[^/.]+$/, "");
       const name = ((promptNameEl.value || "").trim() || fallbackName).trim();
       const form = new FormData();
+      form.append("prompt_kind", promptKind);
       form.append("prompt_name", name);
       form.append("prompt_file", file);
       setGptStatus("正在导入提示词...");
@@ -1682,21 +2101,17 @@ def build_job_html(job_id: str) -> str:
           setGptStatus("导入失败: " + (data.error || "unknown"));
           return;
         }}
-        while (promptSelectEl.firstChild) promptSelectEl.removeChild(promptSelectEl.firstChild);
-        const prompts = data.prompts || {{}};
-        promptMap = prompts;
-        const emptyOpt = document.createElement("option");
-        emptyOpt.value = "";
-        emptyOpt.textContent = "不使用模板";
-        promptSelectEl.appendChild(emptyOpt);
-        Object.keys(prompts).forEach((k) => {{
-          const opt = document.createElement("option");
-          opt.value = k;
-          opt.textContent = k;
-          promptSelectEl.appendChild(opt);
-        }});
-        promptSelectEl.value = data.selected_prompt || name;
-        setGptStatus("提示词导入成功。");
+        if (data.prompt_kind === "system") {{
+          const prompts = data.prompts || {{}};
+          systemPromptMap = prompts;
+          refreshPromptSelect("system", systemPromptMap, data.selected_prompt || name);
+          setGptStatus("系统提示词导入成功。");
+        }} else {{
+          const prompts = data.prompts || {{}};
+          taskPromptMap = prompts;
+          refreshPromptSelect("task", taskPromptMap, data.selected_prompt || name);
+          setGptStatus("任务提示词导入成功。");
+        }}
       }} catch (e) {{
         setGptStatus("导入失败: " + e);
       }}
@@ -1738,84 +2153,70 @@ def build_job_html(job_id: str) -> str:
     }});
 
     document.getElementById("analyze_btn").addEventListener("click", async () => {{
-      const provider = (providerEl.value || "chatgpt").trim();
-      const chatgptModel = selectedModel(chatgptModelSelectEl, chatgptModelCustomEl);
-      const localBaseUrl = (localBaseEl.value || "").trim();
-      const localModel = selectedModel(localModelSelectEl, localModelCustomEl);
-      const deepseekModel = selectedModel(deepseekModelSelectEl, deepseekModelCustomEl);
-      const selectedPrompt = promptSelectEl.value || "";
-      const customPrompt = (customPromptEl.value || "").trim();
-      setGptStatus("正在调用 AI 分析，请稍候...");
-      gptResultEl.textContent = "分析中...";
-        try {{
-            const data = await postForm("/analyze_job", {{
-          job_id: jobId,
-          provider: provider,
-          chatgpt_model: chatgptModel,
-          local_base_url: localBaseUrl,
-          local_model: localModel,
-          deepseek_model: deepseekModel,
-          prompt_key: selectedPrompt,
-          custom_prompt: customPrompt,
-        }});
-          if (!data.ok) {{
-            gptResultEl.textContent = "分析失败: " + (data.error || "unknown");
-            setGptStatus("分析失败。");
-            return;
-          }}
-          gptResultEl.textContent = data.analysis || "(empty)";
-          if (data.provider_used === "local") {{
-            setGptStatus("分析完成。来源: LM Studio | " + (data.local_base_url || "") + " | " + (data.model_used || "") + " | 提示词: " + (data.prompt_source || ""));
-          }} else if (data.provider_used === "deepseek") {{
-            setGptStatus("分析完成。来源: DeepSeek | " + (data.model_used || "") + " | 提示词: " + (data.prompt_source || ""));
-          }} else {{
-            setGptStatus("分析完成。来源: ChatGPT | " + (data.model_used || "") + " | 提示词: " + (data.prompt_source || ""));
-          }}
-        }} catch (e) {{
-          gptResultEl.textContent = "分析失败: " + e;
-          setGptStatus("分析失败。");
-      }}
-    }});
-
-    document.getElementById("analyze_history_btn").addEventListener("click", async () => {{
       const file = historyReportFileEl.files && historyReportFileEl.files[0];
-      if (!file) {{
-        setGptStatus("请先选择历史报告文件。");
-        return;
-      }}
       const provider = (providerEl.value || "chatgpt").trim();
       const chatgptModel = selectedModel(chatgptModelSelectEl, chatgptModelCustomEl);
       const localBaseUrl = (localBaseEl.value || "").trim();
       const localModel = selectedModel(localModelSelectEl, localModelCustomEl);
       const deepseekModel = selectedModel(deepseekModelSelectEl, deepseekModelCustomEl);
-      const selectedPrompt = promptSelectEl.value || "";
+      const selectedSystemPrompt = systemPromptSelectEl.value || "";
+      const selectedTaskPrompt = taskPromptSelectEl.value || "";
+      const systemPromptExtra = (systemPromptExtraEl.value || "").trim();
       const customPrompt = (customPromptEl.value || "").trim();
-      setGptStatus("正在分析历史报告，请稍候...");
       gptResultEl.textContent = "分析中...";
       try {{
-        const form = new FormData();
-        form.append("provider", provider);
-        form.append("chatgpt_model", chatgptModel);
-        form.append("local_base_url", localBaseUrl);
-        form.append("local_model", localModel);
-        form.append("deepseek_model", deepseekModel);
-        form.append("prompt_key", selectedPrompt);
-        form.append("custom_prompt", customPrompt);
-        form.append("report_file", file);
-        const resp = await fetch("/analyze_history_report", {{ method: "POST", body: form }});
-        const data = await resp.json();
+        let data = null;
+        if (file) {{
+          setGptStatus("检测到历史报告，正在优先分析历史报告...");
+          const form = new FormData();
+          form.append("provider", provider);
+          form.append("chatgpt_model", chatgptModel);
+          form.append("local_base_url", localBaseUrl);
+          form.append("local_model", localModel);
+          form.append("deepseek_model", deepseekModel);
+          form.append("system_prompt_key", selectedSystemPrompt);
+          form.append("prompt_key", selectedTaskPrompt);
+          form.append("system_prompt_extra", systemPromptExtra);
+          form.append("custom_prompt", customPrompt);
+          form.append("report_file", file);
+          const resp = await fetch("/analyze_history_report", {{ method: "POST", body: form }});
+          data = await resp.json();
+        }} else {{
+          const hasCurrentReport = !!(latestJobData && latestJobData.status === "success" && (latestJobData.report_json || latestJobData.report_csv));
+          if (!hasCurrentReport) {{
+            gptResultEl.textContent = "分析失败: 无可用报告。";
+            setGptStatus("未检测到可分析报告。请先运行巡检任务，或导入历史报告后再分析。");
+            return;
+          }}
+          setGptStatus("未导入历史报告，正在分析本次巡检结果...");
+          data = await postForm("/analyze_job", {{
+            job_id: jobId,
+            provider: provider,
+            chatgpt_model: chatgptModel,
+            local_base_url: localBaseUrl,
+            local_model: localModel,
+            deepseek_model: deepseekModel,
+            system_prompt_key: selectedSystemPrompt,
+            prompt_key: selectedTaskPrompt,
+            system_prompt_extra: systemPromptExtra,
+            custom_prompt: customPrompt,
+          }});
+        }}
         if (!data.ok) {{
           gptResultEl.textContent = "分析失败: " + (data.error || "unknown");
           setGptStatus("分析失败。");
           return;
         }}
         gptResultEl.textContent = data.analysis || "(empty)";
+        const thisTokens = (data.token_usage && Number(data.token_usage.total_tokens)) ? Number(data.token_usage.total_tokens) : 0;
+        const totalTokens = Number(data.token_total || 0);
+        const tokenInfo = " | 本次Token: " + thisTokens + " | 累计Token: " + totalTokens;
         if (data.provider_used === "local") {{
-          setGptStatus("分析完成。来源: LM Studio | " + (data.local_base_url || "") + " | " + (data.model_used || "") + " | 提示词: " + (data.prompt_source || ""));
+          setGptStatus("分析完成。来源: LM Studio | " + (data.local_base_url || "") + " | " + (data.model_used || "") + " | 提示词: " + (data.prompt_source || "") + tokenInfo);
         }} else if (data.provider_used === "deepseek") {{
-          setGptStatus("分析完成。来源: DeepSeek | " + (data.model_used || "") + " | 提示词: " + (data.prompt_source || ""));
+          setGptStatus("分析完成。来源: DeepSeek | " + (data.model_used || "") + " | 提示词: " + (data.prompt_source || "") + tokenInfo);
         }} else {{
-          setGptStatus("分析完成。来源: ChatGPT | " + (data.model_used || "") + " | 提示词: " + (data.prompt_source || ""));
+          setGptStatus("分析完成。来源: ChatGPT | " + (data.model_used || "") + " | 提示词: " + (data.prompt_source || "") + tokenInfo);
         }}
       }} catch (e) {{
         gptResultEl.textContent = "分析失败: " + e;
@@ -1840,6 +2241,7 @@ def build_job_html(job_id: str) -> str:
           return;
         }}
         const data = await resp.json();
+        latestJobData = data;
         outputEl.textContent = data.output || "";
         setState(data.status, data.exit_code);
         renderReports(data);
@@ -1854,6 +2256,216 @@ def build_job_html(job_id: str) -> str:
 
     poll();
   </script>
+</body>
+</html>"""
+
+
+def build_guide_html() -> str:
+    return """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HealthCheck 使用说明</title>
+  <style>
+    :root {
+      --bg: #f1f5f9;
+      --card: #ffffff;
+      --line: #d5dde7;
+      --text: #0f172a;
+      --muted: #475569;
+      --brand: #0b6e4f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.6 "Helvetica Neue", "PingFang SC", sans-serif;
+    }
+    .wrap {
+      max-width: 1240px;
+      margin: 18px auto;
+      padding: 0 14px;
+    }
+    .head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .head h1 { margin: 0; font-size: 22px; }
+    .back {
+      text-decoration: none;
+      color: #fff;
+      background: var(--brand);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-weight: 700;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 270px 1fr;
+      gap: 12px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px;
+    }
+    .toc {
+      position: sticky;
+      top: 12px;
+      max-height: calc(100vh - 26px);
+      overflow: auto;
+    }
+    .toc h2 { margin: 0 0 8px; font-size: 16px; }
+    .toc a {
+      display: block;
+      padding: 6px 8px;
+      border-radius: 6px;
+      color: #0f172a;
+      text-decoration: none;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .toc a:hover { background: #f1f5f9; }
+    .content h2 {
+      margin: 16px 0 8px;
+      border-left: 4px solid var(--brand);
+      padding-left: 8px;
+      font-size: 18px;
+    }
+    .content p { margin: 6px 0; color: var(--muted); }
+    .content ul { margin: 6px 0 10px 18px; color: var(--muted); }
+    .code {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f8fafc;
+      padding: 10px;
+      font-family: Menlo, Consolas, monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      color: #0f172a;
+    }
+    .note {
+      border: 1px solid #bbf7d0;
+      background: #f0fdf4;
+      color: #166534;
+      border-radius: 8px;
+      padding: 8px 10px;
+      margin-top: 8px;
+    }
+    @media (max-width: 920px) {
+      .layout { grid-template-columns: 1fr; }
+      .toc { position: static; max-height: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="head">
+      <h1>HealthCheck 说明文档</h1>
+      <a class="back" href="/">返回首页</a>
+    </div>
+    <div class="layout">
+      <aside class="card toc">
+        <h2>目录大纲</h2>
+        <a href="#sec1">1. 业务目标</a>
+        <a href="#sec2">2. 整体架构</a>
+        <a href="#sec3">3. 页面业务流程</a>
+        <a href="#sec4">4. 程序执行逻辑</a>
+        <a href="#sec5">5. AI 分析设计</a>
+        <a href="#sec6">6. 文件路径层次</a>
+        <a href="#sec7">7. 关键设计点</a>
+        <a href="#sec8">8. 安全与运维建议</a>
+      </aside>
+      <main class="card content">
+        <section id="sec1">
+          <h2>1. 业务目标</h2>
+          <p>该系统面向网络工程师，目标是把“多设备巡检、结构化报告输出、AI 诊断”打通为单一流程。</p>
+          <ul>
+            <li>批量巡检：多设备并发执行检查项和自定义命令。</li>
+            <li>报告沉淀：输出 JSON/CSV 便于审计与对比。</li>
+            <li>智能诊断：支持 ChatGPT、DeepSeek、本地大模型。</li>
+          </ul>
+        </section>
+        <section id="sec2">
+          <h2>2. 整体架构</h2>
+          <p>架构由三层组成：Web 前端交互层、任务编排层、巡检执行层。</p>
+          <ul>
+            <li>前端交互层：表单输入、任务状态轮询、AI 分析触发。</li>
+            <li>任务编排层：启动子进程、记录日志、解析报告文件名、回传状态。</li>
+            <li>巡检执行层：SSH 登录设备、命令执行、重试与统计、报告写盘。</li>
+          </ul>
+        </section>
+        <section id="sec3">
+          <h2>3. 页面业务流程</h2>
+          <p>首页提交任务后跳转任务状态页；任务完成后可下载报告或发起 AI 分析。</p>
+          <ul>
+            <li>首页：输入设备、选择检查项、导入 command_map、设置执行参数。</li>
+            <li>任务页：实时日志、状态标签、报告下载。</li>
+            <li>AI 分析：优先历史报告，否则本次报告；无报告会提示先运行或导入。</li>
+          </ul>
+        </section>
+        <section id="sec4">
+          <h2>4. 程序执行逻辑</h2>
+          <p>执行核心由 `app/healthcheck.py` 提供，Web 通过子进程调用并注入标准输入参数。</p>
+          <ul>
+            <li>设备清洗：去重、格式校验、无效地址过滤。</li>
+            <li>命令来源：检查项映射命令 + 自定义命令顺序追加。</li>
+            <li>并发策略：auto/serial/parallel + workers 控制。</li>
+            <li>结果落盘：`output/reports/inspection_report_*.json|csv`。</li>
+          </ul>
+        </section>
+        <section id="sec5">
+          <h2>5. AI 分析设计</h2>
+          <p>采用“双层提示词”以提高严谨性：系统提示词约束行为，任务提示词描述本次目标。</p>
+          <ul>
+            <li>系统提示词：强调证据链、禁止臆测、固定结构输出。</li>
+            <li>任务提示词：聚焦接口/协议/资源等具体场景。</li>
+            <li>补充输入：系统补充约束 + 任务补充要求。</li>
+            <li>Token 统计：展示本次与累计 token。</li>
+          </ul>
+        </section>
+        <section id="sec6">
+          <h2>6. 文件路径层次</h2>
+          <div class="code">healthcheck/
+app/                 # 核心程序（healthcheck.py / web_runner.py）
+config/              # command_map.yaml
+data/                # devices.txt / intents.txt
+docs/                # readme.md
+output/reports/      # 巡检结果 JSON/CSV
+runtime/tmp/         # 任务临时文件
+state/               # gpt_config.json / token_stats.json
+prompts/
+  system_default/    # 默认系统提示词
+  system_custom/     # 自定义系统提示词
+  task_default/      # 默认任务提示词
+  task_custom/       # 自定义任务提示词</div>
+        </section>
+        <section id="sec7">
+          <h2>7. 关键设计点</h2>
+          <ul>
+            <li>相对路径统一：避免绝对路径导致迁移失败。</li>
+            <li>模板可维护：提示词文件化管理，支持导入、编辑、删除（删除需确认）。</li>
+            <li>日志可观测：任务状态页轮询输出，支持 debug 开关。</li>
+            <li>结果可追溯：报告文件与 AI 分析均保留来源和模型信息。</li>
+          </ul>
+        </section>
+        <section id="sec8">
+          <h2>8. 安全与运维建议</h2>
+          <ul>
+            <li>API Key 仅保存在本机 `state/gpt_config.json`，请控制目录权限。</li>
+            <li>建议将 `state/`、`output/reports/`、`runtime/tmp/` 排除在 Git 之外。</li>
+            <li>生产环境建议固定系统提示词模板，减少输出漂移。</li>
+          </ul>
+          <div class="note">如需扩展企业级文档，可增加“版本记录”“变更审计”“故障案例库”章节并持续维护。</div>
+        </section>
+      </main>
+    </div>
+  </div>
 </body>
 </html>"""
 
@@ -2006,6 +2618,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/":
             self._respond_html(build_html(default_form_values(), DEFAULT_CHECKS[:3], "", ""))
             return
+        if parsed.path == "/guide":
+            self._respond_html(build_guide_html())
+            return
         if parsed.path == "/job":
             query = parse_qs(parsed.query)
             job_id = (query.get("id", [""])[0] or "").strip()
@@ -2102,7 +2717,8 @@ class Handler(BaseHTTPRequestHandler):
         local_base_url = (form.getvalue("local_base_url") or DEFAULT_LOCAL_BASE_URL).strip()
         local_model = (form.getvalue("local_model") or DEFAULT_LOCAL_MODEL).strip()
         deepseek_model = (form.getvalue("deepseek_model") or DEFAULT_DEEPSEEK_MODEL).strip()
-        selected_prompt = (form.getvalue("selected_prompt") or "").strip()
+        selected_system_prompt = (form.getvalue("selected_system_prompt") or "").strip()
+        selected_task_prompt = (form.getvalue("selected_task_prompt") or "").strip()
         if provider == "chatgpt" and not chatgpt_model:
             self._respond_json({"ok": False, "error": "chatgpt_model required"}, status=400)
             return
@@ -2118,7 +2734,8 @@ class Handler(BaseHTTPRequestHandler):
         cfg["local_base_url"] = local_base_url
         cfg["local_model"] = local_model
         cfg["deepseek_model"] = deepseek_model
-        cfg["selected_prompt"] = selected_prompt
+        cfg["selected_system_prompt"] = selected_system_prompt
+        cfg["selected_task_prompt"] = selected_task_prompt
         save_gpt_config(cfg)
         self._respond_json({"ok": True})
 
@@ -2150,6 +2767,9 @@ class Handler(BaseHTTPRequestHandler):
         if upload is None or not getattr(upload, "filename", ""):
             self._respond_json({"ok": False, "error": "Prompt file is required"}, status=400)
             return
+        prompt_kind = (form.getvalue("prompt_kind") or "task").strip().lower()
+        if prompt_kind not in {"task", "system"}:
+            prompt_kind = "task"
         raw_name = (form.getvalue("prompt_name") or "").strip()
         if not raw_name:
             raw_name = Path(str(upload.filename)).stem
@@ -2171,12 +2791,78 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         cfg = load_gpt_config()
-        if not write_prompt_file(CUSTOM_PROMPTS_DIR, prompt_name, text):
+        target_dir = SYSTEM_CUSTOM_PROMPTS_DIR if prompt_kind == "system" else TASK_CUSTOM_PROMPTS_DIR
+        if not write_prompt_file(target_dir, prompt_name, text):
             self._respond_json({"ok": False, "error": "提示词模板保存失败"}, status=500)
             return
         cfg["custom_prompts"] = {}
         save_gpt_config(cfg)
-        self._respond_json({"ok": True, "prompts": merged_prompt_catalog(), "selected_prompt": prompt_name})
+        prompts = merged_system_prompt_catalog() if prompt_kind == "system" else merged_task_prompt_catalog()
+        self._respond_json(
+            {
+                "ok": True,
+                "prompt_kind": prompt_kind,
+                "prompts": prompts,
+                "selected_prompt": prompt_name,
+            }
+        )
+
+    def _handle_update_prompt(self, form: cgi.FieldStorage) -> None:
+        prompt_kind = (form.getvalue("prompt_kind") or "task").strip().lower()
+        if prompt_kind not in {"task", "system"}:
+            prompt_kind = "task"
+        raw_name = (form.getvalue("prompt_name") or "").strip()
+        prompt_name = sanitize_prompt_name(raw_name)
+        prompt_text = (form.getvalue("prompt_text") or "").strip()
+        if not prompt_name:
+            self._respond_json({"ok": False, "error": "Prompt name is empty"}, status=400)
+            return
+        if not prompt_text:
+            self._respond_json({"ok": False, "error": "Prompt text is empty"}, status=400)
+            return
+        target_dir = SYSTEM_CUSTOM_PROMPTS_DIR if prompt_kind == "system" else TASK_CUSTOM_PROMPTS_DIR
+        if not write_prompt_file(target_dir, prompt_name, prompt_text):
+            self._respond_json({"ok": False, "error": "提示词保存失败"}, status=500)
+            return
+        prompts = prompt_catalog_by_kind(prompt_kind)
+        self._respond_json(
+            {
+                "ok": True,
+                "prompt_kind": prompt_kind,
+                "prompts": prompts,
+                "selected_prompt": prompt_name,
+            }
+        )
+
+    def _handle_delete_prompt(self, form: cgi.FieldStorage) -> None:
+        prompt_kind = (form.getvalue("prompt_kind") or "task").strip().lower()
+        if prompt_kind not in {"task", "system"}:
+            prompt_kind = "task"
+        raw_name = (form.getvalue("prompt_name") or "").strip()
+        prompt_name = sanitize_prompt_name(raw_name)
+        if not prompt_name:
+            self._respond_json({"ok": False, "error": "Prompt name is empty"}, status=400)
+            return
+        target_dir = SYSTEM_CUSTOM_PROMPTS_DIR if prompt_kind == "system" else TASK_CUSTOM_PROMPTS_DIR
+        target_file = target_dir / prompt_file_name(prompt_name)
+        if not target_file.is_file():
+            self._respond_json({"ok": False, "error": "仅可删除自定义模板，默认模板不可直接删除"}, status=400)
+            return
+        try:
+            target_file.unlink()
+        except Exception as exc:
+            self._respond_json({"ok": False, "error": f"删除失败: {exc}"}, status=500)
+            return
+        prompts = prompt_catalog_by_kind(prompt_kind)
+        fallback_selected = "网络工程师-严格模式" if prompt_kind == "system" else ""
+        self._respond_json(
+            {
+                "ok": True,
+                "prompt_kind": prompt_kind,
+                "prompts": prompts,
+                "selected_prompt": fallback_selected if prompt_name not in prompts else prompt_name,
+            }
+        )
 
     def _handle_test_llm(self, form: cgi.FieldStorage) -> None:
         provider = (form.getvalue("provider") or "").strip().lower()
@@ -2240,23 +2926,46 @@ class Handler(BaseHTTPRequestHandler):
             api_key = str(cfg.get("chatgpt_api_key", "") or "").strip()
         else:
             api_key = ""
-        prompt_key = (form.getvalue("prompt_key") or "").strip()
-        custom_prompt = (form.getvalue("custom_prompt") or "").strip()
-        prompts = merged_prompt_catalog()
-        template_prompt = prompts.get(prompt_key, "") if prompt_key else ""
-        extra_prompt = custom_prompt
-        if template_prompt and extra_prompt:
-            prompt_text = f"{template_prompt}\n\n【追加分析要求】\n{extra_prompt}"
-            prompt_source = f"template+extra:{prompt_key}"
-        elif template_prompt:
-            prompt_text = template_prompt
-            prompt_source = f"template:{prompt_key}"
-        elif extra_prompt:
-            prompt_text = extra_prompt
-            prompt_source = "extra_only"
+        system_prompt_key = (form.getvalue("system_prompt_key") or "").strip()
+        task_prompt_key = (form.getvalue("prompt_key") or "").strip()
+        system_prompt_extra = (form.getvalue("system_prompt_extra") or "").strip()
+        task_prompt_extra = (form.getvalue("custom_prompt") or "").strip()
+
+        system_prompts = merged_system_prompt_catalog()
+        task_prompts = merged_task_prompt_catalog()
+
+        base_system_prompt = (
+            system_prompts.get(system_prompt_key, "")
+            if system_prompt_key
+            else system_prompts.get("网络工程师-严格模式", "")
+        )
+        base_task_prompt = task_prompts.get(task_prompt_key, "") if task_prompt_key else ""
+
+        if base_system_prompt and system_prompt_extra:
+            system_prompt_text = f"{base_system_prompt}\n\n【系统补充约束】\n{system_prompt_extra}"
+            system_prompt_source = f"system_template+extra:{system_prompt_key or '网络工程师-严格模式'}"
+        elif base_system_prompt:
+            system_prompt_text = base_system_prompt
+            system_prompt_source = f"system_template:{system_prompt_key or '网络工程师-严格模式'}"
+        elif system_prompt_extra:
+            system_prompt_text = system_prompt_extra
+            system_prompt_source = "system_extra_only"
         else:
-            prompt_text = DEFAULT_NETWORK_PROMPTS["基础巡检诊断"]
-            prompt_source = "default:基础巡检诊断"
+            system_prompt_text = DEFAULT_SYSTEM_PROMPTS["网络工程师-严格模式"]
+            system_prompt_source = "system_default:网络工程师-严格模式"
+
+        if base_task_prompt and task_prompt_extra:
+            task_prompt_text = f"{base_task_prompt}\n\n【任务补充要求】\n{task_prompt_extra}"
+            task_prompt_source = f"task_template+extra:{task_prompt_key}"
+        elif base_task_prompt:
+            task_prompt_text = base_task_prompt
+            task_prompt_source = f"task_template:{task_prompt_key}"
+        elif task_prompt_extra:
+            task_prompt_text = task_prompt_extra
+            task_prompt_source = "task_extra_only"
+        else:
+            task_prompt_text = DEFAULT_TASK_PROMPTS["基础巡检诊断"]
+            task_prompt_source = "task_default:基础巡检诊断"
         return {
             "provider": provider,
             "api_key": api_key,
@@ -2264,16 +2973,19 @@ class Handler(BaseHTTPRequestHandler):
             "local_base_url": local_base_url,
             "local_model": local_model,
             "deepseek_model": deepseek_model,
-            "prompt_text": prompt_text,
-            "prompt_key": prompt_key,
-            "prompt_source": prompt_source,
+            "system_prompt_text": system_prompt_text,
+            "task_prompt_text": task_prompt_text,
+            "system_prompt_key": system_prompt_key or "网络工程师-严格模式",
+            "task_prompt_key": task_prompt_key,
+            "prompt_source": f"{system_prompt_source}; {task_prompt_source}",
         }
 
     def _handle_analyze_job(self, form: cgi.FieldStorage) -> None:
         job_id = (form.getvalue("job_id") or "").strip()
         llm = self._resolve_llm_inputs_from_form(form)
         cfg = load_gpt_config()
-        cfg["selected_prompt"] = llm.get("prompt_key", "")
+        cfg["selected_system_prompt"] = llm.get("system_prompt_key", "")
+        cfg["selected_task_prompt"] = llm.get("task_prompt_key", "")
         save_gpt_config(cfg)
 
         if not job_id:
@@ -2288,35 +3000,39 @@ class Handler(BaseHTTPRequestHandler):
         analysis_input = self._build_analysis_input(job)
         try:
             if llm["provider"] == "local":
-                analysis = call_local_lmstudio_analysis(
+                analysis, usage = call_local_lmstudio_analysis(
                     base_url=llm["local_base_url"],
                     model=llm["local_model"],
-                    prompt_text=llm["prompt_text"],
+                    system_prompt=llm["system_prompt_text"],
+                    task_prompt=llm["task_prompt_text"],
                     report_text=analysis_input,
                 )
             elif llm["provider"] == "deepseek":
                 if not llm["api_key"]:
                     self._respond_json({"ok": False, "error": "DeepSeek API Key not set"}, status=400)
                     return
-                analysis = call_deepseek_analysis(
+                analysis, usage = call_deepseek_analysis(
                     api_key=llm["api_key"],
                     model=llm["deepseek_model"],
-                    prompt_text=llm["prompt_text"],
+                    system_prompt=llm["system_prompt_text"],
+                    task_prompt=llm["task_prompt_text"],
                     report_text=analysis_input,
                 )
             else:
                 if not llm["api_key"]:
                     self._respond_json({"ok": False, "error": "ChatGPT API Key not set"}, status=400)
                     return
-                analysis = call_openai_analysis(
+                analysis, usage = call_openai_analysis(
                     api_key=llm["api_key"],
-                    prompt_text=llm["prompt_text"],
+                    system_prompt=llm["system_prompt_text"],
+                    task_prompt=llm["task_prompt_text"],
                     report_text=analysis_input,
                     model=llm["chatgpt_model"],
                 )
         except Exception as exc:
             self._respond_json({"ok": False, "error": str(exc)}, status=500)
             return
+        token_stats = add_token_usage(llm["provider"], int(usage.get("total_tokens", 0)))
         self._respond_json(
             {
                 "ok": True,
@@ -2329,6 +3045,8 @@ class Handler(BaseHTTPRequestHandler):
                 ),
                 "local_base_url": llm["local_base_url"] if llm["provider"] == "local" else "",
                 "prompt_source": llm.get("prompt_source", ""),
+                "token_usage": usage,
+                "token_total": int(token_stats.get("total_tokens", 0)),
             }
         )
 
@@ -2345,39 +3063,44 @@ class Handler(BaseHTTPRequestHandler):
 
         llm = self._resolve_llm_inputs_from_form(form)
         cfg = load_gpt_config()
-        cfg["selected_prompt"] = llm.get("prompt_key", "")
+        cfg["selected_system_prompt"] = llm.get("system_prompt_key", "")
+        cfg["selected_task_prompt"] = llm.get("task_prompt_key", "")
         save_gpt_config(cfg)
         try:
             if llm["provider"] == "local":
-                analysis = call_local_lmstudio_analysis(
+                analysis, usage = call_local_lmstudio_analysis(
                     base_url=llm["local_base_url"],
                     model=llm["local_model"],
-                    prompt_text=llm["prompt_text"],
+                    system_prompt=llm["system_prompt_text"],
+                    task_prompt=llm["task_prompt_text"],
                     report_text=report_text,
                 )
             elif llm["provider"] == "deepseek":
                 if not llm["api_key"]:
                     self._respond_json({"ok": False, "error": "DeepSeek API Key not set"}, status=400)
                     return
-                analysis = call_deepseek_analysis(
+                analysis, usage = call_deepseek_analysis(
                     api_key=llm["api_key"],
                     model=llm["deepseek_model"],
-                    prompt_text=llm["prompt_text"],
+                    system_prompt=llm["system_prompt_text"],
+                    task_prompt=llm["task_prompt_text"],
                     report_text=report_text,
                 )
             else:
                 if not llm["api_key"]:
                     self._respond_json({"ok": False, "error": "ChatGPT API Key not set"}, status=400)
                     return
-                analysis = call_openai_analysis(
+                analysis, usage = call_openai_analysis(
                     api_key=llm["api_key"],
-                    prompt_text=llm["prompt_text"],
+                    system_prompt=llm["system_prompt_text"],
+                    task_prompt=llm["task_prompt_text"],
                     report_text=report_text,
                     model=llm["chatgpt_model"],
                 )
         except Exception as exc:
             self._respond_json({"ok": False, "error": str(exc)}, status=500)
             return
+        token_stats = add_token_usage(llm["provider"], int(usage.get("total_tokens", 0)))
         self._respond_json(
             {
                 "ok": True,
@@ -2390,6 +3113,8 @@ class Handler(BaseHTTPRequestHandler):
                 ),
                 "local_base_url": llm["local_base_url"] if llm["provider"] == "local" else "",
                 "prompt_source": llm.get("prompt_source", ""),
+                "token_usage": usage,
+                "token_total": int(token_stats.get("total_tokens", 0)),
             }
         )
 
@@ -2405,6 +3130,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/import_prompt":
             self._handle_import_prompt(form)
+            return
+        if self.path == "/update_prompt":
+            self._handle_update_prompt(form)
+            return
+        if self.path == "/delete_prompt":
+            self._handle_delete_prompt(form)
             return
         if self.path == "/save_api_key":
             self._handle_save_api_key(form)

@@ -7,3 +7,5 @@ state/gpt_config.json
 gpt_config.json
 output/reports/
 prompts/custom/
+prompts/system_custom/
+prompts/task_custom/

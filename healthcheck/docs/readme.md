@@ -28,8 +28,10 @@ healthcheck/
 ├── runtime/
 │   └── tmp/                     # 运行时临时文件
 ├── prompts/
-│   ├── default/                 # 内置提示词模板（txt）
-│   └── custom/                  # 你导入的提示词模板（txt）
+│   ├── system_default/          # 内置系统提示词模板（严格约束）
+│   ├── system_custom/           # 自定义系统提示词模板
+│   ├── task_default/            # 内置任务提示词模板（诊断目标）
+│   └── task_custom/             # 自定义任务提示词模板
 └── state/
     └── gpt_config.json          # LLM 配置（本地保存）
 ```
@@ -41,7 +43,7 @@ healthcheck/
 - 默认报告目录：`output/reports/`
 - 默认意图文件：`data/intents.txt`
 - LLM 配置文件：`state/gpt_config.json`
-- 提示词模板目录：`prompts/default/`、`prompts/custom/`
+- 提示词模板目录：`prompts/system_default/`、`prompts/system_custom/`、`prompts/task_default/`、`prompts/task_custom/`
 
 ## 快速运行
 
@@ -85,7 +87,9 @@ python3 web_runner.py
 - API Key 支持导入保存，后续可复用；再次保存会覆盖旧值并提示
 - 默认 LM Studio：`http://192.168.0.99:1234`
 - 默认本地模型：`qwen/qwen3-coder-30b`
-- 诊断提示词支持：默认模板、导入模板、空模板
+- 诊断提示词支持“双层模式”：
+  - 系统提示词（固定约束，建议使用“网络工程师-严格模式”）
+  - 任务提示词（本次诊断目标，可选模板或空模板）
 
 ## 报告字段说明
 
