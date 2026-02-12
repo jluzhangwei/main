@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LLDP 拓扑工具使用手册</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; line-height: 1.6; color: #0f172a; }
+    h1 { margin-bottom: 8px; }
+    h2 { margin-top: 22px; margin-bottom: 8px; }
+    .card { border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px 18px; box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06); max-width: 1100px; }
+    ul { padding-left: 20px; }
+    code { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-size: 90%; }
+    .badge { display: inline-block; margin-left: 6px; padding: 2px 8px; border-radius: 999px; background: #dbeafe; color: #1d4ed8; font-size: 12px; }
+    .pill { display: inline-block; margin-right: 6px; padding: 2px 8px; border-radius: 999px; background: #ecfeff; color: #0891b2; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>LLDP 拓扑工具使用手册</h1>
+  <div class="card">
+    <p><strong>一句话：</strong>导入/追加 LLDP CSV，自动去重生成拓扑；支持分层/分散布局、过滤/搜索、多选/右键操作、邻接高亮；可导入导出 PNG/JSON/坐标，支持多链路合并切换。</p>
+
+    <h2>数据导入</h2>
+    <ul>
+      <li><span class="pill">导入</span> 选择或拖拽 CSV，或粘贴文本；自动去重（按 <code>localhostname/localinterface/remotehostname/remoteinterface</code>）。</li>
+      <li><span class="pill">列映射</span> 默认自动匹配，列名异常时展开「列映射」下拉手动调整。</li>
+      <li><span class="pill">追加</span> 使用「追加 CSV」添加新设备，保留已有节点坐标不动。</li>
+      <li><span class="pill">去后缀</span> 选项可去掉 hostname 域名后缀。</li>
+    </ul>
+
+    <h2>布局与分散</h2>
+    <ul>
+      <li><span class="pill">布局模式</span> 仅强分散（默认 fCoSE）、上下分层、圆形。</li>
+      <li><span class="pill">分散强度</span> 0.1–1 滑杆，默认 0.5。</li>
+      <li><span class="pill">分层关键字</span> 逗号分层，斜杠 <code>/</code> 表示同层同义词，<code>&amp;</code> 表示同层内全部命中才算匹配。示例：<code>EDGE&amp;CORE,CORE,AGGR/SPINE,LEAF/tor</code>。</li>
+      <li><span class="pill">上下分层</span> 选择布局模式为「上下分层」或点击「应用分层」后「重新布局」。</li>
+    </ul>
+
+    <h2>显示与交互</h2>
+    <ul>
+      <li><span class="pill">标签</span> 节点标签缩略/全名切换；端口标签可显示/隐藏。</li>
+      <li><span class="pill">过滤</span> 逗号分隔关键词，命中节点隐藏并同步隐藏相关边。</li>
+      <li><span class="pill">搜索</span> 逗号分隔关键词，回车批量选中匹配节点。</li>
+      <li><span class="pill">多选</span> Ctrl/Cmd 或 Shift；「仅显示邻接」高亮选中及其邻接并暗化其他。</li>
+      <li><span class="pill">右键菜单</span> 固定/取消固定、删除（可恢复）、复制名称。</li>
+      <li><span class="pill">删除/恢复</span> 「删除选中」移除节点及边，「恢复删除设备」撤销最近删除。</li>
+    </ul>
+
+    <h2>链路显示</h2>
+    <ul>
+      <li><span class="pill">多链路合并</span> 按钮「合并多条链路」可在合并/拆分模式间切换：同一对节点的多条链路合并为单条并显示计数。</li>
+    </ul>
+
+    <h2>坐标与导出</h2>
+    <ul>
+      <li><span class="pill">坐标</span> 「导出坐标」保存当前节点位置 JSON；「导入坐标」直接应用到拓扑（再居中缩放）。</li>
+      <li><span class="pill">导出</span> PNG（修复空白问题，使用 blob）、JSON（当前画布状态）。</li>
+    </ul>
+
+    <h2>常用操作流</h2>
+    <ul>
+      <li>导入或追加 CSV → 选布局模式/分层关键字 → 生成或重新布局。</li>
+      <li>调整分散强度、标签显示；用过滤/搜索快速筛选；多选 + 右键固定或删除。</li>
+      <li>需要复用位置时导出坐标，下次导入坐标；若链路过多可开启「合并多条链路」。</li>
+    </ul>
+  </div>
+</body>
+</html>
