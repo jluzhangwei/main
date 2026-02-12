@@ -1,0 +1,25 @@
+# 综合巡检意图清单（每行一个）
+# 程序会按 command_map.yaml 自动匹配厂商/型号命令
+
+# @version
+@uptime
+@cpu_usage
+@memory_usage
+@interface_brief
+@interface_errors
+@transceiver
+@route_summary
+@arp_table
+@mac_table
+@lldp_neighbors
+@bgp_summary
+@ospf_summary
+@ntp_status
+@log_recent
+@alarm_active
+@environmental
+@power_status
+@fan_status
+@spanning_tree
+@acl_summary
+@running_config
