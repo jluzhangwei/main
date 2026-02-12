@@ -195,7 +195,7 @@ python3 web_runner.py
 1. 输入 SSH 用户名和密码
 2. 输入设备地址（每行一个）
 3. 选择检查项（来自 `intents.txt`）
-4. 上传 `command_map.yaml`
+4. 可选上传 `command_map.yaml`（不上传默认使用同目录 `command_map.yaml`）
 5. 点击“执行 Python 巡检脚本”
 
 页面会调用同目录下的 `healthcheck.py`，并在页面展示执行输出。
@@ -207,6 +207,21 @@ python3 web_runner.py
 设备地址支持手动输入，也支持导入设备文件；导入后会直接刷新到“设备地址”文本框并可继续编辑。
 同时页面顶部会展示：
 - 任务成功后在任务状态页显示“本次 JSON/CSV 报告”下载按钮
+
+GPT 分析功能：
+- 在任务状态页支持两种分析方式：
+  - OpenAI API
+  - LM Studio（本地 OpenAI 兼容接口）
+- 默认 LM Studio 配置：
+  - 地址：`http://192.168.0.99:1234`
+  - 模型：`qwen/qwen3-coder-30b`
+- 可保存 LLM 配置（保存后下次可直接使用）
+- API Key 保存在 `healthcheck/gpt_config.json`（本地明文），请注意权限管理
+- 内置默认网络诊断提示词模板
+- 支持导入 `.txt` 提示词文件并保存为自定义模板
+- 支持“连接测试”按钮（先验证 OpenAI/LM Studio 连通性，再进行分析）
+- 点击“GPT 分析本次结果”会把任务日志和结构化报告提交给 GPT 分析
+- GPT 分析结果会显示在任务状态页下方
 
 报告说明：
 - `attempt_output_preview`：压缩后预览（便于快速浏览）

@@ -11,9 +11,12 @@ import subprocess
 import sys
 import tempfile
 import threading
+import ssl
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, List
+from urllib import error as urlerror
+from urllib import request as urlrequest
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
@@ -21,8 +24,28 @@ BASE_DIR = Path(__file__).resolve().parent
 SCRIPT_PATH = BASE_DIR / "healthcheck.py"
 INTENTS_PATH = BASE_DIR / "intents.txt"
 REPORT_DIR = BASE_DIR / "reports"
+GPT_CONFIG_PATH = BASE_DIR / "gpt_config.json"
+DEFAULT_GPT_MODEL = "gpt-4.1-mini"
+DEFAULT_LOCAL_BASE_URL = "http://192.168.0.99:1234"
+DEFAULT_LOCAL_MODEL = "qwen/qwen3-coder-30b"
 JOBS: Dict[str, Dict] = {}
 JOBS_LOCK = threading.Lock()
+
+DEFAULT_NETWORK_PROMPTS: Dict[str, str] = {
+    "基础巡检诊断": (
+        "你是网络运维专家。请基于巡检结果给出："
+        "1) 总体健康结论；2) 关键异常点；3) 可能根因；"
+        "4) 优先级最高的3条处理建议。"
+    ),
+    "接口与链路诊断": (
+        "你是网络接口诊断专家。重点检查接口 up/down、协议状态、错误计数、光模块/邻居信息。"
+        "请输出：异常接口清单、影响范围、排查顺序。"
+    ),
+    "路由与协议诊断": (
+        "你是网络协议诊断专家。重点分析路由摘要、BGP/OSPF 邻居、NTP、STP。"
+        "请输出：潜在协议异常、可能影响、修复建议。"
+    ),
+}
 
 
 def load_default_checks() -> List[str]:
@@ -90,6 +113,271 @@ def is_safe_report_name(name: str) -> bool:
     if name != os.path.basename(name):
         return False
     return bool(re.match(r"^inspection_report_[A-Za-z0-9_]+\.(json|csv)$", name))
+
+
+def load_gpt_config() -> Dict:
+    if not GPT_CONFIG_PATH.is_file():
+        return {
+            "api_key": "",
+            "custom_prompts": {},
+            "provider": "openai",
+            "local_base_url": DEFAULT_LOCAL_BASE_URL,
+            "local_model": DEFAULT_LOCAL_MODEL,
+        }
+    try:
+        data = json.loads(GPT_CONFIG_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {
+                "api_key": "",
+                "custom_prompts": {},
+                "provider": "openai",
+                "local_base_url": DEFAULT_LOCAL_BASE_URL,
+                "local_model": DEFAULT_LOCAL_MODEL,
+            }
+        api_key = data.get("api_key", "")
+        custom_prompts = data.get("custom_prompts", {})
+        provider = (data.get("provider", "openai") or "openai").strip().lower()
+        if provider not in {"openai", "local"}:
+            provider = "openai"
+        local_base_url = str(data.get("local_base_url", DEFAULT_LOCAL_BASE_URL) or DEFAULT_LOCAL_BASE_URL).strip()
+        local_model = str(data.get("local_model", DEFAULT_LOCAL_MODEL) or DEFAULT_LOCAL_MODEL).strip()
+        if not isinstance(custom_prompts, dict):
+            custom_prompts = {}
+        return {
+            "api_key": str(api_key or ""),
+            "custom_prompts": custom_prompts,
+            "provider": provider,
+            "local_base_url": local_base_url,
+            "local_model": local_model,
+        }
+    except Exception:
+        return {
+            "api_key": "",
+            "custom_prompts": {},
+            "provider": "openai",
+            "local_base_url": DEFAULT_LOCAL_BASE_URL,
+            "local_model": DEFAULT_LOCAL_MODEL,
+        }
+
+
+def save_gpt_config(config: Dict) -> None:
+    provider = str(config.get("provider", "openai") or "openai").strip().lower()
+    if provider not in {"openai", "local"}:
+        provider = "openai"
+    payload = {
+        "api_key": str(config.get("api_key", "") or ""),
+        "custom_prompts": config.get("custom_prompts", {}) if isinstance(config.get("custom_prompts", {}), dict) else {},
+        "provider": provider,
+        "local_base_url": str(config.get("local_base_url", DEFAULT_LOCAL_BASE_URL) or DEFAULT_LOCAL_BASE_URL).strip(),
+        "local_model": str(config.get("local_model", DEFAULT_LOCAL_MODEL) or DEFAULT_LOCAL_MODEL).strip(),
+    }
+    GPT_CONFIG_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def sanitize_prompt_name(name: str) -> str:
+    cleaned = re.sub(r"\s+", " ", (name or "").strip())
+    if not cleaned:
+        return ""
+    cleaned = cleaned[:40]
+    cleaned = re.sub(r"[^\w\u4e00-\u9fff ._-]", "", cleaned)
+    return cleaned.strip()
+
+
+def merged_prompt_catalog() -> Dict[str, str]:
+    config = load_gpt_config()
+    custom = config.get("custom_prompts", {}) if isinstance(config.get("custom_prompts"), dict) else {}
+    merged = dict(DEFAULT_NETWORK_PROMPTS)
+    for key, value in custom.items():
+        if key and isinstance(value, str) and value.strip():
+            merged[str(key)] = value.strip()
+    return merged
+
+
+def parse_openai_response_text(payload: Dict) -> str:
+    if isinstance(payload.get("output_text"), str) and payload.get("output_text", "").strip():
+        return payload["output_text"].strip()
+
+    outputs = payload.get("output", [])
+    if isinstance(outputs, list):
+        texts: List[str] = []
+        for item in outputs:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content", [])
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if isinstance(block, dict):
+                    t = block.get("text")
+                    if isinstance(t, str) and t.strip():
+                        texts.append(t.strip())
+        if texts:
+            return "\n\n".join(texts)
+    return ""
+
+
+def build_openai_ssl_context() -> ssl.SSLContext:
+    no_verify = os.environ.get("OPENAI_SSL_NO_VERIFY", "").strip() in {"1", "true", "yes", "on"}
+    ssl_ctx = ssl.create_default_context()
+    if no_verify:
+        return ssl._create_unverified_context()  # nosec B323
+    try:
+        import certifi  # type: ignore
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl_ctx
+
+
+def call_openai_analysis(api_key: str, prompt_text: str, report_text: str, model: str = DEFAULT_GPT_MODEL) -> str:
+    body = {
+        "model": model,
+        "input": [
+            {
+                "role": "system",
+                "content": [{"type": "input_text", "text": "你是资深网络运维专家，输出要结构化、可落地。"}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": f"诊断要求：\n{prompt_text}\n\n巡检数据：\n{report_text}",
+                    }
+                ],
+            },
+        ],
+    }
+    req = urlrequest.Request(
+        "https://api.openai.com/v1/responses",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    ssl_ctx = build_openai_ssl_context()
+
+    try:
+        with urlrequest.urlopen(req, timeout=120, context=ssl_ctx) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except ssl.SSLCertVerificationError as exc:
+        raise RuntimeError(
+            "SSL certificate verify failed. "
+            "请先执行: pip3 install certifi；"
+            "macOS 可再执行: /Applications/Python\\ 3.9/Install\\ Certificates.command"
+        ) from exc
+    except urlerror.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"OpenAI API HTTP {exc.code}: {detail[:400]}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"OpenAI API request failed: {exc}") from exc
+
+    try:
+        payload = json.loads(raw)
+    except Exception as exc:
+        raise RuntimeError(f"OpenAI API response parse failed: {exc}") from exc
+
+    text = parse_openai_response_text(payload)
+    if not text:
+        raise RuntimeError("OpenAI API returned empty analysis text")
+    return text
+
+
+def test_openai_connection(api_key: str) -> str:
+    req = urlrequest.Request(
+        "https://api.openai.com/v1/models",
+        headers={"Authorization": f"Bearer {api_key}"},
+        method="GET",
+    )
+    ssl_ctx = build_openai_ssl_context()
+    try:
+        with urlrequest.urlopen(req, timeout=30, context=ssl_ctx) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except ssl.SSLCertVerificationError as exc:
+        raise RuntimeError(
+            "SSL certificate verify failed. "
+            "请先执行: pip3 install certifi；"
+            "macOS 可再执行: /Applications/Python\\ 3.9/Install\\ Certificates.command"
+        ) from exc
+    except urlerror.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"OpenAI API HTTP {exc.code}: {detail[:300]}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"OpenAI API request failed: {exc}") from exc
+    try:
+        payload = json.loads(raw)
+        count = len(payload.get("data", [])) if isinstance(payload.get("data", []), list) else 0
+        return f"OpenAI 连接成功，models={count}"
+    except Exception:
+        return "OpenAI 连接成功"
+
+
+def call_local_lmstudio_analysis(base_url: str, model: str, prompt_text: str, report_text: str) -> str:
+    base = (base_url or "").strip().rstrip("/")
+    if not base:
+        raise RuntimeError("LM Studio base_url is empty")
+    if not model.strip():
+        raise RuntimeError("LM Studio model is empty")
+
+    body = {
+        "model": model.strip(),
+        "temperature": 0.2,
+        "messages": [
+            {"role": "system", "content": "你是资深网络运维专家，输出要结构化、可落地。"},
+            {"role": "user", "content": f"诊断要求：\n{prompt_text}\n\n巡检数据：\n{report_text}"},
+        ],
+    }
+    req = urlrequest.Request(
+        f"{base}/v1/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=180) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except urlerror.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"LM Studio API HTTP {exc.code}: {detail[:400]}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"LM Studio API request failed: {exc}") from exc
+
+    try:
+        payload = json.loads(raw)
+    except Exception as exc:
+        raise RuntimeError(f"LM Studio response parse failed: {exc}") from exc
+
+    choices = payload.get("choices", [])
+    if isinstance(choices, list) and choices:
+        msg = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+        content = msg.get("content", "") if isinstance(msg, dict) else ""
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+    raise RuntimeError("LM Studio returned empty analysis text")
+
+
+def test_local_lmstudio_connection(base_url: str) -> str:
+    base = (base_url or "").strip().rstrip("/")
+    if not base:
+        raise RuntimeError("LM Studio base_url is empty")
+    req = urlrequest.Request(f"{base}/v1/models", method="GET")
+    try:
+        with urlrequest.urlopen(req, timeout=20) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except urlerror.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"LM Studio API HTTP {exc.code}: {detail[:300]}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"LM Studio API request failed: {exc}") from exc
+    try:
+        payload = json.loads(raw)
+        data = payload.get("data", [])
+        count = len(data) if isinstance(data, list) else 0
+        return f"LM Studio 连接成功，models={count}"
+    except Exception:
+        return "LM Studio 连接成功"
 
 
 def build_html(values: Dict[str, str], selected_checks: List[str], output_text: str, status: str) -> str:
@@ -438,6 +726,15 @@ def build_html(values: Dict[str, str], selected_checks: List[str], output_text: 
 
 
 def build_job_html(job_id: str) -> str:
+    gpt_config = load_gpt_config()
+    prompts = merged_prompt_catalog()
+    prompt_options = "".join(
+        f'<option value="{html.escape(name)}">{html.escape(name)}</option>' for name in prompts.keys()
+    )
+    has_saved_key = bool((gpt_config.get("api_key") or "").strip())
+    provider = str(gpt_config.get("provider", "openai") or "openai")
+    local_base_url = str(gpt_config.get("local_base_url", DEFAULT_LOCAL_BASE_URL) or DEFAULT_LOCAL_BASE_URL)
+    local_model = str(gpt_config.get("local_model", DEFAULT_LOCAL_MODEL) or DEFAULT_LOCAL_MODEL)
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -503,6 +800,49 @@ def build_job_html(job_id: str) -> str:
       background: #f8fafc;
     }}
     .report-links a:hover {{ background: #eef2f7; }}
+    .gpt-card {{
+      margin-top: 12px;
+      border: 1px solid #d6dce3;
+      border-radius: 10px;
+      padding: 12px;
+      background: #f8fafc;
+    }}
+    .gpt-grid {{
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }}
+    .gpt-row {{ margin-top: 10px; }}
+    .gpt-card input[type=text], .gpt-card input[type=password], .gpt-card textarea, .gpt-card select {{
+      width: 100%;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      padding: 8px 10px;
+      background: #fff;
+      box-sizing: border-box;
+    }}
+    .gpt-card textarea {{ min-height: 90px; }}
+    .gpt-actions {{ display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }}
+    .gpt-btn {{
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: #fff;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-weight: 700;
+    }}
+    .gpt-primary {{ background: #0b6e4f; color: #fff; border-color: #0b6e4f; }}
+    .gpt-hint {{ font-size: 12px; color: #475569; margin-top: 4px; }}
+    #gpt_result {{
+      margin-top: 10px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: #fff;
+      padding: 10px;
+      white-space: pre-wrap;
+      max-height: 380px;
+      overflow: auto;
+    }}
   </style>
 </head>
 <body>
@@ -515,13 +855,81 @@ def build_job_html(job_id: str) -> str:
       <div>任务 ID: <code>{html.escape(job_id)}</code> | <a href="/">返回首页</a></div>
       <div id="reports" class="report-links"></div>
       <pre id="output">正在启动任务，请稍候...</pre>
+      <div class="gpt-card">
+        <h3 style="margin:0;">GPT 分析</h3>
+        <div class="gpt-grid gpt-row">
+          <div>
+            <label>分析方式</label>
+            <select id="provider_select">
+              <option value="openai" {"selected" if provider == "openai" else ""}>OpenAI API</option>
+              <option value="local" {"selected" if provider == "local" else ""}>LM Studio（本地）</option>
+            </select>
+          </div>
+          <div>
+            <label>OpenAI API Key</label>
+            <input id="gpt_api_key" type="password" placeholder="{ '已保存，可留空直接使用' if has_saved_key else 'sk-...'}">
+            <div class="gpt-hint">输入后可点击“保存 LLM 配置”，下次无需重复输入。</div>
+          </div>
+        </div>
+        <div class="gpt-grid gpt-row">
+          <div>
+            <label>LM Studio 地址</label>
+            <input id="local_base_url" type="text" value="{html.escape(local_base_url)}" placeholder="http://127.0.0.1:1234">
+          </div>
+          <div>
+            <label>LM Studio 模型</label>
+            <input id="local_model" type="text" value="{html.escape(local_model)}" placeholder="qwen/qwen3-coder-30b">
+          </div>
+        </div>
+        <div class="gpt-grid gpt-row">
+          <div>
+            <label>提示词模板</label>
+            <select id="prompt_select">{prompt_options}</select>
+            <div class="gpt-hint">可选择默认模板，也可导入/覆盖自定义模板。</div>
+          </div>
+          <div></div>
+        </div>
+        <div class="gpt-grid gpt-row">
+          <div>
+            <label>导入提示词文件（txt）</label>
+            <input id="prompt_file" type="file" accept=".txt">
+          </div>
+          <div>
+            <label>导入模板名称</label>
+            <input id="prompt_name" type="text" placeholder="例如：核心链路专项诊断">
+          </div>
+        </div>
+        <div class="gpt-row">
+          <label>临时提示词（可选，优先于模板）</label>
+          <textarea id="custom_prompt" placeholder="不填则使用上面模板内容"></textarea>
+        </div>
+        <div class="gpt-actions">
+          <button class="gpt-btn" id="save_key_btn" type="button">保存 LLM 配置</button>
+          <button class="gpt-btn" id="test_llm_btn" type="button">连接测试</button>
+          <button class="gpt-btn" id="import_prompt_btn" type="button">导入提示词</button>
+          <button class="gpt-btn gpt-primary" id="analyze_btn" type="button">GPT 分析本次结果</button>
+        </div>
+        <div id="gpt_status" class="gpt-hint"></div>
+        <div id="gpt_result">分析结果会显示在这里。</div>
+      </div>
     </div>
   </div>
   <script>
     const jobId = {json.dumps(job_id)};
+    const promptMap = {json.dumps(prompts, ensure_ascii=False)};
     const stateEl = document.getElementById("state");
     const outputEl = document.getElementById("output");
     const reportEl = document.getElementById("reports");
+    const keyEl = document.getElementById("gpt_api_key");
+    const providerEl = document.getElementById("provider_select");
+    const localBaseEl = document.getElementById("local_base_url");
+    const localModelEl = document.getElementById("local_model");
+    const promptSelectEl = document.getElementById("prompt_select");
+    const promptFileEl = document.getElementById("prompt_file");
+    const promptNameEl = document.getElementById("prompt_name");
+    const customPromptEl = document.getElementById("custom_prompt");
+    const gptStatusEl = document.getElementById("gpt_status");
+    const gptResultEl = document.getElementById("gpt_result");
 
     function setState(status, exitCode) {{
       if (status === "running") {{
@@ -550,6 +958,136 @@ def build_job_html(job_id: str) -> str:
       }}
       reportEl.innerHTML = links.join("");
     }}
+
+    function setGptStatus(msg) {{
+      if (gptStatusEl) gptStatusEl.textContent = msg || "";
+    }}
+
+    async function postForm(url, formBody) {{
+      const resp = await fetch(url, {{
+        method: "POST",
+        headers: {{ "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" }},
+        body: new URLSearchParams(formBody),
+      }});
+      return await resp.json();
+    }}
+
+    document.getElementById("save_key_btn").addEventListener("click", async () => {{
+      const key = (keyEl.value || "").trim();
+      const provider = (providerEl.value || "openai").trim();
+      const localBaseUrl = (localBaseEl.value || "").trim();
+      const localModel = (localModelEl.value || "").trim();
+      if (provider === "openai" && !key) {{
+        setGptStatus("OpenAI 模式下请先输入 API Key。");
+        return;
+      }}
+      if (provider === "local" && (!localBaseUrl || !localModel)) {{
+        setGptStatus("LM Studio 模式下请填写地址和模型。");
+        return;
+      }}
+      setGptStatus("正在保存配置...");
+      try {{
+        const data = await postForm("/save_gpt_key", {{
+          api_key: key,
+          provider: provider,
+          local_base_url: localBaseUrl,
+          local_model: localModel,
+        }});
+        setGptStatus(data.ok ? "LLM 配置保存成功。" : ("保存失败: " + (data.error || "unknown")));
+      }} catch (e) {{
+        setGptStatus("保存失败: " + e);
+      }}
+    }});
+
+    document.getElementById("test_llm_btn").addEventListener("click", async () => {{
+      const key = (keyEl.value || "").trim();
+      const provider = (providerEl.value || "openai").trim();
+      const localBaseUrl = (localBaseEl.value || "").trim();
+      setGptStatus("正在测试连接...");
+      try {{
+        const data = await postForm("/test_llm", {{
+          provider: provider,
+          api_key: key,
+          local_base_url: localBaseUrl,
+        }});
+        if (!data.ok) {{
+          setGptStatus("连接测试失败: " + (data.error || "unknown"));
+          return;
+        }}
+        setGptStatus(data.message || "连接测试成功。");
+      }} catch (e) {{
+        setGptStatus("连接测试失败: " + e);
+      }}
+    }});
+
+    document.getElementById("import_prompt_btn").addEventListener("click", async () => {{
+      const name = (promptNameEl.value || "").trim();
+      const file = promptFileEl.files && promptFileEl.files[0];
+      if (!name || !file) {{
+        setGptStatus("请同时选择提示词文件并填写模板名称。");
+        return;
+      }}
+      const form = new FormData();
+      form.append("prompt_name", name);
+      form.append("prompt_file", file);
+      setGptStatus("正在导入提示词...");
+      try {{
+        const resp = await fetch("/import_prompt", {{ method: "POST", body: form }});
+        const data = await resp.json();
+        if (!data.ok) {{
+          setGptStatus("导入失败: " + (data.error || "unknown"));
+          return;
+        }}
+        while (promptSelectEl.firstChild) promptSelectEl.removeChild(promptSelectEl.firstChild);
+        const prompts = data.prompts || {{}};
+        Object.keys(prompts).forEach((k) => {{
+          const opt = document.createElement("option");
+          opt.value = k;
+          opt.textContent = k;
+          promptSelectEl.appendChild(opt);
+        }});
+        promptSelectEl.value = data.selected_prompt || name;
+        setGptStatus("提示词导入成功。");
+      }} catch (e) {{
+        setGptStatus("导入失败: " + e);
+      }}
+    }});
+
+    document.getElementById("analyze_btn").addEventListener("click", async () => {{
+      const key = (keyEl.value || "").trim();
+      const provider = (providerEl.value || "openai").trim();
+      const localBaseUrl = (localBaseEl.value || "").trim();
+      const localModel = (localModelEl.value || "").trim();
+      const selectedPrompt = promptSelectEl.value || "";
+      const customPrompt = (customPromptEl.value || "").trim();
+      setGptStatus("正在调用 GPT 分析，请稍候...");
+      gptResultEl.textContent = "分析中...";
+        try {{
+            const data = await postForm("/analyze_job", {{
+              job_id: jobId,
+              api_key: key,
+              provider: provider,
+              local_base_url: localBaseUrl,
+          local_model: localModel,
+          prompt_key: selectedPrompt,
+          custom_prompt: customPrompt,
+        }});
+          if (!data.ok) {{
+            gptResultEl.textContent = "分析失败: " + (data.error || "unknown");
+            setGptStatus("分析失败。");
+            return;
+          }}
+          gptResultEl.textContent = data.analysis || "(empty)";
+          if (data.provider_used === "local") {{
+            setGptStatus("分析完成。来源: LM Studio | " + (data.local_base_url || "") + " | " + (data.model_used || ""));
+          }} else {{
+            setGptStatus("分析完成。来源: OpenAI | " + (data.model_used || ""));
+          }}
+        }} catch (e) {{
+          gptResultEl.textContent = "分析失败: " + e;
+          setGptStatus("分析失败。");
+        }}
+      }});
 
     async function poll() {{
       try {{
@@ -791,17 +1329,189 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_POST(self) -> None:
-        if self.path != "/run":
-            self.send_error(404, "Not Found")
+    def _respond_json(self, payload: Dict, status: int = 200) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _build_analysis_input(self, job: Dict) -> str:
+        output = str(job.get("output", "") or "")
+        report_name = str(job.get("report_json", "") or "")
+        report_text = ""
+        if report_name and is_safe_report_name(report_name):
+            report_path = REPORT_DIR / report_name
+            if report_path.is_file():
+                report_text = report_path.read_text(encoding="utf-8", errors="ignore")
+
+        output = output[-60000:]
+        report_text = report_text[-120000:]
+        return f"任务日志（可能已截断）：\n{output}\n\n结构化报告JSON（可能已截断）：\n{report_text}"
+
+    def _handle_save_gpt_key(self, form: cgi.FieldStorage) -> None:
+        api_key = (form.getvalue("api_key") or "").strip()
+        provider = (form.getvalue("provider") or "openai").strip().lower()
+        if provider not in {"openai", "local"}:
+            provider = "openai"
+        local_base_url = (form.getvalue("local_base_url") or DEFAULT_LOCAL_BASE_URL).strip()
+        local_model = (form.getvalue("local_model") or DEFAULT_LOCAL_MODEL).strip()
+        if provider == "openai" and not api_key:
+            self._respond_json({"ok": False, "error": "API Key is empty"}, status=400)
+            return
+        if provider == "local" and (not local_base_url or not local_model):
+            self._respond_json({"ok": False, "error": "local_base_url/local_model required"}, status=400)
+            return
+        cfg = load_gpt_config()
+        cfg["api_key"] = api_key
+        cfg["provider"] = provider
+        cfg["local_base_url"] = local_base_url
+        cfg["local_model"] = local_model
+        save_gpt_config(cfg)
+        self._respond_json({"ok": True})
+
+    def _handle_import_prompt(self, form: cgi.FieldStorage) -> None:
+        prompt_name = sanitize_prompt_name((form.getvalue("prompt_name") or "").strip())
+        if not prompt_name:
+            self._respond_json({"ok": False, "error": "Prompt name is empty"}, status=400)
+            return
+        upload = form["prompt_file"] if "prompt_file" in form else None
+        if upload is None or not getattr(upload, "filename", ""):
+            self._respond_json({"ok": False, "error": "Prompt file is required"}, status=400)
+            return
+        raw = upload.file.read()
+        if not raw:
+            self._respond_json({"ok": False, "error": "Prompt file is empty"}, status=400)
+            return
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = raw.decode("gb18030", errors="ignore")
+        text = text.strip()
+        if not text:
+            self._respond_json({"ok": False, "error": "Prompt file has no valid text"}, status=400)
             return
 
+        cfg = load_gpt_config()
+        custom = cfg.get("custom_prompts", {})
+        if not isinstance(custom, dict):
+            custom = {}
+        custom[prompt_name] = text
+        cfg["custom_prompts"] = custom
+        save_gpt_config(cfg)
+        self._respond_json({"ok": True, "prompts": merged_prompt_catalog(), "selected_prompt": prompt_name})
+
+    def _handle_test_llm(self, form: cgi.FieldStorage) -> None:
+        provider = (form.getvalue("provider") or "").strip().lower()
+        api_key = (form.getvalue("api_key") or "").strip()
+        local_base_url = (form.getvalue("local_base_url") or "").strip()
+        cfg = load_gpt_config()
+        if provider not in {"openai", "local"}:
+            provider = str(cfg.get("provider", "openai") or "openai").strip().lower()
+            if provider not in {"openai", "local"}:
+                provider = "openai"
+
+        try:
+            if provider == "local":
+                if not local_base_url:
+                    local_base_url = str(cfg.get("local_base_url", DEFAULT_LOCAL_BASE_URL) or DEFAULT_LOCAL_BASE_URL).strip()
+                msg = test_local_lmstudio_connection(local_base_url)
+                self._respond_json({"ok": True, "message": msg, "provider_used": "local"})
+                return
+
+            if not api_key:
+                api_key = str(cfg.get("api_key", "") or "").strip()
+            if not api_key:
+                self._respond_json({"ok": False, "error": "API Key not set"}, status=400)
+                return
+            msg = test_openai_connection(api_key)
+            self._respond_json({"ok": True, "message": msg, "provider_used": "openai"})
+        except Exception as exc:
+            self._respond_json({"ok": False, "error": str(exc)}, status=500)
+
+    def _handle_analyze_job(self, form: cgi.FieldStorage) -> None:
+        job_id = (form.getvalue("job_id") or "").strip()
+        api_key = (form.getvalue("api_key") or "").strip()
+        provider = (form.getvalue("provider") or "").strip().lower()
+        local_base_url = (form.getvalue("local_base_url") or "").strip()
+        local_model = (form.getvalue("local_model") or "").strip()
+        prompt_key = (form.getvalue("prompt_key") or "").strip()
+        custom_prompt = (form.getvalue("custom_prompt") or "").strip()
+
+        if not job_id:
+            self._respond_json({"ok": False, "error": "job_id is required"}, status=400)
+            return
+        with JOBS_LOCK:
+            job = JOBS.get(job_id)
+        if not job:
+            self._respond_json({"ok": False, "error": "job not found"}, status=404)
+            return
+
+        cfg = load_gpt_config()
+        if provider not in {"openai", "local"}:
+            provider = str(cfg.get("provider", "openai") or "openai").strip().lower()
+            if provider not in {"openai", "local"}:
+                provider = "openai"
+        if not local_base_url:
+            local_base_url = str(cfg.get("local_base_url", DEFAULT_LOCAL_BASE_URL) or DEFAULT_LOCAL_BASE_URL).strip()
+        if not local_model:
+            local_model = str(cfg.get("local_model", DEFAULT_LOCAL_MODEL) or DEFAULT_LOCAL_MODEL).strip()
+        if not api_key:
+            api_key = str(cfg.get("api_key", "") or "").strip()
+
+        prompts = merged_prompt_catalog()
+        prompt_text = custom_prompt or prompts.get(prompt_key, "") or DEFAULT_NETWORK_PROMPTS["基础巡检诊断"]
+        analysis_input = self._build_analysis_input(job)
+        try:
+            if provider == "local":
+                analysis = call_local_lmstudio_analysis(
+                    base_url=local_base_url,
+                    model=local_model,
+                    prompt_text=prompt_text,
+                    report_text=analysis_input,
+                )
+            else:
+                if not api_key:
+                    self._respond_json({"ok": False, "error": "API Key not set"}, status=400)
+                    return
+                analysis = call_openai_analysis(api_key=api_key, prompt_text=prompt_text, report_text=analysis_input)
+        except Exception as exc:
+            self._respond_json({"ok": False, "error": str(exc)}, status=500)
+            return
+        self._respond_json(
+            {
+                "ok": True,
+                "analysis": analysis,
+                "provider_used": provider,
+                "model_used": local_model if provider == "local" else DEFAULT_GPT_MODEL,
+                "local_base_url": local_base_url if provider == "local" else "",
+            }
+        )
+
+    def do_POST(self) -> None:
         environ = {
             "REQUEST_METHOD": "POST",
             "CONTENT_TYPE": self.headers.get("Content-Type", ""),
             "CONTENT_LENGTH": self.headers.get("Content-Length", "0"),
         }
         form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ=environ)
+        if self.path == "/save_gpt_key":
+            self._handle_save_gpt_key(form)
+            return
+        if self.path == "/import_prompt":
+            self._handle_import_prompt(form)
+            return
+        if self.path == "/test_llm":
+            self._handle_test_llm(form)
+            return
+        if self.path == "/analyze_job":
+            self._handle_analyze_job(form)
+            return
+        if self.path != "/run":
+            self.send_error(404, "Not Found")
+            return
 
         username = (form.getvalue("username") or "").strip()
         password = (form.getvalue("password") or "").strip()
