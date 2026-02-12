@@ -1,5 +1,1301 @@
-<html>
- <body>
-    Hello
-  </body>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LLDP Topology Builder (Final)</title>
+
+  <script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+  <script src="https://unpkg.com/cytoscape-fcose@2.2.1/cytoscape-fcose.min.js"></script>
+
+  <style>
+    :root {
+      --sea-blue: #0f6fff;
+      --sea-dark: #0f172a;
+      --sea-gray: #e5e7eb;
+    }
+    body { margin: 0; font-family: "Segoe UI", -apple-system, system-ui, Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f8fafc; }
+    .wrap { display: grid; grid-template-columns: 430px 1fr; height: 100vh; }
+    .panel { padding: 14px; border-right: 1px solid #e5e7eb; overflow: auto; background: #ffffff; box-shadow: 4px 0 24px rgba(0,0,0,0.04); }
+    #cy { height: 100vh; width: 100%; background: #ffffff; }
+
+    h1 { font-size: 17px; margin: 0 0 10px; letter-spacing: 0.2px; }
+    h2 { font-size: 13px; margin: 14px 0 6px; color: #374151; }
+    .hint { font-size: 12px; color: #6b7280; line-height: 1.45; }
+    .box { padding: 10px; border: 1px solid #e5e7eb; border-radius: 12px; margin: 10px 0; background: linear-gradient(180deg,#fff,#f9fafb); }
+    .row { display: grid; grid-template-columns: 1fr; gap: 8px; margin: 10px 0; }
+    .row.inline { grid-template-columns: 1fr 1fr; gap: 10px; }
+    label { font-size: 12px; color: #111827; font-weight: 600; }
+    input, select, textarea, button { width: 100%; box-sizing: border-box; }
+    input[type="text"], select, textarea {
+      padding: 9px 11px; border: 1px solid #d1d5db; border-radius: 10px; font-size: 13px; outline: none; transition: border-color .15s, box-shadow .15s;
+    }
+    input[type="text"]:focus, select:focus, textarea:focus {
+      border-color: var(--sea-blue); box-shadow: 0 0 0 2px rgba(15,111,255,0.16);
+    }
+    textarea { resize: vertical; min-height: 90px; }
+    button {
+      padding: 9px 10px; border: 1px solid #d1d5db; border-radius: 10px; background: #fff; cursor: pointer; font-size: 13px; transition: transform .08s ease, box-shadow .12s, filter .12s;
+    }
+    button.primary { border-color: var(--sea-blue); background: var(--sea-blue); color: #fff; box-shadow: 0 8px 16px rgba(15,111,255,0.18); }
+    button:hover { filter: brightness(0.98); transform: translateY(-1px); }
+    .ok { color: #047857; font-size: 12px; white-space: pre-wrap; }
+    .err { color: #b91c1c; font-size: 12px; white-space: pre-wrap; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .kvs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+    .kvs div { font-size: 12px; color: #374151; }
+    .kvs b { color: #111827; }
+    .drop { border: 1px dashed #cbd5e1; padding: 10px; border-radius: 10px; background: #fff; }
+    input[type="range"] { width: 100%; accent-color: var(--sea-blue); }
+    .badge { display:inline-block; padding:2px 6px; border-radius: 999px; background:#e9f2ff; font-size:11px; color:var(--sea-blue); margin-left:6px; }
+    .filtered { display: none; }
+    .sel-hidden { display: none; }
+    .selected-overlay {
+      box-shadow: 0 0 0 3px rgba(15, 111, 255, 0.35);
+      border-color: var(--sea-blue) !important;
+    }
+    .brand {
+      display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid #f1f5f9; border-radius: 12px; background: linear-gradient(120deg, #fff2f3, #fff);
+      margin-bottom: 8px;
+    }
+    .logo {
+      width: 44px; height: 44px; border-radius: 12px; background: radial-gradient(circle at 30% 30%, #4fb3ff, #0f6fff);
+      display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 13px; letter-spacing: 0.8px;
+      box-shadow: 0 6px 18px rgba(15,111,255,0.25);
+    }
+    .brand-text { line-height: 1.35; }
+    .brand-text .title { font-weight: 700; color: #111827; font-size: 15px; letter-spacing: 0.3px; }
+    .brand-text .sub { font-size: 12px; color: #6b7280; }
+    #ctxMenu {
+      position: fixed;
+      z-index: 9999;
+      background: #0f172a;
+      color: #e5e7eb;
+      border: 1px solid #1f2937;
+      border-radius: 10px;
+      padding: 6px 0;
+      box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+      min-width: 140px;
+      display: none;
+      font-size: 13px;
+    }
+    #ctxMenu button {
+      width: 100%;
+      text-align: left;
+      background: none;
+      border: none;
+      color: inherit;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    #ctxMenu button:hover { background: #1f2937; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="panel">
+    <div class="brand">
+      <div class="logo">SEA</div>
+      <div class="brand-text">
+        <div class="title">SEA IOC · 拓扑生成工具</div>
+        <div class="sub">SEA LIMITED | Intelligent Operations Center</div>
+      </div>
+    </div>
+    <h1>LLDP 拓扑生成器（最终版）</h1>
+    <div class="hint">
+      功能简介：导入 LLDP CSV，自动去重生成拓扑；支持设备/端口标签切换、过滤/搜索、多选、邻接高亮、右键固定/删除/恢复/复制名称，导出 PNG/JSON。
+    </div>
+    <div class="row inline" style="margin-top:6px;">
+      <a href="lldp-manual.html" target="_blank">打开使用手册</a>
+    </div>
+
+    <div class="box">
+      <div><b>状态：</b><span id="status">等待导入</span></div>
+      <div class="kvs" style="margin-top:8px;">
+        <div>输入行数：<b id="nRows">-</b></div>
+        <div>列数：<b id="nCols">-</b></div>
+        <div>节点数：<b id="nNodes">-</b></div>
+        <div>边数(去重)：<b id="nEdges">-</b></div>
+      </div>
+      <div class="ok" id="ok"></div>
+      <div class="err" id="err"></div>
+    </div>
+
+    <h2>导入数据</h2>
+    <div class="row">
+      <label>导入 CSV 文件</label>
+      <input id="file" type="file" accept=".csv,text/csv" multiple />
+      <div class="drop" id="dropzone"><div class="hint">也可以把 CSV 文件直接拖到这里。</div></div>
+    </div>
+    <div class="row">
+      <label>追加 CSV（保持已有节点坐标不变）</label>
+      <input id="appendFile" type="file" accept=".csv,text/csv" multiple />
+    </div>
+
+    <div class="row">
+      <label>或直接粘贴 CSV 内容</label>
+      <textarea id="paste" class="mono" placeholder='"depth","localhostname","localinterface","remotehostname","remoteinterface"&#10;"1","SW1","Eth1/1","SW2.garena.tw","Eth1/2"'></textarea>
+      <button id="loadPaste">从粘贴内容载入</button>
+    </div>
+
+    <details>
+      <summary><strong>列映射</strong>（默认自动匹配，列名异常时再展开调整）</summary>
+      <div class="row inline">
+        <div><label>localhostname</label><select id="colLocalHost"></select></div>
+        <div><label>remotehostname</label><select id="colRemoteHost"></select></div>
+      </div>
+      <div class="row inline">
+        <div><label>localinterface</label><select id="colLocalIf"></select></div>
+        <div><label>remoteinterface</label><select id="colRemoteIf"></select></div>
+      </div>
+    </details>
+
+    <h2>布局 & 分散</h2>
+    <div class="row inline">
+      <div>
+        <label>布局模式</label>
+        <select id="layoutMode">
+          <option value="force" selected>仅强分散（COSE）</option>
+          <option value="layer">上下分层（手动关键字）</option>
+          <option value="circle">圆形环状</option>
+        </select>
+      </div>
+      <div>
+        <label>去掉 hostname 域名后缀</label>
+        <select id="stripDomain">
+          <option value="yes" selected>是（删掉 '.' 后面）</option>
+          <option value="no">否</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row inline">
+      <div>
+        <label>节点标签</label>
+        <select id="nodeLabelMode">
+          <option value="short" selected>缩略（推荐）</option>
+          <option value="full">全名（容易挤）</option>
+        </select>
+      </div>
+      <div>
+        <label>端口标签</label>
+        <select id="edgeLabelMode">
+          <option value="none" selected>不显示</option>
+          <option value="both">一直显示（可能拥挤）</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <label>分散强度（越大越分散） <span class="badge">建议 0.3~0.8</span></label>
+      <input id="spacing" type="range" min="0.1" max="1" step="0.05" value="0.5" />
+    </div>
+    <div class="row">
+      <label>分层关键字（高->低，逗号分层，斜杠同层，&需全部命中，如 EDGE&CORE,CORE,AGGR/SPINE,LEAF/tor）</label>
+      <input id="layerTerms" type="text" value="EDGE,CORE,AGGR,LEAF" />
+      <button id="applyLayers">应用分层</button>
+    </div>
+
+    <div class="row inline">
+      <button id="build" class="primary">生成拓扑</button>
+      <button id="relayout">重新布局</button>
+    </div>
+    <div class="row inline">
+      <button id="fit">适配画布（慎用）</button>
+      <button id="center">居中 + 放大</button>
+      <button id="toggleMerge">合并多条链路：关闭</button>
+    </div>
+
+    <h2>搜索</h2>
+    <div class="row">
+      <label>设备名关键字（逗号分隔，回车多选）</label>
+      <input id="search" type="text" placeholder="例如：MGMT,AGGR" />
+      <div class="hint" id="searchResult"></div>
+    </div>
+    <h2>过滤</h2>
+    <div class="row">
+      <label>不显示：逗号分隔，命中的设备会被隐藏</label>
+      <input id="filter" type="text" placeholder="例如：lab,backup" value="MGMT,null,ACC,SA" />
+      <button id="applyFilter">应用过滤</button>
+    </div>
+    <div class="row">
+      <label>只显示：逗号分隔，回车生效（仅显示命中的设备，其余隐藏）</label>
+      <input id="showOnly" type="text" placeholder="例如：CORE,EDGE" />
+    </div>
+
+    <h2>导出</h2>
+    <div class="row inline">
+      <button id="exportPng">导出 PNG</button>
+      <button id="exportJson">导出 JSON</button>
+      <button id="exportPos">导出坐标</button>
+      <button id="importPosBtn">导入坐标</button>
+      <input id="importPosFile" type="file" accept=".json,application/json" style="display:none" />
+    </div>
+
+    <h2>多选/操作</h2>
+    <div class="row">
+      <div class="hint">按住 Ctrl/Cmd 或 Shift 进行多选（框选已关闭）。</div>
+    </div>
+    <div class="row inline">
+      <button id="fitSelection">定位选中</button>
+      <button id="isolateSelection">仅显示邻接</button>
+    </div>
+    <div class="row inline">
+      <button id="clearSelectionHide">恢复显示</button>
+      <button id="deleteSelection">删除选中</button>
+      <button id="restoreDeleted">恢复删除设备</button>
+    </div>
+  </div>
+
+  <div id="cy"></div>
+</div>
+<div id="ctxMenu">
+  <button id="ctxLock">固定位置</button>
+  <button id="ctxDelete">删除设备</button>
+  <button id="ctxCopy">复制名称</button>
+</div>
+
+<script>
+  let rawRows = [];
+  let headers = [];
+  let cy = null;
+  let deletedStack = [];
+  let degreeMap = new Map();
+  let baseEdges = [];
+  let mergedMode = false;
+  // 注册 fCoSE 扩展（兼容不同全局名），避免引用未定义导致脚本中断
+(() => {
+    const extFcose = window.cytoscapeFcose || window.cytoFcose || window.fcose || window.fCoSE;
+    if (extFcose && typeof cytoscape !== 'undefined' && cytoscape.use) {
+      cytoscape.use(extFcose);
+    }
+  })();
+
+  const $ = (id) => document.getElementById(id);
+  const setStatus = (t) => $('status').textContent = t;
+  const setOK = (t) => $('ok').textContent = t || '';
+  const setErr = (t) => $('err').textContent = t || '';
+
+  function stripAfterDot(s) {
+    if (typeof s !== 'string') return s;
+    const idx = s.indexOf('.');
+    return idx >= 0 ? s.slice(0, idx) : s;
+  }
+
+  // ✅ 关键：hash id，避免 hostname 清洗后冲突导致节点叠在一起
+  function fnv1a(str) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = (h + (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)) >>> 0;
+    }
+    return ('0000000' + h.toString(16)).slice(-8);
+  }
+  function nodeIdFromLabel(label) {
+    const s = String(label || '').trim();
+    return 'n_' + fnv1a(s);
+  }
+
+  function shortLabel(name) {
+    const s = String(name || '');
+    if (s.length <= 26) return s;
+    return s.slice(0, 12) + '…' + s.slice(-10);
+  }
+
+  function roleOf(hostname) {
+    const h = String(hostname || '').toUpperCase();
+    if (h.includes('CORE')) return 'CORE';
+    if (h.includes('AGGR') || h.includes('AGG')) return 'AGGR';
+    if (h.includes('TOR')) return 'TOR';
+    return 'OTHER';
+  }
+  function roleRank(role) {
+    return role === 'CORE' ? 0 : role === 'AGGR' ? 1 : role === 'TOR' ? 2 : 3;
+  }
+
+  function parseCSV(text) {
+    let t = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    if (t.charCodeAt(0) === 0xFEFF) t = t.slice(1);
+
+    const lines = t.split('\n').filter(l => l.trim() !== '');
+    if (lines.length === 0) return { headers: [], rows: [] };
+
+    const first = lines[0];
+    const commaCnt = (first.match(/,/g) || []).length;
+    const tabCnt = (first.match(/\t/g) || []).length;
+    const semiCnt = (first.match(/;/g) || []).length;
+    const delim = commaCnt ? ',' : (tabCnt ? '\t' : (semiCnt ? ';' : ','));
+
+    function splitLine(line) {
+      if (delim === '\t') return line.split('\t').map(x => x.trim().replace(/^"|"$/g, ''));
+      const out = [];
+      let cur = '';
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') {
+          if (inQuotes && line[i+1] === '"') { cur += '"'; i++; }
+          else inQuotes = !inQuotes;
+        } else if (ch === delim && !inQuotes) {
+          out.push(cur); cur = '';
+        } else cur += ch;
+      }
+      out.push(cur);
+      return out.map(x => x.trim().replace(/^"|"$/g, ''));
+    }
+
+    const hdr = splitLine(lines[0]);
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = splitLine(lines[i]);
+      if (cols.every(c => c === '')) continue;
+      const obj = {};
+      hdr.forEach((h, idx) => obj[h] = (cols[idx] ?? '').trim());
+      rows.push(obj);
+    }
+    return { headers: hdr, rows };
+  }
+
+  function autoPickColumn(candidates) {
+    const lower = headers.map(h => h.toLowerCase());
+    for (const cand of candidates) {
+      const idx = lower.indexOf(cand.toLowerCase());
+      if (idx >= 0) return headers[idx];
+    }
+    for (const cand of candidates) {
+      const idx = lower.findIndex(h => h.includes(cand.toLowerCase()));
+      if (idx >= 0) return headers[idx];
+    }
+    return headers[0] || '';
+  }
+
+  function fillSelect(selId, value) {
+    const el = $(selId);
+    el.innerHTML = '';
+    headers.forEach(h => {
+      const opt = document.createElement('option');
+      opt.value = h;
+      opt.textContent = h;
+      el.appendChild(opt);
+    });
+    if (value && headers.includes(value)) el.value = value;
+  }
+
+  function capturePositions() {
+    if (!cy) return {};
+    const pos = {};
+    cy.nodes().forEach(n => { pos[n.id()] = { ...n.position() }; });
+    return pos;
+  }
+
+  function applyPositions(posMap) {
+    if (!cy || !posMap) return;
+    cy.nodes().forEach(n => {
+      const p = posMap[n.id()];
+      if (p && isFinite(p.x) && isFinite(p.y)) n.position(p);
+    });
+    cy.layout({ name: 'preset', fit: false, padding: 30 }).run();
+    cy.center(); cy.zoom(1.05);
+  }
+
+  function loadDataFromText(text) {
+    // 单文本导入（粘贴）会重置数据
+    setErr(''); setOK('');
+    setStatus('解析中...');
+    const parsed = parseCSV(text);
+    headers = parsed.headers;
+    rawRows = parsed.rows;
+
+    $('nRows').textContent = rawRows.length;
+    $('nCols').textContent = headers.length;
+
+    if (!headers.length) {
+      setStatus('解析失败：无表头');
+      setErr('请确认导入的是 CSV/TSV，且第一行是列名。');
+      return;
+    }
+
+    fillSelect('colLocalHost', autoPickColumn(['localhostname','local_host','src','from']));
+    fillSelect('colRemoteHost', autoPickColumn(['remotehostname','remote_host','dst','to']));
+    fillSelect('colLocalIf', autoPickColumn(['localinterface','local_if','src_if','from_if']));
+    fillSelect('colRemoteIf', autoPickColumn(['remoteinterface','remote_if','dst_if','to_if']));
+
+    setStatus('已载入');
+    setOK(`已载入：${rawRows.length} 行，${headers.length} 列`);
+  }
+
+  function mergeParsed(parsed, sourceName) {
+    if (!parsed.headers.length) {
+      setErr(`文件 ${sourceName} 没有表头，已跳过`);
+      return;
+    }
+    if (!headers.length) {
+      headers = parsed.headers;
+    } else {
+      const base = headers.map(h => h.toLowerCase()).join(',');
+      const incoming = parsed.headers.map(h => h.toLowerCase()).join(',');
+      if (base !== incoming) {
+        setErr(`文件 ${sourceName} 表头不一致，已跳过`);
+        return;
+      }
+    }
+    rawRows.push(...parsed.rows);
+  }
+
+  async function loadFiles(files) {
+    try {
+      setErr(''); setOK('');
+      setStatus('读取/解析中...');
+      headers = [];
+      rawRows = [];
+      let used = 0;
+      for (const f of files) {
+        const text = await f.text();
+        const parsed = parseCSV(text);
+        mergeParsed(parsed, f.name);
+        if (parsed.rows.length) used++;
+      }
+
+      $('nRows').textContent = rawRows.length;
+      $('nCols').textContent = headers.length;
+
+      if (!headers.length) {
+        setStatus('解析失败：无表头');
+        setErr('请确认导入的是 CSV/TSV，且第一行是列名。');
+        return;
+      }
+
+      fillSelect('colLocalHost', autoPickColumn(['localhostname','local_host','src','from']));
+      fillSelect('colRemoteHost', autoPickColumn(['remotehostname','remote_host','dst','to']));
+      fillSelect('colLocalIf', autoPickColumn(['localinterface','local_if','src_if','from_if']));
+      fillSelect('colRemoteIf', autoPickColumn(['remoteinterface','remote_if','dst_if','to_if']));
+
+      setStatus('已载入');
+      setOK(`已载入 ${used} 个文件：${rawRows.length} 行，${headers.length} 列`);
+    } catch (e) {
+      setStatus('读取失败');
+      setErr(String(e && e.stack ? e.stack : e));
+    }
+  }
+
+  async function appendFiles(files) {
+    try {
+      if (!files || !files.length) return;
+      setErr(''); setOK('');
+      setStatus('追加中...');
+      let used = 0;
+      for (const f of files) {
+        const text = await f.text();
+        const parsed = parseCSV(text);
+        mergeParsed(parsed, f.name);
+        if (parsed.rows.length) used++;
+      }
+      $('nRows').textContent = rawRows.length;
+      $('nCols').textContent = headers.length;
+      if (!headers.length) {
+        setStatus('追加失败：无表头');
+        setErr('未检测到表头，追加失败。');
+        return;
+      }
+      fillSelect('colLocalHost', autoPickColumn(['localhostname','local_host','src','from']));
+      fillSelect('colRemoteHost', autoPickColumn(['remotehostname','remote_host','dst','to']));
+      fillSelect('colLocalIf', autoPickColumn(['localinterface','local_if','src_if','from_if']));
+      fillSelect('colRemoteIf', autoPickColumn(['remoteinterface','remote_if','dst_if','to_if']));
+      setStatus('追加完成');
+      setOK(`已追加 ${used} 个文件：总计 ${rawRows.length} 行`);
+    } catch (e) {
+      setStatus('追加失败');
+      setErr(String(e && e.stack ? e.stack : e));
+    }
+  }
+
+  function spacingParams() {
+    const s = parseFloat($('spacing').value) || 0.5; // 0.1-1
+    const factor = 0.5 + s * 1.1; // scale ~0.61 - 1.6
+    const idealEdgeLength = 120 * factor; // 较短边，贴近互联
+    return {
+      s,
+      nodeRepulsion: 14000 * factor,         // 适中斥力
+      idealEdgeLength,                       // 边长随因子变化
+      componentSpacing: 140 * factor,        // 组件间隔
+      gravity: 0.2 * factor,                 // 更强重力让互联靠近
+      padding: 120 * factor,                 // 边缘留白
+      overlapPad: 24 * factor                // 碰撞间距
+    };
+  }
+
+  function buildGraph(keepPositions = null) {
+    if (!rawRows.length) { setErr('请先导入 CSV'); return; }
+
+    const colLH = $('colLocalHost').value;
+    const colRH = $('colRemoteHost').value;
+    const colLI = $('colLocalIf').value;
+    const colRI = $('colRemoteIf').value;
+
+    const strip = $('stripDomain').value === 'yes';
+    const nodeLabelMode = $('nodeLabelMode').value;
+    const edgeMode = $('edgeLabelMode').value;
+
+    const nodes = new Map(); // id -> data
+    const edges = [];
+    const edgeSet = new Set();
+    degreeMap = new Map(); // reset global
+
+    let rawEdgeCnt = 0;
+
+    const rows = dedupeRows(rawRows);
+
+    for (const r of rows) {
+      let lh = (r[colLH] || '').trim();
+      let rh = (r[colRH] || '').trim();
+      const li = (r[colLI] || '').trim();
+      const ri = (r[colRI] || '').trim();
+      if (!lh || !rh) continue;
+      if (strip) { lh = stripAfterDot(lh); rh = stripAfterDot(rh); }
+
+      const aId = nodeIdFromLabel(lh);
+      const bId = nodeIdFromLabel(rh);
+
+      const aRole = roleOf(lh);
+      const bRole = roleOf(rh);
+
+      nodes.set(aId, { id: aId, label: lh, short: shortLabel(lh), role: aRole, rank: roleRank(aRole) });
+      nodes.set(bId, { id: bId, label: rh, short: shortLabel(rh), role: bRole, rank: roleRank(bRole) });
+
+      const edgeLabel = `${li} ↔ ${ri}`.trim();
+      const k1 = `${aId}||${bId}||${edgeLabel}`;
+      const k2 = `${bId}||${aId}||${edgeLabel}`;
+      rawEdgeCnt++;
+
+      if (edgeSet.has(k1) || edgeSet.has(k2)) continue;
+      edgeSet.add(k1);
+
+      edges.push({ data: { id: `e_${edges.length}`, source: aId, target: bId, label: edgeLabel } });
+      degreeMap.set(aId, (degreeMap.get(aId) || 0) + 1);
+      degreeMap.set(bId, (degreeMap.get(bId) || 0) + 1);
+    }
+
+    $('nNodes').textContent = nodes.size;
+    baseEdges = edges.slice(); // 保存原始边
+    $('nEdges').textContent = mergedMode ? aggregateEdges(baseEdges).length : baseEdges.length;
+
+    if (nodes.size <= 2 && rawRows.length > 10) {
+      setErr('⚠️ 节点数量异常偏少。说明可能存在 hostname 为空/列映射错误。请检查列映射是否正确。');
+    } else {
+      setErr('');
+    }
+
+    const edgesForCy = mergedMode ? aggregateEdges(baseEdges) : baseEdges;
+    const elements = [
+      ...Array.from(nodes.values()).map(n => ({ data: n })),
+      ...edgesForCy
+    ];
+
+    if (cy) cy.destroy();
+    deletedStack = [];
+
+    // ✅ 初始随机位置，或保持已有位置
+    const rand = (min, max) => Math.random() * (max - min) + min;
+    for (const el of elements) {
+      if (el.data && el.data.id && el.data.label !== undefined && !el.data.source) {
+        const keep = keepPositions && keepPositions[el.data.id];
+        el.position = keep ? { ...keep } : { x: rand(-500, 500), y: rand(-500, 500) };
+      }
+    }
+
+    cy = cytoscape({
+      container: $('cy'),
+      elements,
+      style: [
+        {
+          selector: 'node',
+          style: {
+            'label': nodeLabelMode === 'full' ? 'data(label)' : 'data(short)',
+            'font-size': 10,
+            'text-outline-width': 2,
+            'text-outline-color': '#ffffff',
+            'width': 30,
+            'height': 30,
+            'background-color': '#2563eb',
+            'border-width': 0
+          }
+        },
+        { selector: 'node[role = "CORE"]', style: { 'background-color': '#7c3aed' } },
+        { selector: 'node[role = "AGGR"]', style: { 'background-color': '#2563eb' } },
+        { selector: 'node[role = "TOR"]',  style: { 'background-color': '#059669' } },
+        { selector: 'node[role = "OTHER"]',style: { 'background-color': '#6b7280' } },
+
+        {
+          selector: 'edge',
+          style: {
+            'curve-style': 'bezier',
+            'target-arrow-shape': 'triangle',
+            'arrow-scale': 0.8,
+            'width': 1.2,
+            'line-color': '#9ca3af',
+            'target-arrow-color': '#9ca3af',
+            'label': edgeMode === 'both' ? 'data(label)' : '',
+            'font-size': 9,
+            'text-background-color': '#ffffff',
+            'text-background-opacity': 0.85,
+            'text-background-padding': 2,
+            'text-rotation': 'autorotate',
+            'color': '#374151'
+          }
+        },
+        { selector: 'edge.hovered', style: { 'label': 'data(label)' } },
+
+        { selector: '.hit', style: { 'border-width': 2, 'border-color': '#111827' } },
+        { selector: '.dim', style: { 'opacity': 0.15 } },
+        { selector: '.filtered', style: { 'display': 'none' } },
+        { selector: '.onlyHidden', style: { 'display': 'none' } },
+        { selector: ':selected', style: {
+          'border-width': 3,
+          'border-color': '#2563eb',
+          'shadow-blur': 14,
+          'shadow-color': '#2563eb',
+          'shadow-opacity': 0.6,
+          'shadow-offset-x': 0,
+          'shadow-offset-y': 0
+        } }
+      ],
+      layout: { name: 'preset' },
+      wheelSensitivity: 0.22
+    });
+    cy.autoungrabify(false);
+    cy.autounselectify(false);
+    cy.boxSelectionEnabled(false);
+    cy.userPanningEnabled(true);
+    cy.userZoomingEnabled(true);
+    cy.nodes().unlock().grabify();
+
+    const hasKeep = keepPositions && Object.keys(keepPositions).length > 0;
+
+    // 根据分层关键字重新标记角色/层级
+    applyLayersToNodes(cy.nodes());
+
+    // 如果保留坐标，则先应用并锁定，布局后再解锁
+    if (hasKeep) {
+      cy.nodes().forEach(n => {
+        const p = keepPositions[n.id()];
+        if (p) { n.position(p); n.lock(); }
+      });
+    }
+
+    // 使节点标签模式与当前选择同步
+    updateNodeLabels(nodeLabelMode);
+    // 使边标签模式与当前选择同步
+    updateEdgeLabels(edgeMode);
+
+    // click highlight：仅高亮选中节点本身，不再自动高亮邻居
+    cy.on('tap', 'node', () => {
+      cy.elements().removeClass('hit dim');
+      cy.nodes(':selected').addClass('hit');
+    });
+    cy.on('tap', (evt) => {
+      if (evt.target === cy) cy.elements().removeClass('dim hit');
+    });
+
+    // 右键菜单：固定位置 / 删除节点
+    cy.on('cxttap', 'node', (evt) => {
+      evt.originalEvent.preventDefault();
+      showCtx(evt);
+    });
+    cy.on('tap', () => hideCtx());
+    cy.on('zoom pan', () => hideCtx());
+
+    runLayout();
+    if (hasKeep) {
+      setTimeout(() => {
+        if (cy) cy.nodes().unlock();
+      }, 900);
+    }
+    initDragFollow();
+
+    setStatus('拓扑已生成');
+    setOK(`生成完成：${nodes.size} 节点，${edgesForCy.length} 边（去重后${mergedMode ? '，已合并多链路' : ''}）。\n提示：不要频繁点“适配画布”，会把图缩成很小；用“居中 + 放大”更好。`);
+  }
+
+  function runLayout() {
+    if (!cy) return;
+    const visNodes = cy.nodes(':visible');
+    const visEles = cy.elements(':visible');
+    if (!visNodes.length) {
+      setErr('无可见节点可重新布局，请检查过滤或“只显示”条件。');
+      return;
+    }
+    const mode = $('layoutMode').value;
+    const p = spacingParams();
+    // 按关键字分层，更新 rank
+    applyLayersToNodes(visNodes);
+
+    // 圆形模式：简单环形，凸显整体拓扑
+    if (mode === 'circle') {
+      visNodes.layout({
+        name: 'circle',
+        fit: false,
+        padding: p.padding,
+        avoidOverlap: true,
+        nodeDimensionsIncludeLabels: false,
+        spacingFactor: 1.2 + p.s * 0.2
+      }).run();
+      cy.fit(visNodes, { padding: p.padding });
+      cy.zoom(1.05);
+      return;
+    }
+
+    // 上下分层：按分层关键字顺序使用预设坐标，层级高->低
+    if (mode === 'layer') {
+      const pos = buildLayerPositions(visNodes);
+      visNodes.layout({
+        name: 'preset',
+        positions: pos,
+        fit: false,
+        padding: p.padding
+      }).run();
+      cy.fit(visNodes, { padding: p.padding });
+      cy.zoom(1.05);
+      return;
+    }
+
+    const applyFcose = (eles, mult = 1) => {
+      eles.layout({
+        name: 'fcose',
+        quality: 'proof',
+        randomize: true,
+        animate: true,
+        animationDuration: 480,
+        fit: false,
+        padding: p.padding,
+        nodeDimensionsIncludeLabels: false,
+        nodeRepulsion: (node) => {
+          const deg = degreeMap.get(node.id()) || 0;
+          // 度数越高，斥力越小，让邻居更贴近
+          const factor = 1 + deg * 0.3;
+          return (p.nodeRepulsion * mult) / factor;
+        },
+        idealEdgeLength: (edge) => {
+          const src = cy.getElementById(edge.data('source'));
+          const tgt = cy.getElementById(edge.data('target'));
+          const srcDeg = degreeMap.get(edge.data('source')) || 0;
+          const tgtDeg = degreeMap.get(edge.data('target')) || 0;
+          const weight = srcDeg + tgtDeg + 1;
+          const base = p.idealEdgeLength * mult;
+          const minLen = 80; // 强制最小距离，进一步靠近
+          // 直连且互为高阶节点时进一步缩短
+          const isHigh = (n) => (n.data('rank') || 0) <= 1 || (degreeMap.get(n.id()) || 0) >= 3;
+          const bonus = isHigh(src) && isHigh(tgt) ? 40 : 0;
+          const adjust = Math.min(base * 0.9, weight * 22 + bonus);
+          return Math.max(minLen, base - adjust);
+        },
+        edgeElasticity: 0.8, // 更强边弹性，拉近互联
+        nestingFactor: 0.9,
+        gravity: p.gravity,
+        gravityRange: 2.8,
+        gravityCompound: 1.2,
+        gravityRangeCompound: 2.5,
+        tile: true,
+        packComponents: true,
+        nodeSeparation: p.overlapPad
+      }).run();
+    };
+
+    // 默认/force：连续两轮 fCoSE，偏向聚拢
+    setTimeout(() => {
+      if (!cy) return;
+      applyFcose(visEles, 0.95);
+      setTimeout(() => {
+        if (!cy) return;
+        applyFcose(visEles, 1.05);
+        setTimeout(() => {
+          if (!cy) return;
+          cy.fit(visNodes, { padding: p.padding });
+          cy.zoom(1.1);
+        }, 420);
+      }, 520);
+    }, 80);
+  }
+
+  function relayout() { runLayout(); }
+
+  // 拖拽时让邻居跟随（类似皮筋），仅在重力模式生效
+  function initDragFollow() {
+    // gravity mode removed; keep hook for future use
+  }
+
+  // 多条件过滤：逗号分隔，命中任何子串的节点隐藏，相关边同步隐藏
+  function applyFilter() {
+    if (!cy) return;
+    const terms = parseTerms($('filter').value);
+
+    cy.elements().removeClass('filtered');
+    if (!terms.length) {
+      setOK('已清空过滤，全部显示。');
+      return;
+    }
+
+    const nodeHits = cy.nodes().filter(n => {
+      const label = (n.data('label') || '').toLowerCase();
+      return terms.some(t => label.includes(t));
+    });
+    nodeHits.addClass('filtered');
+
+    cy.edges().forEach(e => {
+      if (e.source().hasClass('filtered') || e.target().hasClass('filtered')) {
+        e.addClass('filtered');
+      }
+    });
+
+    setOK(`已隐藏 ${nodeHits.length} 个节点，过滤条件：${terms.join(', ')}`);
+  }
+
+  function applyShowOnly() {
+    if (!cy) return;
+    const terms = parseTerms($('showOnly').value);
+    cy.elements().removeClass('onlyHidden');
+    if (!terms.length) {
+      setOK('已取消“只显示”过滤，全部显示。');
+      return;
+    }
+
+    const hits = cy.nodes().filter(n => {
+      const label = (n.data('label') || '').toLowerCase();
+      return terms.some(t => label.includes(t));
+    });
+    const hideNodes = cy.nodes().not(hits);
+    hideNodes.addClass('onlyHidden');
+
+    cy.edges().forEach(e => {
+      const sHidden = e.source().hasClass('onlyHidden');
+      const tHidden = e.target().hasClass('onlyHidden');
+      if (sHidden || tHidden) e.addClass('onlyHidden');
+      else e.removeClass('onlyHidden');
+    });
+
+    setOK(`只显示 ${hits.length} 个节点，条件：${terms.join(', ')}`);
+  }
+
+  function parseTerms(raw) {
+    return String(raw || '')
+      .split(',')
+      .map(t => t.trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  function parseLayers() {
+    const raw = $('layerTerms').value || '';
+    return raw
+      .split(',')
+      .map(seg => seg.trim())
+      .filter(Boolean)
+      .map(seg => {
+        // "/" = 同层的 OR；"&" = AND 都需命中
+        const clauses = seg.split('/')
+          .map(part => part.trim())
+          .filter(Boolean)
+          .map(part => part.split('&')
+            .map(t => t.trim().toLowerCase())
+            .filter(Boolean)
+          )
+          .filter(arr => arr.length);
+        return clauses;
+      })
+      .filter(arr => arr.length);
+  }
+
+  function applyLayersToNodes(nodes) {
+    // tiers: array<layer>, layer = array<clause>, clause = array<terms that all must match>
+    const tiers = parseLayers();
+    const layerCount = tiers.length;
+    const hasLayers = layerCount > 0;
+    nodes.forEach(n => {
+      const name = (n.data('label') || '').toLowerCase();
+      let matchedIdx = null;
+      let matchedRole = null;
+      if (hasLayers) {
+        for (let i = 0; i < tiers.length; i++) {
+          const layer = tiers[i];
+          const hit = layer.some(clause => clause.every(term => name.includes(term)));
+          if (hit) {
+            matchedIdx = i;
+            // role 取该层第一个子句的首词，便于显示
+            const roleWord = layer[0]?.[0] || '';
+            matchedRole = roleWord.toUpperCase();
+            break;
+          }
+        }
+      }
+      if (matchedIdx !== null) {
+        n.data('role', matchedRole);
+        n.data('rank', matchedIdx);
+      } else {
+        // 未命中放最下层；如果没自定义层级则用默认角色层级
+        n.data('rank', layerCount ? layerCount : roleRank(n.data('label')));
+      }
+    });
+  }
+
+  function buildLayerPositions(nodes) {
+    const ranks = new Map();
+    nodes.forEach(n => {
+      const r = n.data('rank') ?? 0;
+      if (!ranks.has(r)) ranks.set(r, []);
+      ranks.get(r).push(n.id());
+    });
+    const sortedRanks = Array.from(ranks.keys()).sort((a, b) => a - b);
+    const positions = {};
+    const width = $('cy').clientWidth || 1000;
+    const height = $('cy').clientHeight || 800;
+    const layerGap = Math.max(140, height / Math.max(1, sortedRanks.length + 1));
+    sortedRanks.forEach((r, layerIdx) => {
+      const ids = ranks.get(r);
+      const count = ids.length;
+      const xGap = Math.max(120, width / Math.max(1, count));
+      const y = 80 + layerIdx * layerGap;
+      ids.forEach((id, idx) => {
+        positions[id] = { x: xGap * (idx + 1), y };
+      });
+    });
+    return positions;
+  }
+
+  function isolateSelection() {
+    if (!cy) return;
+    cy.elements().removeClass('sel-hidden dim hit');
+    const sel = cy.nodes(':selected');
+    if (!sel.length) {
+      setOK('未选择节点，保持全部显示。');
+      return;
+    }
+    const neigh = sel.closedNeighborhood(); // 包含自身和邻居、边
+    cy.elements().addClass('dim');
+    neigh.removeClass('dim');
+    sel.addClass('hit');
+    setOK(`已凸显选中及邻接节点：${sel.length} 个选中节点。`);
+  }
+
+  function clearSelectionHide() {
+    if (!cy) return;
+    cy.elements().removeClass('sel-hidden');
+    setOK('已恢复显示全部节点。');
+  }
+
+  function updateCounts() {
+    $('nNodes').textContent = cy ? cy.nodes().length : '-';
+    $('nEdges').textContent = cy ? cy.edges().length : '-';
+  }
+
+  function dedupeRows(rows) {
+    const seen = new Set();
+    const out = [];
+    for (const r of rows) {
+      const lh = (r.localhostname || '').trim();
+      const li = (r.localinterface || '').trim();
+      const rh = (r.remotehostname || '').trim();
+      const ri = (r.remoteinterface || '').trim();
+      if (!lh || !li || !rh || !ri) continue;
+      const key = [lh, li, rh, ri].map(s => s.toLowerCase()).join('||');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ ...r, localhostname: lh, localinterface: li, remotehostname: rh, remoteinterface: ri });
+    }
+    return out;
+  }
+
+  // 将同一对节点的多条边合并为单条
+  function aggregateEdges(edges) {
+    const bucket = new Map();
+    edges.forEach((e) => {
+      const s = e.data.source;
+      const t = e.data.target;
+      const key = s < t ? `${s}||${t}` : `${t}||${s}`;
+      if (!bucket.has(key)) bucket.set(key, []);
+      bucket.get(key).push(e);
+    });
+    const merged = [];
+    let idx = 0;
+    bucket.forEach((list, key) => {
+      const [a, b] = key.split('||');
+      const count = list.length;
+      const labels = list.map(x => x.data.label).filter(Boolean);
+      const label = count > 1 ? `${count} 条链路` : (labels[0] || '');
+      merged.push({ data: { id: `m_${idx++}`, source: a, target: b, label } });
+    });
+    return merged;
+  }
+
+  function normalizeRows(rows) {
+    return rows.map((row) => {
+      if (Array.isArray(row)) {
+        // array row -> map by default headers
+        const keys = ['depth','localhostname','localinterface','remotehostname','remoteinterface'];
+        const obj = {};
+        keys.forEach((k, idx) => obj[k] = row[idx] || '');
+        return obj;
+      }
+      if (row && typeof row === 'object') {
+        const obj = {};
+        Object.entries(row).forEach(([k, v]) => {
+          const key = (k || '').toString().toLowerCase();
+          obj[key] = v == null ? '' : v;
+        });
+        return obj;
+      }
+      return {};
+    });
+  }
+
+  // 右键菜单
+  let ctxTarget = null;
+  function hideCtx() {
+    const menu = $('ctxMenu');
+    menu.style.display = 'none';
+    ctxTarget = null;
+  }
+
+  function ctxNodes() {
+    if (!cy) return cy.collection();
+    const sel = cy.nodes(':selected');
+    if (sel.length) return sel;
+    return ctxTarget ? ctxTarget.collection() : cy.collection();
+  }
+
+  function updateEdgeLabels(mode) {
+    if (!cy) return;
+    const val = mode === 'both' ? 'data(label)' : '';
+    cy.style().selector('edge').style('label', val).update();
+  }
+
+  function showCtx(evt) {
+    ctxTarget = evt.target;
+    const menu = $('ctxMenu');
+    // 切换按钮文案
+    const nodes = ctxNodes();
+    const locked = nodes.length ? nodes.every(n => n.locked()) : false;
+    $('ctxLock').textContent = locked ? '取消固定' : '固定位置';
+    const { clientX, clientY } = evt.originalEvent || {};
+    if (clientX !== undefined) {
+      menu.style.left = `${clientX}px`;
+      menu.style.top = `${clientY}px`;
+    }
+    menu.style.display = 'block';
+  }
+
+  function updateNodeLabels(mode) {
+    if (!cy) return;
+    const useFull = mode === 'full';
+    const val = useFull ? 'data(label)' : 'data(short)';
+    // 更新样式表确保全局生效（含后续新增节点）
+    cy.style().selector('node').style('label', val).update();
+    setOK(useFull ? '节点标签：全名' : '节点标签：缩略');
+  }
+
+  function download(filename, text, mime='text/plain') {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a);
+    a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  // ---- Events ----
+  $('file').addEventListener('change', async (e) => {
+    const files = e.target.files;
+    if (!files || !files.length) return;
+    await loadFiles(files);
+  });
+
+  $('appendFile').addEventListener('change', async (e) => {
+    const files = e.target.files;
+    if (!files || !files.length) return;
+    const pos = capturePositions();
+    await appendFiles(files);
+    if (rawRows.length) buildGraph(pos);
+    e.target.value = '';
+  });
+
+  $('dropzone').addEventListener('dragover', (e) => { e.preventDefault(); $('dropzone').style.borderColor = '#60a5fa'; });
+  $('dropzone').addEventListener('dragleave', () => { $('dropzone').style.borderColor = '#cbd5e1'; });
+  $('dropzone').addEventListener('drop', async (e) => {
+    e.preventDefault();
+    $('dropzone').style.borderColor = '#cbd5e1';
+    const files = e.dataTransfer.files;
+    if (!files || !files.length) return;
+    await loadFiles(files);
+  });
+
+  $('loadPaste').addEventListener('click', () => {
+    const t = $('paste').value;
+    if (!t.trim()) { setErr('粘贴内容为空'); return; }
+    loadDataFromText(t);
+  });
+
+  $('build').addEventListener('click', buildGraph);
+  $('relayout').addEventListener('click', relayout);
+  $('fit').addEventListener('click', () => cy && cy.fit({ padding: 30 }));
+  $('center').addEventListener('click', () => { if (!cy) return; cy.center(); cy.zoom(1.2); });
+  $('toggleMerge').addEventListener('click', () => {
+    mergedMode = !mergedMode;
+    $('toggleMerge').textContent = `合并多条链路：${mergedMode ? '开启' : '关闭'}`;
+    if (!rawRows.length) return;
+    const pos = capturePositions();
+    buildGraph(pos);
+  });
+
+  $('exportPng').addEventListener('click', async () => {
+    if (!cy) return;
+    // 直接用 blob-promise，避免 data URL fetch 可能的空白问题
+    const blob = await cy.png({
+      bg: '#ffffff',
+      full: true,
+      scale: 2,
+      output: 'blob-promise'
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'lldp-topology.png';
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  $('exportJson').addEventListener('click', () => {
+    if (!cy) return;
+    download('lldp-topology.json', JSON.stringify(cy.json(), null, 2), 'application/json');
+  });
+
+  $('exportPos').addEventListener('click', () => {
+    if (!cy) return;
+    download('lldp-positions.json', JSON.stringify(capturePositions(), null, 2), 'application/json');
+    setOK('已导出坐标');
+  });
+
+  $('importPosBtn').addEventListener('click', () => {
+    $('importPosFile').value = '';
+    $('importPosFile').click();
+  });
+
+  $('importPosFile').addEventListener('change', async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    try {
+      const text = await f.text();
+      const obj = JSON.parse(text);
+      applyPositions(obj);
+      setOK('已导入并应用坐标');
+    } catch (err) {
+      setErr(`坐标导入失败：${err}`);
+    }
+  });
+
+  $('applyLayers').addEventListener('click', () => {
+    if (!cy) return;
+    applyLayersToNodes(cy.nodes());
+    runLayout();
+    setOK('已应用分层关键字并重新布局');
+  });
+
+  $('ctxLock').addEventListener('click', () => {
+    const nodes = ctxNodes();
+    if (!nodes.length) return hideCtx();
+    const locking = !nodes.every(n => n.locked());
+    nodes.forEach(n => locking ? n.lock() : n.unlock());
+    if (locking) nodes.addClass('hit');
+    setOK(locking ? `已固定 ${nodes.length} 个节点` : `已取消固定 ${nodes.length} 个节点`);
+    hideCtx();
+  });
+
+  $('ctxDelete').addEventListener('click', () => {
+    const nodes = ctxNodes();
+    if (!nodes.length) return hideCtx();
+    const pack = nodes.union(nodes.connectedEdges()).jsons();
+    deletedStack.push(pack);
+    nodes.remove();
+    hideCtx();
+    updateCounts();
+    setOK(`已删除 ${nodes.length} 个节点及其相关边`);
+  });
+
+  $('ctxCopy').addEventListener('click', async () => {
+    const nodes = ctxNodes();
+    if (!nodes.length) return hideCtx();
+    const names = nodes.map(n => n.data('label') || n.id());
+    const text = names.join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      setOK(`已复制 ${names.length} 个名称`);
+    } catch (err) {
+      setErr('复制失败，可能浏览器不支持或权限受限');
+    }
+    hideCtx();
+  });
+
+  $('nodeLabelMode').addEventListener('change', (e) => updateNodeLabels(e.target.value));
+  $('edgeLabelMode').addEventListener('change', (e) => updateEdgeLabels(e.target.value));
+
+  $('fitSelection').addEventListener('click', () => {
+    if (!cy) return;
+    const sel = cy.elements(':selected');
+    if (!sel.length) { setOK('未选中节点'); return; }
+    cy.animate({ fit: { eles: sel, padding: 120 }, duration: 400 });
+    setOK(`已定位选中元素：${sel.length} 个。`);
+  });
+
+  $('isolateSelection').addEventListener('click', isolateSelection);
+  $('clearSelectionHide').addEventListener('click', clearSelectionHide);
+
+  $('search').addEventListener('keydown', (e) => {
+    if (!cy) return;
+    if (e.key !== 'Enter') return;
+    const terms = parseTerms(e.target.value);
+    if (!terms.length) return;
+
+    const hits = cy.nodes().filter(n => {
+      const label = (n.data('label') || '').toLowerCase();
+      return terms.some(t => label.includes(t));
+    });
+
+    cy.elements().removeClass('hit dim');
+    cy.elements().unselect();
+
+    if (hits.length) {
+      hits.select();
+      hits.addClass('hit');
+      cy.animate({ fit: { eles: hits, padding: 140 }, duration: 450 });
+      $('searchResult').textContent = `命中并选中 ${hits.length} 个节点`;
+    } else {
+      $('searchResult').textContent = '未找到匹配节点';
+    }
+  });
+
+  $('applyFilter').addEventListener('click', applyFilter);
+  $('showOnly').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') applyShowOnly();
+  });
+$('filter').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') applyFilter();
+});
+
+  $('restoreDeleted').addEventListener('click', () => {
+    if (!cy) return;
+    if (!deletedStack.length) { setOK('没有可恢复的删除记录'); return; }
+    const pack = deletedStack.pop();
+    cy.add(pack);
+    updateCounts();
+    setOK(`已恢复 ${pack.length} 个元素（节点及其相关边）。`);
+  });
+
+  $('deleteSelection').addEventListener('click', () => {
+    if (!cy) return;
+    const nodes = cy.nodes(':selected');
+    if (!nodes.length) { setOK('未选中节点'); return; }
+    const pack = nodes.union(nodes.connectedEdges()).jsons();
+    deletedStack.push(pack);
+    nodes.remove();
+    updateCounts();
+    setOK(`已删除选中 ${nodes.length} 个节点及其相关边`);
+  });
+</script>
+</body>
 </html>
