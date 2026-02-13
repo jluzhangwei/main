@@ -1,0 +1,4 @@
+Focus on resource bottlenecks:
+1. Identify CPU/memory/temperature/fan/power anomalies
+2. Evaluate impact on control-plane and forwarding stability
+3. Provide remediation priority and capacity optimization guidance

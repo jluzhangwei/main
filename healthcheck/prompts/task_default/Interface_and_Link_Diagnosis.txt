@@ -1,0 +1,4 @@
+Focus on interfaces and links:
+1. List abnormal interfaces (physical/protocol mismatch, errors, drops, flaps)
+2. Determine whether uplink/core paths are impacted
+3. Provide step-by-step troubleshooting commands (at least 5 steps)

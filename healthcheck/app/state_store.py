@@ -13,6 +13,8 @@ DEFAULT_GPT_MODEL = "gpt-4.1-mini"
 DEFAULT_LOCAL_BASE_URL = "http://192.168.0.99:1234"
 DEFAULT_LOCAL_MODEL = "qwen/qwen3-coder-30b"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
+DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
+DEFAULT_NVIDIA_MODEL = "meta/llama-3.1-70b-instruct"
 
 
 def load_gpt_config() -> Dict:
@@ -20,12 +22,16 @@ def load_gpt_config() -> Dict:
         return {
             "chatgpt_api_key": "",
             "deepseek_api_key": "",
+            "gemini_api_key": "",
+            "nvidia_api_key": "",
             "custom_prompts": {},
             "provider": "chatgpt",
             "chatgpt_model": DEFAULT_GPT_MODEL,
             "local_base_url": DEFAULT_LOCAL_BASE_URL,
             "local_model": DEFAULT_LOCAL_MODEL,
             "deepseek_model": DEFAULT_DEEPSEEK_MODEL,
+            "gemini_model": DEFAULT_GEMINI_MODEL,
+            "nvidia_model": DEFAULT_NVIDIA_MODEL,
             "selected_task_prompt": "",
             "selected_system_prompt": "",
         }
@@ -35,14 +41,18 @@ def load_gpt_config() -> Dict:
             raise ValueError("invalid config type")
         chatgpt_api_key = data.get("chatgpt_api_key", data.get("api_key", ""))
         deepseek_api_key = data.get("deepseek_api_key", "")
+        gemini_api_key = data.get("gemini_api_key", "")
+        nvidia_api_key = data.get("nvidia_api_key", "")
         custom_prompts = data.get("custom_prompts", {})
         provider = (data.get("provider", "chatgpt") or "chatgpt").strip().lower()
-        if provider not in {"chatgpt", "local", "deepseek"}:
+        if provider not in {"chatgpt", "local", "deepseek", "gemini", "nvidia"}:
             provider = "chatgpt"
         chatgpt_model = str(data.get("chatgpt_model", DEFAULT_GPT_MODEL) or DEFAULT_GPT_MODEL).strip()
         local_base_url = str(data.get("local_base_url", DEFAULT_LOCAL_BASE_URL) or DEFAULT_LOCAL_BASE_URL).strip()
         local_model = str(data.get("local_model", DEFAULT_LOCAL_MODEL) or DEFAULT_LOCAL_MODEL).strip()
         deepseek_model = str(data.get("deepseek_model", DEFAULT_DEEPSEEK_MODEL) or DEFAULT_DEEPSEEK_MODEL).strip()
+        gemini_model = str(data.get("gemini_model", DEFAULT_GEMINI_MODEL) or DEFAULT_GEMINI_MODEL).strip()
+        nvidia_model = str(data.get("nvidia_model", DEFAULT_NVIDIA_MODEL) or DEFAULT_NVIDIA_MODEL).strip()
         selected_task_prompt = str(data.get("selected_task_prompt", data.get("selected_prompt", "")) or "").strip()
         selected_system_prompt = str(data.get("selected_system_prompt", "网络工程师-严格模式") or "").strip()
         if not isinstance(custom_prompts, dict):
@@ -50,12 +60,16 @@ def load_gpt_config() -> Dict:
         return {
             "chatgpt_api_key": str(chatgpt_api_key or ""),
             "deepseek_api_key": str(deepseek_api_key or ""),
+            "gemini_api_key": str(gemini_api_key or ""),
+            "nvidia_api_key": str(nvidia_api_key or ""),
             "custom_prompts": custom_prompts,
             "provider": provider,
             "chatgpt_model": chatgpt_model,
             "local_base_url": local_base_url,
             "local_model": local_model,
             "deepseek_model": deepseek_model,
+            "gemini_model": gemini_model,
+            "nvidia_model": nvidia_model,
             "selected_task_prompt": selected_task_prompt,
             "selected_system_prompt": selected_system_prompt,
         }
@@ -63,12 +77,16 @@ def load_gpt_config() -> Dict:
         return {
             "chatgpt_api_key": "",
             "deepseek_api_key": "",
+            "gemini_api_key": "",
+            "nvidia_api_key": "",
             "custom_prompts": {},
             "provider": "chatgpt",
             "chatgpt_model": DEFAULT_GPT_MODEL,
             "local_base_url": DEFAULT_LOCAL_BASE_URL,
             "local_model": DEFAULT_LOCAL_MODEL,
             "deepseek_model": DEFAULT_DEEPSEEK_MODEL,
+            "gemini_model": DEFAULT_GEMINI_MODEL,
+            "nvidia_model": DEFAULT_NVIDIA_MODEL,
             "selected_task_prompt": "",
             "selected_system_prompt": "",
         }
@@ -76,17 +94,21 @@ def load_gpt_config() -> Dict:
 
 def save_gpt_config(config: Dict) -> None:
     provider = str(config.get("provider", "chatgpt") or "chatgpt").strip().lower()
-    if provider not in {"chatgpt", "local", "deepseek"}:
+    if provider not in {"chatgpt", "local", "deepseek", "gemini", "nvidia"}:
         provider = "chatgpt"
     payload = {
         "chatgpt_api_key": str(config.get("chatgpt_api_key", "") or ""),
         "deepseek_api_key": str(config.get("deepseek_api_key", "") or ""),
+        "gemini_api_key": str(config.get("gemini_api_key", "") or ""),
+        "nvidia_api_key": str(config.get("nvidia_api_key", "") or ""),
         "custom_prompts": config.get("custom_prompts", {}) if isinstance(config.get("custom_prompts", {}), dict) else {},
         "provider": provider,
         "chatgpt_model": str(config.get("chatgpt_model", DEFAULT_GPT_MODEL) or DEFAULT_GPT_MODEL).strip(),
         "local_base_url": str(config.get("local_base_url", DEFAULT_LOCAL_BASE_URL) or DEFAULT_LOCAL_BASE_URL).strip(),
         "local_model": str(config.get("local_model", DEFAULT_LOCAL_MODEL) or DEFAULT_LOCAL_MODEL).strip(),
         "deepseek_model": str(config.get("deepseek_model", DEFAULT_DEEPSEEK_MODEL) or DEFAULT_DEEPSEEK_MODEL).strip(),
+        "gemini_model": str(config.get("gemini_model", DEFAULT_GEMINI_MODEL) or DEFAULT_GEMINI_MODEL).strip(),
+        "nvidia_model": str(config.get("nvidia_model", DEFAULT_NVIDIA_MODEL) or DEFAULT_NVIDIA_MODEL).strip(),
         "selected_task_prompt": str(config.get("selected_task_prompt", config.get("selected_prompt", "")) or "").strip(),
         "selected_system_prompt": str(config.get("selected_system_prompt", "网络工程师-严格模式") or "").strip(),
     }
@@ -95,7 +117,7 @@ def save_gpt_config(config: Dict) -> None:
 
 
 def load_token_stats() -> Dict:
-    default = {"total_tokens": 0, "providers": {"chatgpt": 0, "deepseek": 0, "local": 0}}
+    default = {"total_tokens": 0, "providers": {"chatgpt": 0, "deepseek": 0, "gemini": 0, "nvidia": 0, "local": 0}}
     if not TOKEN_STATS_PATH.is_file():
         return default
     try:
@@ -111,6 +133,8 @@ def load_token_stats() -> Dict:
             "providers": {
                 "chatgpt": int(providers.get("chatgpt", 0) or 0),
                 "deepseek": int(providers.get("deepseek", 0) or 0),
+                "gemini": int(providers.get("gemini", 0) or 0),
+                "nvidia": int(providers.get("nvidia", 0) or 0),
                 "local": int(providers.get("local", 0) or 0),
             },
         }
@@ -126,7 +150,7 @@ def save_token_stats(stats: Dict) -> None:
 def add_token_usage(provider: str, used_tokens: int) -> Dict:
     stats = load_token_stats()
     used = max(0, int(used_tokens or 0))
-    p = provider if provider in {"chatgpt", "deepseek", "local"} else "local"
+    p = provider if provider in {"chatgpt", "deepseek", "gemini", "nvidia", "local"} else "local"
     stats["total_tokens"] = int(stats.get("total_tokens", 0) or 0) + used
     providers = stats.get("providers", {})
     if not isinstance(providers, dict):

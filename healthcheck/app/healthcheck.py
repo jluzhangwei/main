@@ -234,15 +234,26 @@ def parse_input_items(input_str: str, item_name: str) -> List[str]:
     if not raw:
         return []
 
+    # If user already entered comma/semicolon/newline separated values,
+    # treat it as inline list directly instead of probing filesystem path.
+    if any(sep in raw for sep in [",", ";", "\n"]):
+        return _deduplicate(_split_inline_items(raw))
+
+    def _safe_is_file(path: Path) -> bool:
+        try:
+            return path.is_file()
+        except OSError:
+            return False
+
     raw_path = Path(raw)
     if raw_path.is_absolute():
         candidate = raw_path
     else:
         cwd_candidate = Path.cwd() / raw_path
         project_candidate = PROJECT_ROOT / raw_path
-        candidate = cwd_candidate if cwd_candidate.is_file() else project_candidate
+        candidate = cwd_candidate if _safe_is_file(cwd_candidate) else project_candidate
 
-    if candidate.is_file():
+    if _safe_is_file(candidate):
         try:
             return _deduplicate(_load_list_from_file(str(candidate.resolve())))
         except Exception as exc:

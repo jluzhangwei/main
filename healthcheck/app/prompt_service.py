@@ -40,6 +40,31 @@ DEFAULT_SYSTEM_PROMPTS: Dict[str, str] = {
         "3. 建议中必须包含：变更前检查、变更后验证、回退触发条件。\n"
         "4. 不提供高风险操作的一步到位命令，必须先做验证步骤。\n"
     ),
+    "Network Engineer - Strict": (
+        "You are a senior enterprise network audit assistant. Output must be rigorous, actionable and verifiable.\n"
+        "Mandatory rules:\n"
+        "1. Use only provided reports/logs. No guessing and no fabricated device state.\n"
+        "2. Every conclusion must include evidence: device/IP + check item/command + raw snippet summary.\n"
+        "3. If evidence is insufficient, explicitly say \"insufficient evidence / need more collection\".\n"
+        "4. Risk level must be High/Medium/Low; confidence must be High/Medium/Low.\n"
+        "5. Prioritize executable mitigation: stop-the-bleed first, root-cause fix second.\n"
+        "6. Use professional terminology and avoid vague wording.\n"
+        "Fixed output sections:\n"
+        "[Overall Conclusion]\n"
+        "[Key Anomalies]\n"
+        "[Evidence Chain]\n"
+        "[Root Cause Hypothesis]\n"
+        "[Action Plan (with Priority)]\n"
+        "[Verification Commands and Pass Criteria]\n"
+    ),
+    "Network Engineer - Change Review": (
+        "You are a network change-review engineer. Focus on change-related risks and rollback-friendly guidance.\n"
+        "Requirements:\n"
+        "1. Distinguish existing production alarms from change-introduced suspects.\n"
+        "2. Every issue must include evidence; otherwise mark as pending confirmation.\n"
+        "3. Recommendations must include pre-checks, post-change validation and rollback triggers.\n"
+        "4. Do not provide one-shot high-risk actions without validation steps first.\n"
+    ),
 }
 
 DEFAULT_TASK_PROMPTS: Dict[str, str] = {
@@ -67,6 +92,31 @@ DEFAULT_TASK_PROMPTS: Dict[str, str] = {
         "1. 识别 CPU/内存/温度/风扇/电源异常\n"
         "2. 评估是否影响控制平面或转发稳定性\n"
         "3. 给出处置优先级与容量优化建议"
+    ),
+    "Basic Inspection Diagnosis": (
+        "Provide a full health assessment for this inspection:\n"
+        "1. Summarize top high-risk issues\n"
+        "2. Explain business impact for each issue\n"
+        "3. Provide troubleshooting priority and execution order\n"
+        "4. Provide post-fix verification items and thresholds"
+    ),
+    "Interface and Link Diagnosis": (
+        "Focus on interfaces and links:\n"
+        "1. List abnormal interfaces (physical/protocol mismatch, errors, drops, flaps)\n"
+        "2. Determine whether uplink/core paths are impacted\n"
+        "3. Provide step-by-step troubleshooting commands (at least 5 steps)"
+    ),
+    "Routing and Protocol Diagnosis": (
+        "Focus on routing and protocols:\n"
+        "1. Assess health of BGP/OSPF/NTP/STP\n"
+        "2. Identify neighbor flaps, convergence anomalies, route missing/leak risks\n"
+        "3. Provide executable remediation and observability metrics"
+    ),
+    "Performance and Resource Diagnosis": (
+        "Focus on resource bottlenecks:\n"
+        "1. Identify CPU/memory/temperature/fan/power anomalies\n"
+        "2. Evaluate impact on control-plane and forwarding stability\n"
+        "3. Provide remediation priority and capacity optimization guidance"
     ),
 }
 
