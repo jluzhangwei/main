@@ -21,24 +21,23 @@ from urllib import request as urlrequest
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
+from app import llm_service, prompt_service, state_store
+
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_DIR.parent
 SCRIPT_PATH = APP_DIR / "healthcheck.py"
 INTENTS_PATH = PROJECT_ROOT / "data" / "intents.txt"
 REPORT_DIR = PROJECT_ROOT / "output" / "reports"
-GPT_CONFIG_PATH = PROJECT_ROOT / "state" / "gpt_config.json"
-TOKEN_STATS_PATH = PROJECT_ROOT / "state" / "token_stats.json"
 TMP_DIR = PROJECT_ROOT / "runtime" / "tmp"
 COMMAND_MAP_PATH = PROJECT_ROOT / "config" / "command_map.yaml"
-PROMPTS_DIR = PROJECT_ROOT / "prompts"
-SYSTEM_DEFAULT_PROMPTS_DIR = PROMPTS_DIR / "system_default"
-SYSTEM_CUSTOM_PROMPTS_DIR = PROMPTS_DIR / "system_custom"
-TASK_DEFAULT_PROMPTS_DIR = PROMPTS_DIR / "task_default"
-TASK_CUSTOM_PROMPTS_DIR = PROMPTS_DIR / "task_custom"
-DEFAULT_GPT_MODEL = "gpt-4.1-mini"
-DEFAULT_LOCAL_BASE_URL = "http://192.168.0.99:1234"
-DEFAULT_LOCAL_MODEL = "qwen/qwen3-coder-30b"
-DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
+SYSTEM_DEFAULT_PROMPTS_DIR = prompt_service.SYSTEM_DEFAULT_PROMPTS_DIR
+SYSTEM_CUSTOM_PROMPTS_DIR = prompt_service.SYSTEM_CUSTOM_PROMPTS_DIR
+TASK_DEFAULT_PROMPTS_DIR = prompt_service.TASK_DEFAULT_PROMPTS_DIR
+TASK_CUSTOM_PROMPTS_DIR = prompt_service.TASK_CUSTOM_PROMPTS_DIR
+DEFAULT_GPT_MODEL = state_store.DEFAULT_GPT_MODEL
+DEFAULT_LOCAL_BASE_URL = state_store.DEFAULT_LOCAL_BASE_URL
+DEFAULT_LOCAL_MODEL = state_store.DEFAULT_LOCAL_MODEL
+DEFAULT_DEEPSEEK_MODEL = state_store.DEFAULT_DEEPSEEK_MODEL
 CHATGPT_MODEL_OPTIONS = [
     "gpt-4.1",
     "gpt-4.1-mini",
@@ -68,135 +67,32 @@ MAX_HISTORY_REPORT_BYTES = 2 * 1024 * 1024
 JOBS: Dict[str, Dict] = {}
 JOBS_LOCK = threading.Lock()
 
-DEFAULT_SYSTEM_PROMPTS: Dict[str, str] = {
-    "网络工程师-严格模式": (
-        "你是资深企业网络工程师审计助手。你的输出必须严谨、可执行、可复核。\n"
-        "强制规则：\n"
-        "1. 仅基于输入报告与日志做判断，不得臆测，不得编造设备状态。\n"
-        "2. 每条结论必须给证据：设备/IP + 检查项/命令 + 原始片段摘要。\n"
-        "3. 证据不足时必须明确写“证据不足/需补采集”。\n"
-        "4. 风险分级仅允许：高/中/低；置信度仅允许：高/中/低。\n"
-        "5. 优先给可执行步骤，先止血再根治；避免破坏性建议作为第一步。\n"
-        "6. 输出中文，术语专业，避免空泛套话。\n"
-        "输出结构固定：\n"
-        "【总体结论】\n"
-        "【关键异常】\n"
-        "【证据链】\n"
-        "【根因判断】\n"
-        "【处置计划（优先级）】\n"
-        "【复核命令与通过标准】\n"
-    ),
-    "网络工程师-变更评审模式": (
-        "你是网络变更评审工程师。请重点识别变更相关风险，并给出回退友好建议。\n"
-        "要求：\n"
-        "1. 区分“现网告警”与“疑似变更引入”两类问题。\n"
-        "2. 每条问题必须有证据引用；无证据则标记待确认。\n"
-        "3. 建议中必须包含：变更前检查、变更后验证、回退触发条件。\n"
-        "4. 不提供高风险操作的一步到位命令，必须先做验证步骤。\n"
-    ),
-}
-
-DEFAULT_TASK_PROMPTS: Dict[str, str] = {
-    "基础巡检诊断": (
-        "请对本次巡检结果做全量健康评估：\n"
-        "1. 汇总高风险问题 TopN\n"
-        "2. 给出每个问题的业务影响\n"
-        "3. 给出排障优先级与执行顺序\n"
-        "4. 给出修复后复核项与阈值"
-    ),
-    "接口与链路诊断": (
-        "请聚焦接口与链路：\n"
-        "1. 列出异常接口（Physical/Protocol不一致、error/丢包/抖动）\n"
-        "2. 判断是否涉及上联/核心路径\n"
-        "3. 给出逐步排查命令顺序（至少5步）"
-    ),
-    "路由与协议诊断": (
-        "请聚焦路由与协议：\n"
-        "1. 分析 BGP/OSPF/NTP/STP 的健康度\n"
-        "2. 指出邻居抖动、收敛异常、路由缺失/泄漏风险\n"
-        "3. 给出可执行修复建议与观察指标"
-    ),
-    "性能与资源诊断": (
-        "请聚焦资源瓶颈：\n"
-        "1. 识别 CPU/内存/温度/风扇/电源异常\n"
-        "2. 评估是否影响控制平面或转发稳定性\n"
-        "3. 给出处置优先级与容量优化建议"
-    ),
-}
+DEFAULT_SYSTEM_PROMPTS: Dict[str, str] = prompt_service.DEFAULT_SYSTEM_PROMPTS
+DEFAULT_TASK_PROMPTS: Dict[str, str] = prompt_service.DEFAULT_TASK_PROMPTS
 
 
 def ensure_prompt_dirs() -> None:
-    SYSTEM_DEFAULT_PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
-    SYSTEM_CUSTOM_PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
-    TASK_DEFAULT_PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
-    TASK_CUSTOM_PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+    prompt_service.ensure_prompt_dirs()
 
 
 def migrate_legacy_prompt_dirs() -> None:
-    legacy_default = PROMPTS_DIR / "default"
-    legacy_custom = PROMPTS_DIR / "custom"
-    if legacy_default.is_dir():
-        for src in legacy_default.glob("*.txt"):
-            target = TASK_DEFAULT_PROMPTS_DIR / src.name
-            if not target.exists():
-                try:
-                    target.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
-                except Exception:
-                    pass
-    if legacy_custom.is_dir():
-        for src in legacy_custom.glob("*.txt"):
-            target = TASK_CUSTOM_PROMPTS_DIR / src.name
-            if not target.exists():
-                try:
-                    target.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
-                except Exception:
-                    pass
+    prompt_service.migrate_legacy_prompt_dirs()
 
 
 def prompt_file_name(name: str) -> str:
-    cleaned = sanitize_prompt_name(name)
-    if not cleaned:
-        return ""
-    safe = re.sub(r"[\\/:*?\"<>|]+", "_", cleaned)
-    safe = re.sub(r"\s+", "_", safe).strip("._")
-    return safe[:80] + ".txt" if safe else ""
+    return prompt_service.prompt_file_name(name)
 
 
 def write_prompt_file(prompt_dir: Path, prompt_name: str, content: str) -> bool:
-    filename = prompt_file_name(prompt_name)
-    text = str(content or "").strip()
-    if not filename or not text:
-        return False
-    prompt_dir.mkdir(parents=True, exist_ok=True)
-    (prompt_dir / filename).write_text(text + "\n", encoding="utf-8")
-    return True
+    return prompt_service.write_prompt_file(prompt_dir, prompt_name, content)
 
 
 def load_prompt_dir(prompt_dir: Path) -> Dict[str, str]:
-    if not prompt_dir.is_dir():
-        return {}
-    prompts: Dict[str, str] = {}
-    for path in sorted(prompt_dir.glob("*.txt")):
-        try:
-            text = path.read_text(encoding="utf-8").strip()
-        except Exception:
-            continue
-        if text:
-            prompts[path.stem.replace("_", " ")] = text
-    return prompts
+    return prompt_service.load_prompt_dir(prompt_dir)
 
 
 def initialize_default_prompt_files() -> None:
-    ensure_prompt_dirs()
-    migrate_legacy_prompt_dirs()
-    for name, content in DEFAULT_SYSTEM_PROMPTS.items():
-        target = SYSTEM_DEFAULT_PROMPTS_DIR / prompt_file_name(name)
-        if not target.is_file():
-            target.write_text(str(content).strip() + "\n", encoding="utf-8")
-    for name, content in DEFAULT_TASK_PROMPTS.items():
-        target = TASK_DEFAULT_PROMPTS_DIR / prompt_file_name(name)
-        if not target.is_file():
-            target.write_text(str(content).strip() + "\n", encoding="utf-8")
+    prompt_service.initialize_default_prompt_files()
 
 
 def load_default_checks() -> List[str]:
@@ -267,181 +163,31 @@ def is_safe_report_name(name: str) -> bool:
 
 
 def load_gpt_config() -> Dict:
-    if not GPT_CONFIG_PATH.is_file():
-        return {
-            "chatgpt_api_key": "",
-            "deepseek_api_key": "",
-            "custom_prompts": {},
-            "provider": "chatgpt",
-            "chatgpt_model": DEFAULT_GPT_MODEL,
-            "local_base_url": DEFAULT_LOCAL_BASE_URL,
-            "local_model": DEFAULT_LOCAL_MODEL,
-            "deepseek_model": DEFAULT_DEEPSEEK_MODEL,
-            "selected_task_prompt": "",
-            "selected_system_prompt": "",
-        }
-    try:
-        data = json.loads(GPT_CONFIG_PATH.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return {
-                "chatgpt_api_key": "",
-                "deepseek_api_key": "",
-                "custom_prompts": {},
-                "provider": "chatgpt",
-                "chatgpt_model": DEFAULT_GPT_MODEL,
-                "local_base_url": DEFAULT_LOCAL_BASE_URL,
-                "local_model": DEFAULT_LOCAL_MODEL,
-                "deepseek_model": DEFAULT_DEEPSEEK_MODEL,
-                "selected_task_prompt": "",
-                "selected_system_prompt": "",
-            }
-        # Backward compatibility: old "api_key" is treated as chatgpt_api_key.
-        chatgpt_api_key = data.get("chatgpt_api_key", data.get("api_key", ""))
-        deepseek_api_key = data.get("deepseek_api_key", "")
-        custom_prompts = data.get("custom_prompts", {})
-        provider = (data.get("provider", "chatgpt") or "chatgpt").strip().lower()
-        if provider not in {"chatgpt", "local", "deepseek"}:
-            provider = "chatgpt"
-        chatgpt_model = str(data.get("chatgpt_model", DEFAULT_GPT_MODEL) or DEFAULT_GPT_MODEL).strip()
-        local_base_url = str(data.get("local_base_url", DEFAULT_LOCAL_BASE_URL) or DEFAULT_LOCAL_BASE_URL).strip()
-        local_model = str(data.get("local_model", DEFAULT_LOCAL_MODEL) or DEFAULT_LOCAL_MODEL).strip()
-        deepseek_model = str(data.get("deepseek_model", DEFAULT_DEEPSEEK_MODEL) or DEFAULT_DEEPSEEK_MODEL).strip()
-        selected_task_prompt = str(data.get("selected_task_prompt", data.get("selected_prompt", "")) or "").strip()
-        selected_system_prompt = str(data.get("selected_system_prompt", "网络工程师-严格模式") or "").strip()
-        if not isinstance(custom_prompts, dict):
-            custom_prompts = {}
-        return {
-            "chatgpt_api_key": str(chatgpt_api_key or ""),
-            "deepseek_api_key": str(deepseek_api_key or ""),
-            "custom_prompts": custom_prompts,
-            "provider": provider,
-            "chatgpt_model": chatgpt_model,
-            "local_base_url": local_base_url,
-            "local_model": local_model,
-            "deepseek_model": deepseek_model,
-            "selected_task_prompt": selected_task_prompt,
-            "selected_system_prompt": selected_system_prompt,
-        }
-    except Exception:
-        return {
-            "chatgpt_api_key": "",
-            "deepseek_api_key": "",
-            "custom_prompts": {},
-            "provider": "chatgpt",
-            "chatgpt_model": DEFAULT_GPT_MODEL,
-            "local_base_url": DEFAULT_LOCAL_BASE_URL,
-            "local_model": DEFAULT_LOCAL_MODEL,
-            "deepseek_model": DEFAULT_DEEPSEEK_MODEL,
-            "selected_task_prompt": "",
-            "selected_system_prompt": "",
-        }
+    return state_store.load_gpt_config()
 
 
 def save_gpt_config(config: Dict) -> None:
-    provider = str(config.get("provider", "chatgpt") or "chatgpt").strip().lower()
-    if provider not in {"chatgpt", "local", "deepseek"}:
-        provider = "chatgpt"
-    payload = {
-        "chatgpt_api_key": str(config.get("chatgpt_api_key", "") or ""),
-        "deepseek_api_key": str(config.get("deepseek_api_key", "") or ""),
-        "custom_prompts": config.get("custom_prompts", {}) if isinstance(config.get("custom_prompts", {}), dict) else {},
-        "provider": provider,
-        "chatgpt_model": str(config.get("chatgpt_model", DEFAULT_GPT_MODEL) or DEFAULT_GPT_MODEL).strip(),
-        "local_base_url": str(config.get("local_base_url", DEFAULT_LOCAL_BASE_URL) or DEFAULT_LOCAL_BASE_URL).strip(),
-        "local_model": str(config.get("local_model", DEFAULT_LOCAL_MODEL) or DEFAULT_LOCAL_MODEL).strip(),
-        "deepseek_model": str(config.get("deepseek_model", DEFAULT_DEEPSEEK_MODEL) or DEFAULT_DEEPSEEK_MODEL).strip(),
-        "selected_task_prompt": str(
-            config.get("selected_task_prompt", config.get("selected_prompt", "")) or ""
-        ).strip(),
-        "selected_system_prompt": str(config.get("selected_system_prompt", "网络工程师-严格模式") or "").strip(),
-    }
-    GPT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    GPT_CONFIG_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    state_store.save_gpt_config(config)
 
 
 def sanitize_prompt_name(name: str) -> str:
-    cleaned = re.sub(r"\s+", " ", (name or "").strip())
-    if not cleaned:
-        return ""
-    cleaned = cleaned[:40]
-    cleaned = re.sub(r"[^\w\u4e00-\u9fff ._-]", "", cleaned)
-    return cleaned.strip()
+    return prompt_service.sanitize_prompt_name(name)
 
 
 def load_token_stats() -> Dict:
-    default = {"total_tokens": 0, "providers": {"chatgpt": 0, "deepseek": 0, "local": 0}}
-    if not TOKEN_STATS_PATH.is_file():
-        return default
-    try:
-        data = json.loads(TOKEN_STATS_PATH.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return default
-        total_tokens = int(data.get("total_tokens", 0) or 0)
-        providers = data.get("providers", {})
-        if not isinstance(providers, dict):
-            providers = {}
-        return {
-            "total_tokens": max(0, total_tokens),
-            "providers": {
-                "chatgpt": int(providers.get("chatgpt", 0) or 0),
-                "deepseek": int(providers.get("deepseek", 0) or 0),
-                "local": int(providers.get("local", 0) or 0),
-            },
-        }
-    except Exception:
-        return default
+    return state_store.load_token_stats()
 
 
 def save_token_stats(stats: Dict) -> None:
-    TOKEN_STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    TOKEN_STATS_PATH.write_text(json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
+    state_store.save_token_stats(stats)
 
 
 def add_token_usage(provider: str, used_tokens: int) -> Dict:
-    stats = load_token_stats()
-    used = max(0, int(used_tokens or 0))
-    p = provider if provider in {"chatgpt", "deepseek", "local"} else "local"
-    stats["total_tokens"] = int(stats.get("total_tokens", 0) or 0) + used
-    providers = stats.get("providers", {})
-    if not isinstance(providers, dict):
-        providers = {}
-    providers[p] = int(providers.get(p, 0) or 0) + used
-    stats["providers"] = providers
-    save_token_stats(stats)
-    return stats
+    return state_store.add_token_usage(provider, used_tokens)
 
 
 def extract_token_usage(payload: Dict) -> Dict[str, int]:
-    usage = payload.get("usage", {})
-    if not isinstance(usage, dict):
-        usage = {}
-    prompt_tokens = (
-        usage.get("prompt_tokens")
-        if usage.get("prompt_tokens") is not None
-        else usage.get("input_tokens", 0)
-    )
-    completion_tokens = (
-        usage.get("completion_tokens")
-        if usage.get("completion_tokens") is not None
-        else usage.get("output_tokens", 0)
-    )
-    total_tokens = usage.get("total_tokens")
-    try:
-        p = int(prompt_tokens or 0)
-    except Exception:
-        p = 0
-    try:
-        c = int(completion_tokens or 0)
-    except Exception:
-        c = 0
-    if total_tokens is None:
-        t = p + c
-    else:
-        try:
-            t = int(total_tokens or 0)
-        except Exception:
-            t = p + c
-    return {"prompt_tokens": max(0, p), "completion_tokens": max(0, c), "total_tokens": max(0, t)}
+    return llm_service.extract_token_usage(payload)
 
 
 def merged_prompt_catalog(
@@ -449,81 +195,27 @@ def merged_prompt_catalog(
     default_dir: Path,
     custom_dir: Path,
 ) -> Dict[str, str]:
-    config = load_gpt_config()
-    ensure_prompt_dirs()
-
-    # 1) Default templates: prefer files, fallback to built-ins.
-    default_from_files = load_prompt_dir(default_dir)
-    merged = dict(default_from_files) if default_from_files else dict(default_prompts)
-
-    # 2) Custom templates from files.
-    custom_from_files = load_prompt_dir(custom_dir)
-    for key, value in custom_from_files.items():
-        if key and value.strip():
-            merged[key] = value.strip()
-
-    # 3) Backward compatibility: old inline templates in gpt_config.json.
-    custom = config.get("custom_prompts", {}) if isinstance(config.get("custom_prompts"), dict) else {}
-    for key, value in custom.items():
-        if key and isinstance(value, str) and value.strip():
-            clean_key = sanitize_prompt_name(str(key))
-            merged[clean_key] = value.strip()
-            # Best-effort migration to prompts/custom directory.
-            write_prompt_file(TASK_CUSTOM_PROMPTS_DIR, clean_key, value.strip())
-
-    # Clean legacy in-config templates after migration.
-    if custom:
-        config["custom_prompts"] = {}
-        save_gpt_config(config)
-    return merged
+    return prompt_service.merged_prompt_catalog(default_prompts, default_dir, custom_dir)
 
 
 def merged_task_prompt_catalog() -> Dict[str, str]:
-    return merged_prompt_catalog(DEFAULT_TASK_PROMPTS, TASK_DEFAULT_PROMPTS_DIR, TASK_CUSTOM_PROMPTS_DIR)
+    return prompt_service.merged_task_prompt_catalog()
 
 
 def merged_system_prompt_catalog() -> Dict[str, str]:
-    return merged_prompt_catalog(DEFAULT_SYSTEM_PROMPTS, SYSTEM_DEFAULT_PROMPTS_DIR, SYSTEM_CUSTOM_PROMPTS_DIR)
+    return prompt_service.merged_system_prompt_catalog()
 
 
 def prompt_catalog_by_kind(kind: str) -> Dict[str, str]:
-    return merged_system_prompt_catalog() if kind == "system" else merged_task_prompt_catalog()
+    return prompt_service.prompt_catalog_by_kind(kind)
 
 
 def parse_openai_response_text(payload: Dict) -> str:
-    if isinstance(payload.get("output_text"), str) and payload.get("output_text", "").strip():
-        return payload["output_text"].strip()
-
-    outputs = payload.get("output", [])
-    if isinstance(outputs, list):
-        texts: List[str] = []
-        for item in outputs:
-            if not isinstance(item, dict):
-                continue
-            content = item.get("content", [])
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if isinstance(block, dict):
-                    t = block.get("text")
-                    if isinstance(t, str) and t.strip():
-                        texts.append(t.strip())
-        if texts:
-            return "\n\n".join(texts)
-    return ""
+    return llm_service.parse_openai_response_text(payload)
 
 
 def build_openai_ssl_context() -> ssl.SSLContext:
-    no_verify = os.environ.get("OPENAI_SSL_NO_VERIFY", "").strip() in {"1", "true", "yes", "on"}
-    ssl_ctx = ssl.create_default_context()
-    if no_verify:
-        return ssl._create_unverified_context()  # nosec B323
-    try:
-        import certifi  # type: ignore
-
-        return ssl.create_default_context(cafile=certifi.where())
-    except Exception:
-        return ssl_ctx
+    return llm_service.build_openai_ssl_context()
 
 
 def call_openai_analysis(
@@ -533,88 +225,11 @@ def call_openai_analysis(
     report_text: str,
     model: str = DEFAULT_GPT_MODEL,
 ) -> tuple:
-    body = {
-        "model": model,
-        "input": [
-            {
-                "role": "system",
-                "content": [{"type": "input_text", "text": system_prompt or "你是资深网络运维专家，输出要结构化、可落地。"}],
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": f"任务要求：\n{task_prompt}\n\n巡检数据：\n{report_text}",
-                    }
-                ],
-            },
-        ],
-    }
-    req = urlrequest.Request(
-        "https://api.openai.com/v1/responses",
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
-    ssl_ctx = build_openai_ssl_context()
-
-    try:
-        with urlrequest.urlopen(req, timeout=120, context=ssl_ctx) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-    except ssl.SSLCertVerificationError as exc:
-        raise RuntimeError(
-            "SSL certificate verify failed. "
-            "请先执行: pip3 install certifi；"
-            "macOS 可再执行: /Applications/Python\\ 3.9/Install\\ Certificates.command"
-        ) from exc
-    except urlerror.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"OpenAI API HTTP {exc.code}: {detail[:400]}") from exc
-    except Exception as exc:
-        raise RuntimeError(f"OpenAI API request failed: {exc}") from exc
-
-    try:
-        payload = json.loads(raw)
-    except Exception as exc:
-        raise RuntimeError(f"OpenAI API response parse failed: {exc}") from exc
-
-    text = parse_openai_response_text(payload)
-    if not text:
-        raise RuntimeError("OpenAI API returned empty analysis text")
-    return text, extract_token_usage(payload)
+    return llm_service.call_openai_analysis(api_key, system_prompt, task_prompt, report_text, model)
 
 
 def test_openai_connection(api_key: str) -> str:
-    req = urlrequest.Request(
-        "https://api.openai.com/v1/models",
-        headers={"Authorization": f"Bearer {api_key}"},
-        method="GET",
-    )
-    ssl_ctx = build_openai_ssl_context()
-    try:
-        with urlrequest.urlopen(req, timeout=30, context=ssl_ctx) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-    except ssl.SSLCertVerificationError as exc:
-        raise RuntimeError(
-            "SSL certificate verify failed. "
-            "请先执行: pip3 install certifi；"
-            "macOS 可再执行: /Applications/Python\\ 3.9/Install\\ Certificates.command"
-        ) from exc
-    except urlerror.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"OpenAI API HTTP {exc.code}: {detail[:300]}") from exc
-    except Exception as exc:
-        raise RuntimeError(f"OpenAI API request failed: {exc}") from exc
-    try:
-        payload = json.loads(raw)
-        count = len(payload.get("data", [])) if isinstance(payload.get("data", []), list) else 0
-        return f"OpenAI 连接成功，models={count}"
-    except Exception:
-        return "OpenAI 连接成功"
+    return llm_service.test_openai_connection(api_key)
 
 
 def call_deepseek_analysis(
@@ -624,58 +239,11 @@ def call_deepseek_analysis(
     report_text: str,
     model: str = DEFAULT_DEEPSEEK_MODEL,
 ) -> tuple:
-    body = {
-        "model": model,
-        "temperature": 0.2,
-        "messages": [
-            {"role": "system", "content": system_prompt or "你是资深网络运维专家，输出要结构化、可落地。"},
-            {"role": "user", "content": f"任务要求：\n{task_prompt}\n\n巡检数据：\n{report_text}"},
-        ],
-    }
-    req = urlrequest.Request(
-        "https://api.deepseek.com/v1/chat/completions",
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
-    try:
-        with urlrequest.urlopen(req, timeout=120, context=build_openai_ssl_context()) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-    except Exception as exc:
-        raise RuntimeError(f"DeepSeek API request failed: {exc}") from exc
-    try:
-        payload = json.loads(raw)
-        choices = payload.get("choices", [])
-        if isinstance(choices, list) and choices:
-            msg = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
-            content = msg.get("content", "") if isinstance(msg, dict) else ""
-            if isinstance(content, str) and content.strip():
-                return content.strip(), extract_token_usage(payload)
-    except Exception:
-        pass
-    raise RuntimeError("DeepSeek API returned empty analysis text")
+    return llm_service.call_deepseek_analysis(api_key, system_prompt, task_prompt, report_text, model)
 
 
 def test_deepseek_connection(api_key: str) -> str:
-    req = urlrequest.Request(
-        "https://api.deepseek.com/v1/models",
-        headers={"Authorization": f"Bearer {api_key}"},
-        method="GET",
-    )
-    try:
-        with urlrequest.urlopen(req, timeout=30, context=build_openai_ssl_context()) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-    except Exception as exc:
-        raise RuntimeError(f"DeepSeek API request failed: {exc}") from exc
-    try:
-        payload = json.loads(raw)
-        count = len(payload.get("data", [])) if isinstance(payload.get("data", []), list) else 0
-        return f"DeepSeek 连接成功，models={count}"
-    except Exception:
-        return "DeepSeek 连接成功"
+    return llm_service.test_deepseek_connection(api_key)
 
 
 def call_local_lmstudio_analysis(
@@ -685,69 +253,11 @@ def call_local_lmstudio_analysis(
     task_prompt: str,
     report_text: str,
 ) -> tuple:
-    base = (base_url or "").strip().rstrip("/")
-    if not base:
-        raise RuntimeError("LM Studio base_url is empty")
-    if not model.strip():
-        raise RuntimeError("LM Studio model is empty")
-
-    body = {
-        "model": model.strip(),
-        "temperature": 0.2,
-        "messages": [
-            {"role": "system", "content": system_prompt or "你是资深网络运维专家，输出要结构化、可落地。"},
-            {"role": "user", "content": f"任务要求：\n{task_prompt}\n\n巡检数据：\n{report_text}"},
-        ],
-    }
-    req = urlrequest.Request(
-        f"{base}/v1/chat/completions",
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urlrequest.urlopen(req, timeout=180) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-    except urlerror.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"LM Studio API HTTP {exc.code}: {detail[:400]}") from exc
-    except Exception as exc:
-        raise RuntimeError(f"LM Studio API request failed: {exc}") from exc
-
-    try:
-        payload = json.loads(raw)
-    except Exception as exc:
-        raise RuntimeError(f"LM Studio response parse failed: {exc}") from exc
-
-    choices = payload.get("choices", [])
-    if isinstance(choices, list) and choices:
-        msg = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
-        content = msg.get("content", "") if isinstance(msg, dict) else ""
-        if isinstance(content, str) and content.strip():
-            return content.strip(), extract_token_usage(payload)
-    raise RuntimeError("LM Studio returned empty analysis text")
+    return llm_service.call_local_lmstudio_analysis(base_url, model, system_prompt, task_prompt, report_text)
 
 
 def test_local_lmstudio_connection(base_url: str) -> str:
-    base = (base_url or "").strip().rstrip("/")
-    if not base:
-        raise RuntimeError("LM Studio base_url is empty")
-    req = urlrequest.Request(f"{base}/v1/models", method="GET")
-    try:
-        with urlrequest.urlopen(req, timeout=20) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-    except urlerror.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"LM Studio API HTTP {exc.code}: {detail[:300]}") from exc
-    except Exception as exc:
-        raise RuntimeError(f"LM Studio API request failed: {exc}") from exc
-    try:
-        payload = json.loads(raw)
-        data = payload.get("data", [])
-        count = len(data) if isinstance(data, list) else 0
-        return f"LM Studio 连接成功，models={count}"
-    except Exception:
-        return "LM Studio 连接成功"
+    return llm_service.test_local_lmstudio_connection(base_url)
 
 
 def decode_best_effort_text(raw: bytes) -> str:
