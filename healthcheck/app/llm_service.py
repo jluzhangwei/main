@@ -5,6 +5,7 @@ import json
 import os
 import re
 import ssl
+import time
 from typing import Dict
 from urllib import error as urlerror
 from urllib import request as urlrequest
@@ -13,6 +14,10 @@ DEFAULT_GPT_MODEL = "gpt-4.1-mini"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
 DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
 DEFAULT_NVIDIA_MODEL = "meta/llama-3.1-70b-instruct"
+MODEL_DISCOVERY_TTL_SEC = 600
+MODEL_CANDIDATE_LIMIT = 6
+_MODEL_LIST_CACHE = {}
+DEFAULT_SYSTEM_PROMPT = "You are a senior network operations assistant. Be rigorous, evidence-based, and actionable."
 
 
 def extract_token_usage(payload: Dict) -> Dict[str, int]:
@@ -85,6 +90,10 @@ def _extract_chat_choice_text(payload: Dict) -> str:
         if isinstance(content, str) and content.strip():
             return content.strip()
     return ""
+
+
+def _compose_user_text(task_prompt: str, report_text: str) -> str:
+    return f"Task Requirements:\n{task_prompt}\n\nInspection Data:\n{report_text}"
 
 
 def _list_openai_models(api_key: str) -> list:
@@ -187,16 +196,45 @@ def _build_model_candidates(requested_model: str, available_models: list, defaul
                 add(m)
     if available:
         add(available[0])
-    return out or ([req] if req else ([default_model] if default_model else []))
+    candidates = out or ([req] if req else ([default_model] if default_model else []))
+    return candidates[:MODEL_CANDIDATE_LIMIT]
+
+
+def _cache_key(provider: str, api_key: str) -> str:
+    key_tail = str(api_key or "")[-8:]
+    return f"{provider}:{key_tail}"
+
+
+def _is_model_discovery_enabled() -> bool:
+    flag = os.environ.get("HC_LLM_DISABLE_MODEL_DISCOVERY", "").strip().lower()
+    return flag not in {"1", "true", "yes", "on"}
+
+
+def _get_cached_model_list(provider: str, api_key: str, fetcher):
+    now = time.time()
+    k = _cache_key(provider, api_key)
+    item = _MODEL_LIST_CACHE.get(k)
+    if isinstance(item, dict):
+        ts = float(item.get("ts", 0) or 0)
+        if now - ts < MODEL_DISCOVERY_TTL_SEC:
+            data = item.get("data", [])
+            return data if isinstance(data, list) else []
+    data = fetcher()
+    if not isinstance(data, list):
+        data = []
+    _MODEL_LIST_CACHE[k] = {"ts": now, "data": data}
+    return data
 
 
 def call_openai_analysis(api_key: str, system_prompt: str, task_prompt: str, report_text: str, model: str = DEFAULT_GPT_MODEL) -> tuple:
-    system_text = system_prompt or "你是资深网络运维专家，输出要结构化、可落地。"
-    user_text = f"任务要求：\n{task_prompt}\n\n巡检数据：\n{report_text}"
-    try:
-        available_models = _list_openai_models(api_key)
-    except Exception:
-        available_models = []
+    system_text = system_prompt or DEFAULT_SYSTEM_PROMPT
+    user_text = _compose_user_text(task_prompt, report_text)
+    available_models = []
+    if _is_model_discovery_enabled():
+        try:
+            available_models = _get_cached_model_list("openai", api_key, lambda: _list_openai_models(api_key))
+        except Exception:
+            available_models = []
     model_candidates = _build_model_candidates(model, available_models, DEFAULT_GPT_MODEL)
     endpoints = [
         ("responses", "https://api.openai.com/v1/responses"),
@@ -296,12 +334,14 @@ def test_openai_connection(api_key: str) -> str:
 
 
 def call_deepseek_analysis(api_key: str, system_prompt: str, task_prompt: str, report_text: str, model: str = DEFAULT_DEEPSEEK_MODEL) -> tuple:
-    system_text = system_prompt or "你是资深网络运维专家，输出要结构化、可落地。"
-    user_text = f"任务要求：\n{task_prompt}\n\n巡检数据：\n{report_text}"
-    try:
-        available_models = _list_deepseek_models(api_key)
-    except Exception:
-        available_models = []
+    system_text = system_prompt or DEFAULT_SYSTEM_PROMPT
+    user_text = _compose_user_text(task_prompt, report_text)
+    available_models = []
+    if _is_model_discovery_enabled():
+        try:
+            available_models = _get_cached_model_list("deepseek", api_key, lambda: _list_deepseek_models(api_key))
+        except Exception:
+            available_models = []
     model_candidates = _build_model_candidates(model, available_models, DEFAULT_DEEPSEEK_MODEL)
     endpoints = [
         "https://api.deepseek.com/v1/chat/completions",
@@ -398,12 +438,14 @@ def _extract_gemini_usage(payload: Dict) -> Dict[str, int]:
 
 
 def call_gemini_analysis(api_key: str, system_prompt: str, task_prompt: str, report_text: str, model: str = DEFAULT_GEMINI_MODEL) -> tuple:
-    user_text = f"任务要求：\n{task_prompt}\n\n巡检数据：\n{report_text}"
-    system_text = system_prompt or "你是资深网络运维专家，输出要结构化、可落地。"
-    try:
-        available_models = _list_gemini_models(api_key)
-    except Exception:
-        available_models = []
+    user_text = _compose_user_text(task_prompt, report_text)
+    system_text = system_prompt or DEFAULT_SYSTEM_PROMPT
+    available_models = []
+    if _is_model_discovery_enabled():
+        try:
+            available_models = _get_cached_model_list("gemini", api_key, lambda: _list_gemini_models(api_key))
+        except Exception:
+            available_models = []
     requested = model.split("/", 1)[1] if str(model).startswith("models/") else str(model or "")
     model_candidates = _build_model_candidates(requested, available_models, DEFAULT_GEMINI_MODEL)
     api_versions = ["v1beta", "v1"]
@@ -490,8 +532,8 @@ def test_gemini_connection(api_key: str) -> str:
 
 def call_nvidia_analysis(api_key: str, system_prompt: str, task_prompt: str, report_text: str, model: str = DEFAULT_NVIDIA_MODEL) -> tuple:
     resolved_model = (model or DEFAULT_NVIDIA_MODEL).strip()
-    system_text = system_prompt or "你是资深网络运维专家，输出要结构化、可落地。"
-    user_text = f"任务要求：\n{task_prompt}\n\n巡检数据：\n{report_text}"
+    system_text = system_prompt or DEFAULT_SYSTEM_PROMPT
+    user_text = _compose_user_text(task_prompt, report_text)
     endpoints = [
         (
             "https://integrate.api.nvidia.com/v1/chat/completions",
@@ -506,7 +548,12 @@ def call_nvidia_analysis(api_key: str, system_prompt: str, task_prompt: str, rep
             "chat",
         ),
     ]
-    available_models = _list_nvidia_models(api_key)
+    available_models = []
+    if _is_model_discovery_enabled():
+        try:
+            available_models = _get_cached_model_list("nvidia", api_key, lambda: _list_nvidia_models(api_key))
+        except Exception:
+            available_models = []
     model_candidates = _build_model_candidates(resolved_model, available_models, DEFAULT_NVIDIA_MODEL)
 
     last_http_error = ""
@@ -628,8 +675,8 @@ def call_local_lmstudio_analysis(base_url: str, model: str, system_prompt: str, 
         "model": model.strip(),
         "temperature": 0.2,
         "messages": [
-            {"role": "system", "content": system_prompt or "你是资深网络运维专家，输出要结构化、可落地。"},
-            {"role": "user", "content": f"任务要求：\n{task_prompt}\n\n巡检数据：\n{report_text}"},
+            {"role": "system", "content": system_prompt or DEFAULT_SYSTEM_PROMPT},
+            {"role": "user", "content": _compose_user_text(task_prompt, report_text)},
         ],
     }
     req = urlrequest.Request(

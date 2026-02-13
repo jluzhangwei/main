@@ -7,6 +7,7 @@ import csv
 import json
 import os
 import re
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -222,6 +223,20 @@ def _split_inline_items(raw: str) -> List[str]:
 
 def _deduplicate(items: List[str]) -> List[str]:
     return list(dict.fromkeys(items))
+
+
+def read_password(prompt: str = "SSH password: ") -> str:
+    """
+    Support both interactive terminal and piped stdin.
+    On Windows subprocess with piped stdin, getpass may block;
+    fallback to plain input when stdin is non-tty.
+    """
+    try:
+        if sys.stdin is not None and sys.stdin.isatty():
+            return getpass.getpass(prompt)
+    except Exception:
+        pass
+    return input(prompt)
 
 
 def parse_input_items(input_str: str, item_name: str) -> List[str]:
@@ -656,7 +671,7 @@ def main():
     print("=" * 50)
 
     username = input("SSH username: ").strip()
-    password = getpass.getpass("SSH password: ").strip()
+    password = read_password("SSH password: ").strip()
 
     if not username or not password:
         print("Username and password cannot be empty.")

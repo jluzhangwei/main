@@ -24,7 +24,7 @@ except ImportError:
     class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
         daemon_threads = True
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from urllib import error as urlerror
 from urllib import request as urlrequest
 from urllib.parse import parse_qs, quote, unquote, urlparse
@@ -105,7 +105,7 @@ JOBS: Dict[str, Dict] = {}
 JOBS_LOCK = threading.Lock()
 SESSIONS: Dict[str, Dict[str, str]] = {}
 SESSIONS_LOCK = threading.Lock()
-DOC_VERSION = "V1.15"
+DOC_VERSION = "V2.0"
 DOC_VERSION_RULE = "大改动升主版本（如 V2.0），小更新升次版本（如 V1.14 -> V1.15）"
 SUPPORTED_LANGS = {"zh", "en"}
 PROMPT_NAME_EN = {
@@ -235,6 +235,9 @@ def localize_html_page(page_html: str, lang: str) -> str:
         ("Analyze Historical Report模式", "History Report Analysis Mode"),
         ("任务 ID", "Task ID"),
         ("返回首页", "Back to Home"),
+        ("AI 报告：待生成", "AI Report: Pending"),
+        ("AI 报告：分析中", "AI Report: In Progress"),
+        ("AI 报告：报告完成", "AI Report: Completed"),
         ("请在页面底部上传历史报告文件并点击 AI 分析。", "Upload a historical report at the bottom, then click AI Analysis."),
         ("下载本次 JSON 报告", "Download JSON Report"),
         ("下载本次 CSV 报告", "Download CSV Report"),
@@ -563,7 +566,7 @@ def check_template_file_name(name: str) -> str:
     return prompt_file_name(name)
 
 
-def parse_check_template_text(raw: str) -> tuple[List[str], List[str]]:
+def parse_check_template_text(raw: str) -> Tuple[List[str], List[str]]:
     text = str(raw or "")
     lines = text.splitlines()
     mode = "checks"
@@ -1959,9 +1962,11 @@ def build_job_html(
     state_class = "ok" if history_mode else "running"
     state_text = "历史报告模式" if history_mode else "执行中..."
     job_meta = (
-        f'任务 ID: <code>{html.escape(job_id)}</code> | <a href="{with_lang("/", lang)}">返回首页</a>'
+        f'任务 ID: <code>{html.escape(job_id)}</code> | <a href="{with_lang("/", lang)}">返回首页</a> | '
+        f'<span id="ai_report_status" class="meta-tag">AI 报告：待生成</span>'
         if not history_mode
-        else f'历史报告分析模式 | <a href="{with_lang("/", lang)}">返回首页</a>'
+        else f'历史报告分析模式 | <a href="{with_lang("/", lang)}">返回首页</a> | '
+        f'<span id="ai_report_status" class="meta-tag">AI 报告：待生成</span>'
     )
     output_init_text = "请在页面底部上传历史报告文件并点击 AI 分析。" if history_mode else "正在启动任务，请稍候..."
     modify_disabled = "" if can_modify else "disabled"
@@ -2065,6 +2070,16 @@ def build_job_html(
       background: #f8fafc;
     }}
     .report-links a:hover {{ background: #eef2f7; }}
+    .meta-tag {{
+      display: inline-block;
+      border: 1px solid #d7dee7;
+      border-radius: 999px;
+      padding: 2px 10px;
+      background: #f8fafc;
+      color: #334155;
+      font-size: 12px;
+      font-weight: 700;
+    }}
     .gpt-card {{
       margin-top: 12px;
       border: 1px solid #d6dce3;
@@ -2507,6 +2522,7 @@ def build_job_html(
     const customPromptEl = document.getElementById("custom_prompt");
     const gptStatusEl = document.getElementById("gpt_status");
     const gptResultEl = document.getElementById("gpt_result");
+    const aiReportStatusEl = document.getElementById("ai_report_status");
     let latestJobData = null;
     const promptEditorModalEl = document.getElementById("prompt_editor_modal");
     const promptEditorTitleEl = document.getElementById("prompt_editor_title");
@@ -2556,6 +2572,10 @@ def build_job_html(
 
     function setGptStatus(msg) {{
       if (gptStatusEl) gptStatusEl.textContent = msg || "";
+    }}
+
+    function setAiReportStatus(msg) {{
+      if (aiReportStatusEl) aiReportStatusEl.textContent = msg || "AI 报告：待生成";
     }}
 
     function displayPromptName(name) {{
@@ -3062,6 +3082,7 @@ def build_job_html(
       const systemPromptExtra = (systemPromptExtraEl.value || "").trim();
       const customPrompt = (customPromptEl.value || "").trim();
       gptResultEl.textContent = "分析中...";
+      setAiReportStatus("AI 报告：分析中");
       try {{
         let data = null;
         if (file) {{
@@ -3107,9 +3128,11 @@ def build_job_html(
         if (!data.ok) {{
           gptResultEl.textContent = "分析失败: " + (data.error || "unknown");
           setGptStatus("分析失败。");
+          setAiReportStatus("AI 报告：待生成");
           return;
         }}
         gptResultEl.textContent = data.analysis || "(empty)";
+        setAiReportStatus("AI 报告：报告完成");
         const thisTokens = (data.token_usage && Number(data.token_usage.total_tokens)) ? Number(data.token_usage.total_tokens) : 0;
         const totalTokens = Number(data.token_total || 0);
         const tokenInfo = " | 本次Token: " + thisTokens + " | 累计Token: " + totalTokens;
@@ -3127,6 +3150,7 @@ def build_job_html(
       }} catch (e) {{
         gptResultEl.textContent = "分析失败: " + e;
         setGptStatus("分析失败。");
+        setAiReportStatus("AI 报告：待生成");
       }}
     }});
 
@@ -3976,17 +4000,21 @@ def start_job(
                 ]
             ) + "\n"
 
-            proc = subprocess.Popen(
-                [sys.executable, str(SCRIPT_PATH)],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                cwd=str(PROJECT_ROOT),
-                bufsize=1,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
-                preexec_fn=os.setsid,
-            )
+            popen_kwargs = {
+                "stdin": subprocess.PIPE,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "text": True,
+                "cwd": str(PROJECT_ROOT),
+                "bufsize": 1,
+                "env": {**os.environ, "PYTHONUNBUFFERED": "1"},
+            }
+            if os.name == "nt":
+                popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            else:
+                popen_kwargs["preexec_fn"] = os.setsid
+
+            proc = subprocess.Popen([sys.executable, str(SCRIPT_PATH)], **popen_kwargs)
             assert proc.stdin is not None
             assert proc.stdout is not None
             proc.stdin.write(stdin_text)
@@ -4686,7 +4714,7 @@ class Handler(BaseHTTPRequestHandler):
         base_task_prompt = task_prompts.get(task_prompt_key, "") if task_prompt_key else ""
 
         if base_system_prompt and system_prompt_extra:
-            system_prompt_text = f"{base_system_prompt}\n\n【系统补充约束】\n{system_prompt_extra}"
+            system_prompt_text = f"{base_system_prompt}\n\n[Extra System Constraints]\n{system_prompt_extra}"
             system_prompt_source = f"system_template+extra:{system_prompt_key or '网络工程师-严格模式'}"
         elif base_system_prompt:
             system_prompt_text = base_system_prompt
@@ -4699,7 +4727,7 @@ class Handler(BaseHTTPRequestHandler):
             system_prompt_source = "system_default:网络工程师-严格模式"
 
         if base_task_prompt and task_prompt_extra:
-            task_prompt_text = f"{base_task_prompt}\n\n【任务补充要求】\n{task_prompt_extra}"
+            task_prompt_text = f"{base_task_prompt}\n\n[Extra Task Requirements]\n{task_prompt_extra}"
             task_prompt_source = f"task_template+extra:{task_prompt_key}"
         elif base_task_prompt:
             task_prompt_text = base_task_prompt
