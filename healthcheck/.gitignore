@@ -4,6 +4,7 @@ __pycache__/
 
 runtime/tmp/
 state/gpt_config.json
+state/token_stats.json
 gpt_config.json
 output/reports/
 prompts/custom/

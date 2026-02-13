@@ -2266,7 +2266,7 @@ def build_guide_html() -> str:
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>HealthCheck 使用说明</title>
+  <title>HealthCheck 设计逻辑说明</title>
   <style>
     :root {
       --bg: #f1f5f9;
@@ -2366,8 +2366,8 @@ def build_guide_html() -> str:
 <body>
   <div class="wrap">
     <div class="head">
-      <h1>HealthCheck 说明文档</h1>
-      <a class="back" href="/">返回首页</a>
+      <h1>HealthCheck 设计逻辑说明</h1>
+      <a class="back" href="/guide">返回文档首页</a>
     </div>
     <div class="layout">
       <aside class="card toc">
@@ -2462,6 +2462,169 @@ prompts/
             <li>生产环境建议固定系统提示词模板，减少输出漂移。</li>
           </ul>
           <div class="note">如需扩展企业级文档，可增加“版本记录”“变更审计”“故障案例库”章节并持续维护。</div>
+        </section>
+      </main>
+    </div>
+  </div>
+</body>
+</html>"""
+
+
+def build_guide_index_html() -> str:
+    return """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HealthCheck 文档中心</title>
+  <style>
+    :root {
+      --bg: #f1f5f9;
+      --card: #ffffff;
+      --line: #d5dde7;
+      --text: #0f172a;
+      --muted: #475569;
+      --brand: #0b6e4f;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.6 "Helvetica Neue", "PingFang SC", sans-serif; }
+    .wrap { max-width: 980px; margin: 24px auto; padding: 0 16px; }
+    .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .head h1 { margin: 0; font-size: 24px; }
+    .back { text-decoration: none; color: #fff; background: var(--brand); border-radius: 8px; padding: 8px 12px; font-weight: 700; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+    .card h2 { margin: 0 0 8px; font-size: 18px; }
+    .card p { margin: 0 0 10px; color: var(--muted); }
+    .go { display: inline-block; text-decoration: none; color: #fff; background: var(--brand); border-radius: 8px; padding: 8px 12px; font-weight: 700; }
+    @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="head">
+      <h1>HealthCheck 文档中心</h1>
+      <a class="back" href="/">返回首页</a>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <h2>程序设计逻辑文档</h2>
+        <p>面向开发与维护人员，说明业务设计思路、程序逻辑、目录层次、关键设计点。</p>
+        <a class="go" href="/guide/design">进入设计文档</a>
+      </div>
+      <div class="card">
+        <h2>用户使用说明文档</h2>
+        <p>面向操作人员，说明从首页配置、任务执行、报告下载到 AI 分析的完整使用流程。</p>
+        <a class="go" href="/guide/user">进入使用文档</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>"""
+
+
+def build_user_guide_html() -> str:
+    return """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HealthCheck 用户使用说明</title>
+  <style>
+    :root {
+      --bg: #f1f5f9;
+      --card: #ffffff;
+      --line: #d5dde7;
+      --text: #0f172a;
+      --muted: #475569;
+      --brand: #0b6e4f;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.6 "Helvetica Neue", "PingFang SC", sans-serif; }
+    .wrap { max-width: 1240px; margin: 18px auto; padding: 0 14px; }
+    .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .head h1 { margin: 0; font-size: 22px; }
+    .back { text-decoration: none; color: #fff; background: var(--brand); border-radius: 8px; padding: 8px 12px; font-weight: 700; }
+    .layout { display: grid; grid-template-columns: 270px 1fr; gap: 12px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+    .toc { position: sticky; top: 12px; max-height: calc(100vh - 26px); overflow: auto; }
+    .toc h2 { margin: 0 0 8px; font-size: 16px; }
+    .toc a { display: block; padding: 6px 8px; border-radius: 6px; color: #0f172a; text-decoration: none; font-weight: 600; margin-bottom: 4px; }
+    .toc a:hover { background: #f1f5f9; }
+    .content h2 { margin: 16px 0 8px; border-left: 4px solid var(--brand); padding-left: 8px; font-size: 18px; }
+    .content p { margin: 6px 0; color: var(--muted); }
+    .content ul { margin: 6px 0 10px 18px; color: var(--muted); }
+    .code { border: 1px solid var(--line); border-radius: 8px; background: #f8fafc; padding: 10px; font-family: Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; color: #0f172a; }
+    @media (max-width: 920px) { .layout { grid-template-columns: 1fr; } .toc { position: static; max-height: none; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="head">
+      <h1>HealthCheck 用户使用说明</h1>
+      <a class="back" href="/guide">返回文档首页</a>
+    </div>
+    <div class="layout">
+      <aside class="card toc">
+        <h2>目录大纲</h2>
+        <a href="#u1">1. 启动与访问</a>
+        <a href="#u2">2. 首页巡检配置</a>
+        <a href="#u3">3. 任务状态页</a>
+        <a href="#u4">4. AI 分析流程</a>
+        <a href="#u5">5. 提示词管理</a>
+        <a href="#u6">6. 常见问题</a>
+      </aside>
+      <main class="card content">
+        <section id="u1">
+          <h2>1. 启动与访问</h2>
+          <p>在项目目录运行 `python3 web_runner.py`，默认访问 `http://127.0.0.1:8080`。</p>
+          <div class="code">cd healthcheck
+python3 web_runner.py</div>
+        </section>
+        <section id="u2">
+          <h2>2. 首页巡检配置</h2>
+          <ul>
+            <li>输入 SSH 用户名/密码。</li>
+            <li>填写设备地址（每行一个），或导入设备文件。</li>
+            <li>勾选检查项，可同时填写自定义命令（按行执行）。</li>
+            <li>设置执行模式、并发 workers、重试次数、debug。</li>
+            <li>点击“执行 Python 巡检脚本”。</li>
+          </ul>
+          <p>提示：首页支持本地记忆；可通过“清空已保存配置”重置。</p>
+        </section>
+        <section id="u3">
+          <h2>3. 任务状态页</h2>
+          <ul>
+            <li>显示实时日志与任务状态（执行中/完成/失败）。</li>
+            <li>任务成功后显示本次 JSON/CSV 报告下载。</li>
+            <li>支持返回首页继续下一次巡检。</li>
+          </ul>
+        </section>
+        <section id="u4">
+          <h2>4. AI 分析流程</h2>
+          <ul>
+            <li>点击“AI 分析”后：若导入了历史报告，优先分析历史报告。</li>
+            <li>未导入历史报告时，分析本次任务结果。</li>
+            <li>若无历史报告且本次任务无可用报告，会提示先运行巡检或导入报告。</li>
+            <li>分析完成后会显示本次 token 与累计 token。</li>
+          </ul>
+        </section>
+        <section id="u5">
+          <h2>5. 提示词管理</h2>
+          <ul>
+            <li>系统提示词：用于严格约束 AI 输出规范。</li>
+            <li>任务提示词：用于定义本次分析重点。</li>
+            <li>支持导入到“系统提示词/任务提示词”。</li>
+            <li>支持 Review 后编辑、保存、删除（删除/保存均有确认）。</li>
+          </ul>
+        </section>
+        <section id="u6">
+          <h2>6. 常见问题</h2>
+          <ul>
+            <li>页面转圈不更新：可开启 debug 模式查看完整日志。</li>
+            <li>连接测试失败：检查模型服务地址、API Key、网络连通性。</li>
+            <li>图标不显示：系统会自动回退到内置图标，不影响分析功能。</li>
+          </ul>
         </section>
       </main>
     </div>
@@ -2619,7 +2782,13 @@ class Handler(BaseHTTPRequestHandler):
             self._respond_html(build_html(default_form_values(), DEFAULT_CHECKS[:3], "", ""))
             return
         if parsed.path == "/guide":
+            self._respond_html(build_guide_index_html())
+            return
+        if parsed.path == "/guide/design":
             self._respond_html(build_guide_html())
+            return
+        if parsed.path == "/guide/user":
+            self._respond_html(build_user_guide_html())
             return
         if parsed.path == "/job":
             query = parse_qs(parsed.query)
