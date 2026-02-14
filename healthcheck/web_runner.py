@@ -3,7 +3,7 @@
 
 import os
 
-from app.web_runner import run_server
+from app.web_server import run_server
 
 
 if __name__ == "__main__":

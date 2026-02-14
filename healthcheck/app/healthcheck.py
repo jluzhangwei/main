@@ -6,7 +6,11 @@ import ipaddress
 import csv
 import json
 import os
+import pty
 import re
+import select
+import signal
+import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -66,6 +70,13 @@ class HuaweiSwitchManager:
         connect_timeout: int = 10,
         command_timeout: int = 30,
         command_interval: float = 0.0,
+        jump_enabled: bool = False,
+        jump_mode: str = "ssh",
+        jump_host: str = "",
+        jump_port: int = 22,
+        jump_username: str = "",
+        jump_password: str = "",
+        smc_command: str = "smc server toc {jump_host}",
     ):
         self.username = username
         self.password = password
@@ -73,14 +84,54 @@ class HuaweiSwitchManager:
         self.connect_timeout = connect_timeout
         self.command_timeout = command_timeout
         self.command_interval = command_interval
+        self.jump_enabled = bool(jump_enabled and jump_host and jump_username)
+        self.jump_mode = jump_mode if jump_mode in {"ssh", "smc"} else "ssh"
+        self.jump_host = jump_host
+        self.jump_port = int(jump_port or 22)
+        self.jump_username = jump_username
+        self.jump_password = jump_password
+        self.smc_command = smc_command or "smc server toc {jump_host}"
+        if self.jump_mode == "smc":
+            self.jump_enabled = bool(jump_enabled and jump_host)
         self.client = None
+        self.jump_client = None
+        self.jump_channel = None
+        self.proxy_sock = None
         self.shell = None
+        self.smc_proc = None
+        self.smc_master_fd = None
+        self.smc_mode_active = False
 
     def connect(self, hostname: str) -> bool:
         """Connect to a device."""
         self.disconnect()
 
         try:
+            sock = None
+            if self.jump_enabled and self.jump_mode == "ssh":
+                self.jump_client = paramiko.SSHClient()
+                self.jump_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                self.jump_client.connect(
+                    hostname=self.jump_host,
+                    username=self.jump_username,
+                    password=self.jump_password,
+                    port=self.jump_port,
+                    timeout=self.connect_timeout,
+                    look_for_keys=False,
+                    allow_agent=False,
+                )
+                transport = self.jump_client.get_transport()
+                if not transport:
+                    raise RuntimeError("jump host transport is unavailable")
+                self.jump_channel = transport.open_channel(
+                    "direct-tcpip",
+                    (hostname, self.port),
+                    ("127.0.0.1", 0),
+                )
+                sock = self.jump_channel
+            elif self.jump_enabled and self.jump_mode == "smc":
+                return self._connect_via_smc_shell(hostname)
+
             self.client = paramiko.SSHClient()
             self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             self.client.connect(
@@ -91,6 +142,7 @@ class HuaweiSwitchManager:
                 timeout=self.connect_timeout,
                 look_for_keys=False,
                 allow_agent=False,
+                sock=sock,
             )
 
             self.shell = self.client.invoke_shell(width=240, height=4000)
@@ -119,6 +171,8 @@ class HuaweiSwitchManager:
 
     def execute_command(self, command: str) -> CommandResult:
         """Run a command on the device."""
+        if self.smc_mode_active:
+            return self._execute_command_via_smc(command)
         if not self.shell:
             return CommandResult(command=command, output="", error="device is not connected", exit_status=1)
 
@@ -148,12 +202,233 @@ class HuaweiSwitchManager:
 
     def disconnect(self):
         """Disconnect from the device."""
+        self.smc_mode_active = False
         if self.shell:
             self.shell.close()
             self.shell = None
         if self.client:
             self.client.close()
             self.client = None
+        if self.jump_channel:
+            self.jump_channel.close()
+            self.jump_channel = None
+        if self.jump_client:
+            self.jump_client.close()
+            self.jump_client = None
+        if self.proxy_sock:
+            self.proxy_sock.close()
+            self.proxy_sock = None
+        if self.smc_master_fd is not None:
+            try:
+                os.close(self.smc_master_fd)
+            except Exception:
+                pass
+            self.smc_master_fd = None
+        if self.smc_proc:
+            try:
+                if self.smc_proc.poll() is None:
+                    try:
+                        os.killpg(os.getpgid(self.smc_proc.pid), signal.SIGTERM)
+                    except Exception:
+                        self.smc_proc.terminate()
+                    try:
+                        self.smc_proc.wait(timeout=2)
+                    except Exception:
+                        try:
+                            os.killpg(os.getpgid(self.smc_proc.pid), signal.SIGKILL)
+                        except Exception:
+                            self.smc_proc.kill()
+            except Exception:
+                pass
+            self.smc_proc = None
+
+    def _connect_via_smc_shell(self, hostname: str) -> bool:
+        if os.name == "nt":
+            raise RuntimeError("SMC mode is currently supported on POSIX systems only")
+
+        cmd = str(self.smc_command).strip() or "smc server toc {jump_host}"
+        cmd = cmd.replace("{jump_host}", self.jump_host).replace("{jump_port}", str(self.jump_port))
+        if "{jump_host}" not in str(self.smc_command) and self.jump_host and self.jump_host not in cmd:
+            cmd = f"{cmd} {self.jump_host}".strip()
+        debug_print(f"[SMC] start jump command: {cmd}")
+
+        master_fd, slave_fd = pty.openpty()
+        try:
+            self.smc_proc = subprocess.Popen(
+                ["bash", "-lc", cmd],
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                close_fds=True,
+                preexec_fn=os.setsid,
+            )
+        finally:
+            try:
+                os.close(slave_fd)
+            except Exception:
+                pass
+        self.smc_master_fd = master_fd
+
+        prompt_pattern = re.compile(r"(?m)^([A-Za-z0-9_.-]+(?:\([^)]+\))?[>#]|<[^>\r\n]+>|\[[^\]\r\n]+\])\s*$")
+        jump_prompt_pattern = re.compile(r"(?m)^.*[@].*[$#]\s*$")
+        yes_pattern = re.compile(r"\(yes/no(?:/\[fingerprint\])?\)\??", re.IGNORECASE)
+        pwd_pattern = re.compile(r"(enter\s+password|password)\s*:\s*$", re.IGNORECASE | re.MULTILINE)
+        fail_pattern = re.compile(
+            r"(permission denied|connection timed out|could not resolve|connection refused|no route to host|closed by remote host)",
+            re.IGNORECASE,
+        )
+        ansi_pattern = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+
+        # Phase 1: wait jump-host shell ready after `smc ...`
+        jump_deadline = time.time() + max(20, self.connect_timeout * 2)
+        jump_buffer = ""
+        jump_ready = False
+        while time.time() < jump_deadline:
+            chunk = self._smc_read_for(1.0)
+            if not chunk:
+                continue
+            jump_buffer += chunk
+            if len(jump_buffer) > 20000:
+                jump_buffer = jump_buffer[-20000:]
+            normalized = ansi_pattern.sub("", jump_buffer).replace("\r", "")
+            tail = normalized[-800:]
+            debug_print(f"[SMC][jump] {tail}")
+            if fail_pattern.search(normalized):
+                raise RuntimeError("SMC jump command failed before device login")
+            if yes_pattern.search(normalized):
+                self._smc_send("yes\n")
+                continue
+            if jump_prompt_pattern.search(tail) or "Last login:" in tail:
+                jump_ready = True
+                break
+        if not jump_ready:
+            tail = ansi_pattern.sub("", jump_buffer).replace("\r", "")[-500:]
+            raise RuntimeError(f"SMC jump shell timeout. tail={tail}")
+
+        # Phase 2: ssh from jump shell to target device
+        self._smc_send(f"ssh -o StrictHostKeyChecking=no {self.username}@{hostname}\n")
+        deadline = time.time() + max(20, self.connect_timeout * 3)
+        buffer = ""
+        password_attempts = 0
+        max_password_attempts = 3
+        while time.time() < deadline:
+            chunk = self._smc_read_for(1.0)
+            if not chunk:
+                continue
+            buffer += chunk
+            if len(buffer) > 20000:
+                buffer = buffer[-20000:]
+            normalized = ansi_pattern.sub("", buffer).replace("\r", "")
+            debug_print(f"[SMC][device] {normalized[-800:]}")
+            if fail_pattern.search(normalized):
+                raise RuntimeError("SMC jump login failed while ssh to target device")
+            if yes_pattern.search(normalized):
+                self._smc_send("yes\n")
+                continue
+            if pwd_pattern.search(normalized):
+                if password_attempts < max_password_attempts:
+                    password_attempts += 1
+                    debug_print(f"[SMC] password prompt detected, sending password attempt={password_attempts}")
+                    self._smc_send(self.password + "\n")
+                    # Clear consumed challenge to avoid repeatedly matching historical prompt text.
+                    buffer = ""
+                else:
+                    raise RuntimeError("SMC auth failed: password prompt repeated too many times")
+                continue
+            tail = normalized[-4000:]
+            if prompt_pattern.search(tail):
+                self.smc_mode_active = True
+                break
+
+        if not self.smc_mode_active:
+            tail = ansi_pattern.sub("", buffer).replace("\r", "")[-500:]
+            raise RuntimeError(f"SMC mode timeout: cannot reach target device prompt. tail={tail}")
+
+        for pager_cmd in (
+            "screen-length 0 temporary",
+            "screen-length 0",
+            "terminal length 0",
+            "set cli screen-length 0",
+        ):
+            self._smc_send(f"{pager_cmd}\n")
+            self._smc_read_until_prompt_via_smc(timeout=1)
+        return True
+
+    def _execute_command_via_smc(self, command: str) -> CommandResult:
+        if not self.smc_mode_active or self.smc_master_fd is None:
+            return CommandResult(command=command, output="", error="SMC session is not connected", exit_status=1)
+        try:
+            self._smc_send(f"{command}\n")
+            raw_output = self._smc_read_until_prompt_via_smc(timeout=self.command_timeout)
+            output = self._clean_shell_output(raw_output, command)
+            error = ""
+            exit_status = 0
+            lowered = output.lower()
+            has_caret_error_marker = bool(re.search(r"(?m)^\s*\^\s*$", output))
+            if (
+                "error:" in lowered
+                or "unrecognized command" in lowered
+                or "wrong parameter found" in lowered
+                or "% invalid input" in lowered
+                or "% incomplete command" in lowered
+                or has_caret_error_marker
+            ):
+                error = output
+                exit_status = 1
+            return CommandResult(command=command, output=output, error=error, exit_status=exit_status)
+        except Exception as exc:
+            return CommandResult(command=command, output="", error=f"SMC command execution failed: {exc}", exit_status=1)
+
+    def _smc_send(self, text: str) -> None:
+        if self.smc_master_fd is None:
+            return
+        os.write(self.smc_master_fd, text.encode("utf-8", errors="ignore"))
+
+    def _smc_read_for(self, timeout: float) -> str:
+        if self.smc_master_fd is None:
+            return ""
+        data_parts: List[str] = []
+        deadline = time.time() + max(0.0, timeout)
+        while time.time() < deadline:
+            left = max(0.0, deadline - time.time())
+            rlist, _, _ = select.select([self.smc_master_fd], [], [], min(0.2, left))
+            if not rlist:
+                continue
+            try:
+                chunk = os.read(self.smc_master_fd, 65535)
+            except OSError:
+                break
+            if not chunk:
+                break
+            data_parts.append(chunk.decode("utf-8", errors="replace"))
+            if len(chunk) < 65535:
+                break
+        return "".join(data_parts)
+
+    def _smc_read_until_prompt_via_smc(self, timeout: int = 30) -> str:
+        prompt_pattern = re.compile(r"(?m)^([A-Za-z0-9_.-]+(?:\([^)]+\))?[>#]|<[^>\r\n]+>|\[[^\]\r\n]+\])\s*$")
+        ansi_pattern = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+        chunks: List[str] = []
+        deadline = time.time() + timeout
+        last_recv_ts = time.time()
+
+        while time.time() < deadline:
+            piece = self._smc_read_for(0.3)
+            if piece:
+                chunks.append(piece)
+                last_recv_ts = time.time()
+                tail = "".join(chunks)[-3000:]
+                normalized_tail = ansi_pattern.sub("", tail).replace("\r", "")
+                if prompt_pattern.search(normalized_tail) and (time.time() - last_recv_ts) >= 0.1:
+                    break
+            else:
+                if chunks and (time.time() - last_recv_ts) >= 0.2:
+                    tail = "".join(chunks)[-3000:]
+                    normalized_tail = ansi_pattern.sub("", tail).replace("\r", "")
+                    if prompt_pattern.search(normalized_tail):
+                        break
+                time.sleep(0.05)
+        return "".join(chunks)
 
     def _read_until_prompt(self, timeout: int = 30) -> str:
         """Read from interactive shell until a prompt is detected."""
@@ -576,6 +851,13 @@ def process_device(
         connect_timeout=manager_options.get("connect_timeout", 10),
         command_timeout=manager_options.get("command_timeout", 30),
         command_interval=manager_options.get("command_interval", 0.0),
+        jump_enabled=bool(manager_options.get("jump_enabled", False)),
+        jump_mode=str(manager_options.get("jump_mode", "ssh") or "ssh"),
+        jump_host=str(manager_options.get("jump_host", "") or ""),
+        jump_port=int(manager_options.get("jump_port", 22) or 22),
+        jump_username=str(manager_options.get("jump_username", "") or ""),
+        jump_password=str(manager_options.get("jump_password", "") or ""),
+        smc_command=str(manager_options.get("smc_command", "smc server toc {jump_host}") or "smc server toc {jump_host}"),
     )
 
     device_start = time.time()
@@ -721,6 +1003,40 @@ def main():
         connect_retry = 0
     connect_retry = max(0, connect_retry)
 
+    jump_mode_input = input("Jump mode direct/ssh/smc (default: direct): ").strip().lower()
+    jump_mode = jump_mode_input or "direct"
+    if jump_mode not in {"direct", "ssh", "smc"}:
+        print("Invalid jump mode, fallback to direct.")
+        jump_mode = "direct"
+    jump_enabled = jump_mode in {"ssh", "smc"}
+    jump_host = ""
+    jump_port = 22
+    jump_username = ""
+    jump_password = ""
+    smc_command = "smc server toc {jump_host}"
+    if jump_mode == "ssh":
+        jump_host = input("Jump host address: ").strip()
+        jump_port_input = input("Jump host port (default: 22): ").strip()
+        try:
+            jump_port = int(jump_port_input) if jump_port_input else 22
+        except ValueError:
+            print("Invalid jump host port, using default 22.")
+            jump_port = 22
+        jump_username = input("Jump host username: ").strip()
+        jump_password = read_password("Jump host password: ").strip()
+        if not jump_host or not jump_username or not jump_password:
+            print("Jump host parameters are incomplete, fallback to direct mode.")
+            jump_enabled = False
+            jump_mode = "direct"
+    elif jump_mode == "smc":
+        jump_host = input("Jump host address: ").strip()
+        smc_cmd_input = input("SMC command template (default: smc server toc {jump_host}): ").strip()
+        smc_command = smc_cmd_input or "smc server toc {jump_host}"
+        if not jump_host:
+            print("Jump host address is empty, fallback to direct mode.")
+            jump_enabled = False
+            jump_mode = "direct"
+
     debug_input = input("Enable live debug output? (y/N): ").strip().lower()
     DEBUG_VERBOSE = debug_input in {"y", "yes", "1", "true"}
 
@@ -736,7 +1052,7 @@ def main():
     print(
         f"Execution config: mode={effective_mode}, workers={max_workers}, "
         f"recommended_workers={recommended_workers}, connect_retry={connect_retry}, "
-        f"debug={DEBUG_VERBOSE}"
+        f"jump_mode={jump_mode}, jump_enabled={jump_enabled}, debug={DEBUG_VERBOSE}"
     )
 
     connected_devices = 0
@@ -752,6 +1068,13 @@ def main():
         "command_timeout": 30,
         "command_interval": 0.0,
         "connect_retry": connect_retry,
+        "jump_enabled": jump_enabled,
+        "jump_mode": jump_mode,
+        "jump_host": jump_host,
+        "jump_port": jump_port,
+        "jump_username": jump_username,
+        "jump_password": jump_password,
+        "smc_command": smc_command,
     }
 
     future_map = {}
@@ -820,6 +1143,10 @@ def main():
         "workers": max_workers,
         "recommended_workers": recommended_workers,
         "connect_retry": connect_retry,
+        "jump_mode": jump_mode,
+        "jump_enabled": jump_enabled,
+        "jump_host": jump_host if jump_enabled else "",
+        "jump_port": jump_port if jump_enabled else 22,
         "connected_devices": connected_devices,
         "failed_devices": failed_devices,
         "total_items": total_items,
