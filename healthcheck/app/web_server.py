@@ -32,14 +32,14 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from uuid import uuid4
 
 try:
-    from app import llm_service, prompt_service, state_store
+    from app import analysis_pipeline, llm_service, prompt_service, state_store
 except ModuleNotFoundError:
     # Allow direct execution: python3 app/web_server.py
     _self_dir = Path(__file__).resolve().parent
     _parent_dir = _self_dir.parent
     if str(_parent_dir) not in sys.path:
         sys.path.insert(0, str(_parent_dir))
-    from app import llm_service, prompt_service, state_store
+    from app import analysis_pipeline, llm_service, prompt_service, state_store
 
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_DIR.parent
@@ -108,7 +108,7 @@ ANALYSIS_JOBS: Dict[str, Dict] = {}
 ANALYSIS_JOBS_LOCK = threading.Lock()
 SESSIONS: Dict[str, Dict[str, str]] = {}
 SESSIONS_LOCK = threading.Lock()
-DOC_VERSION = "V2.0"
+DOC_VERSION = "V2.1"
 DOC_VERSION_RULE = "大改动升主版本（如 V2.0），小更新升次版本（如 V1.14 -> V1.15）"
 SUPPORTED_LANGS = {"zh", "en"}
 PROMPT_NAME_EN = {
@@ -2569,13 +2569,6 @@ def build_job_html(
               <input id="batch_size" type="number" min="1" max="50" step="1" value="5">
             </div>
           </div>
-          <div class="gpt-grid gpt-row">
-            <div>
-              <label class="check-item"><input type="checkbox" id="compact_analysis" checked>启用压缩输入（减少 Token）</label>
-              <div class="gpt-hint">关闭后会提交更完整内容，可能更慢且更耗 Token。</div>
-            </div>
-            <div></div>
-          </div>
         </div>
         <div class="gpt-section">
           <div class="gpt-section-title">历史报告分析</div>
@@ -2677,7 +2670,6 @@ def build_job_html(
     const precisionModeBtnEl = document.getElementById("precision_mode_btn");
     const batchedAnalysisEl = document.getElementById("batched_analysis");
     const batchSizeEl = document.getElementById("batch_size");
-    const compactAnalysisEl = document.getElementById("compact_analysis");
     const analysisProgressBoxEl = document.getElementById("analysis_progress_box");
     const analysisProgressTextEl = document.getElementById("analysis_progress_text");
     const analysisProgressFillEl = document.getElementById("analysis_progress_fill");
@@ -3212,12 +3204,13 @@ def build_job_html(
       }}
     }});
 
+    let highPrecisionMode = false;
     if (precisionModeBtnEl) {{
       precisionModeBtnEl.addEventListener("click", () => {{
         if (batchedAnalysisEl) batchedAnalysisEl.checked = true;
-        if (compactAnalysisEl) compactAnalysisEl.checked = false;
         if (batchSizeEl) batchSizeEl.value = "1";
-        setGptStatus("已启用高精度模式：分批分析=开，压缩输入=关，分批大小=1。");
+        highPrecisionMode = true;
+        setGptStatus("已启用高精度模式：分批分析=开，分批大小=1。");
       }});
     }}
 
@@ -3324,7 +3317,6 @@ def build_job_html(
       const customPrompt = (customPromptEl.value || "").trim();
       const batchedAnalysis = !!(batchedAnalysisEl && batchedAnalysisEl.checked);
       const batchSize = batchSizeEl ? (batchSizeEl.value || "5").trim() : "5";
-      const compactAnalysis = !!(compactAnalysisEl && compactAnalysisEl.checked);
       gptResultEl.textContent = "分析中...";
       setAiReportStatus("AI 报告：分析中");
       updateAnalysisProgress(false, 0, "");
@@ -3346,7 +3338,7 @@ def build_job_html(
           form.append("custom_prompt", customPrompt);
           form.append("batched_analysis", batchedAnalysis ? "1" : "0");
           form.append("batch_size", batchSize);
-          form.append("compact_analysis", compactAnalysis ? "1" : "0");
+          form.append("high_precision", highPrecisionMode ? "1" : "0");
           form.append("report_file", file);
           const resp = await fetch("/analyze_history_report", {{ method: "POST", body: form }});
           data = await resp.json();
@@ -3380,7 +3372,7 @@ def build_job_html(
             custom_prompt: customPrompt,
             batched_analysis: batchedAnalysis ? "1" : "0",
             batch_size: batchSize,
-            compact_analysis: compactAnalysis ? "1" : "0",
+            high_precision: highPrecisionMode ? "1" : "0",
           }});
           if (data && data.ok && data.async && data.analysis_id) {{
             updateAnalysisProgress(true, 1, "进度: 1%（准备任务）");
@@ -3645,6 +3637,8 @@ def build_guide_html(lang: str = "zh") -> str:
             <li>系统提示词：强调证据链、禁止臆测、固定结构输出。</li>
             <li>任务提示词：聚焦接口/协议/资源等具体场景。</li>
             <li>补充输入：系统补充约束 + 任务补充要求。</li>
+            <li>分批分析：每台设备单独提交分析并汇总，降低大报告失败率。</li>
+            <li>高精度模式：提交全量原文，不做裁剪；普通模式启用受控截断以避免上下文超限。</li>
             <li>模型调用策略统一：先发现模型列表，再做模型候选匹配与端点回退，提升可用性。</li>
             <li>Token 统计：展示本次与累计 token。</li>
           </ul>
@@ -3652,13 +3646,14 @@ def build_guide_html(lang: str = "zh") -> str:
         <section id="sec6">
           <h2>6. 文件路径层次</h2>
           <div class="code">healthcheck/
-app/                 # 核心程序（healthcheck.py / web_runner.py）
+app/                 # 核心程序（healthcheck.py / web_server.py / web_runner.py兼容入口）
 config/              # command_map.yaml
 data/                # devices.txt / intents.txt
 docs/                # readme.md
 output/reports/      # 巡检结果 JSON/CSV
 runtime/tmp/         # 任务临时文件
 state/               # gpt_config.json / token_stats.json
+scripts/             # 启动脚本（如 start_web.sh）
 prompts/
   system_default/    # 默认系统提示词
   system_custom/     # 自定义系统提示词
@@ -3676,12 +3671,19 @@ prompts/
             <li>目录权限：对 `output/reports`、`runtime/tmp`、`state`、`prompts/*` 具备读写权限。</li>
             <li>配置文件：`config/command_map.yaml` 必须存在，或在页面上传临时 map 文件。</li>
             <li>模型配置：若用本地大模型（LM Studio），需保证 `base_url` 可连通且模型已加载。</li>
+            <li>若云模型连接测试出现 CERTIFICATE_VERIFY_FAILED，建议通过 `OPENAI_CA_BUNDLE` 指定 certifi 证书链。</li>
           </ul>
           <div class="code"># 推荐安装方式
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
-pip install paramiko PyYAML certifi</div>
+pip install paramiko PyYAML certifi
+
+# 或：使用依赖文件一条命令安装
+python -m pip install -r requirements.txt
+
+# 推荐启动（自动注入 OPENAI_CA_BUNDLE）
+./scripts/start_web.sh</div>
         </section>
         <section id="sec8">
           <h2>8. 关键设计点</h2>
@@ -3855,8 +3857,11 @@ def build_user_guide_html(lang: str = "zh") -> str:
       <main class="card content">
         <section id="u1">
           <h2>1. 启动与访问</h2>
-          <p>在项目目录运行 `python3 web_runner.py`，默认访问 `http://127.0.0.1:8080`。</p>
+          <p>推荐使用 `./scripts/start_web.sh` 启动（自动注入证书链），默认访问 `http://127.0.0.1:8080`。</p>
           <div class="code">cd healthcheck
+./scripts/start_web.sh
+
+# 兼容入口（保留）
 python3 web_runner.py</div>
         </section>
         <section id="u2">
@@ -3885,6 +3890,9 @@ python3 web_runner.py</div>
             <li>点击“AI 分析”后：若导入了历史报告，优先分析历史报告。</li>
             <li>未导入历史报告时，分析本次任务结果。</li>
             <li>若无历史报告且本次任务无可用报告，会提示先运行巡检或导入报告。</li>
+            <li>启用分批分析时：每台设备单独提交分析，页面显示进度和批次。</li>
+            <li>高精度模式：强制分批大小=1，并以全量原文提交 AI（不做裁剪，可能更慢且更耗 token）。</li>
+            <li>普通模式：为避免模型上下文超限，会保留关键证据并做受控截断。</li>
             <li>云模型调用统一采用“模型发现 + 候选匹配 + 端点回退”策略，减少模型/端点差异导致的失败。</li>
             <li>分析完成后会显示本次 token 与累计 token。</li>
           </ul>
@@ -3907,13 +3915,16 @@ python3 web_runner.py</div>
             <li>确保可写目录：`output/reports`、`runtime/tmp`、`state`、`prompts/*`。</li>
             <li>确保网络连通：设备 SSH（22 端口）与所选 AI 服务 API 域名。</li>
             <li>本地大模型模式需保证 LM Studio 地址可访问且模型可用。</li>
+            <li>若 DeepSeek/NVIDIA/Gemini/OpenAI 连接报证书错误，优先使用 `scripts/start_web.sh` 启动。</li>
           </ul>
           <div class="code">cd healthcheck
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
 pip install paramiko PyYAML certifi
-python3 app/web_server.py</div>
+# 或
+python -m pip install -r requirements.txt
+./scripts/start_web.sh</div>
         </section>
         <section id="u7">
           <h2>7. 常见问题</h2>
@@ -4346,44 +4357,6 @@ def start_job(
 
 
 class Handler(BaseHTTPRequestHandler):
-    @staticmethod
-    def _extract_key_lines(output_full: str, command: str) -> List[str]:
-        text = str(output_full or "")
-        if not text:
-            return []
-        cmd = str(command or "").lower()
-        patterns: List[re.Pattern] = []
-        if "interface" in cmd:
-            patterns.extend(
-                [
-                    re.compile(r"last\s+\d+\s+seconds.*(rate|packets/sec)", re.IGNORECASE),
-                    re.compile(r"\b(input|output)\b.*\b(errors?|drops?|discard|crc|ignored)\b", re.IGNORECASE),
-                    re.compile(r"\b(errors?|drops?|discard|crc|ignored)\b", re.IGNORECASE),
-                    re.compile(r"\bcurrent state\b", re.IGNORECASE),
-                ]
-            )
-        else:
-            patterns.extend(
-                [
-                    re.compile(r"\b(error|failed|timeout|denied|down|alarm|drop|crc)\b", re.IGNORECASE),
-                ]
-            )
-        picked: List[str] = []
-        seen: set = set()
-        for line in text.splitlines():
-            raw = line.strip()
-            if not raw:
-                continue
-            for p in patterns:
-                if p.search(raw):
-                    if raw not in seen:
-                        seen.add(raw)
-                        picked.append(raw)
-                    break
-            if len(picked) >= 30:
-                break
-        return picked
-
     def _parse_cookie(self) -> Dict[str, str]:
         raw = self.headers.get("Cookie", "") or ""
         out: Dict[str, str] = {}
@@ -4609,78 +4582,23 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _build_compact_report_text_from_json(self, report_data: Dict) -> str:
-        devices = report_data.get("devices", []) if isinstance(report_data, dict) else []
-        compact_devices: List[Dict] = []
-        for dev in devices if isinstance(devices, list) else []:
-            items = dev.get("items", []) if isinstance(dev, dict) else []
-            failed_items: List[Dict] = []
-            sample_success_items: List[Dict] = []
-            success_count = 0
-            for it in items if isinstance(items, list) else []:
-                ok = bool(it.get("success", False))
-                attempts = it.get("attempts", []) if isinstance(it, dict) else []
-                attempt_rows = []
-                for at in attempts[:2]:
-                    key_lines = self._extract_key_lines(at.get("output_full", ""), at.get("command", ""))
-                    attempt_rows.append(
-                        {
-                            "command": at.get("command", ""),
-                            "success": bool(at.get("success", False)),
-                            "error_first_line": at.get("error_first_line", ""),
-                            "output_preview": at.get("output_preview", ""),
-                            "key_lines": key_lines,
-                        }
-                    )
-                item_row = {
-                    "item": it.get("item", ""),
-                    "success": ok,
-                    "elapsed_sec": it.get("elapsed_sec", 0),
-                    "attempts": attempt_rows,
-                }
-                if ok:
-                    success_count += 1
-                    if len(sample_success_items) < 3:
-                        sample_success_items.append(item_row)
-                else:
-                    failed_items.append(item_row)
-
-            compact_devices.append(
-                {
-                    "device": dev.get("device", ""),
-                    "connected": bool(dev.get("connected", False)),
-                    "profile_id": dev.get("profile_id", ""),
-                    "elapsed_sec": dev.get("elapsed_sec", 0),
-                    "stats": dev.get("stats", {}),
-                    "success_items": success_count,
-                    "sample_success_items": sample_success_items,
-                    "failed_items": failed_items,
-                }
-            )
-
-        payload = {
-            "generated_at": report_data.get("generated_at", ""),
-            "summary": report_data.get("summary", {}),
-            "device_count": len(compact_devices),
-            "devices": compact_devices,
-            "instruction": "请对所有设备逐台给出结论，禁止只分析第一台设备。",
-        }
-        return "结构化巡检摘要JSON（覆盖全部设备）：\n" + json.dumps(payload, ensure_ascii=False)
-
-    def _build_analysis_input(self, job: Dict, compact: bool = True) -> str:
+    def _build_analysis_input(self, job: Dict, high_precision: bool = False) -> str:
         report_name = str(job.get("report_json", "") or "")
         if report_name and is_safe_report_name(report_name):
             report_path = REPORT_DIR / report_name
             if report_path.is_file():
                 try:
                     report_data = json.loads(report_path.read_text(encoding="utf-8", errors="ignore"))
-                    if compact:
-                        return self._build_compact_report_text_from_json(report_data)
+                    if isinstance(report_data, dict) and isinstance(report_data.get("devices"), list):
+                        return analysis_pipeline.build_whole_report_analysis_input(
+                            report_data,
+                            force_full=high_precision,
+                        )
                     report_text = json.dumps(report_data, ensure_ascii=False)
-                    return f"结构化报告JSON（可能已截断）：\n{report_text[-180000:]}"
+                    return f"结构化报告JSON（完整）：\n{report_text}"
                 except Exception:
-                    report_text = report_path.read_text(encoding="utf-8", errors="ignore")[-180000:]
-                    return f"结构化报告JSON（可能已截断）：\n{report_text}"
+                    report_text = report_path.read_text(encoding="utf-8", errors="ignore")
+                    return f"结构化报告JSON（完整）：\n{report_text}"
         raise RuntimeError("未找到可用于 AI 分析的 JSON 报告，请先运行巡检并生成 JSON 报告。")
 
     def _llm_model_used(self, llm: Dict[str, str]) -> str:
@@ -4756,68 +4674,13 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             raise RuntimeError(f"JSON 报告解析失败: {exc}") from exc
 
-    def _build_device_analysis_input(self, report_data: Dict, device_data: Dict) -> str:
-        summary = report_data.get("summary", {}) if isinstance(report_data, dict) else {}
-        device = dict(device_data or {})
-        device["items"] = []
-        for item in (device_data.get("items", []) if isinstance(device_data, dict) else []):
-            row = {
-                "item": item.get("item", ""),
-                "success": bool(item.get("success", False)),
-                "elapsed_sec": item.get("elapsed_sec", 0),
-                "attempt_count": item.get("attempt_count", 0),
-                "attempts": [],
-            }
-            for attempt in item.get("attempts", []) if isinstance(item, dict) else []:
-                output_full = str(attempt.get("output_full", "") or "")
-                excerpt = output_full
-                if len(excerpt) > 1800:
-                    excerpt = f"{excerpt[:1200]}\n...\n{excerpt[-600:]}"
-                row["attempts"].append(
-                    {
-                        "command": attempt.get("command", ""),
-                        "success": bool(attempt.get("success", False)),
-                        "exit_status": attempt.get("exit_status", 0),
-                        "error_first_line": attempt.get("error_first_line", ""),
-                        "output_preview": attempt.get("output_preview", ""),
-                        "output_full_excerpt": excerpt,
-                    }
-                )
-            device["items"].append(row)
-        payload = {
-            "generated_at": report_data.get("generated_at", ""),
-            "summary": summary,
-            "device_report": device,
-        }
-        return "单设备巡检JSON（结构化，可能已裁剪）：\n" + json.dumps(payload, ensure_ascii=False)
-
-    def _build_batched_summary_input(self, report_data: Dict, per_device_results: List[Dict]) -> str:
-        summary = report_data.get("summary", {}) if isinstance(report_data, dict) else {}
-        devices = report_data.get("devices", []) if isinstance(report_data, dict) else []
-        brief = []
-        for item in per_device_results:
-            brief.append(
-                {
-                    "device": item.get("device", ""),
-                    "analysis": item.get("analysis", ""),
-                    "token_usage": item.get("token_usage", {}),
-                }
-            )
-        payload = {
-            "mode": "per-device batched analysis",
-            "generated_at": report_data.get("generated_at", ""),
-            "summary": summary,
-            "device_count": len(devices) if isinstance(devices, list) else 0,
-            "per_device_analysis": brief,
-        }
-        return "分批单设备分析结果汇总JSON：\n" + json.dumps(payload, ensure_ascii=False)
-
     def _start_batched_analysis(
         self,
         job_id: str,
         llm: Dict[str, str],
         batch_size: int = 5,
         report_data_override: Optional[Dict] = None,
+        high_precision: bool = False,
     ) -> str:
         analysis_id = uuid4().hex[:12]
         with ANALYSIS_JOBS_LOCK:
@@ -4888,11 +4751,16 @@ class Handler(BaseHTTPRequestHandler):
                         _update(message=f"分析设备 {device_name} ({done_devices + 1}/{total_devices}) ...")
                         usage = {}
                         try:
-                            device_input = self._build_device_analysis_input(report_data, dev)
+                            device_input = analysis_pipeline.build_device_analysis_input(
+                                report_data,
+                                dev,
+                                force_full=high_precision,
+                            )
                             analysis, usage = self._run_llm_analysis(llm, device_input)
                         except Exception as dev_exc:
-                            analysis = f"[设备分析失败] {device_name}: {dev_exc}"
-                            failed_results.append({"device": device_name, "error": str(dev_exc)})
+                            final_error = str(dev_exc)
+                            analysis = f"[设备分析失败] {device_name}: {final_error}"
+                            failed_results.append({"device": device_name, "error": final_error})
                         used = int((usage or {}).get("total_tokens", 0) or 0)
                         total_tokens_used += used
                         done_devices += 1
@@ -4908,7 +4776,11 @@ class Handler(BaseHTTPRequestHandler):
                     _update(done_batches=batch_idx + 1)
 
                 _update(stage="summary", message="正在汇总分析...", progress=92)
-                summary_input = self._build_batched_summary_input(report_data, results)
+                summary_input = analysis_pipeline.build_batched_summary_input(
+                    report_data,
+                    results,
+                    force_full=high_precision,
+                )
                 try:
                     summary_analysis, summary_usage = self._run_llm_analysis(llm, summary_input)
                     total_tokens_used += int((summary_usage or {}).get("total_tokens", 0) or 0)
@@ -5443,7 +5315,7 @@ class Handler(BaseHTTPRequestHandler):
         job_id = (form.getvalue("job_id") or "").strip()
         llm = self._resolve_llm_inputs_from_form(form)
         batched_analysis = (form.getvalue("batched_analysis") or "").strip().lower() in {"1", "true", "on", "yes"}
-        compact_analysis = (form.getvalue("compact_analysis") or "1").strip().lower() in {"1", "true", "on", "yes"}
+        high_precision = (form.getvalue("high_precision") or "").strip().lower() in {"1", "true", "on", "yes"}
         batch_size_raw = (form.getvalue("batch_size") or "5").strip()
         try:
             batch_size = max(1, min(50, int(batch_size_raw or "5")))
@@ -5464,7 +5336,12 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if batched_analysis:
-            analysis_id = self._start_batched_analysis(job_id, llm, batch_size=batch_size)
+            analysis_id = self._start_batched_analysis(
+                job_id,
+                llm,
+                batch_size=batch_size,
+                high_precision=high_precision,
+            )
             self._respond_json(
                 {
                     "ok": True,
@@ -5476,7 +5353,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            analysis_input = self._build_analysis_input(job, compact=compact_analysis)
+            analysis_input = self._build_analysis_input(job, high_precision=high_precision)
         except Exception as exc:
             self._respond_json({"ok": False, "error": str(exc)}, status=400)
             return
@@ -5505,7 +5382,7 @@ class Handler(BaseHTTPRequestHandler):
             self._respond_json({"ok": False, "error": "report_file is required"}, status=400)
             return
         batched_analysis = (form.getvalue("batched_analysis") or "").strip().lower() in {"1", "true", "on", "yes"}
-        compact_analysis = (form.getvalue("compact_analysis") or "1").strip().lower() in {"1", "true", "on", "yes"}
+        high_precision = (form.getvalue("high_precision") or "").strip().lower() in {"1", "true", "on", "yes"}
         batch_size_raw = (form.getvalue("batch_size") or "5").strip()
         try:
             batch_size = max(1, min(50, int(batch_size_raw or "5")))
@@ -5545,6 +5422,7 @@ class Handler(BaseHTTPRequestHandler):
                     llm=llm,
                     batch_size=batch_size,
                     report_data_override=report_data,
+                    high_precision=high_precision,
                 )
                 self._respond_json(
                     {
@@ -5568,10 +5446,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             maybe_json = json.loads(decode_best_effort_text(raw))
             if isinstance(maybe_json, dict) and isinstance(maybe_json.get("devices", None), list):
-                if compact_analysis:
-                    report_text = self._build_compact_report_text_from_json(maybe_json)
-                else:
-                    report_text = "结构化报告JSON（可能已截断）：\n" + json.dumps(maybe_json, ensure_ascii=False)[-180000:]
+                report_text = analysis_pipeline.build_whole_report_analysis_input(
+                    maybe_json,
+                    force_full=high_precision,
+                )
         except Exception:
             pass
 

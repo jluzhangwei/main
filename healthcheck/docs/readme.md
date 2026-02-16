@@ -1,108 +1,139 @@
-# HealthCheck 网络设备巡检工具
+# HealthCheck 网络设备巡检工具（V2.1）
 
-通过 SSH 批量登录网络设备执行巡检，支持：
-- 勾选意图检查项（`@xxx`）
-- 自定义命令按顺序执行
-- Web 页面执行与任务状态追踪
-- JSON/CSV 报告下载
-- ChatGPT / DeepSeek / 本地大模型（LM Studio）分析报告
+通过 SSH 批量登录网络设备执行巡检，支持 Web 执行、报告下载、AI 诊断（多模型）。
 
-## 目录结构
+## 1. 功能总览
+
+- 批量设备巡检：检查项（`@xxx`）+ 自定义命令（按行顺序）
+- 多种接入：直连 / Jump SSH / SMC 命令接入
+- 报告输出：JSON + CSV
+- AI 诊断：ChatGPT / DeepSeek / Gemini / NVIDIA / 本地大模型（LM Studio）
+- 分批分析：每台设备单独分析并汇总，支持进度显示
+- 高精度模式：全量原文提交 AI（不裁剪）
+- 角色权限：admin / user（admin 可管理模板与用户）
+- 中英文界面、帮助文档双语
+
+## 2. 目录结构
 
 ```txt
 healthcheck/
-├── healthcheck.py                # CLI 启动入口（wrapper）
-├── web_runner.py                # Web 启动入口（wrapper）
+├── healthcheck.py                 # CLI 启动入口（wrapper）
+├── web_runner.py                 # Web 启动入口（wrapper）
 ├── app/
-│   ├── healthcheck.py           # 核心巡检执行逻辑
-│   └── web_runner.py            # Web 服务与页面逻辑
+│   ├── healthcheck.py            # 巡检执行核心
+│   ├── web_server.py             # Web 主服务（主入口）
+│   ├── web_runner.py             # 兼容入口（转发到 web_server）
+│   ├── llm_service.py            # 各模型 API 对接/连接测试
+│   ├── analysis_pipeline.py      # AI 分析输入构造（分批/全量）
+│   ├── prompt_service.py         # 提示词模板管理
+│   └── state_store.py            # 本地状态存储
 ├── config/
-│   └── command_map.yaml         # 意图到命令映射 + 设备画像规则
-├── data/
-│   ├── devices.txt              # 设备示例
-│   └── intents.txt              # 检查项示例
-├── docs/
-│   └── readme.md
-├── output/
-│   └── reports/                 # 巡检报告输出目录（JSON/CSV）
-├── runtime/
-│   └── tmp/                     # 运行时临时文件
+│   └── command_map.yaml          # 检查项映射
+├── check_templates/              # 检查项模板（默认/自定义）
 ├── prompts/
-│   ├── system_default/          # 内置系统提示词模板（严格约束）
-│   ├── system_custom/           # 自定义系统提示词模板
-│   ├── task_default/            # 内置任务提示词模板（诊断目标）
-│   └── task_custom/             # 自定义任务提示词模板
-└── state/
-    └── gpt_config.json          # LLM 配置（本地保存）
+│   ├── system_default/
+│   ├── system_custom/
+│   ├── task_default/
+│   └── task_custom/
+├── output/reports/               # 巡检输出 JSON/CSV
+├── runtime/tmp/                  # 临时文件
+├── state/                        # 用户、会话、LLM配置、Token统计
+├── scripts/
+│   └── start_web.sh              # 推荐启动脚本（自动注入 OPENAI_CA_BUNDLE）
+└── docs/
+    └── readme.md
 ```
 
-## 路径规则
-
-- 已统一使用相对项目根目录路径，不依赖绝对路径。
-- 默认命令映射文件：`config/command_map.yaml`
-- 默认报告目录：`output/reports/`
-- 默认意图文件：`data/intents.txt`
-- LLM 配置文件：`state/gpt_config.json`
-- 提示词模板目录：`prompts/system_default/`、`prompts/system_custom/`、`prompts/task_default/`、`prompts/task_custom/`
-
-## 快速运行
-
-### CLI 模式
+## 3. 启动方式（推荐）
 
 ```bash
 cd healthcheck
-python3 healthcheck.py
+./scripts/start_web.sh
 ```
 
-程序默认提示：
-- Command map 默认值：`config/command_map.yaml`
-- 设备地址可直接输入，或输入相对路径文件（如 `data/devices.txt`）
-- 命令/意图可直接输入，或输入相对路径文件（如 `data/intents.txt`）
+默认地址：`http://127.0.0.1:8080`
 
-### Web 模式
+兼容方式：
 
 ```bash
-cd healthcheck
 python3 web_runner.py
+# 或
+python3 app/web_server.py
 ```
 
-浏览器访问：`http://127.0.0.1:8080`
+## 4. 依赖与部署
 
-## Web 功能说明
+- Python 3.9+（建议 3.10/3.11）
+- 依赖：`paramiko`、`PyYAML`、`certifi`
+- 目录写权限：`output/reports`、`runtime/tmp`、`state`、`prompts/*`
+- 网络连通：设备 SSH（22）+ 所选云模型 API 域名
 
-- 首页：输入账号、设备地址、检查项、自定义命令、执行参数（并发/重试/debug）
-- 设备导入：导入后直接刷新到“设备地址”文本框，可继续手动编辑
-- 检查项：按分类展示，分类支持全选
-- 任务状态页：实时日志、状态、仅展示本次报告下载
-- 报告分析：支持分析本次任务或上传任意历史报告文件
+安装示例：
 
-## LLM 分析配置
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install paramiko PyYAML certifi
+```
 
-支持三种模型来源：
-- ChatGPT（OpenAI）
-- DeepSeek
-- 本地大模型（LM Studio）
+推荐用依赖文件一条命令安装：
 
-说明：
-- API Key 支持导入保存，后续可复用；再次保存会覆盖旧值并提示
-- 默认 LM Studio：`http://192.168.0.99:1234`
-- 默认本地模型：`qwen/qwen3-coder-30b`
-- 诊断提示词支持“双层模式”：
-  - 系统提示词（固定约束，建议使用“网络工程师-严格模式”）
-  - 任务提示词（本次诊断目标，可选模板或空模板）
+```bash
+python -m pip install -r requirements.txt
+```
 
-## 报告字段说明
+## 5. AI 分析模式说明
 
-- `attempt_output_preview`：压缩预览内容（便于快速浏览）
-- `attempt_output_full`：完整原始命令回显（用于精确分析）
+### 普通模式（默认）
+- 为避免模型上下文超限，提交“关键证据 + 受控截断片段”
+- 适合大批量设备和长输出场景
 
-## 常见问题
+### 高精度模式
+- 强制分批大小 = 1
+- 提交全量原文 JSON（不裁剪）
+- 精度高，但更慢、token 消耗更大，且更容易触发模型上下文上限
 
-1. 只跑了一台设备
-- 先检查设备地址输入是否被分隔（换行/逗号/分号）；导入文件后请确认文本框内容。
+### 分批分析
+- 每台设备单独提交给 AI
+- 页面显示“设备进度 + 批次进度”
+- 结束后生成逐设备结果和汇总分析
 
-2. 页面转圈但无输出
-- 可开启 debug 模式查看完整日志；并确认设备 SSH 可达、账号密码正确。
+## 6. 证书与连接测试（重要）
 
-3. OpenAI 证书错误（CERTIFICATE_VERIFY_FAILED）
-- 属于本机/网络证书链问题。可先改用本地大模型，或修复系统证书链。
+若 DeepSeek/NVIDIA/Gemini/OpenAI 连接测试报：
+`CERTIFICATE_VERIFY_FAILED`
+
+优先用推荐脚本启动（已自动设置）：
+
+```bash
+./scripts/start_web.sh
+```
+
+脚本会注入：
+- `OPENAI_CA_BUNDLE=<certifi cacert.pem>`
+
+说明：该设置同时影响 OpenAI/DeepSeek/Gemini/NVIDIA 的 HTTPS 校验。
+
+## 7. 最近关键变更（V2.1）
+
+- Web 主入口统一为 `app/web_server.py`，`web_runner.py` 保留兼容
+- 新增 `scripts/start_web.sh`，解决云模型 SSL 证书链问题
+- 新增 `requirements.txt`，支持新环境一条命令安装依赖
+- AI 分析输入策略重构：
+  - 默认模式启用受控限长（防上下文超限）
+  - 高精度模式强制全量输入
+- 分批分析路径与历史报告路径统一，进度显示更清晰
+- 文档同步更新：目录结构、入口脚本、AI 模式与证书策略
+
+## 8. 常见问题
+
+1. 连接测试失败（证书错误）
+- 使用 `./scripts/start_web.sh` 启动再测。
+
+2. AI 分析只返回一台设备
+- 开启分批分析可强制逐设备分析。
+- 高精度全量模式可能因上下文超限导致失败，建议切回普通模式。
+
+3. 分析很慢
+- 关闭高精度，使用普通模式或分批大小 > 1。

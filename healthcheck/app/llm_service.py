@@ -70,15 +70,24 @@ def parse_openai_response_text(payload: Dict) -> str:
 
 def build_openai_ssl_context() -> ssl.SSLContext:
     no_verify = os.environ.get("OPENAI_SSL_NO_VERIFY", "").strip() in {"1", "true", "yes", "on"}
-    ssl_ctx = ssl.create_default_context()
     if no_verify:
         return ssl._create_unverified_context()  # nosec B323
+    # Optional explicit CA bundle path (highest priority after no-verify).
+    ca_bundle = os.environ.get("OPENAI_CA_BUNDLE", "").strip()
+    if ca_bundle:
+        return ssl.create_default_context(cafile=ca_bundle)
+    # Use system trust store by default. This works better in enterprise networks
+    # where custom root CAs are installed at OS level.
+    prefer = os.environ.get("OPENAI_SSL_TRUST_STORE", "").strip().lower()
+    if prefer in {"system", ""}:
+        return ssl.create_default_context()
+    # Fallback: explicitly use certifi when requested.
     try:
         import certifi  # type: ignore
 
         return ssl.create_default_context(cafile=certifi.where())
     except Exception:
-        return ssl_ctx
+        return ssl.create_default_context()
 
 
 def _extract_chat_choice_text(payload: Dict) -> str:
@@ -342,13 +351,26 @@ def call_deepseek_analysis(api_key: str, system_prompt: str, task_prompt: str, r
             available_models = _get_cached_model_list("deepseek", api_key, lambda: _list_deepseek_models(api_key))
         except Exception:
             available_models = []
-    model_candidates = _build_model_candidates(model, available_models, DEFAULT_DEEPSEEK_MODEL)
+    raw_candidates = _build_model_candidates(model, available_models, DEFAULT_DEEPSEEK_MODEL)
+    # DeepSeek chat API expects plain model ids (e.g. deepseek-chat), not models/<id>.
+    model_candidates = []
+    for c in raw_candidates:
+        cc = str(c or "").strip()
+        if not cc:
+            continue
+        if cc.startswith("models/"):
+            cc = cc.split("/", 1)[1].strip()
+        if cc and cc not in model_candidates:
+            model_candidates.append(cc)
+    if not model_candidates:
+        model_candidates = [DEFAULT_DEEPSEEK_MODEL]
     endpoints = [
         "https://api.deepseek.com/v1/chat/completions",
         "https://api.deepseek.com/chat/completions",
     ]
     tried = []
     last_error = ""
+    first_400_error = ""
     for candidate_model in model_candidates:
         for url in endpoints:
             body = {
@@ -373,6 +395,8 @@ def call_deepseek_analysis(api_key: str, system_prompt: str, task_prompt: str, r
                 detail = exc.read().decode("utf-8", errors="replace")
                 last_error = f"HTTP {exc.code}: {detail[:300]}"
                 if exc.code in {400, 404}:
+                    if exc.code == 400 and not first_400_error:
+                        first_400_error = last_error
                     continue
                 raise RuntimeError(f"DeepSeek API HTTP {exc.code}: {detail[:400]}") from exc
             except Exception as exc:
@@ -389,7 +413,7 @@ def call_deepseek_analysis(api_key: str, system_prompt: str, task_prompt: str, r
 
     raise RuntimeError(
         "DeepSeek API analysis failed after fallback. "
-        f"tried={tried}; last_error={last_error or 'unknown'}; "
+        f"tried={tried}; last_error={(first_400_error or last_error or 'unknown')}; "
         f"requested_model={model}; available_models_sample={available_models[:12]}"
     )
 
