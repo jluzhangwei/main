@@ -33,14 +33,14 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from uuid import uuid4
 
 try:
-    from app import analysis_pipeline, llm_service, prompt_service, state_store
+    from app import analysis_guard, analysis_pipeline, llm_service, prompt_service, state_store
 except ModuleNotFoundError:
     # Allow direct execution: python3 app/web_server.py
     _self_dir = Path(__file__).resolve().parent
     _parent_dir = _self_dir.parent
     if str(_parent_dir) not in sys.path:
         sys.path.insert(0, str(_parent_dir))
-    from app import analysis_pipeline, llm_service, prompt_service, state_store
+    from app import analysis_guard, analysis_pipeline, llm_service, prompt_service, state_store
 
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_DIR.parent
@@ -109,7 +109,7 @@ ANALYSIS_JOBS: Dict[str, Dict] = {}
 ANALYSIS_JOBS_LOCK = threading.Lock()
 SESSIONS: Dict[str, Dict[str, str]] = {}
 SESSIONS_LOCK = threading.Lock()
-DOC_VERSION = "V2.1"
+DOC_VERSION = "V2.2"
 DOC_VERSION_RULE = "大改动升主版本（如 V2.0），小更新升次版本（如 V1.14 -> V1.15）"
 SUPPORTED_LANGS = {"zh", "en"}
 PROMPT_NAME_EN = {
@@ -294,6 +294,8 @@ def localize_html_page(page_html: str, lang: str) -> str:
         ("仅分批分析生效。每轮会按 AI 并发数并行分析设备；例如并发=2、设备=6 时共 3 轮。建议 1-4，过高可能触发 API 限流。", "Only effective for batched analysis. Each round analyzes up to AI parallelism devices; e.g., parallelism=2 with 6 devices runs 3 rounds. Recommended 1-4 to avoid API rate limits."),
         ("每设备失败重试", "Retry per Device"),
         ("重试仅针对 AI 分析请求失败，不影响巡检采集。", "Retries apply only to AI analysis request failures, not data collection."),
+        ("分析预估", "Estimate"),
+        ("分析预估：未计算", "Estimate: not calculated"),
         ("历史报告分析", "Historical Report Analysis"),
         ("历史报告文件（任意格式）", "History Report File (Any Format)"),
         ("导入历史报告文件（任意格式）", "Import History Report File (Any Format)"),
@@ -2702,6 +2704,10 @@ def build_job_html(
               <div class="gpt-hint">仅分批分析生效。每轮会按 AI 并发数并行分析设备；例如并发=2、设备=6 时共 3 轮。建议并发 1-4，过高可能触发 API 限流。</div>
             </div>
           </div>
+          <div class="gpt-actions" style="margin-top:8px;">
+            <button class="gpt-btn" id="analysis_precheck_btn" type="button">分析预估</button>
+          </div>
+          <div id="analysis_precheck_box" class="gpt-hint" style="margin-top:8px;">分析预估：未计算</div>
         </div>
         <div class="gpt-section">
           <div class="gpt-section-title">历史报告分析</div>
@@ -2809,6 +2815,8 @@ def build_job_html(
     const analysisProgressBoxEl = document.getElementById("analysis_progress_box");
     const analysisProgressTextEl = document.getElementById("analysis_progress_text");
     const analysisProgressFillEl = document.getElementById("analysis_progress_fill");
+    const analysisPrecheckBtnEl = document.getElementById("analysis_precheck_btn");
+    const analysisPrecheckBoxEl = document.getElementById("analysis_precheck_box");
     const aiReportStatusEl = document.getElementById("ai_report_status");
     let latestJobData = null;
     let activeAnalysisId = "";
@@ -2898,6 +2906,76 @@ def build_job_html(
       }} else {{
         llmTestResultEl.style.color = "#475569";
       }}
+    }}
+
+    function setAnalysisPrecheck(msg, level) {{
+      if (!analysisPrecheckBoxEl) return;
+      analysisPrecheckBoxEl.textContent = msg || "分析预估：未计算";
+      if (level === "warn") {{
+        analysisPrecheckBoxEl.style.color = "#b45309";
+      }} else if (level === "error") {{
+        analysisPrecheckBoxEl.style.color = "#b91c1c";
+      }} else {{
+        analysisPrecheckBoxEl.style.color = "#475569";
+      }}
+    }}
+
+    function resetAnalysisPrecheck() {{
+      setAnalysisPrecheck("分析预估：未计算", null);
+    }}
+
+    async function runAnalysisPrecheck() {{
+      const file = historyReportFileEl.files && historyReportFileEl.files[0];
+      const provider = (providerEl.value || "chatgpt").trim();
+      const chatgptModel = selectedModel(chatgptModelSelectEl, chatgptModelCustomEl);
+      const localBaseUrl = (localBaseEl.value || "").trim();
+      const localModel = selectedModel(localModelSelectEl, localModelCustomEl);
+      const deepseekModel = selectedModel(deepseekModelSelectEl, deepseekModelCustomEl);
+      const geminiModel = selectedModel(geminiModelSelectEl, geminiModelCustomEl);
+      const nvidiaModel = selectedModel(nvidiaModelSelectEl, nvidiaModelCustomEl);
+      const selectedSystemPrompt = systemPromptSelectEl.value || "";
+      const selectedTaskPrompt = taskPromptSelectEl.value || "";
+      const systemPromptExtra = (systemPromptExtraEl.value || "").trim();
+      const customPrompt = (customPromptEl.value || "").trim();
+      const batchedAnalysis = !!(batchedAnalysisEl && batchedAnalysisEl.checked);
+      const analysisParallelism = analysisParallelismEl ? (analysisParallelismEl.value || "2").trim() : "2";
+      const analysisRetries = analysisRetriesEl ? (analysisRetriesEl.value || "1").trim() : "1";
+      const largeReportMode = !!(largeReportModeEl && largeReportModeEl.checked);
+      const largeReportChunkItems = largeReportChunkItemsEl ? (largeReportChunkItemsEl.value || "4").trim() : "4";
+      setAnalysisPrecheck("正在计算分析规模...", null);
+      const form = new FormData();
+      form.append("source", file ? "history" : "job");
+      form.append("job_id", jobId);
+      form.append("provider", provider);
+      form.append("chatgpt_model", chatgptModel);
+      form.append("local_base_url", localBaseUrl);
+      form.append("local_model", localModel);
+      form.append("deepseek_model", deepseekModel);
+      form.append("gemini_model", geminiModel);
+      form.append("nvidia_model", nvidiaModel);
+      form.append("system_prompt_key", selectedSystemPrompt);
+      form.append("prompt_key", selectedTaskPrompt);
+      form.append("system_prompt_extra", systemPromptExtra);
+      form.append("custom_prompt", customPrompt);
+      form.append("batched_analysis", batchedAnalysis ? "1" : "0");
+      form.append("analysis_parallelism", analysisParallelism);
+      form.append("analysis_retries", analysisRetries);
+      form.append("large_report_mode", largeReportMode ? "1" : "0");
+      form.append("large_report_chunk_items", largeReportChunkItems);
+      if (file) form.append("report_file", file);
+      const resp = await fetch("/analysis_precheck", {{ method: "POST", body: form }});
+      const data = await resp.json();
+      if (!data || !data.ok) {{
+        throw new Error((data && data.error) || "预估失败");
+      }}
+      const est = data.estimation || {{}};
+      const warns = Array.isArray(est.warnings) ? est.warnings : [];
+      const line = "分析预估：设备 " + String(est.device_count || 0)
+        + " 台 | 预计调用 " + String(est.estimated_calls || 0)
+        + " 次 | 预计 Token " + String(est.estimated_total_tokens || 0)
+        + " | 预计耗时 " + String(est.estimated_seconds || 0) + "s";
+      setAnalysisPrecheck(line + (warns.length ? (" | 提示: " + warns.join("；")) : ""), warns.length ? "warn" : null);
+      return data;
     }}
 
     function setAiReportStatus(msg) {{
@@ -3431,6 +3509,16 @@ def build_job_html(
       }}
     }});
 
+    if (analysisPrecheckBtnEl) {{
+      analysisPrecheckBtnEl.addEventListener("click", async () => {{
+        try {{
+          await runAnalysisPrecheck();
+        }} catch (e) {{
+          setAnalysisPrecheck("分析预估失败: " + e, "error");
+        }}
+      }});
+    }}
+
     function refreshAnalysisOptionUI() {{
       const batched = !!(batchedAnalysisEl && batchedAnalysisEl.checked);
       if (execFieldsCardEl) execFieldsCardEl.classList.toggle("exec-disabled", !batched);
@@ -3449,6 +3537,12 @@ def build_job_html(
         refreshAnalysisOptionUI();
       }});
     }}
+    [providerEl, chatgptModelSelectEl, chatgptModelCustomEl, localBaseEl, localModelSelectEl, localModelCustomEl, deepseekModelSelectEl, deepseekModelCustomEl, geminiModelSelectEl, geminiModelCustomEl, nvidiaModelSelectEl, nvidiaModelCustomEl, systemPromptSelectEl, taskPromptSelectEl, systemPromptExtraEl, customPromptEl, batchedAnalysisEl, analysisParallelismEl, analysisRetriesEl, largeReportModeEl, largeReportChunkItemsEl, historyReportFileEl].forEach((el) => {{
+      if (el && el.addEventListener) {{
+        const evt = (el.tagName === "INPUT" || el.tagName === "TEXTAREA") ? "input" : "change";
+        el.addEventListener(evt, resetAnalysisPrecheck);
+      }}
+    }});
 
     document.getElementById("import_prompt_btn").addEventListener("click", async () => {{
       if (!canModify) {{
@@ -3560,6 +3654,24 @@ def build_job_html(
       gptResultEl.textContent = "分析中...";
       setAiReportStatus("AI 报告：分析中");
       updateAnalysisProgress(false, 0, "");
+      let precheckData = null;
+      try {{
+        precheckData = await runAnalysisPrecheck();
+        const est = (precheckData && precheckData.estimation) ? precheckData.estimation : {{}};
+        const maybeTooLarge = Number(est.estimated_total_tokens || 0) > 120000;
+        if (maybeTooLarge) {{
+          const ok = window.confirm("预计 Token 较高（" + String(est.estimated_total_tokens || 0) + "），可能导致失败或耗时较长。是否继续分析？");
+          if (!ok) {{
+            gptResultEl.textContent = "已取消分析。";
+            setAiReportStatus("AI 报告：待生成");
+            analysisRunning = false;
+            syncIdleModelStatus();
+            return;
+          }}
+        }}
+      }} catch (e) {{
+        setAnalysisPrecheck("分析预估失败: " + e, "error");
+      }}
       try {{
         let data = null;
         if (file) {{
@@ -5200,6 +5312,29 @@ class Handler(BaseHTTPRequestHandler):
                             )
                     _update(done_batches=batch_idx + 1)
 
+                expected_devices: List[str] = []
+                for dev_row in devices:
+                    if not isinstance(dev_row, dict):
+                        continue
+                    dname = str(dev_row.get("device", "") or "").strip()
+                    if dname and dname not in expected_devices:
+                        expected_devices.append(dname)
+                got_devices = set()
+                for row in results:
+                    dname = str(row.get("device", "") or "").strip()
+                    if dname:
+                        got_devices.add(dname)
+                missing_rows = [d for d in expected_devices if d not in got_devices]
+                for d in missing_rows:
+                    results.append(
+                        {
+                            "device": d,
+                            "analysis": f"[设备分析失败] {d}: 该设备未生成分析结果（线程执行异常或被提前中断）。",
+                            "token_usage": {},
+                        }
+                    )
+                    failed_results.append({"device": d, "error": "missing_analysis_result"})
+
                 _update(stage="summary", message="正在汇总分析...", progress=92)
                 summary_input = analysis_pipeline.build_batched_summary_input(
                     report_data,
@@ -5212,25 +5347,9 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as sum_exc:
                     summary_analysis = f"[汇总分析失败] {sum_exc}"
 
-                # Enforce full device coverage in summary output: if model misses any device,
-                # append deterministic fallback rows so no device is silently omitted.
-                all_device_names: List[str] = []
-                for dev_row in (report_data.get("devices", []) if isinstance(report_data, dict) else []):
-                    if not isinstance(dev_row, dict):
-                        continue
-                    dname = str(dev_row.get("device", "") or "").strip()
-                    if dname and dname not in all_device_names:
-                        all_device_names.append(dname)
-                summary_compact = re.sub(r"\s+", "", str(summary_analysis or ""))
-                missing_devices = [d for d in all_device_names if d and d.replace(" ", "") not in summary_compact]
-                if missing_devices:
-                    summary_analysis = (
-                        str(summary_analysis or "")
-                        + "\n\n## 全设备逐台结论补全（程序自动补齐）\n"
-                        + "| 设备 IP | 风险等级 | 是否上榜 TopN | 关键依据 |\n"
-                        + "| --- | --- | --- | --- |\n"
-                        + "\n".join([f"| {d} | 待复核 | 否 | 汇总模型输出中未覆盖该设备，建议复核该设备逐台分析结果。 |" for d in missing_devices])
-                    )
+                patched = analysis_guard.patch_summary_full_coverage(summary_analysis, expected_devices)
+                summary_analysis = str(patched.get("summary_text", summary_analysis) or summary_analysis)
+                missing_devices = list(patched.get("missing_devices", []) or [])
 
                 final_text_parts = ["# 逐设备分析结果"]
                 for item in results:
@@ -5878,18 +5997,12 @@ class Handler(BaseHTTPRequestHandler):
             "prompt_source": f"{system_prompt_source}; {task_prompt_source}",
         }
 
-    def _handle_analyze_job(self, form: cgi.FieldStorage) -> None:
-        job_id = (form.getvalue("job_id") or "").strip()
-        llm = self._resolve_llm_inputs_from_form(form)
+    def _parse_analysis_options(self, form: cgi.FieldStorage) -> Dict[str, int]:
         batched_analysis = (form.getvalue("batched_analysis") or "").strip().lower() in {"1", "true", "on", "yes"}
         large_report_mode = (form.getvalue("large_report_mode") or "").strip().lower() in {"1", "true", "on", "yes"}
         analysis_parallelism_raw = (form.getvalue("analysis_parallelism") or "2").strip()
         analysis_retries_raw = (form.getvalue("analysis_retries") or "1").strip()
         large_report_chunk_items_raw = (form.getvalue("large_report_chunk_items") or "4").strip()
-        try:
-            large_report_chunk_items = max(1, min(20, int(large_report_chunk_items_raw or "4")))
-        except ValueError:
-            large_report_chunk_items = 4
         try:
             analysis_parallelism = max(1, min(8, int(analysis_parallelism_raw or "2")))
         except ValueError:
@@ -5898,9 +6011,94 @@ class Handler(BaseHTTPRequestHandler):
             analysis_retries = max(0, min(3, int(analysis_retries_raw or "1")))
         except ValueError:
             analysis_retries = 1
-        batch_size = max(1, min(50, analysis_parallelism))
+        try:
+            large_report_chunk_items = max(1, min(20, int(large_report_chunk_items_raw or "4")))
+        except ValueError:
+            large_report_chunk_items = 4
         if large_report_mode and not batched_analysis:
             batched_analysis = True
+        batch_size = max(1, min(50, analysis_parallelism))
+        return {
+            "batched_analysis": 1 if batched_analysis else 0,
+            "large_report_mode": 1 if large_report_mode else 0,
+            "analysis_parallelism": analysis_parallelism,
+            "analysis_retries": analysis_retries,
+            "large_report_chunk_items": large_report_chunk_items,
+            "batch_size": batch_size,
+        }
+
+    def _precheck_report_data_from_job(self, job_id: str) -> Dict:
+        with JOBS_LOCK:
+            job = JOBS.get(job_id)
+        if not job:
+            raise RuntimeError("job not found")
+        return self._load_job_report_json(job)
+
+    def _handle_analysis_precheck(self, form: cgi.FieldStorage) -> None:
+        llm = self._resolve_llm_inputs_from_form(form)
+        opts = self._parse_analysis_options(form)
+        source = (form.getvalue("source") or "").strip().lower()
+        report_data: Dict = {}
+        source_desc = ""
+
+        if source == "history":
+            upload = form["report_file"] if "report_file" in form else None
+            if upload is None or not getattr(upload, "filename", ""):
+                self._respond_json({"ok": False, "error": "report_file is required for history precheck"}, status=400)
+                return
+            try:
+                _filename, raw = read_uploaded_report_raw(upload)
+                maybe = json.loads(decode_best_effort_text(raw))
+                if not isinstance(maybe, dict):
+                    raise RuntimeError("invalid JSON root")
+                report_data = maybe
+                source_desc = "history_json"
+            except Exception as exc:
+                self._respond_json({"ok": False, "error": f"历史报告预估仅支持结构化 JSON：{exc}"}, status=400)
+                return
+        else:
+            job_id = (form.getvalue("job_id") or "").strip()
+            if not job_id:
+                self._respond_json({"ok": False, "error": "job_id is required"}, status=400)
+                return
+            try:
+                report_data = self._precheck_report_data_from_job(job_id)
+                source_desc = "current_job_json"
+            except Exception as exc:
+                self._respond_json({"ok": False, "error": str(exc)}, status=400)
+                return
+
+        estimation = analysis_guard.estimate_analysis_plan(
+            report_data=report_data,
+            provider=llm.get("provider", "chatgpt"),
+            batched=bool(opts["batched_analysis"]),
+            parallelism=int(opts["analysis_parallelism"]),
+            retries=int(opts["analysis_retries"]),
+            large_report_mode=bool(opts["large_report_mode"]),
+            large_report_chunk_items=int(opts["large_report_chunk_items"]),
+            system_prompt_text=llm.get("system_prompt_text", ""),
+            task_prompt_text=llm.get("task_prompt_text", ""),
+        )
+        self._respond_json(
+            {
+                "ok": True,
+                "source": source_desc,
+                "provider": llm.get("provider", "chatgpt"),
+                "model_used": self._llm_model_used(llm),
+                "estimation": estimation,
+            }
+        )
+
+    def _handle_analyze_job(self, form: cgi.FieldStorage) -> None:
+        job_id = (form.getvalue("job_id") or "").strip()
+        llm = self._resolve_llm_inputs_from_form(form)
+        opts = self._parse_analysis_options(form)
+        batched_analysis = bool(opts["batched_analysis"])
+        large_report_mode = bool(opts["large_report_mode"])
+        analysis_parallelism = int(opts["analysis_parallelism"])
+        analysis_retries = int(opts["analysis_retries"])
+        large_report_chunk_items = int(opts["large_report_chunk_items"])
+        batch_size = int(opts["batch_size"])
         cfg = load_gpt_config()
         cfg["selected_system_prompt"] = llm.get("system_prompt_key", "")
         cfg["selected_task_prompt"] = llm.get("task_prompt_key", "")
@@ -5971,26 +6169,13 @@ class Handler(BaseHTTPRequestHandler):
         if upload is None or not getattr(upload, "filename", ""):
             self._respond_json({"ok": False, "error": "report_file is required"}, status=400)
             return
-        batched_analysis = (form.getvalue("batched_analysis") or "").strip().lower() in {"1", "true", "on", "yes"}
-        large_report_mode = (form.getvalue("large_report_mode") or "").strip().lower() in {"1", "true", "on", "yes"}
-        analysis_parallelism_raw = (form.getvalue("analysis_parallelism") or "2").strip()
-        analysis_retries_raw = (form.getvalue("analysis_retries") or "1").strip()
-        large_report_chunk_items_raw = (form.getvalue("large_report_chunk_items") or "4").strip()
-        try:
-            large_report_chunk_items = max(1, min(20, int(large_report_chunk_items_raw or "4")))
-        except ValueError:
-            large_report_chunk_items = 4
-        try:
-            analysis_parallelism = max(1, min(8, int(analysis_parallelism_raw or "2")))
-        except ValueError:
-            analysis_parallelism = 2
-        try:
-            analysis_retries = max(0, min(3, int(analysis_retries_raw or "1")))
-        except ValueError:
-            analysis_retries = 1
-        batch_size = max(1, min(50, analysis_parallelism))
-        if large_report_mode and not batched_analysis:
-            batched_analysis = True
+        opts = self._parse_analysis_options(form)
+        batched_analysis = bool(opts["batched_analysis"])
+        large_report_mode = bool(opts["large_report_mode"])
+        analysis_parallelism = int(opts["analysis_parallelism"])
+        analysis_retries = int(opts["analysis_retries"])
+        large_report_chunk_items = int(opts["large_report_chunk_items"])
+        batch_size = int(opts["batch_size"])
 
         filename = ""
         raw = b""
@@ -6152,6 +6337,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/test_llm":
             self._handle_test_llm(form)
+            return
+        if self.path == "/analysis_precheck":
+            self._handle_analysis_precheck(form)
             return
         if self.path == "/analyze_job":
             self._handle_analyze_job(form)

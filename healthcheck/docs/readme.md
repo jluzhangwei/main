@@ -1,4 +1,4 @@
-# HealthCheck 网络设备巡检工具（V2.1）
+# HealthCheck 网络设备巡检工具（V2.2）
 
 通过 SSH 批量登录网络设备执行巡检，支持 Web 执行、报告下载、AI 诊断（多模型）。
 
@@ -25,6 +25,7 @@ healthcheck/
 │   ├── web_runner.py             # 兼容入口（转发到 web_server）
 │   ├── llm_service.py            # 各模型 API 对接/连接测试
 │   ├── analysis_pipeline.py      # AI 分析输入构造（分批/全量）
+│   ├── analysis_guard.py         # AI 分析预估与结果覆盖校验
 │   ├── prompt_service.py         # 提示词模板管理
 │   └── state_store.py            # 本地状态存储
 ├── config/
@@ -100,6 +101,16 @@ python -m pip install -r requirements.txt
 - 单设备报告按“检查项分片”提交，降低上下文超限概率
 - 分片结果先汇总为设备级结论，再进行全局汇总
 
+### 分析预估（P0）
+- 支持“分析预估”按钮：执行前给出设备数、预计调用次数、预计 Token、预计耗时
+- 当预计 Token 过高时，执行前会弹窗二次确认
+- 便于在大报告场景提前调整并发/分片参数，降低失败率
+
+### 汇总覆盖校验（P0）
+- 分批/分片汇总后，程序会校验“全设备逐台覆盖”
+- 若模型汇总遗漏设备，程序会自动补齐缺失设备行（标记“待复核”）
+- 防止最终汇总静默漏设备
+
 ## 6. 证书与连接测试（重要）
 
 若 DeepSeek/NVIDIA/Gemini/OpenAI 连接测试报：
@@ -116,7 +127,14 @@ python -m pip install -r requirements.txt
 
 说明：该设置同时影响 OpenAI/DeepSeek/Gemini/NVIDIA 的 HTTPS 校验。
 
-## 7. 最近关键变更（V2.1）
+## 7. 最近关键变更（V2.2）
+
+- 新增 `analysis_guard.py`，提供分析前规模预估与汇总覆盖校验
+- 新增前端“分析预估”按钮，展示预计调用次数/Token/耗时并给出风险提示
+- 新增 `POST /analysis_precheck` 接口，支持本次报告与历史 JSON 报告预估
+- 分批结果缺失时自动补占位，避免设备被静默遗漏
+
+## 8. 最近关键变更（V2.1）
 
 - Web 主入口统一为 `app/web_server.py`，`web_runner.py` 保留兼容
 - 新增 `scripts/start_web.sh`，解决云模型 SSL 证书链问题
@@ -125,7 +143,7 @@ python -m pip install -r requirements.txt
 - 分批分析路径与历史报告路径统一，进度显示更清晰
 - 文档同步更新：目录结构、入口脚本、AI 模式与证书策略
 
-## 8. 常见问题
+## 9. 常见问题
 
 1. 连接测试失败（证书错误）
 - 使用 `./scripts/start_web.sh` 启动再测。
