@@ -111,6 +111,13 @@ def build_device_analysis_input(
 def build_batched_summary_input(report_data: Dict, per_device_results: List[Dict], force_full: bool = False) -> str:
     summary = report_data.get("summary", {}) if isinstance(report_data, dict) else {}
     devices = report_data.get("devices", []) if isinstance(report_data, dict) else []
+    device_names = []
+    if isinstance(devices, list):
+        for d in devices:
+            if isinstance(d, dict):
+                name = str(d.get("device", "") or "").strip()
+                if name:
+                    device_names.append(name)
     brief = []
     for item in per_device_results:
         analysis_text = str(item.get("analysis", "") or "")
@@ -130,6 +137,14 @@ def build_batched_summary_input(report_data: Dict, per_device_results: List[Dict
         "generated_at": report_data.get("generated_at", ""),
         "summary": summary,
         "device_count": len(devices) if isinstance(devices, list) else 0,
+        "device_list": device_names,
+        "coverage_rule": "必须在输出中逐台覆盖 device_list 的所有设备，每台设备至少出现一次；禁止遗漏。",
+        "required_output_sections": [
+            "总体结论",
+            "高风险问题 TopN",
+            "全设备逐台结论（必须覆盖全部设备，格式：设备IP | 风险等级 | 是否上榜TopN | 关键依据）",
+            "处置优先级",
+        ],
         "per_device_analysis": brief,
     }
     return "分批单设备分析结果汇总JSON：\n" + json.dumps(payload, ensure_ascii=False)
@@ -236,13 +251,18 @@ def build_device_chunk_inputs(
     report_data: Dict,
     device_data: Dict,
     chunk_size_items: int = 4,
+    chunk_count: int = 0,
     force_full: bool = False,
     max_chars: int = 100000,
 ) -> List[str]:
     items = device_data.get("items", []) if isinstance(device_data, dict) else []
     if not isinstance(items, list) or not items:
         return [build_device_analysis_input(report_data, device_data, force_full=force_full)]
-    size = max(1, int(chunk_size_items or 4))
+    if chunk_count and int(chunk_count) > 0:
+        target_chunks = max(1, int(chunk_count))
+        size = max(1, (len(items) + target_chunks - 1) // target_chunks)
+    else:
+        size = max(1, int(chunk_size_items or 4))
     chunks: List[str] = []
     total_chunks = (len(items) + size - 1) // size
     for idx in range(total_chunks):
