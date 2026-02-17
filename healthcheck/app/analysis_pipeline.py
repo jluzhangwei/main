@@ -202,3 +202,130 @@ def build_whole_report_analysis_input(report_data: Dict, max_chars: int = 260000
     payload = _build_whole_payload(report_data, output_cap=0, include_excerpt=False)
     txt = json.dumps(payload, ensure_ascii=False)
     return "多设备巡检JSON（结构化，仅关键证据；原文过大已省略）：\n" + txt
+
+
+def _normalize_item_for_analysis(item: Dict, excerpt_cap: int, include_excerpt: bool, force_full: bool) -> Dict:
+    row = {
+        "item": item.get("item", ""),
+        "success": bool(item.get("success", False)),
+        "elapsed_sec": item.get("elapsed_sec", 0),
+        "attempt_count": item.get("attempt_count", 0),
+        "attempts": [],
+    }
+    for attempt in item.get("attempts", []) if isinstance(item, dict) else []:
+        if force_full:
+            row["attempts"].append(dict(attempt))
+            continue
+        full = str(attempt.get("output_full", "") or "")
+        cmd = str(attempt.get("command", "") or "")
+        attempt_row: Dict = {
+            "command": cmd,
+            "success": bool(attempt.get("success", False)),
+            "exit_status": attempt.get("exit_status", 0),
+            "error_first_line": attempt.get("error_first_line", ""),
+            "output_preview": attempt.get("output_preview", ""),
+            "key_lines": extract_key_lines(full, cmd),
+        }
+        if include_excerpt:
+            attempt_row["output_excerpt"] = _excerpt_text(full, excerpt_cap)
+        row["attempts"].append(attempt_row)
+    return row
+
+
+def build_device_chunk_inputs(
+    report_data: Dict,
+    device_data: Dict,
+    chunk_size_items: int = 4,
+    force_full: bool = False,
+    max_chars: int = 100000,
+) -> List[str]:
+    items = device_data.get("items", []) if isinstance(device_data, dict) else []
+    if not isinstance(items, list) or not items:
+        return [build_device_analysis_input(report_data, device_data, force_full=force_full)]
+    size = max(1, int(chunk_size_items or 4))
+    chunks: List[str] = []
+    total_chunks = (len(items) + size - 1) // size
+    for idx in range(total_chunks):
+        start = idx * size
+        end = min(len(items), start + size)
+        item_slice = items[start:end]
+        if force_full:
+            excerpt_caps = [0]
+        else:
+            excerpt_caps = [8000, 5000, 3000, 1500, 800, 0]
+        selected_text = ""
+        for cap in excerpt_caps:
+            include_excerpt = cap > 0
+            normalized_items = [
+                _normalize_item_for_analysis(i, excerpt_cap=cap, include_excerpt=include_excerpt, force_full=False)
+                for i in item_slice
+            ]
+            if force_full:
+                normalized_items = [dict(i) for i in item_slice]
+            payload = {
+                "generated_at": report_data.get("generated_at", ""),
+                "summary": report_data.get("summary", {}),
+                "device": {
+                    "device": device_data.get("device", ""),
+                    "profile_id": device_data.get("profile_id", ""),
+                    "connected": bool(device_data.get("connected", False)),
+                    "elapsed_sec": device_data.get("elapsed_sec", 0),
+                    "stats": device_data.get("stats", {}),
+                },
+                "chunk_meta": {
+                    "chunk_index": idx + 1,
+                    "chunk_count": total_chunks,
+                    "item_start": start + 1,
+                    "item_end": end,
+                    "item_total": len(items),
+                },
+                "items": normalized_items,
+                "instruction": "请仅分析当前分片，并给出分片结论、证据链和风险等级。",
+            }
+            prefix = (
+                f"单设备分片巡检JSON（完整原文，chunk {idx + 1}/{total_chunks}）：\n"
+                if force_full
+                else f"单设备分片巡检JSON（受控输入，chunk {idx + 1}/{total_chunks}，excerpt_cap={cap}）：\n"
+            )
+            txt = prefix + json.dumps(payload, ensure_ascii=False)
+            if force_full or len(txt) <= max_chars:
+                selected_text = txt
+                break
+        if not selected_text:
+            selected_text = build_device_analysis_input(report_data, device_data, force_full=force_full)
+        chunks.append(selected_text)
+    return chunks
+
+
+def build_device_chunk_summary_input(
+    report_data: Dict,
+    device_data: Dict,
+    chunk_results: List[Dict],
+    force_full: bool = False,
+) -> str:
+    brief = []
+    for item in chunk_results:
+        text = str(item.get("analysis", "") or "")
+        brief.append(
+            {
+                "chunk_index": item.get("chunk_index", 0),
+                "chunk_count": item.get("chunk_count", 0),
+                "analysis": text if force_full else _excerpt_text(text, 3500),
+                "token_usage": item.get("token_usage", {}),
+            }
+        )
+    payload = {
+        "generated_at": report_data.get("generated_at", ""),
+        "summary": report_data.get("summary", {}),
+        "device": {
+            "device": device_data.get("device", ""),
+            "profile_id": device_data.get("profile_id", ""),
+            "connected": bool(device_data.get("connected", False)),
+            "elapsed_sec": device_data.get("elapsed_sec", 0),
+            "stats": device_data.get("stats", {}),
+        },
+        "chunk_count": len(brief),
+        "chunk_results": brief,
+        "instruction": "请汇总所有分片结论，输出该设备最终诊断，必须覆盖异常、证据链、根因判断、修复建议。",
+    }
+    return "单设备分片汇总JSON：\n" + json.dumps(payload, ensure_ascii=False)

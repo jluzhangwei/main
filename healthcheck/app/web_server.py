@@ -279,6 +279,14 @@ def localize_html_page(page_html: str, lang: str) -> str:
         ("导入提示词", "Import Prompt"),
         ("系统补充约束（可选）", "Extra System Constraints (Optional)"),
         ("任务补充要求（可选）", "Extra Task Requirements (Optional)"),
+        ("分析执行选项", "Analysis Execution Options"),
+        ("启用分批分析（每台设备单独提交 JSON 给 AI）", "Enable Batched Analysis (submit one device JSON per request)"),
+        ("适用于本次巡检 JSON 和历史 JSON 报告；非结构化历史文件仍为单次分析。", "Applies to current-run JSON and historical JSON; non-structured history files still run single analysis."),
+        ("分批大小（台/批）", "Batch Size (devices/batch)"),
+        ("大报告分析模式（设备分片分析 + 汇总）", "Large Report Mode (chunk per device + summarize)"),
+        ("单设备先按检查项分片提交，再生成设备汇总，最后做全局汇总。适合超大报告。", "Each device is split by check items first, then device summary and global summary. Suitable for very large reports."),
+        ("分片大小（检查项/片）", "Chunk Size (checks/chunk)"),
+        ("高精度模式", "High Precision Mode"),
         ("历史报告分析", "Historical Report Analysis"),
         ("历史报告文件（任意格式）", "History Report File (Any Format)"),
         ("导入历史报告文件（任意格式）", "Import History Report File (Any Format)"),
@@ -1064,6 +1072,17 @@ def build_html(
     .row {{ margin-bottom: 12px; }}
     .tips {{ color: #475569; font-size: 12px; margin-top: 4px; }}
     .import-result {{ color: #0b6e4f; font-size: 12px; margin-top: 6px; }}
+    .warn-inline {{
+      display: none;
+      margin-top: 6px;
+      border: 1px solid #f59e0b;
+      background: #fffbeb;
+      color: #92400e;
+      border-radius: 8px;
+      padding: 6px 8px;
+      font-size: 12px;
+      font-weight: 600;
+    }}
     .preview-box {{
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -1304,6 +1323,7 @@ def build_html(
         <div class="row">
           <label>检查项（可多选）</label>
           <div id="check_groups" class="check-groups">{''.join(checks_blocks)}</div>
+          <div id="check_count_warning" class="warn-inline"></div>
         </div>
         <div class="row">
           <div class="sub-card">
@@ -1572,6 +1592,7 @@ def build_html(
   const importResultEl = document.getElementById('import_result');
   const customCommandsEl = document.querySelector('textarea[name="custom_commands"]');
   const previewEl = document.getElementById('command_preview');
+  const checkCountWarningEl = document.getElementById('check_count_warning');
   const noFileChosenText = {json.dumps(no_file_text)};
 
   function refreshJumpModeUI() {{
@@ -1774,7 +1795,23 @@ def build_html(
     closeSaveTemplateModal();
   }}
 
+  function updateCheckSelectionWarning() {{
+    if (!checkCountWarningEl) return;
+    const selectedChecks = Array.from(document.querySelectorAll('input[name="checks"]:checked')).map(i => i.value);
+    const count = selectedChecks.length;
+    if (count > 10) {{
+      const msgZh = '当前已选择 ' + count + ' 个检查项。检查项过多可能超出大模型上下文窗口，并显著增加巡检/分析耗时，建议减少检查项或启用分批分析。';
+      const msgEn = 'You selected ' + count + ' check items. Too many items may exceed LLM context window and slow report generation. Consider fewer items or batched analysis.';
+      checkCountWarningEl.textContent = currentLang === 'en' ? msgEn : msgZh;
+      checkCountWarningEl.style.display = '';
+      return;
+    }}
+    checkCountWarningEl.textContent = '';
+    checkCountWarningEl.style.display = 'none';
+  }}
+
   function buildPreview() {{
+    updateCheckSelectionWarning();
     if (!previewEl) return;
     const selectedChecks = Array.from(document.querySelectorAll('input[name="checks"]:checked')).map(i => i.value);
     const customCommands = parseItems(customCommandsEl ? customCommandsEl.value : '');
@@ -2569,6 +2606,16 @@ def build_job_html(
               <input id="batch_size" type="number" min="1" max="50" step="1" value="5">
             </div>
           </div>
+          <div class="gpt-grid gpt-row">
+            <div>
+              <label class="check-item"><input type="checkbox" id="large_report_mode">大报告分析模式（设备分片分析 + 汇总）</label>
+              <div class="gpt-hint">单设备先按检查项分片提交，再生成设备汇总，最后做全局汇总。适合超大报告。</div>
+            </div>
+            <div>
+              <label>分片大小（检查项/片）</label>
+              <input id="large_report_chunk_items" type="number" min="1" max="20" step="1" value="4">
+            </div>
+          </div>
         </div>
         <div class="gpt-section">
           <div class="gpt-section-title">历史报告分析</div>
@@ -2670,6 +2717,8 @@ def build_job_html(
     const precisionModeBtnEl = document.getElementById("precision_mode_btn");
     const batchedAnalysisEl = document.getElementById("batched_analysis");
     const batchSizeEl = document.getElementById("batch_size");
+    const largeReportModeEl = document.getElementById("large_report_mode");
+    const largeReportChunkItemsEl = document.getElementById("large_report_chunk_items");
     const analysisProgressBoxEl = document.getElementById("analysis_progress_box");
     const analysisProgressTextEl = document.getElementById("analysis_progress_text");
     const analysisProgressFillEl = document.getElementById("analysis_progress_fill");
@@ -3209,8 +3258,10 @@ def build_job_html(
       precisionModeBtnEl.addEventListener("click", () => {{
         if (batchedAnalysisEl) batchedAnalysisEl.checked = true;
         if (batchSizeEl) batchSizeEl.value = "1";
+        if (largeReportModeEl) largeReportModeEl.checked = true;
+        if (largeReportChunkItemsEl) largeReportChunkItemsEl.value = "3";
         highPrecisionMode = true;
-        setGptStatus("已启用高精度模式：分批分析=开，分批大小=1。");
+        setGptStatus("已启用高精度模式：分批分析=开，分批大小=1，大报告模式=开。");
       }});
     }}
 
@@ -3317,6 +3368,8 @@ def build_job_html(
       const customPrompt = (customPromptEl.value || "").trim();
       const batchedAnalysis = !!(batchedAnalysisEl && batchedAnalysisEl.checked);
       const batchSize = batchSizeEl ? (batchSizeEl.value || "5").trim() : "5";
+      const largeReportMode = !!(largeReportModeEl && largeReportModeEl.checked);
+      const largeReportChunkItems = largeReportChunkItemsEl ? (largeReportChunkItemsEl.value || "4").trim() : "4";
       gptResultEl.textContent = "分析中...";
       setAiReportStatus("AI 报告：分析中");
       updateAnalysisProgress(false, 0, "");
@@ -3338,6 +3391,8 @@ def build_job_html(
           form.append("custom_prompt", customPrompt);
           form.append("batched_analysis", batchedAnalysis ? "1" : "0");
           form.append("batch_size", batchSize);
+          form.append("large_report_mode", largeReportMode ? "1" : "0");
+          form.append("large_report_chunk_items", largeReportChunkItems);
           form.append("high_precision", highPrecisionMode ? "1" : "0");
           form.append("report_file", file);
           const resp = await fetch("/analyze_history_report", {{ method: "POST", body: form }});
@@ -3372,6 +3427,8 @@ def build_job_html(
             custom_prompt: customPrompt,
             batched_analysis: batchedAnalysis ? "1" : "0",
             batch_size: batchSize,
+            large_report_mode: largeReportMode ? "1" : "0",
+            large_report_chunk_items: largeReportChunkItems,
             high_precision: highPrecisionMode ? "1" : "0",
           }});
           if (data && data.ok && data.async && data.analysis_id) {{
@@ -4681,6 +4738,8 @@ class Handler(BaseHTTPRequestHandler):
         batch_size: int = 5,
         report_data_override: Optional[Dict] = None,
         high_precision: bool = False,
+        large_report_mode: bool = False,
+        large_report_chunk_items: int = 4,
     ) -> str:
         analysis_id = uuid4().hex[:12]
         with ANALYSIS_JOBS_LOCK:
@@ -4751,12 +4810,45 @@ class Handler(BaseHTTPRequestHandler):
                         _update(message=f"分析设备 {device_name} ({done_devices + 1}/{total_devices}) ...")
                         usage = {}
                         try:
-                            device_input = analysis_pipeline.build_device_analysis_input(
-                                report_data,
-                                dev,
-                                force_full=high_precision,
-                            )
-                            analysis, usage = self._run_llm_analysis(llm, device_input)
+                            if large_report_mode:
+                                chunk_inputs = analysis_pipeline.build_device_chunk_inputs(
+                                    report_data,
+                                    dev,
+                                    chunk_size_items=large_report_chunk_items,
+                                    force_full=high_precision,
+                                )
+                                chunk_results: List[Dict] = []
+                                for chunk_idx, chunk_input in enumerate(chunk_inputs, start=1):
+                                    _update(
+                                        message=(
+                                            f"分析设备 {device_name} ({done_devices + 1}/{total_devices}) "
+                                            f"分片 {chunk_idx}/{len(chunk_inputs)} ..."
+                                        )
+                                    )
+                                    chunk_analysis, chunk_usage = self._run_llm_analysis(llm, chunk_input)
+                                    total_tokens_used += int((chunk_usage or {}).get("total_tokens", 0) or 0)
+                                    chunk_results.append(
+                                        {
+                                            "chunk_index": chunk_idx,
+                                            "chunk_count": len(chunk_inputs),
+                                            "analysis": chunk_analysis,
+                                            "token_usage": chunk_usage or {},
+                                        }
+                                    )
+                                device_summary_input = analysis_pipeline.build_device_chunk_summary_input(
+                                    report_data,
+                                    dev,
+                                    chunk_results,
+                                    force_full=high_precision,
+                                )
+                                analysis, usage = self._run_llm_analysis(llm, device_summary_input)
+                            else:
+                                device_input = analysis_pipeline.build_device_analysis_input(
+                                    report_data,
+                                    dev,
+                                    force_full=high_precision,
+                                )
+                                analysis, usage = self._run_llm_analysis(llm, device_input)
                         except Exception as dev_exc:
                             final_error = str(dev_exc)
                             analysis = f"[设备分析失败] {device_name}: {final_error}"
@@ -5315,12 +5407,22 @@ class Handler(BaseHTTPRequestHandler):
         job_id = (form.getvalue("job_id") or "").strip()
         llm = self._resolve_llm_inputs_from_form(form)
         batched_analysis = (form.getvalue("batched_analysis") or "").strip().lower() in {"1", "true", "on", "yes"}
+        large_report_mode = (form.getvalue("large_report_mode") or "").strip().lower() in {"1", "true", "on", "yes"}
         high_precision = (form.getvalue("high_precision") or "").strip().lower() in {"1", "true", "on", "yes"}
         batch_size_raw = (form.getvalue("batch_size") or "5").strip()
+        large_report_chunk_items_raw = (form.getvalue("large_report_chunk_items") or "4").strip()
         try:
             batch_size = max(1, min(50, int(batch_size_raw or "5")))
         except ValueError:
             batch_size = 5
+        try:
+            large_report_chunk_items = max(1, min(20, int(large_report_chunk_items_raw or "4")))
+        except ValueError:
+            large_report_chunk_items = 4
+        if large_report_mode and not batched_analysis:
+            batched_analysis = True
+            if batch_size < 1:
+                batch_size = 1
         cfg = load_gpt_config()
         cfg["selected_system_prompt"] = llm.get("system_prompt_key", "")
         cfg["selected_task_prompt"] = llm.get("task_prompt_key", "")
@@ -5341,13 +5443,16 @@ class Handler(BaseHTTPRequestHandler):
                 llm,
                 batch_size=batch_size,
                 high_precision=high_precision,
+                large_report_mode=large_report_mode,
+                large_report_chunk_items=large_report_chunk_items,
             )
+            mode_desc = "大报告分片模式" if large_report_mode else "标准分批模式"
             self._respond_json(
                 {
                     "ok": True,
                     "async": True,
                     "analysis_id": analysis_id,
-                    "message": f"已启动分批分析：每台设备单独提交，批大小={batch_size}",
+                    "message": f"已启动分批分析：{mode_desc}，批大小={batch_size}，分片大小={large_report_chunk_items}",
                 }
             )
             return
@@ -5382,12 +5487,22 @@ class Handler(BaseHTTPRequestHandler):
             self._respond_json({"ok": False, "error": "report_file is required"}, status=400)
             return
         batched_analysis = (form.getvalue("batched_analysis") or "").strip().lower() in {"1", "true", "on", "yes"}
+        large_report_mode = (form.getvalue("large_report_mode") or "").strip().lower() in {"1", "true", "on", "yes"}
         high_precision = (form.getvalue("high_precision") or "").strip().lower() in {"1", "true", "on", "yes"}
         batch_size_raw = (form.getvalue("batch_size") or "5").strip()
+        large_report_chunk_items_raw = (form.getvalue("large_report_chunk_items") or "4").strip()
         try:
             batch_size = max(1, min(50, int(batch_size_raw or "5")))
         except ValueError:
             batch_size = 5
+        try:
+            large_report_chunk_items = max(1, min(20, int(large_report_chunk_items_raw or "4")))
+        except ValueError:
+            large_report_chunk_items = 4
+        if large_report_mode and not batched_analysis:
+            batched_analysis = True
+            if batch_size < 1:
+                batch_size = 1
         filename = ""
         raw = b""
         try:
@@ -5423,13 +5538,16 @@ class Handler(BaseHTTPRequestHandler):
                     batch_size=batch_size,
                     report_data_override=report_data,
                     high_precision=high_precision,
+                    large_report_mode=large_report_mode,
+                    large_report_chunk_items=large_report_chunk_items,
                 )
+                mode_desc = "大报告分片模式" if large_report_mode else "标准分批模式"
                 self._respond_json(
                     {
                         "ok": True,
                         "async": True,
                         "analysis_id": analysis_id,
-                        "message": f"历史 JSON 分批分析已启动，批大小={batch_size}",
+                        "message": f"历史 JSON 分批分析已启动：{mode_desc}，批大小={batch_size}，分片大小={large_report_chunk_items}",
                     }
                 )
                 return
