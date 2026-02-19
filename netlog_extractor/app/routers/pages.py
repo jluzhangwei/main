@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, Request, UploadFile
+from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from ..models import DeviceInput
 from ..services.task_service import (
     build_payload,
-    parse_devices_from_csv,
     parse_devices_from_text,
 )
 
@@ -33,7 +32,6 @@ async def create_task(
     username: str = Form(""),
     password: str = Form(""),
     batch_text: str = Form(""),
-    csv_file: UploadFile | None = File(None),
     default_username: str = Form(""),
     default_password: str = Form(""),
     start_time: str = Form(...),
@@ -71,19 +69,6 @@ async def create_task(
             global_pass = default_password or None
             final_smc_cmd = smc_command.strip() or (f"smc server toc {jump_host.strip()}" if jump_mode == "smc" else None)
 
-            if csv_file and csv_file.filename:
-                csv_bytes = await csv_file.read()
-                devices.extend(
-                    parse_devices_from_csv(
-                        csv_bytes=csv_bytes,
-                        default_username=global_user,
-                        default_password=global_pass,
-                        default_jump_mode=jump_mode,
-                        jump_host=jump_host.strip() or None,
-                        jump_port=jump_port,
-                        smc_command=final_smc_cmd,
-                    )
-                )
             if batch_text.strip():
                 devices.extend(
                     parse_devices_from_text(
@@ -98,7 +83,7 @@ async def create_task(
                     )
                 )
             if not devices:
-                raise ValueError("Batch mode requires CSV or text device list")
+                raise ValueError("Batch mode requires device list text")
 
         payload = build_payload(
             {

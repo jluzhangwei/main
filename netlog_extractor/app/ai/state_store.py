@@ -13,6 +13,8 @@ DEFAULT_GPT_MODEL = "gpt-4.1-mini"
 DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:1234"
 DEFAULT_LOCAL_MODEL = "qwen/qwen3-coder-30b"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
+DEFAULT_QWEN_MODEL = "qwen-plus"
+DEFAULT_QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
 DEFAULT_NVIDIA_MODEL = "meta/llama-3.1-70b-instruct"
 
@@ -21,6 +23,7 @@ def _default_config() -> dict[str, Any]:
     return {
         "chatgpt_api_key": "",
         "deepseek_api_key": "",
+        "qwen_api_key": "",
         "gemini_api_key": "",
         "nvidia_api_key": "",
         "custom_prompts": {},
@@ -29,6 +32,8 @@ def _default_config() -> dict[str, Any]:
         "local_base_url": DEFAULT_LOCAL_BASE_URL,
         "local_model": DEFAULT_LOCAL_MODEL,
         "deepseek_model": DEFAULT_DEEPSEEK_MODEL,
+        "qwen_model": DEFAULT_QWEN_MODEL,
+        "qwen_base_url": DEFAULT_QWEN_BASE_URL,
         "gemini_model": DEFAULT_GEMINI_MODEL,
         "nvidia_model": DEFAULT_NVIDIA_MODEL,
         "selected_task_prompt": "日志异常诊断-标准版",
@@ -58,7 +63,7 @@ def load_gpt_config() -> dict[str, Any]:
         cfg = _default_config()
         cfg.update(data)
         provider = str(cfg.get("provider", "chatgpt") or "chatgpt").strip().lower()
-        if provider not in {"chatgpt", "local", "deepseek", "gemini", "nvidia"}:
+        if provider not in {"chatgpt", "local", "deepseek", "qwen", "gemini", "nvidia"}:
             provider = "chatgpt"
         cfg["provider"] = provider
         return cfg
@@ -70,7 +75,7 @@ def save_gpt_config(config: dict[str, Any]) -> None:
     cfg = _default_config()
     cfg.update(config or {})
     provider = str(cfg.get("provider", "chatgpt") or "chatgpt").strip().lower()
-    if provider not in {"chatgpt", "local", "deepseek", "gemini", "nvidia"}:
+    if provider not in {"chatgpt", "local", "deepseek", "qwen", "gemini", "nvidia"}:
         provider = "chatgpt"
     cfg["provider"] = provider
     STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -78,7 +83,7 @@ def save_gpt_config(config: dict[str, Any]) -> None:
 
 
 def load_token_stats() -> dict[str, Any]:
-    default = {"total_tokens": 0, "providers": {"chatgpt": 0, "deepseek": 0, "gemini": 0, "nvidia": 0, "local": 0}}
+    default = {"total_tokens": 0, "providers": {"chatgpt": 0, "deepseek": 0, "qwen": 0, "gemini": 0, "nvidia": 0, "local": 0}}
     if not TOKEN_STATS_PATH.is_file():
         return default
     try:
@@ -97,7 +102,7 @@ def save_token_stats(stats: dict[str, Any]) -> None:
 
 def add_token_usage(provider: str, used_tokens: int) -> dict[str, Any]:
     stats = load_token_stats()
-    p = provider if provider in {"chatgpt", "deepseek", "gemini", "nvidia", "local"} else "local"
+    p = provider if provider in {"chatgpt", "deepseek", "qwen", "gemini", "nvidia", "local"} else "local"
     used = max(0, int(used_tokens or 0))
     stats["total_tokens"] = int(stats.get("total_tokens", 0) or 0) + used
     providers = stats.get("providers", {})

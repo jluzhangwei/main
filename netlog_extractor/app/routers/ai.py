@@ -12,6 +12,7 @@ from fastapi.templating import Jinja2Templates
 from ..ai.prompt_store import merged_system_prompt_catalog, merged_task_prompt_catalog, save_custom_prompt
 from ..ai.state_store import load_gpt_config, load_token_stats, save_gpt_config
 from ..ai.llm_client import (
+    detect_qwen_endpoint,
     test_deepseek_connection,
     test_gemini_connection,
     test_local_lmstudio_connection,
@@ -35,6 +36,12 @@ CHATGPT_MODEL_OPTIONS = [
 DEEPSEEK_MODEL_OPTIONS = [
     "deepseek-chat",
     "deepseek-reasoner",
+]
+QWEN_MODEL_OPTIONS = [
+    "qwen-plus",
+    "qwen-turbo",
+    "qwen-max",
+    "qwen-long",
 ]
 GEMINI_MODEL_OPTIONS = [
     "gemini-2.0-flash",
@@ -91,12 +98,15 @@ def _merge_cfg(cfg: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
             "provider": str(incoming.get("provider", cfg.get("provider", "chatgpt")) or "chatgpt"),
             "chatgpt_api_key": keep_or_update("chatgpt_api_key"),
             "deepseek_api_key": keep_or_update("deepseek_api_key"),
+            "qwen_api_key": keep_or_update("qwen_api_key"),
             "gemini_api_key": keep_or_update("gemini_api_key"),
             "nvidia_api_key": keep_or_update("nvidia_api_key"),
             "chatgpt_model": str(incoming.get("chatgpt_model", cfg.get("chatgpt_model", "")) or ""),
             "local_base_url": str(incoming.get("local_base_url", cfg.get("local_base_url", "")) or ""),
             "local_model": str(incoming.get("local_model", cfg.get("local_model", "")) or ""),
             "deepseek_model": str(incoming.get("deepseek_model", cfg.get("deepseek_model", "")) or ""),
+            "qwen_model": str(incoming.get("qwen_model", cfg.get("qwen_model", "")) or ""),
+            "qwen_base_url": str(incoming.get("qwen_base_url", cfg.get("qwen_base_url", "")) or ""),
             "gemini_model": str(incoming.get("gemini_model", cfg.get("gemini_model", "")) or ""),
             "nvidia_model": str(incoming.get("nvidia_model", cfg.get("nvidia_model", "")) or ""),
             "selected_system_prompt": str(
@@ -163,6 +173,7 @@ def _redact_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
     out = dict(cfg)
     out["chatgpt_api_key"] = ""
     out["deepseek_api_key"] = ""
+    out["qwen_api_key"] = ""
     out["gemini_api_key"] = ""
     out["nvidia_api_key"] = ""
     return out
@@ -172,6 +183,7 @@ def _has_keys(cfg: dict[str, Any]) -> dict[str, bool]:
     return {
         "chatgpt": bool(str(cfg.get("chatgpt_api_key", "") or "").strip()),
         "deepseek": bool(str(cfg.get("deepseek_api_key", "") or "").strip()),
+        "qwen": bool(str(cfg.get("qwen_api_key", "") or "").strip()),
         "gemini": bool(str(cfg.get("gemini_api_key", "") or "").strip()),
         "nvidia": bool(str(cfg.get("nvidia_api_key", "") or "").strip()),
     }
@@ -253,6 +265,7 @@ async def ai_settings_page(request: Request):
             "task_prompts": merged_task_prompt_catalog(),
             "chatgpt_model_options": CHATGPT_MODEL_OPTIONS,
             "deepseek_model_options": DEEPSEEK_MODEL_OPTIONS,
+            "qwen_model_options": QWEN_MODEL_OPTIONS,
             "gemini_model_options": GEMINI_MODEL_OPTIONS,
             "nvidia_model_options": NVIDIA_MODEL_OPTIONS,
             "local_model_options": LOCAL_MODEL_OPTIONS,
@@ -268,12 +281,14 @@ async def ai_settings_save(
     provider: str = Form("chatgpt"),
     chatgpt_api_key: str = Form(""),
     deepseek_api_key: str = Form(""),
+    qwen_api_key: str = Form(""),
     gemini_api_key: str = Form(""),
     nvidia_api_key: str = Form(""),
     chatgpt_model: str = Form(""),
     local_base_url: str = Form(""),
     local_model: str = Form(""),
     deepseek_model: str = Form(""),
+    qwen_model: str = Form(""),
     gemini_model: str = Form(""),
     nvidia_model: str = Form(""),
     selected_system_prompt: str = Form(""),
@@ -293,12 +308,14 @@ async def ai_settings_save(
             "provider": provider,
             "chatgpt_api_key": chatgpt_api_key,
             "deepseek_api_key": deepseek_api_key,
+            "qwen_api_key": qwen_api_key,
             "gemini_api_key": gemini_api_key,
             "nvidia_api_key": nvidia_api_key,
             "chatgpt_model": chatgpt_model,
             "local_base_url": local_base_url,
             "local_model": local_model,
             "deepseek_model": deepseek_model,
+            "qwen_model": qwen_model,
             "gemini_model": gemini_model,
             "nvidia_model": nvidia_model,
             "selected_system_prompt": selected_system_prompt,
@@ -326,6 +343,7 @@ async def ai_settings_save(
             "task_prompts": merged_task_prompt_catalog(),
             "chatgpt_model_options": CHATGPT_MODEL_OPTIONS,
             "deepseek_model_options": DEEPSEEK_MODEL_OPTIONS,
+            "qwen_model_options": QWEN_MODEL_OPTIONS,
             "gemini_model_options": GEMINI_MODEL_OPTIONS,
             "nvidia_model_options": NVIDIA_MODEL_OPTIONS,
             "local_model_options": LOCAL_MODEL_OPTIONS,
@@ -346,6 +364,7 @@ async def ai_settings_api():
         "model_options": {
             "chatgpt": CHATGPT_MODEL_OPTIONS,
             "deepseek": DEEPSEEK_MODEL_OPTIONS,
+            "qwen": QWEN_MODEL_OPTIONS,
             "gemini": GEMINI_MODEL_OPTIONS,
             "nvidia": NVIDIA_MODEL_OPTIONS,
             "local": LOCAL_MODEL_OPTIONS,
@@ -410,20 +429,22 @@ async def test_connection(
     provider: str = Form("chatgpt"),
     chatgpt_api_key: str = Form(""),
     deepseek_api_key: str = Form(""),
+    qwen_api_key: str = Form(""),
     gemini_api_key: str = Form(""),
     nvidia_api_key: str = Form(""),
     chatgpt_model: str = Form(""),
     local_base_url: str = Form(""),
     local_model: str = Form(""),
     deepseek_model: str = Form(""),
+    qwen_model: str = Form(""),
     gemini_model: str = Form(""),
     nvidia_model: str = Form(""),
 ):
     cfg = load_gpt_config()
     provider = (provider or "").strip().lower()
-    if provider not in {"chatgpt", "local", "deepseek", "gemini", "nvidia"}:
+    if provider not in {"chatgpt", "local", "deepseek", "qwen", "gemini", "nvidia"}:
         provider = str(cfg.get("provider", "chatgpt") or "chatgpt").strip().lower()
-        if provider not in {"chatgpt", "local", "deepseek", "gemini", "nvidia"}:
+        if provider not in {"chatgpt", "local", "deepseek", "qwen", "gemini", "nvidia"}:
             provider = "chatgpt"
 
     if not (local_base_url or "").strip():
@@ -432,6 +453,8 @@ async def test_connection(
         chatgpt_model = str(cfg.get("chatgpt_model", "") or "")
     if not (deepseek_model or "").strip():
         deepseek_model = str(cfg.get("deepseek_model", "") or "")
+    if not (qwen_model or "").strip():
+        qwen_model = str(cfg.get("qwen_model", "") or "")
     if not (gemini_model or "").strip():
         gemini_model = str(cfg.get("gemini_model", "") or "")
     if not (nvidia_model or "").strip():
@@ -443,6 +466,8 @@ async def test_connection(
         chatgpt_api_key = str(saved_cfg.get("chatgpt_api_key", "") or "")
     elif provider == "deepseek" and not (deepseek_api_key or "").strip():
         deepseek_api_key = str(saved_cfg.get("deepseek_api_key", "") or "")
+    elif provider == "qwen" and not (qwen_api_key or "").strip():
+        qwen_api_key = str(saved_cfg.get("qwen_api_key", "") or "")
     elif provider == "gemini" and not (gemini_api_key or "").strip():
         gemini_api_key = str(saved_cfg.get("gemini_api_key", "") or "")
     elif provider == "nvidia" and not (nvidia_api_key or "").strip():
@@ -465,6 +490,22 @@ async def test_connection(
                 "ok": True,
                 "message": f"{msg} | Token余额: 未知",
                 "provider_used": "deepseek",
+                "token_balance_status": "unknown",
+                "token_balance_message": "未知",
+            }
+        if provider == "qwen":
+            if not (qwen_api_key or "").strip():
+                return JSONResponse(status_code=400, content={"ok": False, "error": "QWEN API Key not set"})
+            preferred = str(saved_cfg.get("qwen_base_url", "") or "")
+            region, base, msg = await asyncio.to_thread(detect_qwen_endpoint, qwen_api_key, preferred)
+            saved_cfg["qwen_base_url"] = base
+            save_gpt_config(saved_cfg)
+            return {
+                "ok": True,
+                "message": f"{msg} | 区域: {region.upper()} | Endpoint: {base} | Token余额: 未知",
+                "provider_used": "qwen",
+                "endpoint_region": region,
+                "endpoint_base_url": base,
                 "token_balance_status": "unknown",
                 "token_balance_message": "未知",
             }

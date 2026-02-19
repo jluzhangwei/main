@@ -13,9 +13,20 @@ from .state_store import (
     DEFAULT_GPT_MODEL,
     DEFAULT_LOCAL_MODEL,
     DEFAULT_NVIDIA_MODEL,
+    DEFAULT_QWEN_BASE_URL,
+    DEFAULT_QWEN_MODEL,
 )
 
 DEFAULT_SYSTEM_PROMPT = "You are a senior network log diagnosis assistant. Be rigorous and evidence-based."
+QWEN_CN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+QWEN_INTL_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+
+
+def _normalize_api_key(api_key: str) -> str:
+    key = str(api_key or "").strip()
+    if key.lower().startswith("bearer "):
+        key = key.split(" ", 1)[1].strip()
+    return key
 
 
 def _ssl_context() -> ssl.SSLContext:
@@ -106,15 +117,43 @@ def _get_json(url: str, headers: dict[str, str] | None = None, timeout: int = 30
 
 
 def test_openai_connection(api_key: str) -> str:
-    payload = _get_json("https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {api_key}"})
+    key = _normalize_api_key(api_key)
+    payload = _get_json("https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {key}"})
     count = len(payload.get("data", [])) if isinstance(payload.get("data", []), list) else 0
     return f"ChatGPT 连接成功，models={count}"
 
 
 def test_deepseek_connection(api_key: str) -> str:
-    payload = _get_json("https://api.deepseek.com/v1/models", headers={"Authorization": f"Bearer {api_key}"})
+    key = _normalize_api_key(api_key)
+    payload = _get_json("https://api.deepseek.com/v1/models", headers={"Authorization": f"Bearer {key}"})
     count = len(payload.get("data", [])) if isinstance(payload.get("data", []), list) else 0
     return f"DeepSeek 连接成功，models={count}"
+
+
+def test_qwen_connection(api_key: str, base_url: str = DEFAULT_QWEN_BASE_URL) -> str:
+    key = _normalize_api_key(api_key)
+    base = (base_url or DEFAULT_QWEN_BASE_URL).strip().rstrip("/")
+    payload = _get_json(
+        f"{base}/models",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    count = len(payload.get("data", [])) if isinstance(payload.get("data", []), list) else 0
+    return f"QWEN 连接成功，models={count}"
+
+
+def detect_qwen_endpoint(api_key: str, preferred_base_url: str = "") -> tuple[str, str, str]:
+    pref = (preferred_base_url or "").strip().rstrip("/")
+    candidates: list[tuple[str, str]] = [("intl", QWEN_INTL_BASE_URL), ("cn", QWEN_CN_BASE_URL)]
+    if pref:
+        candidates = sorted(candidates, key=lambda x: 0 if x[1] == pref else 1)
+    errors: list[str] = []
+    for region, base in candidates:
+        try:
+            msg = test_qwen_connection(api_key, base)
+            return region, base, msg
+        except Exception as exc:
+            errors.append(f"{region}:{exc}")
+    raise RuntimeError("QWEN endpoint auto-detect failed: " + " | ".join(errors))
 
 
 def test_gemini_connection(api_key: str) -> str:
@@ -124,7 +163,8 @@ def test_gemini_connection(api_key: str) -> str:
 
 
 def test_nvidia_connection(api_key: str) -> str:
-    payload = _get_json("https://integrate.api.nvidia.com/v1/models", headers={"Authorization": f"Bearer {api_key}"})
+    key = _normalize_api_key(api_key)
+    payload = _get_json("https://integrate.api.nvidia.com/v1/models", headers={"Authorization": f"Bearer {key}"})
     count = len(payload.get("data", [])) if isinstance(payload.get("data", []), list) else 0
     return f"NVIDIA 连接成功，models={count}"
 
@@ -149,7 +189,8 @@ def _run_openai_compatible(base_url: str, api_key: str, model: str, system_promp
             {"role": "user", "content": user_text},
         ],
     }
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    key = _normalize_api_key(api_key)
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
     payload = _post_json(base_url.rstrip("/") + "/chat/completions", body, headers=headers)
     text = _extract_chat_text(payload)
     if not text:
@@ -172,6 +213,30 @@ def run_analysis(llm: dict[str, str], report_text: str):
             raise RuntimeError("DeepSeek API Key not set")
         model = llm.get("deepseek_model") or DEFAULT_DEEPSEEK_MODEL
         return _run_openai_compatible("https://api.deepseek.com/v1", key, model, system_prompt, task_prompt, report_text)
+    if provider == "qwen":
+        key = _normalize_api_key(llm.get("api_key", ""))
+        if not key:
+            raise RuntimeError("QWEN API Key not set")
+        model = llm.get("qwen_model") or DEFAULT_QWEN_MODEL
+        base_url = (llm.get("qwen_base_url") or DEFAULT_QWEN_BASE_URL).strip().rstrip("/")
+        candidates = [base_url]
+        for alt in (QWEN_INTL_BASE_URL, QWEN_CN_BASE_URL):
+            if alt not in candidates:
+                candidates.append(alt)
+        last_exc: Exception | None = None
+        for base in candidates:
+            try:
+                return _run_openai_compatible(
+                    base,
+                    key,
+                    model,
+                    system_prompt,
+                    task_prompt,
+                    report_text,
+                )
+            except Exception as exc:
+                last_exc = exc
+        raise RuntimeError(f"QWEN call failed on all endpoints, last error: {last_exc}")
     if provider == "nvidia":
         key = llm.get("api_key", "")
         if not key:
@@ -214,6 +279,8 @@ def model_used(llm: dict[str, str]) -> str:
         return llm.get("local_model", "")
     if provider == "deepseek":
         return llm.get("deepseek_model", "")
+    if provider == "qwen":
+        return llm.get("qwen_model", "")
     if provider == "gemini":
         return llm.get("gemini_model", "")
     if provider == "nvidia":

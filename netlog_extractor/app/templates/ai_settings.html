@@ -17,6 +17,7 @@
         <select id="provider_select">
           <option value="chatgpt" {% if cfg.provider=='chatgpt' %}selected{% endif %}>ChatGPT</option>
           <option value="deepseek" {% if cfg.provider=='deepseek' %}selected{% endif %}>DeepSeek</option>
+          <option value="qwen" {% if cfg.provider=='qwen' %}selected{% endif %}>QWEN</option>
           <option value="gemini" {% if cfg.provider=='gemini' %}selected{% endif %}>Gemini</option>
           <option value="nvidia" {% if cfg.provider=='nvidia' %}selected{% endif %}>NVIDIA</option>
           <option value="local" {% if cfg.provider=='local' %}selected{% endif %}>本地大模型</option>
@@ -64,6 +65,22 @@
       <div id="deepseek_custom_wrap" {% if cfg.deepseek_model in deepseek_model_options %}style="display:none;"{% endif %}>
         <label>自定义 DeepSeek 模型</label>
         <input id="deepseek_model_custom" value="{% if cfg.deepseek_model in deepseek_model_options %}{% else %}{{ cfg.deepseek_model }}{% endif %}" placeholder="例如 deepseek-chat" />
+      </div>
+    </div>
+
+    <div id="qwen_settings" class="ai-grid ai-row">
+      <div>
+        <label>QWEN 模型</label>
+        <select id="qwen_model_select">
+          {% for m in qwen_model_options %}
+          <option value="{{ m }}" {% if cfg.qwen_model == m %}selected{% endif %}>{{ m }}</option>
+          {% endfor %}
+          <option value="__custom__" {% if cfg.qwen_model not in qwen_model_options %}selected{% endif %}>自定义...</option>
+        </select>
+      </div>
+      <div id="qwen_custom_wrap" {% if cfg.qwen_model in qwen_model_options %}style="display:none;"{% endif %}>
+        <label>自定义 QWEN 模型</label>
+        <input id="qwen_model_custom" value="{% if cfg.qwen_model in qwen_model_options %}{% else %}{{ cfg.qwen_model }}{% endif %}" placeholder="例如 qwen-plus" />
       </div>
     </div>
 
@@ -260,12 +277,14 @@
   let savedKeyState = {
     chatgpt: {{ 'true' if has_keys.chatgpt else 'false' }},
     deepseek: {{ 'true' if has_keys.deepseek else 'false' }},
+    qwen: {{ 'true' if has_keys.qwen else 'false' }},
     gemini: {{ 'true' if has_keys.gemini else 'false' }},
     nvidia: {{ 'true' if has_keys.nvidia else 'false' }}
   };
   let apiKeys = {
     chatgpt: '',
     deepseek: '',
+    qwen: '',
     gemini: '',
     nvidia: ''
   };
@@ -291,6 +310,7 @@
   function getConfigFromUI() {
     const chatgptModel = selectedModel(id('chatgpt_model_select'), id('chatgpt_model_custom'));
     const deepseekModel = selectedModel(id('deepseek_model_select'), id('deepseek_model_custom'));
+    const qwenModel = selectedModel(id('qwen_model_select'), id('qwen_model_custom'));
     const geminiModel = selectedModel(id('gemini_model_select'), id('gemini_model_custom'));
     const nvidiaModel = selectedModel(id('nvidia_model_select'), id('nvidia_model_custom'));
     const localModel = selectedModel(id('local_model_select'), id('local_model_custom'));
@@ -298,12 +318,14 @@
       provider: id('provider_select').value,
       chatgpt_api_key: apiKeys.chatgpt || '',
       deepseek_api_key: apiKeys.deepseek || '',
+      qwen_api_key: apiKeys.qwen || '',
       gemini_api_key: apiKeys.gemini || '',
       nvidia_api_key: apiKeys.nvidia || '',
       chatgpt_model: chatgptModel,
       local_base_url: id('local_base_url').value,
       local_model: localModel,
       deepseek_model: deepseekModel,
+      qwen_model: qwenModel,
       gemini_model: geminiModel,
       nvidia_model: nvidiaModel,
       selected_system_prompt: id('selected_system_prompt').value,
@@ -317,11 +339,13 @@
     const p = id('provider_select').value;
     id('chatgpt_settings').style.display = p === 'chatgpt' ? '' : 'none';
     id('deepseek_settings').style.display = p === 'deepseek' ? '' : 'none';
+    id('qwen_settings').style.display = p === 'qwen' ? '' : 'none';
     id('gemini_settings').style.display = p === 'gemini' ? '' : 'none';
     id('nvidia_settings').style.display = p === 'nvidia' ? '' : 'none';
     id('local_settings').style.display = p === 'local' ? '' : 'none';
     syncCustomModelInput('chatgpt_model_select', 'chatgpt_custom_wrap', 'chatgpt_model_custom');
     syncCustomModelInput('deepseek_model_select', 'deepseek_custom_wrap', 'deepseek_model_custom');
+    syncCustomModelInput('qwen_model_select', 'qwen_custom_wrap', 'qwen_model_custom');
     syncCustomModelInput('gemini_model_select', 'gemini_custom_wrap', 'gemini_model_custom');
     syncCustomModelInput('nvidia_model_select', 'nvidia_custom_wrap', 'nvidia_model_custom');
     syncCustomModelInput('local_model_select', 'local_custom_wrap', 'local_model_custom');
@@ -391,6 +415,10 @@
       setBrandIcon(iconMap.deepseek, 'DeepSeek', 'DeepSeek', '#2563eb', 'DS');
       return;
     }
+    if (provider === 'qwen') {
+      setBrandIcon(iconMap.qwen, 'QWEN', 'QWEN', '#ef4444', 'QW');
+      return;
+    }
     if (provider === 'gemini') {
       setBrandIcon(iconMap.gemini, 'Gemini', 'Gemini', '#3b82f6', 'GM');
       return;
@@ -446,6 +474,7 @@
     const state = [
       `ChatGPT Key: ${(savedKeyState.chatgpt || !!apiKeys.chatgpt) ? '已保存' : '未保存'}`,
       `DeepSeek Key: ${(savedKeyState.deepseek || !!apiKeys.deepseek) ? '已保存' : '未保存'}`,
+      `QWEN Key: ${(savedKeyState.qwen || !!apiKeys.qwen) ? '已保存' : '未保存'}`,
       `Gemini Key: ${(savedKeyState.gemini || !!apiKeys.gemini) ? '已保存' : '未保存'}`,
       `NVIDIA Key: ${(savedKeyState.nvidia || !!apiKeys.nvidia) ? '已保存' : '未保存'}`,
     ];
@@ -466,7 +495,7 @@
     if (data && data.has_keys) {
       savedKeyState = data.has_keys;
     }
-    apiKeys = { chatgpt: '', deepseek: '', gemini: '', nvidia: '' };
+    apiKeys = { chatgpt: '', deepseek: '', qwen: '', gemini: '', nvidia: '' };
     updateApiKeyState();
     id('llm_test_result').textContent = '模型配置已保存。';
   }
@@ -529,11 +558,13 @@
   id('provider_select').addEventListener('change', updateProviderSection);
   id('chatgpt_model_select').addEventListener('change', updateProviderSection);
   id('deepseek_model_select').addEventListener('change', updateProviderSection);
+  id('qwen_model_select').addEventListener('change', updateProviderSection);
   id('gemini_model_select').addEventListener('change', updateProviderSection);
   id('nvidia_model_select').addEventListener('change', updateProviderSection);
   id('local_model_select').addEventListener('change', updateProviderSection);
   id('chatgpt_model_custom').addEventListener('input', updateProviderIcon);
   id('deepseek_model_custom').addEventListener('input', updateProviderIcon);
+  id('qwen_model_custom').addEventListener('input', updateProviderIcon);
   id('gemini_model_custom').addEventListener('input', updateProviderIcon);
   id('nvidia_model_custom').addEventListener('input', updateProviderIcon);
   id('local_model_custom').addEventListener('input', updateProviderIcon);
@@ -549,6 +580,7 @@
     const map = {
       chatgpt: 'chatgpt',
       deepseek: 'deepseek',
+      qwen: 'qwen',
       gemini: 'gemini',
       nvidia: 'nvidia'
     };

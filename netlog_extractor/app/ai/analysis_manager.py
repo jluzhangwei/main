@@ -64,6 +64,13 @@ class AIAnalysisManager:
         if call_started > 0 and call_timeout > 0:
             call_elapsed = max(0.0, time.monotonic() - call_started)
             active_note = f" | 当前调用 {call_elapsed:.1f}s/{call_timeout:.0f}s"
+        # Global summary is task-level work; avoid showing stale per-device fields.
+        if stage == "全局汇总中":
+            return (
+                f"阶段: {stage} | 设备总数 {total}，已完成 {done}，进行中 {running} | "
+                f"设备批次 {rounds_done}/{rounds_total} | 调用单元 {unit_done}/{unit_total} | "
+                f"已耗时 {elapsed:.1f}s{active_note}"
+            )
         return (
             f"阶段: {stage} | 设备总数 {total}，已完成 {done}，进行中 {running}，设备: {running_display} | "
             f"设备批次 {rounds_done}/{rounds_total} | 调用单元 {unit_done}/{unit_total} | "
@@ -91,6 +98,8 @@ class AIAnalysisManager:
             api_key = str(cfg.get("chatgpt_api_key") or "")
         elif provider == "deepseek":
             api_key = str(cfg.get("deepseek_api_key") or "")
+        elif provider == "qwen":
+            api_key = str(cfg.get("qwen_api_key") or "")
         elif provider == "gemini":
             api_key = str(cfg.get("gemini_api_key") or "")
         elif provider == "nvidia":
@@ -103,6 +112,8 @@ class AIAnalysisManager:
             "local_base_url": str(cfg.get("local_base_url") or ""),
             "local_model": str(cfg.get("local_model") or ""),
             "deepseek_model": str(cfg.get("deepseek_model") or ""),
+            "qwen_model": str(cfg.get("qwen_model") or ""),
+            "qwen_base_url": str(cfg.get("qwen_base_url") or ""),
             "gemini_model": str(cfg.get("gemini_model") or ""),
             "nvidia_model": str(cfg.get("nvidia_model") or ""),
             "system_prompt_text": system_text,
