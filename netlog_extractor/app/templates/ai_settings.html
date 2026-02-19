@@ -1,0 +1,572 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card ai-card">
+  <div class="ai-head">
+    <span id="provider_brand_inline" class="ai-brand" title="Provider"></span>
+    <h2>AI 分析设置</h2>
+  </div>
+
+  {% if saved %}<div class="ok-msg">已保存</div>{% endif %}
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+  <div class="ai-section">
+    <div class="ai-section-title">大模型配置</div>
+    <div class="ai-grid">
+      <div>
+        <label>大模型选择</label>
+        <select id="provider_select">
+          <option value="chatgpt" {% if cfg.provider=='chatgpt' %}selected{% endif %}>ChatGPT</option>
+          <option value="deepseek" {% if cfg.provider=='deepseek' %}selected{% endif %}>DeepSeek</option>
+          <option value="gemini" {% if cfg.provider=='gemini' %}selected{% endif %}>Gemini</option>
+          <option value="nvidia" {% if cfg.provider=='nvidia' %}selected{% endif %}>NVIDIA</option>
+          <option value="local" {% if cfg.provider=='local' %}selected{% endif %}>本地大模型</option>
+        </select>
+        <div id="llm_test_result" class="hint">模型连接测试结果将在此显示。</div>
+      </div>
+      <div>
+        <label>API Key 管理</label>
+        <div class="actions" style="margin-top:0;">
+          <button class="btn" id="import_api_key_btn" type="button">导入 API Key</button>
+          <button class="btn" id="test_llm_btn" type="button">模型连接测试</button>
+          <button class="btn" id="save_llm_btn" type="button">保存模型配置</button>
+        </div>
+        <div class="hint">用途：保存当前大模型来源、模型名、本地地址、已选提示词模板。下次打开页面自动带出。</div>
+        <div id="api_key_state" class="hint"></div>
+      </div>
+    </div>
+
+    <div id="chatgpt_settings" class="ai-grid ai-row">
+      <div>
+        <label>ChatGPT 模型</label>
+        <select id="chatgpt_model_select">
+          {% for m in chatgpt_model_options %}
+          <option value="{{ m }}" {% if cfg.chatgpt_model == m %}selected{% endif %}>{{ m }}</option>
+          {% endfor %}
+          <option value="__custom__" {% if cfg.chatgpt_model not in chatgpt_model_options %}selected{% endif %}>自定义...</option>
+        </select>
+      </div>
+      <div id="chatgpt_custom_wrap" {% if cfg.chatgpt_model in chatgpt_model_options %}style="display:none;"{% endif %}>
+        <label>自定义 ChatGPT 模型</label>
+        <input id="chatgpt_model_custom" value="{% if cfg.chatgpt_model in chatgpt_model_options %}{% else %}{{ cfg.chatgpt_model }}{% endif %}" placeholder="例如 gpt-4.1-mini" />
+      </div>
+    </div>
+
+    <div id="deepseek_settings" class="ai-grid ai-row">
+      <div>
+        <label>DeepSeek 模型</label>
+        <select id="deepseek_model_select">
+          {% for m in deepseek_model_options %}
+          <option value="{{ m }}" {% if cfg.deepseek_model == m %}selected{% endif %}>{{ m }}</option>
+          {% endfor %}
+          <option value="__custom__" {% if cfg.deepseek_model not in deepseek_model_options %}selected{% endif %}>自定义...</option>
+        </select>
+      </div>
+      <div id="deepseek_custom_wrap" {% if cfg.deepseek_model in deepseek_model_options %}style="display:none;"{% endif %}>
+        <label>自定义 DeepSeek 模型</label>
+        <input id="deepseek_model_custom" value="{% if cfg.deepseek_model in deepseek_model_options %}{% else %}{{ cfg.deepseek_model }}{% endif %}" placeholder="例如 deepseek-chat" />
+      </div>
+    </div>
+
+    <div id="gemini_settings" class="ai-grid ai-row">
+      <div>
+        <label>Gemini 模型</label>
+        <select id="gemini_model_select">
+          {% for m in gemini_model_options %}
+          <option value="{{ m }}" {% if cfg.gemini_model == m %}selected{% endif %}>{{ m }}</option>
+          {% endfor %}
+          <option value="__custom__" {% if cfg.gemini_model not in gemini_model_options %}selected{% endif %}>自定义...</option>
+        </select>
+      </div>
+      <div id="gemini_custom_wrap" {% if cfg.gemini_model in gemini_model_options %}style="display:none;"{% endif %}>
+        <label>自定义 Gemini 模型</label>
+        <input id="gemini_model_custom" value="{% if cfg.gemini_model in gemini_model_options %}{% else %}{{ cfg.gemini_model }}{% endif %}" placeholder="例如 gemini-2.5-flash" />
+      </div>
+    </div>
+
+    <div id="nvidia_settings" class="ai-grid ai-row">
+      <div>
+        <label>NVIDIA 模型</label>
+        <select id="nvidia_model_select">
+          {% for m in nvidia_model_options %}
+          <option value="{{ m }}" {% if cfg.nvidia_model == m %}selected{% endif %}>{{ m }}</option>
+          {% endfor %}
+          <option value="__custom__" {% if cfg.nvidia_model not in nvidia_model_options %}selected{% endif %}>自定义...</option>
+        </select>
+      </div>
+      <div id="nvidia_custom_wrap" {% if cfg.nvidia_model in nvidia_model_options %}style="display:none;"{% endif %}>
+        <label>自定义 NVIDIA 模型</label>
+        <input id="nvidia_model_custom" value="{% if cfg.nvidia_model in nvidia_model_options %}{% else %}{{ cfg.nvidia_model }}{% endif %}" placeholder="例如 meta/llama-3.1-405b-instruct" />
+      </div>
+    </div>
+
+    <div id="local_settings" class="ai-grid ai-row">
+      <div>
+        <label>本地大模型地址</label>
+        <input id="local_base_url" value="{{ cfg.local_base_url }}" placeholder="http://127.0.0.1:1234" />
+      </div>
+      <div>
+        <label>本地大模型模型</label>
+        <select id="local_model_select">
+          {% for m in local_model_options %}
+          <option value="{{ m }}" {% if cfg.local_model == m %}selected{% endif %}>{{ m }}</option>
+          {% endfor %}
+          <option value="__custom__" {% if cfg.local_model not in local_model_options %}selected{% endif %}>自定义...</option>
+        </select>
+      </div>
+      <div id="local_custom_wrap" {% if cfg.local_model in local_model_options %}style="display:none;"{% endif %}>
+        <label>自定义本地模型</label>
+        <input id="local_model_custom" value="{% if cfg.local_model in local_model_options %}{% else %}{{ cfg.local_model }}{% endif %}" placeholder="例如 qwen/qwen3-coder-30b" />
+      </div>
+    </div>
+  </div>
+
+  <div class="ai-section">
+    <div class="ai-section-title">提示词设置</div>
+    <div class="ai-grid">
+      <div>
+        <label>系统提示词模板（严格约束）</label>
+        <select id="selected_system_prompt">
+          {% for k,v in system_prompts.items() %}
+          <option value="{{ k }}" {% if cfg.selected_system_prompt==k %}selected{% endif %}>{{ k }}</option>
+          {% endfor %}
+        </select>
+        <div class="hint">系统提示词用于约束 AI 行为与输出规范，建议固定使用“网络日志诊断专家-严格模式”。</div>
+      </div>
+      <div>
+        <label>系统模板查看</label>
+        <div class="actions" style="margin-top:0;">
+          <button class="btn" id="review_system_template_btn" type="button">Review 系统提示词</button>
+        </div>
+        <div class="hint">点击弹窗查看当前系统模板内容。</div>
+      </div>
+    </div>
+
+    <div class="ai-grid ai-row">
+      <div>
+        <label>任务提示词模板</label>
+        <select id="selected_task_prompt">
+          {% for k,v in task_prompts.items() %}
+          <option value="{{ k }}" {% if cfg.selected_task_prompt==k %}selected{% endif %}>{{ k }}</option>
+          {% endfor %}
+        </select>
+        <div class="hint">任务提示词描述本次分析目标；可选择不使用模板。</div>
+      </div>
+      <div>
+        <label>模板查看</label>
+        <div class="actions" style="margin-top:0;">
+          <button class="btn" id="review_task_template_btn" type="button">Review 任务提示词</button>
+        </div>
+        <div class="hint">点击弹窗查看当前任务模板内容。</div>
+      </div>
+    </div>
+
+    <details class="ai-details ai-row">
+      <summary>提示词管理（可选）</summary>
+      <div class="prompt-stack">
+        <div>
+          <label>导入提示词文件（.txt）</label>
+          <div class="file-picker">
+            <label for="prompt_file" class="file-btn">选择文件</label>
+            <span id="prompt_file_name" class="file-name">未选择文件</span>
+          </div>
+          <input id="prompt_file" class="file-real" type="file" accept=".txt" />
+          <div class="hint">留空名称时自动使用文件名。</div>
+        </div>
+        <div class="ai-grid">
+          <div>
+            <label>导入到</label>
+            <select id="prompt_kind_select">
+              <option value="task" selected>任务提示词</option>
+              <option value="system">系统提示词</option>
+            </select>
+          </div>
+          <div>
+            <label>导入时命名（可选）</label>
+            <input id="prompt_name" type="text" placeholder="例如：网络日志根因追踪模板" />
+          </div>
+        </div>
+        <div class="actions"><button class="btn" id="import_prompt_btn" type="button">导入提示词</button></div>
+      </div>
+    </details>
+
+    <div class="ai-row">
+      <label>系统补充约束（可选）</label>
+      <textarea id="system_prompt_extra" placeholder="可追加系统级约束，例如：每条结论必须给证据链。">{{ cfg.system_prompt_extra }}</textarea>
+    </div>
+
+    <div class="ai-row">
+      <label>任务补充要求（可选）</label>
+      <textarea id="task_prompt_extra" placeholder="会追加在任务模板后面。">{{ cfg.task_prompt_extra }}</textarea>
+    </div>
+  </div>
+
+  <details class="ai-details" style="margin-top:10px;">
+    <summary>Token 统计</summary>
+    <pre style="white-space:pre-wrap;">{{ stats | tojson(indent=2) }}</pre>
+  </details>
+</div>
+
+<div id="prompt_modal" class="modal-mask">
+  <div class="modal-box">
+    <div class="modal-head">
+      <div id="prompt_modal_title" class="modal-title">模板内容</div>
+      <button id="prompt_modal_close" class="modal-close" type="button">关闭</button>
+    </div>
+    <div class="modal-body"><textarea id="prompt_modal_text" readonly></textarea></div>
+  </div>
+</div>
+
+<style>
+  .ai-card { background: #f8fafc; }
+  .ai-head { display:flex; align-items:center; gap:8px; }
+  .ai-head h2 { margin:0 0 8px; }
+  .ai-brand { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; flex:0 0 24px; }
+  .ai-brand img { width:20px; height:20px; border-radius:4px; display:block; }
+  .ai-brand svg { width:20px; height:20px; display:block; }
+  .ok-msg { color:#065f46; font-weight:700; margin:6px 0; }
+  .ai-section { border:1px solid #d7dee7; border-radius:10px; background:#fff; padding:10px; margin-top:10px; }
+  .ai-section-title { font-weight:700; color:#1e293b; margin:0 0 8px; }
+  .ai-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .ai-row { margin-top:10px; }
+  .ai-card input[type=text], .ai-card input[type=password], .ai-card input[type=number], .ai-card select, .ai-card textarea {
+    width:100%; max-width:none; border:1px solid #cbd5e1; border-radius:8px; padding:8px 10px; background:#fff; box-sizing:border-box;
+  }
+  .ai-card input[type=text], .ai-card input[type=password], .ai-card input[type=number], .ai-card select { min-height:40px; }
+  .ai-card textarea { min-height:90px; }
+  .actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+  .btn { border:1px solid #cbd5e1; border-radius:8px; background:#fff; color:#0f172a; padding:8px 12px; min-width:auto; min-height:40px; font-weight:700; cursor:pointer; }
+  .hint { font-size:12px; color:#475569; margin-top:4px; }
+  .ai-details { margin-top:10px; border:1px dashed #cbd5e1; border-radius:8px; padding:8px 10px; background:#fff; }
+  .ai-details summary { cursor:pointer; font-weight:700; }
+  .file-picker { display:inline-flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .file-btn { display:inline-flex; align-items:center; justify-content:center; min-height:40px; padding:0 12px; border:1px solid #cbd5e1; border-radius:8px; background:#fff; cursor:pointer; font-weight:700; }
+  .file-name { color:#334155; font-size:13px; }
+  .file-real { position:absolute; left:-9999px; width:1px; height:1px; opacity:0; pointer-events:none; }
+  .prompt-stack { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
+  .modal-mask { position:fixed; inset:0; background:rgba(15,23,42,.45); display:none; align-items:center; justify-content:center; z-index:9999; padding:16px; }
+  .modal-box { width:min(760px,100%); background:#fff; border:1px solid #cbd5e1; border-radius:12px; padding:12px; box-shadow:0 20px 35px rgba(15,23,42,.25); }
+  .modal-head { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; }
+  .modal-title { font-weight:700; }
+  .modal-close { border:1px solid #cbd5e1; border-radius:8px; background:#fff; padding:4px 8px; cursor:pointer; font-weight:700; }
+  .modal-body textarea { width:100%; min-height:260px; border:1px solid #cbd5e1; border-radius:8px; padding:10px; font-family:Menlo,Consolas,monospace; box-sizing:border-box; }
+
+  @media (max-width: 920px) {
+    .ai-grid { grid-template-columns:1fr; }
+  }
+</style>
+
+<script>
+  function id(v) { return document.getElementById(v); }
+  let savedKeyState = {
+    chatgpt: {{ 'true' if has_keys.chatgpt else 'false' }},
+    deepseek: {{ 'true' if has_keys.deepseek else 'false' }},
+    gemini: {{ 'true' if has_keys.gemini else 'false' }},
+    nvidia: {{ 'true' if has_keys.nvidia else 'false' }}
+  };
+  let apiKeys = {
+    chatgpt: '',
+    deepseek: '',
+    gemini: '',
+    nvidia: ''
+  };
+
+  function selectedModel(selectEl, customEl) {
+    if (!selectEl) return '';
+    const val = (selectEl.value || '').trim();
+    if (val === '__custom__') return (customEl?.value || '').trim();
+    return val;
+  }
+
+  function syncCustomModelInput(selectId, wrapId, inputId) {
+    const sel = id(selectId);
+    const wrap = id(wrapId);
+    if (!sel || !wrap) return;
+    wrap.style.display = sel.value === '__custom__' ? '' : 'none';
+    if (sel.value !== '__custom__') {
+      const input = id(inputId);
+      if (input) input.value = '';
+    }
+  }
+
+  function getConfigFromUI() {
+    const chatgptModel = selectedModel(id('chatgpt_model_select'), id('chatgpt_model_custom'));
+    const deepseekModel = selectedModel(id('deepseek_model_select'), id('deepseek_model_custom'));
+    const geminiModel = selectedModel(id('gemini_model_select'), id('gemini_model_custom'));
+    const nvidiaModel = selectedModel(id('nvidia_model_select'), id('nvidia_model_custom'));
+    const localModel = selectedModel(id('local_model_select'), id('local_model_custom'));
+    return {
+      provider: id('provider_select').value,
+      chatgpt_api_key: apiKeys.chatgpt || '',
+      deepseek_api_key: apiKeys.deepseek || '',
+      gemini_api_key: apiKeys.gemini || '',
+      nvidia_api_key: apiKeys.nvidia || '',
+      chatgpt_model: chatgptModel,
+      local_base_url: id('local_base_url').value,
+      local_model: localModel,
+      deepseek_model: deepseekModel,
+      gemini_model: geminiModel,
+      nvidia_model: nvidiaModel,
+      selected_system_prompt: id('selected_system_prompt').value,
+      selected_task_prompt: id('selected_task_prompt').value,
+      system_prompt_extra: id('system_prompt_extra').value,
+      task_prompt_extra: id('task_prompt_extra').value,
+    };
+  }
+
+  function updateProviderSection() {
+    const p = id('provider_select').value;
+    id('chatgpt_settings').style.display = p === 'chatgpt' ? '' : 'none';
+    id('deepseek_settings').style.display = p === 'deepseek' ? '' : 'none';
+    id('gemini_settings').style.display = p === 'gemini' ? '' : 'none';
+    id('nvidia_settings').style.display = p === 'nvidia' ? '' : 'none';
+    id('local_settings').style.display = p === 'local' ? '' : 'none';
+    syncCustomModelInput('chatgpt_model_select', 'chatgpt_custom_wrap', 'chatgpt_model_custom');
+    syncCustomModelInput('deepseek_model_select', 'deepseek_custom_wrap', 'deepseek_model_custom');
+    syncCustomModelInput('gemini_model_select', 'gemini_custom_wrap', 'gemini_model_custom');
+    syncCustomModelInput('nvidia_model_select', 'nvidia_custom_wrap', 'nvidia_model_custom');
+    syncCustomModelInput('local_model_select', 'local_custom_wrap', 'local_model_custom');
+    updateProviderIcon();
+  }
+
+  function updateProviderIcon() {
+    const providerEl = id('provider_select');
+    const providerBrandInlineEl = id('provider_brand_inline');
+    if (!providerEl || !providerBrandInlineEl) return;
+    const provider = (providerEl.value || 'chatgpt').trim();
+    const svgDataUri = (bg, txt) => {
+      const color = bg || '#334155';
+      const svg =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">' +
+        '<rect width="24" height="24" rx="6" fill="' + color + '"/>' +
+        '<text x="12" y="15" text-anchor="middle" font-size="9" font-family="Arial, sans-serif" fill="white">' + txt + '</text>' +
+        '</svg>';
+      return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+    };
+    const setBrandIcon = (url, alt, title, fallbackBg, fallbackLabel) => {
+      const fb = svgDataUri(fallbackBg, fallbackLabel);
+      providerBrandInlineEl.innerHTML = '<img src="' + url + '" alt="' + alt + '" title="' + title + '">';
+      const img = providerBrandInlineEl.querySelector('img');
+      if (img) {
+        img.onerror = () => {
+          img.onerror = null;
+          img.src = fb;
+        };
+      }
+    };
+    const setGemmaIcon = () => {
+      providerBrandInlineEl.innerHTML =
+        '<svg viewBox="0 0 24 24" aria-hidden="true">' +
+        '<circle cx="12" cy="12" r="9.5" fill="none" stroke="#c7d2fe" stroke-width="1.2"/>' +
+        '<path d="M12 3.5v17M3.5 12h17M5.8 5.8l12.4 12.4M18.2 5.8L5.8 18.2" stroke="#e2e8f0" stroke-width="0.8"/>' +
+        '<path d="M12 5.8l3.8 6.2L12 18.2 8.2 12z" fill="none" stroke="#3b82f6" stroke-width="1.6" stroke-linejoin="round"/>' +
+        '</svg>';
+    };
+    const setLlamaIcon = () => {
+      providerBrandInlineEl.innerHTML =
+        '<svg viewBox="0 0 24 24" aria-hidden="true">' +
+        '<path d="M6.2 12c1.6-3.5 3.1-3.5 5.8 0-2.7 3.5-4.2 3.5-5.8 0z" fill="none" stroke="#1d4ed8" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>' +
+        '<path d="M12 12c1.6-3.5 3.1-3.5 5.8 0-2.7 3.5-4.2 3.5-5.8 0z" fill="none" stroke="#1d4ed8" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>' +
+        '</svg>';
+    };
+    const iconMap = {
+      openai: 'https://openai.com/favicon.ico',
+      deepseek: 'https://www.deepseek.com/favicon.ico',
+      gemini: 'https://www.gstatic.com/lamda/images/gemini_sparkle_aurora_33f86dc0c0257da337c63.svg',
+      nvidia: 'https://www.nvidia.com/favicon.ico',
+      lmstudio: 'https://lmstudio.ai/favicon.ico',
+      qwen: 'https://upload.wikimedia.org/wikipedia/commons/6/69/Qwen_logo.svg',
+      llama: 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/89/Meta_Platforms_Inc._logo.svg/64px-Meta_Platforms_Inc._logo.svg.png',
+      mistral: 'https://mistral.ai/favicon.ico',
+      gemma: 'https://ai.google.dev/favicon.ico',
+      claude: 'https://www.anthropic.com/favicon.ico',
+      cohere: 'https://cohere.com/favicon.ico',
+      grok: 'https://x.ai/favicon.ico',
+      yi: 'https://www.lingyiwanwu.com/favicon.ico'
+    };
+    if (provider === 'chatgpt') {
+      setBrandIcon(iconMap.openai, 'OpenAI', 'ChatGPT', '#10a37f', 'OA');
+      return;
+    }
+    if (provider === 'deepseek') {
+      setBrandIcon(iconMap.deepseek, 'DeepSeek', 'DeepSeek', '#2563eb', 'DS');
+      return;
+    }
+    if (provider === 'gemini') {
+      setBrandIcon(iconMap.gemini, 'Gemini', 'Gemini', '#3b82f6', 'GM');
+      return;
+    }
+    if (provider === 'nvidia') {
+      setBrandIcon(iconMap.nvidia, 'NVIDIA', 'NVIDIA', '#76b900', 'NV');
+      return;
+    }
+
+    const localModelRaw = (selectedModel(id('local_model_select'), id('local_model_custom')).toLowerCase().trim());
+    const vendorPrefix = (localModelRaw.split(/[-_/:.\s]/).filter(Boolean)[0] || 'lmstudio');
+    const vendorAliasMap = {
+      google: 'gemma',
+      meta: 'llama',
+      'meta-llama': 'llama',
+      mixtral: 'mistral',
+      'command-r': 'cohere',
+      moonshot: 'kimi'
+    };
+    const localVendor = vendorAliasMap[vendorPrefix] || vendorPrefix;
+    const fallbackMap = {
+      qwen: ['#ef4444', 'QW'],
+      deepseek: ['#2563eb', 'DS'],
+      llama: ['#0ea5e9', 'LL'],
+      mistral: ['#f59e0b', 'MS'],
+      gemma: ['#3b82f6', 'GM'],
+      claude: ['#8b5cf6', 'CL'],
+      cohere: ['#0891b2', 'CO'],
+      grok: ['#111827', 'GX'],
+      yi: ['#059669', 'YI'],
+      glm: ['#0f766e', 'GL'],
+      baichuan: ['#0ea5e9', 'BC'],
+      internlm: ['#9333ea', 'IL'],
+      doubao: ['#1d4ed8', 'DB'],
+      kimi: ['#ec4899', 'KM'],
+      phi: ['#4f46e5', 'PH'],
+      lmstudio: ['#334155', 'LM']
+    };
+    const fb = fallbackMap[localVendor] || fallbackMap.lmstudio;
+    if (localVendor === 'gemma') {
+      setGemmaIcon();
+      return;
+    }
+    if (localVendor === 'llama') {
+      setLlamaIcon();
+      return;
+    }
+    const icon = iconMap[localVendor] || iconMap.lmstudio;
+    setBrandIcon(icon, localVendor, localVendor.toUpperCase(), fb[0], fb[1]);
+  }
+
+  function updateApiKeyState() {
+    const state = [
+      `ChatGPT Key: ${(savedKeyState.chatgpt || !!apiKeys.chatgpt) ? '已保存' : '未保存'}`,
+      `DeepSeek Key: ${(savedKeyState.deepseek || !!apiKeys.deepseek) ? '已保存' : '未保存'}`,
+      `Gemini Key: ${(savedKeyState.gemini || !!apiKeys.gemini) ? '已保存' : '未保存'}`,
+      `NVIDIA Key: ${(savedKeyState.nvidia || !!apiKeys.nvidia) ? '已保存' : '未保存'}`,
+    ];
+    id('api_key_state').textContent = state.join(' | ');
+  }
+
+  async function saveSettings() {
+    const res = await fetch('/api/ai/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(getConfigFromUI())
+    });
+    if (!res.ok) {
+      alert('保存失败');
+      return;
+    }
+    const data = await res.json();
+    if (data && data.has_keys) {
+      savedKeyState = data.has_keys;
+    }
+    apiKeys = { chatgpt: '', deepseek: '', gemini: '', nvidia: '' };
+    updateApiKeyState();
+    id('llm_test_result').textContent = '模型配置已保存。';
+  }
+
+  async function testConnection() {
+    const cfg = getConfigFromUI();
+    const fd = new FormData();
+    Object.entries(cfg).forEach(([k, v]) => {
+      if (typeof v === 'boolean') return;
+      fd.append(k, String(v ?? ''));
+    });
+    fd.append('provider', cfg.provider);
+    id('llm_test_result').textContent = '连接测试中...';
+    try {
+      const res = await fetch('/api/ai/test_connection', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        id('llm_test_result').textContent = data.error || data.detail || '连接测试失败';
+        return;
+      }
+      id('llm_test_result').textContent = data.message || '连接测试成功。';
+    } catch (e) {
+      id('llm_test_result').textContent = `连接测试失败: ${e}`;
+    }
+  }
+
+  async function reviewPrompt(kind) {
+    const name = kind === 'system' ? id('selected_system_prompt').value : id('selected_task_prompt').value;
+    const url = `/api/ai/prompt_preview?kind=${encodeURIComponent(kind)}&name=${encodeURIComponent(name)}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      alert('模板读取失败');
+      return;
+    }
+    const data = await res.json();
+    id('prompt_modal_title').textContent = `${kind === 'system' ? '系统' : '任务'}模板：${data.name}`;
+    id('prompt_modal_text').value = data.text || '';
+    id('prompt_modal').style.display = 'flex';
+  }
+
+  async function importPrompt() {
+    const file = id('prompt_file').files[0];
+    if (!file) {
+      alert('请选择提示词文件');
+      return;
+    }
+    const fd = new FormData();
+    fd.append('kind', id('prompt_kind_select').value);
+    fd.append('name', id('prompt_name').value || '');
+    fd.append('prompt_file', file);
+    const res = await fetch('/api/ai/import_prompt', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      alert(data.detail || data.message || '导入失败');
+      return;
+    }
+    window.location.reload();
+  }
+
+  id('provider_select').addEventListener('change', updateProviderSection);
+  id('chatgpt_model_select').addEventListener('change', updateProviderSection);
+  id('deepseek_model_select').addEventListener('change', updateProviderSection);
+  id('gemini_model_select').addEventListener('change', updateProviderSection);
+  id('nvidia_model_select').addEventListener('change', updateProviderSection);
+  id('local_model_select').addEventListener('change', updateProviderSection);
+  id('chatgpt_model_custom').addEventListener('input', updateProviderIcon);
+  id('deepseek_model_custom').addEventListener('input', updateProviderIcon);
+  id('gemini_model_custom').addEventListener('input', updateProviderIcon);
+  id('nvidia_model_custom').addEventListener('input', updateProviderIcon);
+  id('local_model_custom').addEventListener('input', updateProviderIcon);
+  id('save_llm_btn').addEventListener('click', saveSettings);
+  id('test_llm_btn').addEventListener('click', testConnection);
+  id('review_system_template_btn').addEventListener('click', () => reviewPrompt('system'));
+  id('review_task_template_btn').addEventListener('click', () => reviewPrompt('task'));
+  id('import_prompt_btn').addEventListener('click', importPrompt);
+  id('import_api_key_btn').addEventListener('click', () => {
+    const provider = id('provider_select').value;
+    const key = window.prompt(`请输入 ${provider.toUpperCase()} API Key`);
+    if (!key) return;
+    const map = {
+      chatgpt: 'chatgpt',
+      deepseek: 'deepseek',
+      gemini: 'gemini',
+      nvidia: 'nvidia'
+    };
+    const target = map[provider];
+    if (target) apiKeys[target] = key;
+    updateApiKeyState();
+  });
+  id('prompt_modal_close').addEventListener('click', () => { id('prompt_modal').style.display = 'none'; });
+  id('prompt_modal').addEventListener('click', (e) => {
+    if (e.target === id('prompt_modal')) id('prompt_modal').style.display = 'none';
+  });
+  id('prompt_file').addEventListener('change', () => {
+    const f = id('prompt_file').files[0];
+    id('prompt_file_name').textContent = f ? f.name : '未选择文件';
+  });
+
+  updateProviderSection();
+  updateProviderIcon();
+  updateApiKeyState();
+</script>
+{% endblock %}

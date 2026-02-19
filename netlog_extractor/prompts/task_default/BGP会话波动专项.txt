@@ -1,0 +1,2 @@
+重点识别 BGP 邻居 flap/holdtime expired/max-prefix 等事件，
+分析影响范围并给出稳定性恢复步骤。

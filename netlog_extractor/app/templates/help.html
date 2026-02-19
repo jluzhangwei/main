@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>NetLog Extractor 帮助文档</h2>
+  <p class="muted">用于从网络设备 buffer log 中按时间范围提取日志，并支持 AI 诊断分析。</p>
+</div>
+
+<div class="card">
+  <h3>核心功能</h3>
+  <ul>
+    <li>单台与批量设备日志提取（文本输入 + CSV 上传）</li>
+    <li>连接方式：Direct SSH（asyncssh）和 SMC 跳板模式（pty + subprocess）</li>
+    <li>自动识别设备厂商/系统（Cisco/Arista/Huawei）并执行对应命令</li>
+    <li>按“服务器本机时间”输入时间窗，自动计算设备时钟偏移（offset）后过滤</li>
+    <li>命中日志保留前后上下文行，重叠/相邻区间自动合并去重</li>
+    <li>任务结果下载：单设备日志、任务 summary、整包 zip</li>
+    <li>Debug 模式可查看登录/命令执行/设备返回</li>
+    <li>AI 分析支持多模型源、提示词模板、Markdown 结果展示</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>使用流程</h3>
+  <ol>
+    <li>进入 <code>Create Task</code> 页面，选择 <code>direct</code> 或 <code>smc</code>。</li>
+    <li>填写设备账号和时间范围（格式：<code>YYYY-MM-DD HH:MM:SS</code>）。</li>
+    <li>单台模式直接填 IP；批量模式可粘贴设备列表或上传 CSV。</li>
+    <li>点击创建任务后进入任务详情页，页面会自动轮询进度。</li>
+    <li>任务完成后下载 <code>filtered.log</code>、<code>summary.json</code>、<code>download.zip</code>。</li>
+    <li>可在任务详情页执行 AI 分析，查看渲染后的 Markdown 诊断结果。</li>
+  </ol>
+</div>
+
+<div class="card">
+  <h3>CSV 字段说明</h3>
+  <p>批量上传至少支持以下字段：</p>
+  <ul>
+    <li><code>device_ip</code>（必填）</li>
+    <li><code>device_port</code>（可选，默认 22）</li>
+    <li><code>device_name</code>（可选）</li>
+    <li><code>username</code> / <code>password</code>（可选，未填则用全局默认）</li>
+    <li><code>vendor_hint</code>（可选：cisco/arista/huawei）</li>
+    <li><code>jump_mode</code>（可选：direct/smc）</li>
+    <li><code>jump_host</code>, <code>jump_port</code>, <code>smc_command</code>（smc 时可覆盖全局）</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>SMC 模式说明</h3>
+  <ul>
+    <li>先进入跳板 shell（自动处理 <code>yes/no</code> 和 token 提示）</li>
+    <li>再从跳板 ssh 到目标设备（自动发送密码，最多重试）</li>
+    <li>识别到设备提示符后执行版本/时间/日志命令</li>
+    <li>每台设备独立 SMC 子会话，并发执行，任务结束自动清理进程</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>输出目录结构</h3>
+  <pre>output/{task_id}/
+  summary.json
+  download.zip
+  dev-1/
+    raw.log
+    filtered.log
+    meta.json
+    debug.log (debug 模式)
+</pre>
+</div>
+
+<div class="card">
+  <h3>常见问题</h3>
+  <ul>
+    <li><strong>证书错误 CERTIFICATE_VERIFY_FAILED</strong>：优先使用 <code>./run.sh</code> 启动（会自动注入 CA bundle）。</li>
+    <li><strong>日志未命中</strong>：检查设备时钟、时区、输入时间窗，必要时在 Debug 中查看 <code>show/display clock</code> 返回。</li>
+    <li><strong>命令不兼容</strong>：系统会先做厂商识别，再回退到可用命令；失败原因会记录在任务详情 <code>reason</code>。</li>
+  </ul>
+</div>
+{% endblock %}

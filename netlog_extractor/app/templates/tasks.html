@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Tasks</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>task_id</th>
+        <th>created_at</th>
+        <th>status</th>
+        <th>progress</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for t in tasks %}
+      <tr>
+        <td><a href="/tasks/{{ t.task_id }}">{{ t.task_id }}</a></td>
+        <td>{{ t.created_at }}</td>
+        <td>{{ t.status }}</td>
+        <td>{{ t.progress_done }}/{{ t.progress_total }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <style>
+    .hc-head { margin-bottom: 10px; }
+    .hc-sub { margin: 0; color: #3d4b63; font-size: 15px; }
+    .hc-form .row { margin-top: 8px; }
+    .hc-form input, .hc-form select, .hc-form textarea { width: 100%; max-width: none; background:#fff; }
+    .hc-form .file-picker { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .hc-form .file-btn {
+      display:inline-flex; align-items:center; justify-content:center;
+      padding:8px 12px; border:1px solid var(--line); border-radius:8px;
+      background:#fff; cursor:pointer; font-weight:600; min-width:90px;
+    }
+    .hc-form .file-real {
+      position:absolute; left:-9999px; width:1px; height:1px; opacity:0; pointer-events:none;
+    }
+    .hc-form .tips { color:#51617b; font-size:12px; margin-top:4px; }
+    .hc-form .actions { margin-top: 14px; }
+  </style>
+
+  <div class="hc-head">
+    <h2>NetLog Extractor Web Runner</h2>
+    <p class="hc-sub">输入设备地址、时间范围和跳板参数后，点击执行日志提取任务。</p>
+  </div>
+
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+  <form class="hc-form" method="post" action="/tasks/create" enctype="multipart/form-data">
+    <input type="hidden" name="mode" value="batch" />
+
+    <div class="row">
+      <div>
+        <label>设备 SSH 用户名</label>
+        <input name="default_username" placeholder="例如 netops" required />
+      </div>
+      <div>
+        <label>设备 SSH 密码</label>
+        <input name="default_password" type="password" required />
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>跳板机接入模式</label>
+        <select name="jump_mode" id="jump_mode" onchange="toggleSmc()">
+          <option value="direct">direct（直连）</option>
+          <option value="smc">smc（命令行接入）</option>
+        </select>
+      </div>
+      <div>
+        <label>vendor_hint（可选）</label>
+        <input name="vendor_hint" placeholder="cisco / arista / huawei" />
+      </div>
+    </div>
+
+    <div id="smc-host-row" class="row" style="display:none;">
+      <div class="row">
+        <div><label>跳板机地址</label><input name="jump_host" placeholder="例如 103.115.79.114" /></div>
+        <div><label>跳板机端口</label><input name="jump_port" type="number" value="22" /></div>
+      </div>
+    </div>
+
+    <div id="smc-box" class="row" style="display:none;">
+      <label>SMC 命令模板</label>
+      <input name="smc_command" placeholder="smc server toc {jump_host}" />
+      <div class="tips">SMC 模式会执行该命令；支持变量：`{jump_host}`、`{jump_port}`。</div>
+    </div>
+
+    <div class="row">
+      <label>设备地址（每行一个）</label>
+      <textarea name="batch_text" id="batch_text" placeholder="10.0.0.1&#10;10.0.0.2:22,core-1,cisco"></textarea>
+      <div class="tips">支持手动输入。格式：`ip[:port],device_name,vendor_hint`，每行一台。</div>
+    </div>
+
+    <div class="row">
+      <label>导入设备文件（可选）</label>
+      <div class="file-picker">
+        <label for="csv_file" class="file-btn">选择文件</label>
+        <span id="csv_file_name" class="muted">未选择文件</span>
+      </div>
+      <input type="file" class="file-real" id="csv_file" name="csv_file" accept=".csv,.txt,.list" />
+      <div class="tips">上传 CSV 将按字段解析；上传文本文件可直接复制到设备地址文本框继续编辑。</div>
+    </div>
+
+    <div class="row">
+      <div class="row">
+        <div><label>开始时间（服务器本机时间）</label><input name="start_time" placeholder="YYYY-MM-DD HH:MM:SS" required /></div>
+        <div><label>结束时间（服务器本机时间）</label><input name="end_time" placeholder="YYYY-MM-DD HH:MM:SS" required /></div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="row">
+        <div><label>context_lines</label><input name="context_lines" type="number" value="3" /></div>
+        <div><label>concurrency</label><input name="concurrency" type="number" value="10" /></div>
+      </div>
+      <div>
+        <label>per_device_timeout（秒）</label>
+        <input name="per_device_timeout" type="number" value="60" />
+        <label style="margin-top:8px;display:flex;gap:8px;align-items:center;font-weight:600;">
+          <input type="checkbox" name="debug_mode" style="width:auto;max-width:none;" />
+          开启 Debug 模式（显示登录/命令/返回）
+        </label>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button type="submit">创建任务</button>
+    </div>
+  </form>
+</div>
+
+<script>
+  const STORAGE_KEY = 'netlog_extractor_create_form_v1';
+
+  function getPersistFields() {
+    return [
+      'default_username',
+      'jump_mode',
+      'vendor_hint',
+      'jump_host',
+      'jump_port',
+      'smc_command',
+      'batch_text',
+      'start_time',
+      'end_time',
+      'context_lines',
+      'concurrency',
+      'per_device_timeout',
+      'debug_mode',
+    ];
+  }
+
+  function saveFormState() {
+    const form = document.querySelector('form.hc-form');
+    if (!form) return;
+    const payload = {};
+    for (const name of getPersistFields()) {
+      const el = form.querySelector(`[name="${name}"]`);
+      if (!el) continue;
+      if (el.type === 'checkbox') {
+        payload[name] = !!el.checked;
+      } else {
+        payload[name] = el.value ?? '';
+      }
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  }
+
+  function restoreFormState() {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    let payload = null;
+    try {
+      payload = JSON.parse(raw);
+    } catch (e) {
+      return;
+    }
+    const form = document.querySelector('form.hc-form');
+    if (!form || !payload) return;
+
+    for (const name of getPersistFields()) {
+      if (!(name in payload)) continue;
+      const el = form.querySelector(`[name="${name}"]`);
+      if (!el) continue;
+      if (el.type === 'checkbox') {
+        el.checked = !!payload[name];
+      } else if (typeof payload[name] === 'string' || typeof payload[name] === 'number') {
+        el.value = String(payload[name]);
+      }
+    }
+  }
+
+  function toggleSmc(){
+    const mode = document.getElementById('jump_mode').value;
+    document.getElementById('smc-host-row').style.display = mode === 'smc' ? 'block' : 'none';
+    document.getElementById('smc-box').style.display = mode === 'smc' ? 'block' : 'none';
+  }
+  const csvInput = document.getElementById('csv_file');
+  const csvName = document.getElementById('csv_file_name');
+  csvInput.addEventListener('change', () => {
+    csvName.textContent = csvInput.files && csvInput.files[0] ? csvInput.files[0].name : '未选择文件';
+  });
+
+  restoreFormState();
+  toggleSmc();
+
+  const form = document.querySelector('form.hc-form');
+  if (form) {
+    form.addEventListener('input', saveFormState);
+    form.addEventListener('change', saveFormState);
+    form.addEventListener('submit', saveFormState);
+  }
+</script>
+{% endblock %}

@@ -1,0 +1,489 @@
+{% extends "base.html" %}
+{% block content %}
+{% if error %}
+<div class="card error">{{ error }}</div>
+{% else %}
+<div class="card">
+  <h2>Task {{ task.task_id }}</h2>
+  <p>Status: <span id="task-status">{{ task.status }}</span></p>
+  <p>Progress: <span id="task-progress">{{ task.progress_done }}/{{ task.progress_total }}</span></p>
+  <p>
+    <a href="/api/tasks/{{ task.task_id }}/summary.json">summary.json</a>
+    |
+    <a href="/api/tasks/{{ task.task_id }}/download.zip">download.zip</a>
+  </p>
+  <p><a href="/ai/settings">AI 设置</a></p>
+</div>
+
+<div class="card">
+  <table id="dev-table">
+    <thead>
+      <tr>
+        <th>device_id</th><th>ip</th><th>status</th><th>vendor</th><th>offset(s)</th><th>hits</th><th>reason</th><th>download</th><th>debug</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for d in task.devices %}
+      <tr>
+        <td>{{ d.device_id }}</td>
+        <td>{{ d.device_ip }}</td>
+        <td>{{ d.status }}</td>
+        <td>{{ d.vendor }}</td>
+        <td>{{ d.offset_seconds if d.offset_seconds is not none else '' }}</td>
+        <td>{{ d.hits_count }}</td>
+        <td>{{ d.reason or '' }}</td>
+        <td>
+          {% if d.filtered_log_path %}
+          <a href="/api/tasks/{{ task.task_id }}/devices/{{ d.device_id }}/log">filtered.log</a>
+          {% endif %}
+        </td>
+        <td>
+          {% if d.debug_log_path %}
+          <a href="/api/tasks/{{ task.task_id }}/devices/{{ d.device_id }}/debug">debug.log</a>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if task.params.get("debug_mode") %}
+<div class="card">
+  <h3 style="margin:0 0 8px;">Debug Console</h3>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+    <label for="debug-device" style="margin:0;">设备</label>
+    <select id="debug-device" style="width:220px;max-width:100%;">
+      {% for d in task.devices %}
+      <option value="{{ d.device_id }}">{{ d.device_id }} ({{ d.device_ip }})</option>
+      {% endfor %}
+    </select>
+    <a id="debug-download-link" href="#" target="_blank">下载 debug.log</a>
+  </div>
+  <pre id="debug-console" style="background:#0f172a;color:#e2e8f0;padding:10px;border-radius:8px;max-height:420px;overflow:auto;margin:0;">等待设备执行...</pre>
+</div>
+{% endif %}
+
+<div class="card">
+  <h3 style="margin:0 0 8px;">AI 日志分析</h3>
+  <div class="ai-section">
+    <div class="ai-section-title">分析执行选项</div>
+    <div class="exec-options">
+      <div class="exec-card">
+        <label class="check-item"><input type="checkbox" id="batched_analysis">分批模式（每台设备单独提交 JSON 给 AI）</label>
+        <div class="muted">适用于本次巡检 JSON 和历史 JSON 报告；非结构化历史文件仍为单次分析。</div>
+        <label class="check-item"><input type="checkbox" id="fragmented_analysis">分片模式（设备分片分析 + 汇总）</label>
+        <div class="muted">单设备先按日志分片提交，再生成设备汇总，适合超大报告。</div>
+      </div>
+      <div class="exec-card">
+        <div class="exec-field"><label>AI 并发数（设备级）</label><input id="analysis_parallelism" type="number" min="1" max="8" value="2"></div>
+        <div class="exec-field"><label>分片并行数</label><input id="chunk_parallelism" type="number" min="1" max="8" value="1"></div>
+        <div class="exec-field"><label>每分片 Token 预算</label><input id="max_tokens_per_chunk" type="number" min="800" max="12000" value="4500"></div>
+        <div class="exec-field"><label>每设备最大分片</label><input id="max_chunks_per_device" type="number" min="1" max="60" value="12"></div>
+        <div class="exec-field"><label>每设备失败重试</label><input id="analysis_retries" type="number" min="0" max="3" value="1"></div>
+        <div class="exec-field"><label>AI 调用超时秒数</label><input id="llm_call_timeout_sec" type="number" min="60" max="600" value="240"></div>
+        <div class="exec-field">
+          <label>分片策略</label>
+          <select id="chunk_strategy" class="narrow-select">
+            <option value="hybrid" selected>hybrid</option>
+            <option value="time">time</option>
+            <option value="event">event</option>
+          </select>
+        </div>
+        <div class="muted">hybrid：综合时间与事件（推荐） | time：按时间窗口切分 | event：按事件类型聚合切分</div>
+        <div class="muted">建议并发 1-4，过高可能触发 API 限流。</div>
+      </div>
+    </div>
+    <div style="margin-top:8px;">
+      <button id="analysis-precheck-btn" type="button">分析预估</button>
+    </div>
+    <div id="analysis-precheck-box" class="muted">分析预估：未计算</div>
+  </div>
+
+  <div class="ai-section">
+    <div class="ai-section-title">日志文件分析</div>
+    <label>导入日志文件</label>
+    <input id="history-report-file" type="file" />
+    <div class="muted">可上传历史 JSON/CSV/TXT/LOG 作为参考，当前版本暂不参与自动拼接。</div>
+  </div>
+
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+    <button id="ai-start-btn" class="primary-btn" type="button" onclick="startAnalysis()">AI 分析</button>
+    <button id="save-analysis-btn" type="button" onclick="saveAnalysis()">保存分析报告</button>
+  </div>
+  <p id="ai-status" class="muted">当前模型: - | 未启动</p>
+  <div id="analysis-progress-box" class="analysis-progress" style="display:none;">
+    <div id="analysis-progress-text" class="muted">进度: 0%</div>
+    <div class="analysis-progress-bar">
+      <div id="analysis-progress-fill" class="analysis-progress-fill"></div>
+    </div>
+  </div>
+  <div id="ai-output" class="markdown-body">分析结果会显示在这里。</div>
+</div>
+
+<script>
+  let latestTask = null;
+  let currentAnalysisId = null;
+  let latestAnalysisText = '';
+
+  function updateAnalysisProgress(visible, percent, text) {
+    const box = document.getElementById('analysis-progress-box');
+    const txt = document.getElementById('analysis-progress-text');
+    const fill = document.getElementById('analysis-progress-fill');
+    if (box) box.style.display = visible ? '' : 'none';
+    if (txt) txt.textContent = text || `进度: ${percent || 0}%`;
+    if (fill) fill.style.width = `${Math.max(0, Math.min(100, Number(percent || 0)))}%`;
+  }
+
+  async function poll() {
+    const res = await fetch('/api/tasks/{{ task.task_id }}');
+    if (!res.ok) return;
+    const task = await res.json();
+    latestTask = task;
+    document.getElementById('task-status').innerText = task.status;
+    document.getElementById('task-progress').innerText = `${task.progress_done}/${task.progress_total}`;
+
+    const tbody = document.querySelector('#dev-table tbody');
+    tbody.innerHTML = '';
+    for (const d of task.devices) {
+      const tr = document.createElement('tr');
+      const dl = d.filtered_log_path ? `<a href="/api/tasks/${task.task_id}/devices/${d.device_id}/log">filtered.log</a>` : '';
+      const dbg = d.debug_log_path ? `<a href="/api/tasks/${task.task_id}/devices/${d.device_id}/debug">debug.log</a>` : '';
+      tr.innerHTML = `
+        <td>${d.device_id}</td>
+        <td>${d.device_ip}</td>
+        <td>${d.status}</td>
+        <td>${d.vendor || ''}</td>
+        <td>${d.offset_seconds ?? ''}</td>
+        <td>${d.hits_count ?? 0}</td>
+        <td>${d.reason || ''}</td>
+        <td>${dl}</td>
+        <td>${dbg}</td>`;
+      tbody.appendChild(tr);
+    }
+
+    {% if task.params.get("debug_mode") %}
+    pollDebug();
+    {% endif %}
+
+    if (task.status === 'running' || task.status === 'pending') {
+      setTimeout(poll, 2000);
+    }
+  }
+
+  {% if task.params.get("debug_mode") %}
+  async function pollDebug() {
+    const sel = document.getElementById('debug-device');
+    const consoleEl = document.getElementById('debug-console');
+    const linkEl = document.getElementById('debug-download-link');
+    if (!sel || !consoleEl || !linkEl) return;
+    const deviceId = sel.value;
+    const devices = latestTask?.devices || [];
+    const dev = devices.find(d => d.device_id === deviceId);
+    if (!dev || !dev.debug_log_path) {
+      linkEl.removeAttribute('href');
+      consoleEl.textContent = 'debug 日志尚未生成...';
+      return;
+    }
+    const url = `/api/tasks/{{ task.task_id }}/devices/${deviceId}/debug`;
+    linkEl.href = url;
+    try {
+      const res = await fetch(url);
+      if (res.ok) {
+        const text = await res.text();
+        consoleEl.textContent = text || 'debug 日志为空';
+        consoleEl.scrollTop = consoleEl.scrollHeight;
+      }
+    } catch (e) {
+      // keep silent in polling
+    }
+  }
+  document.getElementById('debug-device')?.addEventListener('change', pollDebug);
+  {% endif %}
+
+  async function startAnalysis() {
+    const btn = document.getElementById('ai-start-btn');
+    const statusEl = document.getElementById('ai-status');
+    const outEl = document.getElementById('ai-output');
+    if (!btn || !statusEl || !outEl) return;
+    btn.disabled = true;
+    statusEl.textContent = '启动中...';
+    outEl.innerHTML = '';
+    updateAnalysisProgress(true, 0, '进度: 0%（准备中）');
+    const payload = {
+      batched_analysis: document.getElementById('batched_analysis')?.checked || false,
+      fragmented_analysis: document.getElementById('fragmented_analysis')?.checked || false,
+      analysis_parallelism: parseInt(document.getElementById('analysis_parallelism')?.value || '2', 10),
+      chunk_parallelism: parseInt(document.getElementById('chunk_parallelism')?.value || '1', 10),
+      max_tokens_per_chunk: parseInt(document.getElementById('max_tokens_per_chunk')?.value || '4500', 10),
+      max_chunks_per_device: parseInt(document.getElementById('max_chunks_per_device')?.value || '12', 10),
+      chunk_strategy: document.getElementById('chunk_strategy')?.value || 'hybrid',
+      analysis_retries: parseInt(document.getElementById('analysis_retries')?.value || '1', 10),
+      llm_call_timeout_sec: parseInt(document.getElementById('llm_call_timeout_sec')?.value || '240', 10),
+    };
+    const res = await fetch('/api/tasks/{{ task.task_id }}/analysis/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      btn.disabled = false;
+      statusEl.textContent = '启动失败';
+      return;
+    }
+    const data = await res.json();
+    currentAnalysisId = data.analysis_id;
+    statusEl.textContent = `运行中 (${currentAnalysisId})`;
+    setTimeout(pollAnalysis, 1000);
+  }
+
+  async function pollAnalysis() {
+    const statusEl = document.getElementById('ai-status');
+    const outEl = document.getElementById('ai-output');
+    const btn = document.getElementById('ai-start-btn');
+    if (!currentAnalysisId || !statusEl || !outEl || !btn) return;
+    const res = await fetch(`/api/analysis/${currentAnalysisId}`);
+    if (!res.ok) {
+      statusEl.textContent = '查询失败';
+      btn.disabled = false;
+      return;
+    }
+    const data = await res.json();
+    statusEl.textContent = `${data.status} | provider=${data.provider_used || '-'} | model=${data.model_used || '-'}`;
+    const p = Number(data.progress_percent || 0);
+    const stageText = data.progress_text || '';
+    const progressLine = stageText ? `进度: ${p}% | ${stageText}` : `进度: ${p}%`;
+    updateAnalysisProgress(
+      true,
+      p,
+      progressLine
+    );
+    if (data.status === 'success') {
+      latestAnalysisText = data.result || '';
+      outEl.innerHTML = renderMarkdown(latestAnalysisText);
+      updateAnalysisProgress(true, 100, `进度: 100% | ${data.progress_text || '阶段: 完成'}`);
+      btn.disabled = false;
+      return;
+    }
+    if (data.status === 'failed') {
+      outEl.innerHTML = renderMarkdown(data.error || 'analysis failed');
+      updateAnalysisProgress(true, p || 1, `进度: ${p || 1}% | ${data.progress_text || '阶段: 失败'}`);
+      btn.disabled = false;
+      return;
+    }
+    setTimeout(pollAnalysis, 2000);
+  }
+
+  async function runPrecheck() {
+    const box = document.getElementById('analysis-precheck-box');
+    if (box) box.textContent = '分析预估：计算中...';
+    const payload = {
+      batched_analysis: document.getElementById('batched_analysis')?.checked || false,
+      fragmented_analysis: document.getElementById('fragmented_analysis')?.checked || false,
+      analysis_parallelism: parseInt(document.getElementById('analysis_parallelism')?.value || '2', 10),
+      chunk_parallelism: parseInt(document.getElementById('chunk_parallelism')?.value || '1', 10),
+      max_tokens_per_chunk: parseInt(document.getElementById('max_tokens_per_chunk')?.value || '4500', 10),
+      max_chunks_per_device: parseInt(document.getElementById('max_chunks_per_device')?.value || '12', 10),
+      chunk_strategy: document.getElementById('chunk_strategy')?.value || 'hybrid',
+      analysis_retries: parseInt(document.getElementById('analysis_retries')?.value || '1', 10),
+      llm_call_timeout_sec: parseInt(document.getElementById('llm_call_timeout_sec')?.value || '240', 10),
+    };
+    try {
+      const res = await fetch('/api/tasks/{{ task.task_id }}/analysis/precheck', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.detail || data.error || '预估失败');
+      }
+      if (box) box.textContent = data.line || '分析预估：未计算';
+    } catch (e) {
+      if (box) box.textContent = `分析预估：失败 (${e})`;
+    }
+  }
+
+  function saveAnalysis() {
+    const text = latestAnalysisText || document.getElementById('ai-output')?.innerText || '';
+    if (!text.trim()) {
+      alert('暂无可保存的分析结果');
+      return;
+    }
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `analysis_{{ task.task_id }}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  }
+
+  function escapeHtml(text) {
+    return String(text || '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
+  function renderInline(text) {
+    let s = escapeHtml(text);
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    return s;
+  }
+
+  function renderMarkdown(mdText) {
+    const text = String(mdText || '').replace(/\r\n/g, '\n');
+    const lines = text.split('\n');
+    const out = [];
+    let inCode = false;
+    let inUl = false;
+    let inOl = false;
+
+    const closeLists = () => {
+      if (inUl) { out.push('</ul>'); inUl = false; }
+      if (inOl) { out.push('</ol>'); inOl = false; }
+    };
+
+    for (const raw of lines) {
+      const line = raw || '';
+      if (line.trim().startsWith('```')) {
+        closeLists();
+        if (!inCode) {
+          inCode = true;
+          out.push('<pre><code>');
+        } else {
+          inCode = false;
+          out.push('</code></pre>');
+        }
+        continue;
+      }
+      if (inCode) {
+        out.push(escapeHtml(line) + '\n');
+        continue;
+      }
+
+      if (!line.trim()) {
+        closeLists();
+        out.push('<div class="md-gap"></div>');
+        continue;
+      }
+
+      const h = line.match(/^(#{1,6})\s+(.*)$/);
+      if (h) {
+        closeLists();
+        const lv = h[1].length;
+        out.push(`<h${lv}>${renderInline(h[2])}</h${lv}>`);
+        continue;
+      }
+
+      const ul = line.match(/^\s*[-*+]\s+(.*)$/);
+      if (ul) {
+        if (!inUl) {
+          if (inOl) { out.push('</ol>'); inOl = false; }
+          out.push('<ul>');
+          inUl = true;
+        }
+        out.push(`<li>${renderInline(ul[1])}</li>`);
+        continue;
+      }
+
+      const ol = line.match(/^\s*\d+\.\s+(.*)$/);
+      if (ol) {
+        if (!inOl) {
+          if (inUl) { out.push('</ul>'); inUl = false; }
+          out.push('<ol>');
+          inOl = true;
+        }
+        out.push(`<li>${renderInline(ol[1])}</li>`);
+        continue;
+      }
+
+      const quote = line.match(/^\s*>\s?(.*)$/);
+      if (quote) {
+        closeLists();
+        out.push(`<blockquote>${renderInline(quote[1])}</blockquote>`);
+        continue;
+      }
+
+      closeLists();
+      out.push(`<p>${renderInline(line)}</p>`);
+    }
+    closeLists();
+    if (inCode) out.push('</code></pre>');
+    return out.join('');
+  }
+
+  async function loadAiDefaults() {
+    try {
+      const res = await fetch('/api/ai/settings');
+      if (!res.ok) return;
+      const data = await res.json();
+      const cfg = data.cfg || {};
+      if (document.getElementById('batched_analysis')) document.getElementById('batched_analysis').checked = !!cfg.batched_analysis;
+      if (document.getElementById('fragmented_analysis')) document.getElementById('fragmented_analysis').checked = !!cfg.fragmented_analysis;
+      if (document.getElementById('analysis_parallelism')) document.getElementById('analysis_parallelism').value = cfg.analysis_parallelism ?? 2;
+      if (document.getElementById('chunk_parallelism')) document.getElementById('chunk_parallelism').value = cfg.chunk_parallelism ?? 1;
+      if (document.getElementById('max_tokens_per_chunk')) document.getElementById('max_tokens_per_chunk').value = cfg.max_tokens_per_chunk ?? 4500;
+      if (document.getElementById('max_chunks_per_device')) {
+        document.getElementById('max_chunks_per_device').value = cfg.max_chunks_per_device ?? cfg.large_report_chunk_items ?? 12;
+      }
+      if (document.getElementById('chunk_strategy')) document.getElementById('chunk_strategy').value = cfg.chunk_strategy || 'hybrid';
+      if (document.getElementById('analysis_retries')) document.getElementById('analysis_retries').value = cfg.analysis_retries ?? 1;
+      if (document.getElementById('llm_call_timeout_sec')) document.getElementById('llm_call_timeout_sec').value = cfg.llm_call_timeout_sec ?? 240;
+      const model = cfg.provider ? `${cfg.provider} | ${cfg[cfg.provider + '_model'] || '-'}` : '-';
+      const aiStatus = document.getElementById('ai-status');
+      if (aiStatus) aiStatus.textContent = `当前模型: ${model} | 未启动`;
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  document.getElementById('analysis-precheck-btn')?.addEventListener('click', runPrecheck);
+  loadAiDefaults();
+  setTimeout(poll, 1000);
+</script>
+<style>
+  .ai-section { border:1px solid #d7dee7; border-radius:10px; background:#fff; padding:10px; margin-bottom:10px; }
+  .ai-section-title { font-weight:700; color:#1e293b; margin-bottom:8px; }
+  .exec-options { display:grid; grid-template-columns:1.2fr 1fr; gap:10px; }
+  .exec-card { border:1px solid #d7dee7; border-radius:8px; background:#fff; padding:10px; }
+  .check-item { display:flex; align-items:center; gap:8px; margin:6px 0 3px; font-weight:600; }
+  .check-item input { width:auto; }
+  .exec-field { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
+  .exec-field > label { margin:0; font-weight:700; }
+  .exec-field > input { width:68px; max-width:68px; }
+  .exec-field > .narrow-select {
+    width:92px;
+    max-width:92px;
+    min-width:92px;
+    height:34px;
+    min-height:34px;
+    padding:4px 8px;
+    border-radius:8px;
+    box-sizing:border-box;
+  }
+  .primary-btn { background:#0b6e4f; border-color:#0b6e4f; }
+  .analysis-progress { margin:8px 0 10px; border:1px solid #cbd5e1; border-radius:10px; background:#f8fafc; padding:10px; }
+  .analysis-progress-bar { height:14px; border-radius:999px; background:#e2e8f0; overflow:hidden; margin-top:4px; }
+  .analysis-progress-fill { height:100%; width:0%; background:#0b7a57; transition:width .25s ease; }
+  .markdown-body { max-height:520px; overflow:auto; background:#f8fafc; border:1px solid #d6dde8; border-radius:8px; padding:12px; line-height:1.55; }
+  .markdown-body h1,.markdown-body h2,.markdown-body h3,.markdown-body h4 { margin:10px 0 6px; }
+  .markdown-body p { margin:6px 0; }
+  .markdown-body ul,.markdown-body ol { margin:6px 0 6px 20px; padding:0; }
+  .markdown-body code { background:#eef2f7; border:1px solid #d7dee7; border-radius:4px; padding:1px 4px; font-family:Menlo,Consolas,monospace; font-size:12px; }
+  .markdown-body pre { margin:8px 0; background:#0f172a; color:#e2e8f0; padding:10px; border-radius:8px; overflow:auto; }
+  .markdown-body pre code { background:transparent; border:none; padding:0; color:inherit; }
+  .markdown-body blockquote { margin:8px 0; padding:6px 10px; border-left:3px solid #94a3b8; color:#334155; background:#f1f5f9; }
+  .markdown-body a { color:#0b6e4f; }
+  .markdown-body .md-gap { height:4px; }
+  @media (max-width: 920px) { .exec-options { grid-template-columns:1fr; } }
+</style>
+{% endif %}
+{% endblock %}
