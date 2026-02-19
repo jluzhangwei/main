@@ -1,4 +1,4 @@
-# HealthCheck 网络设备巡检工具（V2.2）
+# HealthCheck 网络设备巡检工具（V2.3）
 
 通过 SSH 批量登录网络设备执行巡检，支持 Web 执行、报告下载、AI 诊断（多模型）。
 
@@ -10,6 +10,7 @@
 - AI 诊断：ChatGPT / DeepSeek / Gemini / NVIDIA / 本地大模型（LM Studio）
 - 分批分析：每台设备单独分析并汇总，支持进度显示
 - 分片模式：单设备按检查项分片分析，再做设备汇总与全局汇总
+- AI 结果保存：支持“保存分析报告”为 Markdown（`.md`）
 - 角色权限：admin / user（admin 可管理模板与用户）
 - 中英文界面、帮助文档双语
 
@@ -114,6 +115,12 @@ python -m pip install -r requirements.txt
 - 若模型汇总遗漏设备，程序会自动补齐缺失设备行（标记“待复核”）
 - 防止最终汇总静默漏设备
 
+### 分析结果另存为（.md）
+- AI 分析按钮旁提供“保存分析报告”
+- 优先调用浏览器原生保存对话框（可选路径+文件名）
+- 浏览器不支持时回退为下载方式，默认扩展名 `.md`
+- 保存内容包含：生成时间、模型来源、任务 ID 与分析正文
+
 ## 6. 证书与连接测试（重要）
 
 若 DeepSeek/NVIDIA/Gemini/OpenAI 连接测试报：
@@ -130,14 +137,23 @@ python -m pip install -r requirements.txt
 
 说明：该设置同时影响 OpenAI/DeepSeek/Gemini/NVIDIA 的 HTTPS 校验。
 
-## 7. 最近关键变更（V2.2）
+## 7. 最近关键变更（V2.3）
+
+- AI 分析区新增“保存分析报告”按钮，支持另存为 `.md`
+- AI 服务层拆分完成：
+  - `analysis_service.py`（分析编排）
+  - `status_service.py`（状态存取）
+  - `llm_adapter.py`（模型适配）
+- `web_server.py` 聚焦为请求编排层，减少超大文件耦合
+
+## 8. 最近关键变更（V2.2）
 
 - 新增 `analysis_guard.py`，提供分析前规模预估与汇总覆盖校验
 - 新增前端“分析预估”按钮，展示预计调用次数/Token/耗时并给出风险提示
 - 新增 `POST /analysis_precheck` 接口，支持本次报告与历史 JSON 报告预估
 - 分批结果缺失时自动补占位，避免设备被静默遗漏
 
-## 8. 最近关键变更（V2.1）
+## 9. 最近关键变更（V2.1）
 
 - Web 主入口统一为 `app/web_server.py`，`web_runner.py` 保留兼容
 - 新增 `scripts/start_web.sh`，解决云模型 SSL 证书链问题
@@ -146,7 +162,7 @@ python -m pip install -r requirements.txt
 - 分批分析路径与历史报告路径统一，进度显示更清晰
 - 文档同步更新：目录结构、入口脚本、AI 模式与证书策略
 
-## 9. 常见问题
+## 10. 常见问题
 
 1. 连接测试失败（证书错误）
 - 使用 `./scripts/start_web.sh` 启动再测。
