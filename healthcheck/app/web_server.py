@@ -3,11 +3,9 @@
 
 import cgi
 import base64
-import concurrent.futures
 import html
 import hashlib
 import json
-import math
 import mimetypes
 import os
 import re
@@ -33,14 +31,14 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from uuid import uuid4
 
 try:
-    from app import analysis_guard, analysis_pipeline, llm_service, prompt_service, state_store
+    from app import analysis_guard, analysis_pipeline, analysis_service, llm_adapter, llm_service, prompt_service, state_store, status_service
 except ModuleNotFoundError:
     # Allow direct execution: python3 app/web_server.py
     _self_dir = Path(__file__).resolve().parent
     _parent_dir = _self_dir.parent
     if str(_parent_dir) not in sys.path:
         sys.path.insert(0, str(_parent_dir))
-    from app import analysis_guard, analysis_pipeline, llm_service, prompt_service, state_store
+    from app import analysis_guard, analysis_pipeline, analysis_service, llm_adapter, llm_service, prompt_service, state_store, status_service
 
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_DIR.parent
@@ -107,6 +105,9 @@ JOBS: Dict[str, Dict] = {}
 JOBS_LOCK = threading.Lock()
 ANALYSIS_JOBS: Dict[str, Dict] = {}
 ANALYSIS_JOBS_LOCK = threading.Lock()
+ANALYSIS_STATUS_STORE: Optional[status_service.AnalysisStatusStore] = None
+LLM_ADAPTER: Optional[llm_adapter.LLMAdapter] = None
+ANALYSIS_SERVICE: Optional[analysis_service.AnalysisService] = None
 SESSIONS: Dict[str, Dict[str, str]] = {}
 SESSIONS_LOCK = threading.Lock()
 DOC_VERSION = "V2.2"
@@ -257,7 +258,7 @@ def localize_html_page(page_html: str, lang: str) -> str:
         ("请在页面底部上传历史报告文件并点击 AI 分析。", "Upload a historical report at the bottom, then click AI Analysis."),
         ("下载本次 JSON 报告", "Download JSON Report"),
         ("下载本次 CSV 报告", "Download CSV Report"),
-        ("AI 诊断分析", "AI Diagnostic Analysis"),
+        ("AI 分析设置", "AI Analysis Settings"),
         ("大模型配置", "LLM Configuration"),
         ("大模型选择", "LLM Provider"),
         ("本地大模型", "Local LLM"),
@@ -304,6 +305,12 @@ def localize_html_page(page_html: str, lang: str) -> str:
         ("模型连接测试", "Model Connection Test"),
         ("模型连接测试结果将在此显示。", "Model connection test result will be shown here."),
         ("AI 分析", "AI Analysis"),
+        ("保存分析报告", "Save Analysis Report"),
+        ("分析结果为空，无法保存。", "Analysis result is empty and cannot be saved."),
+        ("分析结果尚未生成。", "Analysis result is not generated yet."),
+        ("分析报告已保存。", "Analysis report saved."),
+        ("保存失败", "Save failed"),
+        ("请输入文件名（默认 .md）", "Enter filename (default .md)"),
         ("分析结果会显示在这里。", "Analysis result will be shown here."),
         ("分析中...", "Analyzing..."),
         ("文档中心", "Docs"),
@@ -776,6 +783,24 @@ def save_token_stats(stats: Dict) -> None:
 
 def add_token_usage(provider: str, used_tokens: int) -> Dict:
     return state_store.add_token_usage(provider, used_tokens)
+
+
+def ensure_analysis_services() -> None:
+    global ANALYSIS_STATUS_STORE, LLM_ADAPTER, ANALYSIS_SERVICE
+    if ANALYSIS_STATUS_STORE is None:
+        ANALYSIS_STATUS_STORE = status_service.AnalysisStatusStore(ANALYSIS_JOBS, ANALYSIS_JOBS_LOCK)
+    if LLM_ADAPTER is None:
+        LLM_ADAPTER = llm_adapter.LLMAdapter()
+    if ANALYSIS_SERVICE is None:
+        ANALYSIS_SERVICE = analysis_service.AnalysisService(
+            jobs=JOBS,
+            jobs_lock=JOBS_LOCK,
+            report_dir=REPORT_DIR,
+            is_safe_report_name=is_safe_report_name,
+            add_token_usage=add_token_usage,
+            status_store=ANALYSIS_STATUS_STORE,
+            llm_adapter=LLM_ADAPTER,
+        )
 
 
 def extract_token_usage(payload: Dict) -> Dict[str, int]:
@@ -2522,7 +2547,7 @@ def build_job_html(
       <div id="ai-analysis" class="gpt-card">
         <div class="ai-head">
           <span id="provider_brand_inline" class="ai-brand"></span>
-          <h3 style="margin:0;">AI 诊断分析</h3>
+          <h3 style="margin:0;">AI 分析设置</h3>
         </div>
         <div class="gpt-section">
           <div class="gpt-section-title">大模型配置</div>
@@ -2726,6 +2751,7 @@ def build_job_html(
         </div>
         <div class="gpt-actions">
           <button class="gpt-btn gpt-primary" id="analyze_btn" type="button">AI 分析</button>
+          <button class="gpt-btn" id="save_analysis_btn" type="button">保存分析报告</button>
         </div>
         <div id="gpt_status" class="gpt-hint"></div>
         <div id="analysis_progress_box" class="analysis-progress" style="display:none;">
@@ -2805,6 +2831,7 @@ def build_job_html(
     const gptStatusEl = document.getElementById("gpt_status");
     const llmTestResultEl = document.getElementById("llm_test_result");
     const gptResultEl = document.getElementById("gpt_result");
+    const saveAnalysisBtnEl = document.getElementById("save_analysis_btn");
     const batchedAnalysisEl = document.getElementById("batched_analysis");
     const analysisParallelismEl = document.getElementById("analysis_parallelism");
     const analysisRetriesEl = document.getElementById("analysis_retries");
@@ -2869,6 +2896,35 @@ def build_job_html(
 
     function setGptStatus(msg) {{
       if (gptStatusEl) gptStatusEl.textContent = msg || "";
+    }}
+
+    function buildAnalysisMarkdown() {{
+      const raw = String((gptResultEl && gptResultEl.textContent) || "").trim();
+      if (!raw || raw === "分析结果会显示在这里。" || raw === "Analysis result will be shown here." || raw === "分析中..." || raw === "Analyzing...") {{
+        return "";
+      }}
+      const provider = (providerEl && providerEl.value) ? String(providerEl.value) : "";
+      const now = new Date();
+      const ts = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0") + "-" + String(now.getDate()).padStart(2, "0")
+        + " " + String(now.getHours()).padStart(2, "0") + ":" + String(now.getMinutes()).padStart(2, "0") + ":" + String(now.getSeconds()).padStart(2, "0");
+      return "# AI Analysis Report\\n\\n"
+        + "- Generated At: " + ts + "\\n"
+        + "- Provider: " + provider + "\\n"
+        + "- Job ID: " + String(jobId || "") + "\\n\\n"
+        + "## Content\\n\\n"
+        + raw + "\\n";
+    }}
+
+    function downloadTextFile(filename, content) {{
+      const blob = new Blob([content], {{ type: "text/markdown;charset=utf-8" }});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     }}
 
     function currentSelectedModelText() {{
@@ -3515,6 +3571,46 @@ def build_job_html(
           await runAnalysisPrecheck();
         }} catch (e) {{
           setAnalysisPrecheck("分析预估失败: " + e, "error");
+        }}
+      }});
+    }}
+
+    if (saveAnalysisBtnEl) {{
+      saveAnalysisBtnEl.addEventListener("click", async () => {{
+        const content = buildAnalysisMarkdown();
+        if (!content) {{
+          setGptStatus("分析结果为空，无法保存。");
+          return;
+        }}
+        const defaultName = "analysis_report_" + String(Date.now()) + ".md";
+        try {{
+          if (window.showSaveFilePicker) {{
+            const handle = await window.showSaveFilePicker({{
+              suggestedName: defaultName,
+              types: [{{ description: "Markdown", accept: {{ "text/markdown": [".md"] }} }}],
+            }});
+            const writable = await handle.createWritable();
+            await writable.write(content);
+            await writable.close();
+            setGptStatus("分析报告已保存。");
+            return;
+          }}
+        }} catch (e) {{
+          if (String((e && e.name) || "") === "AbortError") {{
+            return;
+          }}
+          setGptStatus("保存失败: " + e);
+          return;
+        }}
+        const nameInput = window.prompt("请输入文件名（默认 .md）", defaultName);
+        if (nameInput === null) return;
+        let filename = String(nameInput || "").trim() || defaultName;
+        if (!/\\.md$/i.test(filename)) filename += ".md";
+        try {{
+          downloadTextFile(filename, content);
+          setGptStatus("分析报告已保存。");
+        }} catch (e) {{
+          setGptStatus("保存失败: " + e);
         }}
       }});
     }}
@@ -4923,35 +5019,8 @@ class Handler(BaseHTTPRequestHandler):
         if not analysis_id:
             self.send_error(400, "Missing analysis id")
             return
-        with ANALYSIS_JOBS_LOCK:
-            task = ANALYSIS_JOBS.get(analysis_id)
-            if not task:
-                payload = {"ok": False, "error": "analysis task not found"}
-            else:
-                payload = {
-                    "ok": True,
-                    "status": task.get("status", "error"),
-                    "stage": task.get("stage", ""),
-                    "message": task.get("message", ""),
-                    "progress": int(task.get("progress", 0) or 0),
-                    "elapsed_seconds": float(task.get("elapsed_seconds", 0.0) or 0.0),
-                    "duration_seconds": float(task.get("duration_seconds", 0.0) or 0.0),
-                    "total_devices": int(task.get("total_devices", 0) or 0),
-                    "done_devices": int(task.get("done_devices", 0) or 0),
-                    "started_devices": int(task.get("started_devices", 0) or 0),
-                    "inflight_devices": int(task.get("inflight_devices", 0) or 0),
-                    "inflight_device_names": list(task.get("inflight_device_names", []) or []),
-                    "total_batches": int(task.get("total_batches", 0) or 0),
-                    "done_batches": int(task.get("done_batches", 0) or 0),
-                    "analysis": task.get("result", ""),
-                    "error": task.get("error", ""),
-                    "provider_used": task.get("provider_used", ""),
-                    "model_used": task.get("model_used", ""),
-                    "local_base_url": task.get("local_base_url", ""),
-                    "prompt_source": task.get("prompt_source", ""),
-                    "token_usage": task.get("token_usage", {"total_tokens": 0}),
-                    "token_total": int(task.get("token_total", 0) or 0),
-                }
+        ensure_analysis_services()
+        payload = ANALYSIS_STATUS_STORE.get_response_payload(analysis_id) if ANALYSIS_STATUS_STORE else {"ok": False, "error": "analysis status service unavailable"}
         self._respond_json(payload)
 
     def _respond_json(self, payload: Dict, status: int = 200) -> None:
@@ -4964,126 +5033,28 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _build_analysis_input(self, job: Dict) -> str:
-        report_name = str(job.get("report_json", "") or "")
-        if report_name and is_safe_report_name(report_name):
-            report_path = REPORT_DIR / report_name
-            if report_path.is_file():
-                try:
-                    report_data = json.loads(report_path.read_text(encoding="utf-8", errors="ignore"))
-                    if isinstance(report_data, dict) and isinstance(report_data.get("devices"), list):
-                        return analysis_pipeline.build_whole_report_analysis_input(
-                            report_data,
-                            force_full=False,
-                        )
-                    report_text = json.dumps(report_data, ensure_ascii=False)
-                    return f"结构化报告JSON（完整）：\n{report_text}"
-                except Exception:
-                    report_text = report_path.read_text(encoding="utf-8", errors="ignore")
-                    return f"结构化报告JSON（完整）：\n{report_text}"
-        raise RuntimeError("未找到可用于 AI 分析的 JSON 报告，请先运行巡检并生成 JSON 报告。")
+        ensure_analysis_services()
+        if not ANALYSIS_SERVICE:
+            raise RuntimeError("analysis service unavailable")
+        return ANALYSIS_SERVICE.build_analysis_input(job)
 
     def _llm_model_used(self, llm: Dict[str, str]) -> str:
-        provider = llm.get("provider", "chatgpt")
-        if provider == "local":
-            return llm.get("local_model", "")
-        if provider == "deepseek":
-            return llm.get("deepseek_model", "")
-        if provider == "gemini":
-            return llm.get("gemini_model", "")
-        if provider == "nvidia":
-            return llm.get("nvidia_model", "")
-        return llm.get("chatgpt_model", "")
+        ensure_analysis_services()
+        if not ANALYSIS_SERVICE:
+            return ""
+        return ANALYSIS_SERVICE.model_used(llm)
 
     def _run_llm_analysis(self, llm: Dict[str, str], report_text: str) -> Tuple[str, Dict]:
-        def _normalize_usage(analysis_text: str, usage: Dict) -> Dict:
-            raw = usage if isinstance(usage, dict) else {}
-            try:
-                p = int(raw.get("prompt_tokens", 0) or 0)
-            except Exception:
-                p = 0
-            try:
-                c = int(raw.get("completion_tokens", 0) or 0)
-            except Exception:
-                c = 0
-            try:
-                t = int(raw.get("total_tokens", 0) or 0)
-            except Exception:
-                t = 0
-            if t <= 0:
-                # Fallback estimate when provider does not return usage.
-                p = max(p, int(len(report_text or "") / 4))
-                c = max(c, int(len(analysis_text or "") / 4))
-                t = p + c
-            return {
-                "prompt_tokens": max(0, p),
-                "completion_tokens": max(0, c),
-                "total_tokens": max(0, t),
-            }
-
-        if llm["provider"] == "local":
-            text, usage = call_local_lmstudio_analysis(
-                base_url=llm["local_base_url"],
-                model=llm["local_model"],
-                system_prompt=llm["system_prompt_text"],
-                task_prompt=llm["task_prompt_text"],
-                report_text=report_text,
-            )
-            return text, _normalize_usage(text, usage)
-        if llm["provider"] == "deepseek":
-            if not llm["api_key"]:
-                raise RuntimeError("DeepSeek API Key not set")
-            text, usage = call_deepseek_analysis(
-                api_key=llm["api_key"],
-                model=llm["deepseek_model"],
-                system_prompt=llm["system_prompt_text"],
-                task_prompt=llm["task_prompt_text"],
-                report_text=report_text,
-            )
-            return text, _normalize_usage(text, usage)
-        if llm["provider"] == "gemini":
-            if not llm["api_key"]:
-                raise RuntimeError("Gemini API Key not set")
-            text, usage = call_gemini_analysis(
-                api_key=llm["api_key"],
-                model=llm["gemini_model"],
-                system_prompt=llm["system_prompt_text"],
-                task_prompt=llm["task_prompt_text"],
-                report_text=report_text,
-            )
-            return text, _normalize_usage(text, usage)
-        if llm["provider"] == "nvidia":
-            if not llm["api_key"]:
-                raise RuntimeError("NVIDIA API Key not set")
-            text, usage = call_nvidia_analysis(
-                api_key=llm["api_key"],
-                model=llm["nvidia_model"],
-                system_prompt=llm["system_prompt_text"],
-                task_prompt=llm["task_prompt_text"],
-                report_text=report_text,
-            )
-            return text, _normalize_usage(text, usage)
-        if not llm["api_key"]:
-            raise RuntimeError("ChatGPT API Key not set")
-        text, usage = call_openai_analysis(
-            api_key=llm["api_key"],
-            system_prompt=llm["system_prompt_text"],
-            task_prompt=llm["task_prompt_text"],
-            report_text=report_text,
-            model=llm["chatgpt_model"],
-        )
-        return text, _normalize_usage(text, usage)
+        ensure_analysis_services()
+        if not ANALYSIS_SERVICE:
+            raise RuntimeError("analysis service unavailable")
+        return ANALYSIS_SERVICE.run_llm_analysis(llm, report_text)
 
     def _load_job_report_json(self, job: Dict) -> Dict:
-        report_name = str(job.get("report_json", "") or "")
-        if not report_name or not is_safe_report_name(report_name):
-            raise RuntimeError("未找到可用于 AI 分析的 JSON 报告。")
-        report_path = REPORT_DIR / report_name
-        if not report_path.is_file():
-            raise RuntimeError("JSON 报告文件不存在。")
-        try:
-            return json.loads(report_path.read_text(encoding="utf-8", errors="ignore"))
-        except Exception as exc:
-            raise RuntimeError(f"JSON 报告解析失败: {exc}") from exc
+        ensure_analysis_services()
+        if not ANALYSIS_SERVICE:
+            raise RuntimeError("analysis service unavailable")
+        return ANALYSIS_SERVICE.load_job_report_json(job)
 
     def _start_batched_analysis(
         self,
@@ -5096,294 +5067,19 @@ class Handler(BaseHTTPRequestHandler):
         large_report_mode: bool = False,
         large_report_chunk_items: int = 4,
     ) -> str:
-        analysis_id = uuid4().hex[:12]
-        with ANALYSIS_JOBS_LOCK:
-            ANALYSIS_JOBS[analysis_id] = {
-                "status": "running",
-                "stage": "preparing",
-                "message": "准备分批分析...",
-                "progress": 0,
-                "start_ts": time.time(),
-                "elapsed_seconds": 0.0,
-                "duration_seconds": 0.0,
-                "job_id": job_id,
-                "total_devices": 0,
-                "done_devices": 0,
-                "started_devices": 0,
-                "inflight_devices": 0,
-                "inflight_device_names": [],
-                "total_batches": 0,
-                "done_batches": 0,
-                "result": "",
-                "error": "",
-                "token_usage": {"total_tokens": 0},
-                "token_total": 0,
-                "provider_used": llm.get("provider", "chatgpt"),
-                "model_used": self._llm_model_used(llm),
-                "local_base_url": llm.get("local_base_url", "") if llm.get("provider") == "local" else "",
-                "prompt_source": llm.get("prompt_source", ""),
-                "analysis_parallelism": max(1, int(analysis_parallelism or 1)),
-                "analysis_retries": max(0, int(analysis_retries or 0)),
-            }
-
-        def _update(**kwargs: Dict) -> None:
-            with ANALYSIS_JOBS_LOCK:
-                if analysis_id in ANALYSIS_JOBS:
-                    start_ts = float(ANALYSIS_JOBS[analysis_id].get("start_ts", time.time()) or time.time())
-                    elapsed = max(0.0, time.time() - start_ts)
-                    kwargs.setdefault("elapsed_seconds", elapsed)
-                    if "progress" in kwargs:
-                        try:
-                            new_progress = int(kwargs.get("progress", 0) or 0)
-                        except Exception:
-                            new_progress = 0
-                        old_progress = int(ANALYSIS_JOBS[analysis_id].get("progress", 0) or 0)
-                        kwargs["progress"] = max(old_progress, new_progress)
-                    ANALYSIS_JOBS[analysis_id].update(kwargs)
-
-        def _worker() -> None:
-            try:
-                start_ts_local = time.time()
-                with JOBS_LOCK:
-                    job = JOBS.get(job_id)
-                if report_data_override is not None:
-                    report_data = report_data_override
-                else:
-                    if not job:
-                        raise RuntimeError("job not found")
-                    report_data = self._load_job_report_json(job)
-                devices = report_data.get("devices", []) if isinstance(report_data, dict) else []
-                if not isinstance(devices, list) or not devices:
-                    raise RuntimeError("报告中没有可分析的设备数据")
-
-                size = max(1, int(batch_size or 5))
-                size = min(size, 50)
-                total_devices = len(devices)
-                total_batches = math.ceil(total_devices / size)
-                parallelism = max(1, min(8, int(analysis_parallelism or 1)))
-                retries = max(0, min(3, int(analysis_retries or 0)))
-                _update(
-                    stage="per_device",
-                    message=f"开始分批分析，共 {total_devices} 台设备，{total_batches} 批，并发={parallelism}，重试={retries}。",
-                    total_devices=total_devices,
-                    total_batches=total_batches,
-                )
-                results: List[Dict] = []
-                failed_results: List[Dict] = []
-                total_tokens_used = 0
-                done_devices = 0
-                started_devices = 0
-                inflight_devices = 0
-                inflight_names: List[str] = []
-                progress_lock = threading.Lock()
-                completed_chunk_units = 0
-                total_chunk_units = max(1, total_devices * max(1, int(large_report_chunk_items or 1))) if large_report_mode else 0
-
-                def _calc_progress() -> int:
-                    if large_report_mode:
-                        chunk_ratio = completed_chunk_units / max(1, total_chunk_units)
-                        device_ratio = done_devices / max(1, total_devices)
-                        return min(90, max(1, int(10 + chunk_ratio * 72 + device_ratio * 8)))
-                    return min(90, int((done_devices / max(1, total_devices)) * 90))
-
-                def _analyze_device(dev: Dict, total_devices_local: int, done_snapshot: int) -> Dict:
-                    nonlocal completed_chunk_units
-                    device_name = str(dev.get("device", "unknown"))
-                    usage_local = {}
-                    total_tokens_local = 0
-                    for attempt_idx in range(retries + 1):
-                        try:
-                            if large_report_mode:
-                                chunk_inputs = analysis_pipeline.build_device_chunk_inputs(
-                                    report_data,
-                                    dev,
-                                    chunk_count=large_report_chunk_items,
-                                    force_full=False,
-                                )
-                                chunk_results: List[Dict] = []
-                                for chunk_idx, chunk_input in enumerate(chunk_inputs, start=1):
-                                    _update(
-                                        message=(
-                                            f"分析设备 {device_name} ({done_snapshot + 1}/{total_devices_local}) "
-                                            f"分片 {chunk_idx}/{len(chunk_inputs)} ..."
-                                        )
-                                    )
-                                    chunk_analysis, chunk_usage = self._run_llm_analysis(llm, chunk_input)
-                                    with progress_lock:
-                                        completed_chunk_units += 1
-                                        progress_now = _calc_progress()
-                                    _update(progress=progress_now)
-                                    total_tokens_local += int((chunk_usage or {}).get("total_tokens", 0) or 0)
-                                    chunk_results.append(
-                                        {
-                                            "chunk_index": chunk_idx,
-                                            "chunk_count": len(chunk_inputs),
-                                            "analysis": chunk_analysis,
-                                            "token_usage": chunk_usage or {},
-                                        }
-                                    )
-                                device_summary_input = analysis_pipeline.build_device_chunk_summary_input(
-                                    report_data,
-                                    dev,
-                                    chunk_results,
-                                    force_full=False,
-                                )
-                                analysis_local, usage_local = self._run_llm_analysis(llm, device_summary_input)
-                            else:
-                                device_input = analysis_pipeline.build_device_analysis_input(
-                                    report_data,
-                                    dev,
-                                    force_full=False,
-                                )
-                                analysis_local, usage_local = self._run_llm_analysis(llm, device_input)
-                            total_tokens_local += int((usage_local or {}).get("total_tokens", 0) or 0)
-                            return {
-                                "device": device_name,
-                                "analysis": analysis_local,
-                                "token_usage": usage_local or {},
-                                "used_tokens": total_tokens_local,
-                                "error": "",
-                            }
-                        except Exception as exc:
-                            if attempt_idx >= retries:
-                                return {
-                                    "device": device_name,
-                                    "analysis": f"[设备分析失败] {device_name}: {exc}",
-                                    "token_usage": usage_local or {},
-                                    "used_tokens": total_tokens_local,
-                                    "error": str(exc),
-                                }
-                            _update(
-                                message=(
-                                    f"设备 {device_name} 分析失败，重试 {attempt_idx + 1}/{retries} ..."
-                                )
-                            )
-                            time.sleep(min(2.5, 0.8 * (attempt_idx + 1)))
-
-                for batch_idx in range(total_batches):
-                    start = batch_idx * size
-                    end = min(total_devices, start + size)
-                    batch_devices = devices[start:end]
-                    _update(
-                        done_batches=batch_idx,
-                        message=f"批次 {batch_idx + 1}/{total_batches} 分析中（并发={parallelism}）...",
-                    )
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=parallelism) as executor:
-                        future_map = {}
-                        for dev in batch_devices:
-                            future = executor.submit(_analyze_device, dev, total_devices, done_devices)
-                            future_map[future] = dev
-                            started_devices += 1
-                            inflight_devices += 1
-                            device_name = str((dev or {}).get("device", "unknown"))
-                            if device_name not in inflight_names:
-                                inflight_names.append(device_name)
-                            start_progress = min(15, int((started_devices / max(1, total_devices)) * 15))
-                            _update(
-                                started_devices=started_devices,
-                                inflight_devices=inflight_devices,
-                                inflight_device_names=inflight_names[:4],
-                                progress=start_progress,
-                            )
-                        for future in concurrent.futures.as_completed(future_map):
-                            row = future.result()
-                            total_tokens_used += int(row.get("used_tokens", 0) or 0)
-                            done_devices += 1
-                            inflight_devices = max(0, inflight_devices - 1)
-                            done_name = str(row.get("device", "") or "")
-                            inflight_names = [n for n in inflight_names if n != done_name]
-                            if row.get("error"):
-                                failed_results.append({"device": row.get("device", ""), "error": row.get("error", "")})
-                            results.append(
-                                {
-                                    "device": row.get("device", ""),
-                                    "analysis": row.get("analysis", ""),
-                                    "token_usage": row.get("token_usage", {}) or {},
-                                }
-                            )
-                            progress = min(90, int((done_devices / max(1, total_devices)) * 90))
-                            with progress_lock:
-                                progress = _calc_progress()
-                            _update(
-                                done_devices=done_devices,
-                                inflight_devices=inflight_devices,
-                                inflight_device_names=inflight_names[:4],
-                                progress=progress,
-                            )
-                    _update(done_batches=batch_idx + 1)
-
-                expected_devices: List[str] = []
-                for dev_row in devices:
-                    if not isinstance(dev_row, dict):
-                        continue
-                    dname = str(dev_row.get("device", "") or "").strip()
-                    if dname and dname not in expected_devices:
-                        expected_devices.append(dname)
-                got_devices = set()
-                for row in results:
-                    dname = str(row.get("device", "") or "").strip()
-                    if dname:
-                        got_devices.add(dname)
-                missing_rows = [d for d in expected_devices if d not in got_devices]
-                for d in missing_rows:
-                    results.append(
-                        {
-                            "device": d,
-                            "analysis": f"[设备分析失败] {d}: 该设备未生成分析结果（线程执行异常或被提前中断）。",
-                            "token_usage": {},
-                        }
-                    )
-                    failed_results.append({"device": d, "error": "missing_analysis_result"})
-
-                _update(stage="summary", message="正在汇总分析...", progress=92)
-                summary_input = analysis_pipeline.build_batched_summary_input(
-                    report_data,
-                    results,
-                    force_full=False,
-                )
-                try:
-                    summary_analysis, summary_usage = self._run_llm_analysis(llm, summary_input)
-                    total_tokens_used += int((summary_usage or {}).get("total_tokens", 0) or 0)
-                except Exception as sum_exc:
-                    summary_analysis = f"[汇总分析失败] {sum_exc}"
-
-                patched = analysis_guard.patch_summary_full_coverage(summary_analysis, expected_devices)
-                summary_analysis = str(patched.get("summary_text", summary_analysis) or summary_analysis)
-                missing_devices = list(patched.get("missing_devices", []) or [])
-
-                final_text_parts = ["# 逐设备分析结果"]
-                for item in results:
-                    final_text_parts.append(f"\n## {item.get('device', '')}\n{item.get('analysis', '')}")
-                if failed_results:
-                    final_text_parts.append("\n# 分析失败设备")
-                    for fr in failed_results:
-                        final_text_parts.append(f"- {fr.get('device', '')}: {fr.get('error', '')}")
-                final_text_parts.append("\n# 汇总分析")
-                final_text_parts.append(summary_analysis or "")
-                final_text = "\n".join(final_text_parts).strip()
-
-                token_stats = add_token_usage(llm["provider"], total_tokens_used)
-                _update(
-                    status="done",
-                    stage="done",
-                    message=f"分批分析完成（成功 {len(results) - len(failed_results)} / 总计 {len(results)}）",
-                    progress=100,
-                    duration_seconds=max(0.0, time.time() - start_ts_local),
-                    result=final_text,
-                    token_usage={"total_tokens": total_tokens_used},
-                    token_total=int(token_stats.get("total_tokens", 0)),
-                )
-            except Exception as exc:
-                _update(
-                    status="error",
-                    stage="error",
-                    message="分批分析失败",
-                    error=str(exc),
-                    duration_seconds=max(0.0, time.time() - start_ts_local),
-                )
-
-        threading.Thread(target=_worker, daemon=True).start()
-        return analysis_id
+        ensure_analysis_services()
+        if not ANALYSIS_SERVICE:
+            raise RuntimeError("analysis service unavailable")
+        return ANALYSIS_SERVICE.start_batched_analysis(
+            job_id=job_id,
+            llm=llm,
+            batch_size=batch_size,
+            analysis_parallelism=analysis_parallelism,
+            analysis_retries=analysis_retries,
+            report_data_override=report_data_override,
+            large_report_mode=large_report_mode,
+            large_report_chunk_items=large_report_chunk_items,
+        )
 
     def _handle_login(self, form: cgi.FieldStorage) -> None:
         username = (form.getvalue("username") or "").strip()
@@ -5849,62 +5545,10 @@ class Handler(BaseHTTPRequestHandler):
             self._respond_json({"ok": False, "error": str(exc)}, status=500)
 
     def _probe_cloud_token_balance(self, provider: str, api_key: str, model: str) -> Tuple[str, str]:
-        p = (provider or "").strip().lower()
-        probe_system = "You are a connectivity checker."
-        probe_task = "Reply only with OK."
-        probe_text = "ping"
-        try:
-            if p == "chatgpt":
-                _txt, _usage = call_openai_analysis(
-                    api_key=api_key,
-                    system_prompt=probe_system,
-                    task_prompt=probe_task,
-                    report_text=probe_text,
-                    model=model or DEFAULT_GPT_MODEL,
-                )
-            elif p == "deepseek":
-                _txt, _usage = call_deepseek_analysis(
-                    api_key=api_key,
-                    system_prompt=probe_system,
-                    task_prompt=probe_task,
-                    report_text=probe_text,
-                    model=model or DEFAULT_DEEPSEEK_MODEL,
-                )
-            elif p == "gemini":
-                _txt, _usage = call_gemini_analysis(
-                    api_key=api_key,
-                    system_prompt=probe_system,
-                    task_prompt=probe_task,
-                    report_text=probe_text,
-                    model=model or DEFAULT_GEMINI_MODEL,
-                )
-            elif p == "nvidia":
-                _txt, _usage = call_nvidia_analysis(
-                    api_key=api_key,
-                    system_prompt=probe_system,
-                    task_prompt=probe_task,
-                    report_text=probe_text,
-                    model=model or DEFAULT_NVIDIA_MODEL,
-                )
-            else:
-                return "unknown", "未知（不支持的模型来源）"
-            return "available", "可用"
-        except Exception as exc:
-            em = str(exc or "")
-            low = em.lower()
-            no_balance_hits = [
-                "insufficient_quota",
-                "billing_hard_limit_reached",
-                "quota exceeded",
-                "quota_exceeded",
-                "credit balance is too low",
-                "payment required",
-                "余额不足",
-                "欠费",
-            ]
-            if any(k in low for k in no_balance_hits):
-                return "insufficient", "不足"
-            return "unknown", f"未知（{em[:120]}）"
+        ensure_analysis_services()
+        if not ANALYSIS_SERVICE:
+            return "unknown", "未知（analysis service unavailable）"
+        return ANALYSIS_SERVICE.probe_cloud_token_balance(provider, api_key, model)
 
     def _resolve_llm_inputs_from_form(self, form: cgi.FieldStorage) -> Dict[str, str]:
         cfg = load_gpt_config()
@@ -6586,6 +6230,7 @@ def run_server(host: str = "0.0.0.0", port: int = 8080) -> None:
     initialize_default_prompt_files()
     initialize_default_check_templates()
     ensure_auth_db()
+    ensure_analysis_services()
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"HealthCheck Web Runner started at http://{host}:{port}")
     print("Press Ctrl+C to stop.")

@@ -24,8 +24,11 @@ healthcheck/
 │   ├── web_server.py             # Web 主服务（主入口）
 │   ├── web_runner.py             # 兼容入口（转发到 web_server）
 │   ├── llm_service.py            # 各模型 API 对接/连接测试
+│   ├── llm_adapter.py            # LLM 调用适配层（统一 run/probe/model_used）
 │   ├── analysis_pipeline.py      # AI 分析输入构造（分批/全量）
 │   ├── analysis_guard.py         # AI 分析预估与结果覆盖校验
+│   ├── analysis_service.py       # AI 分析编排服务（分批/分片/汇总）
+│   ├── status_service.py         # 分析状态存储与查询服务
 │   ├── prompt_service.py         # 提示词模板管理
 │   └── state_store.py            # 本地状态存储
 ├── config/
