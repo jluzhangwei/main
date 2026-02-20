@@ -1,20 +1,22 @@
 {% extends "base.html" %}
 {% block content %}
+{% set lang_raw = request.query_params.get('lang', 'zh') %}
+{% set lang = 'en' if lang_raw.lower().startswith('en') else 'zh' %}
 <div class="card">
-  <h2>Tasks</h2>
+  <h2>{{ 'Tasks' if lang == 'en' else '任务页面' }}</h2>
   <table>
     <thead>
       <tr>
         <th>task_id</th>
-        <th>created_at</th>
-        <th>status</th>
-        <th>progress</th>
+        <th>{{ 'created_at' if lang == 'en' else '创建时间' }}</th>
+        <th>{{ 'status' if lang == 'en' else '状态' }}</th>
+        <th>{{ 'progress' if lang == 'en' else '进度' }}</th>
       </tr>
     </thead>
     <tbody>
     {% for t in tasks %}
       <tr>
-        <td><a href="/tasks/{{ t.task_id }}">{{ t.task_id }}</a></td>
+        <td><a href="/tasks/{{ t.task_id }}?lang={{ lang }}">{{ t.task_id }}</a></td>
         <td>{{ t.created_at }}</td>
         <td>{{ t.status }}</td>
         <td>{{ t.progress_done }}/{{ t.progress_total }}</td>

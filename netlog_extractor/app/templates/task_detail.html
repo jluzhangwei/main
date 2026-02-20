@@ -1,25 +1,27 @@
 {% extends "base.html" %}
 {% block content %}
+{% set lang = request.query_params.get('lang', 'zh') %}
+{% set is_en = lang.lower().startswith('en') %}
 {% if error %}
 <div class="card error">{{ error }}</div>
 {% else %}
 <div class="card">
   <h2>Task {{ task.task_id }}</h2>
-  <p>Status: <span id="task-status">{{ task.status }}</span></p>
-  <p>Progress: <span id="task-progress">{{ task.progress_done }}/{{ task.progress_total }}</span></p>
+  <p>{{ 'Status' if is_en else '状态' }}: <span id="task-status">{{ task.status }}</span></p>
+  <p>{{ 'Progress' if is_en else '进度' }}: <span id="task-progress">{{ task.progress_done }}/{{ task.progress_total }}</span></p>
   <p>
-    <a href="/api/tasks/{{ task.task_id }}/summary.json">summary.json</a>
+    <a href="/api/tasks/{{ task.task_id }}/summary.json?lang={{ lang }}">summary.json</a>
     |
-    <a href="/api/tasks/{{ task.task_id }}/download.zip">download.zip</a>
+    <a href="/api/tasks/{{ task.task_id }}/download.zip?lang={{ lang }}">download.zip</a>
   </p>
-  <p><a href="/ai/settings">AI 设置</a></p>
+  <p><a href="/ai/settings?lang={{ lang }}">{{ 'AI Settings' if is_en else 'AI 设置' }}</a></p>
 </div>
 
 <div class="card">
   <table id="dev-table">
     <thead>
       <tr>
-        <th>device_id</th><th>ip</th><th>status</th><th>vendor</th><th>offset(s)</th><th>hits</th><th>reason</th><th>download</th><th>debug</th>
+        <th>device_id</th><th>ip</th><th>{{ 'status' if is_en else '状态' }}</th><th>vendor</th><th>offset(s)</th><th>hits</th><th>{{ 'reason' if is_en else '原因' }}</th><th>{{ 'download' if is_en else '下载' }}</th><th>debug</th>
       </tr>
     </thead>
     <tbody>
@@ -34,12 +36,12 @@
         <td>{{ d.reason or '' }}</td>
         <td>
           {% if d.filtered_log_path %}
-          <a href="/api/tasks/{{ task.task_id }}/devices/{{ d.device_id }}/log">filtered.log</a>
+          <a href="/api/tasks/{{ task.task_id }}/devices/{{ d.device_id }}/log?lang={{ lang }}">filtered.log</a>
           {% endif %}
         </td>
         <td>
           {% if d.debug_log_path %}
-          <a href="/api/tasks/{{ task.task_id }}/devices/{{ d.device_id }}/debug">debug.log</a>
+          <a href="/api/tasks/{{ task.task_id }}/devices/{{ d.device_id }}/debug?lang={{ lang }}">debug.log</a>
           {% endif %}
         </td>
       </tr>
@@ -50,88 +52,120 @@
 
 {% if task.params.get("debug_mode") %}
 <div class="card">
-  <h3 style="margin:0 0 8px;">Debug Console</h3>
+  <h3 style="margin:0 0 8px;">{{ 'Debug Console' if is_en else 'Debug 控制台' }}</h3>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
-    <label for="debug-device" style="margin:0;">设备</label>
+    <label for="debug-device" style="margin:0;">{{ 'Device' if is_en else '设备' }}</label>
     <select id="debug-device" style="width:220px;max-width:100%;">
       {% for d in task.devices %}
       <option value="{{ d.device_id }}">{{ d.device_id }} ({{ d.device_ip }})</option>
       {% endfor %}
     </select>
-    <a id="debug-download-link" href="#" target="_blank">下载 debug.log</a>
+    <a id="debug-download-link" href="#" target="_blank">{{ 'Download debug.log' if is_en else '下载 debug.log' }}</a>
   </div>
-  <pre id="debug-console" style="background:#0f172a;color:#e2e8f0;padding:10px;border-radius:8px;max-height:420px;overflow:auto;margin:0;">等待设备执行...</pre>
+  <pre id="debug-console" style="background:#0f172a;color:#e2e8f0;padding:10px;border-radius:8px;max-height:420px;overflow:auto;margin:0;">{{ 'Waiting for device output...' if is_en else '等待设备执行...' }}</pre>
 </div>
 {% endif %}
 
 <div class="card">
-  <h3 style="margin:0 0 8px;">AI 日志分析</h3>
+  <h3 style="margin:0 0 8px;">{{ 'AI Log Analysis' if is_en else 'AI 日志分析' }}</h3>
   <div class="ai-section">
-    <div class="ai-section-title">分析执行选项</div>
+    <div class="ai-section-title">{{ 'Analysis Execution Options' if is_en else '分析执行选项' }}</div>
     <div class="exec-options">
       <div class="exec-card">
-        <label class="check-item"><input type="checkbox" id="batched_analysis">分批模式（每台设备单独提交 JSON 给 AI）</label>
-        <div class="muted">适用于本次巡检 JSON 和历史 JSON 报告；非结构化历史文件仍为单次分析。</div>
-        <label class="check-item"><input type="checkbox" id="fragmented_analysis">分片模式（设备分片分析 + 汇总）</label>
-        <div class="muted">单设备先按日志分片提交，再生成设备汇总，适合超大报告。</div>
+        <label class="check-item"><input type="checkbox" id="batched_analysis">{{ 'Batched mode (submit each device JSON separately to AI)' if is_en else '分批模式（每台设备单独提交 JSON 给 AI）' }}</label>
+        <div class="muted">{{ 'Best for current-task JSON and historical JSON reports; unstructured files still run once.' if is_en else '适用于本次巡检 JSON 和历史 JSON 报告；非结构化历史文件仍为单次分析。' }}</div>
+        <label class="check-item"><input type="checkbox" id="fragmented_analysis">{{ 'Chunk mode (device chunks + summary)' if is_en else '分片模式（设备分片分析 + 汇总）' }}</label>
+        <div class="muted">{{ 'Each device is analyzed by chunks first, then summarized; suitable for very large logs.' if is_en else '单设备先按日志分片提交，再生成设备汇总，适合超大报告。' }}</div>
       </div>
       <div class="exec-card">
-        <div class="exec-field"><label>AI 并发数（设备级）</label><input id="analysis_parallelism" type="number" min="1" max="8" value="2"></div>
-        <div class="exec-field"><label>分片并行数</label><input id="chunk_parallelism" type="number" min="1" max="8" value="1"></div>
-        <div class="exec-field"><label>每分片 Token 预算</label><input id="max_tokens_per_chunk" type="number" min="800" max="12000" value="4500"></div>
-        <div class="exec-field"><label>每设备最大分片</label><input id="max_chunks_per_device" type="number" min="1" max="60" value="12"></div>
-        <div class="exec-field"><label>每设备失败重试</label><input id="analysis_retries" type="number" min="0" max="3" value="1"></div>
-        <div class="exec-field"><label>AI 调用超时秒数</label><input id="llm_call_timeout_sec" type="number" min="60" max="600" value="240"></div>
+        <div class="exec-field"><label>{{ 'AI parallelism (device-level)' if is_en else 'AI 并发数（设备级）' }}</label><input id="analysis_parallelism" type="number" min="1" max="8" value="2"></div>
+        <div class="exec-field"><label>{{ 'Chunk parallelism' if is_en else '分片并行数' }}</label><input id="chunk_parallelism" type="number" min="1" max="8" value="1"></div>
+        <div class="exec-field"><label>{{ 'Token budget per chunk' if is_en else '每分片 Token 预算' }}</label><input id="max_tokens_per_chunk" type="number" min="800" max="12000" value="4500"></div>
+        <div class="exec-field"><label>{{ 'Max chunks per device' if is_en else '每设备最大分片' }}</label><input id="max_chunks_per_device" type="number" min="1" max="60" value="12"></div>
+        <div class="exec-field"><label>{{ 'Retries per device' if is_en else '每设备失败重试' }}</label><input id="analysis_retries" type="number" min="0" max="3" value="1"></div>
+        <div class="exec-field"><label>{{ 'LLM timeout (seconds)' if is_en else 'AI 调用超时秒数' }}</label><input id="llm_call_timeout_sec" type="number" min="60" max="600" value="240"></div>
         <div class="exec-field">
-          <label>分片策略</label>
+          <label>{{ 'Chunk strategy' if is_en else '分片策略' }}</label>
           <select id="chunk_strategy" class="narrow-select">
             <option value="hybrid" selected>hybrid</option>
             <option value="time">time</option>
             <option value="event">event</option>
           </select>
         </div>
-        <div class="muted">hybrid：综合时间与事件（推荐） | time：按时间窗口切分 | event：按事件类型聚合切分</div>
-        <div class="muted">建议并发 1-4，过高可能触发 API 限流。</div>
+        <div class="muted">{{ 'hybrid: time + event (recommended) | time: split by time windows | event: split by event classes' if is_en else 'hybrid：综合时间与事件（推荐） | time：按时间窗口切分 | event：按事件类型聚合切分' }}</div>
+        <div class="muted">{{ 'Recommended parallelism: 1-4. Too high may hit API rate limits.' if is_en else '建议并发 1-4，过高可能触发 API 限流。' }}</div>
       </div>
     </div>
     <div style="margin-top:8px;">
-      <button id="analysis-precheck-btn" type="button">分析预估</button>
+      <button id="analysis-precheck-btn" type="button">{{ 'Estimate' if is_en else '分析预估' }}</button>
     </div>
-    <div id="analysis-precheck-box" class="muted">分析预估：未计算</div>
+    <div id="analysis-precheck-box" class="muted">{{ 'Estimate: not calculated' if is_en else '分析预估：未计算' }}</div>
   </div>
 
   <div class="ai-section">
-    <div class="ai-section-title">日志文件分析</div>
-    <label>导入日志文件</label>
+    <div class="ai-section-title">{{ 'Log File Analysis' if is_en else '日志文件分析' }}</div>
+    <label>{{ 'Import Log File' if is_en else '导入日志文件' }}</label>
     <input id="history-report-file" type="file" />
-    <div class="muted">可上传历史 JSON/CSV/TXT/LOG 作为参考，当前版本暂不参与自动拼接。</div>
+    <div class="muted">{{ 'Upload historical JSON/CSV/TXT/LOG as reference. Not merged automatically in current version.' if is_en else '可上传历史 JSON/CSV/TXT/LOG 作为参考，当前版本暂不参与自动拼接。' }}</div>
   </div>
 
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
-    <button id="ai-start-btn" class="primary-btn" type="button" onclick="startAnalysis()">AI 分析</button>
-    <button id="save-analysis-btn" type="button" onclick="saveAnalysis()">保存分析报告</button>
+    <button id="ai-start-btn" class="primary-btn" type="button" onclick="startAnalysis()">{{ 'AI Analyze' if is_en else 'AI 分析' }}</button>
+    <button id="save-analysis-btn" type="button" onclick="saveAnalysis()">{{ 'Save Report' if is_en else '保存分析报告' }}</button>
   </div>
-  <p id="ai-status" class="muted">当前模型: - | 未启动</p>
+  <p id="ai-status" class="muted">{{ 'Current model: - | not started' if is_en else '当前模型: - | 未启动' }}</p>
   <div id="analysis-progress-box" class="analysis-progress" style="display:none;">
-    <div id="analysis-progress-text" class="muted">进度: 0%</div>
+    <div id="analysis-progress-text" class="muted">{{ 'Progress: 0%' if is_en else '进度: 0%' }}</div>
     <div class="analysis-progress-bar">
       <div id="analysis-progress-fill" class="analysis-progress-fill"></div>
     </div>
   </div>
-  <div id="ai-output" class="markdown-body">分析结果会显示在这里。</div>
+  <div id="ai-output" class="markdown-body">{{ 'Analysis result will be shown here.' if is_en else '分析结果会显示在这里。' }}</div>
 </div>
 
 <script>
+  const LANG_Q = {{ ('"en"' if is_en else '"zh"') | safe }};
+  const UI_LANG = {{ ('"en"' if is_en else '"zh"') | safe }};
+  const T = {
+    progress: UI_LANG === 'en' ? 'Progress' : '进度',
+    preparing: UI_LANG === 'en' ? 'preparing' : '准备中',
+    startFailed: UI_LANG === 'en' ? 'start failed' : '启动失败',
+    starting: UI_LANG === 'en' ? 'starting...' : '启动中...',
+    running: UI_LANG === 'en' ? 'running' : '运行中',
+    queryFailed: UI_LANG === 'en' ? 'query failed' : '查询失败',
+    debugPending: UI_LANG === 'en' ? 'debug log not generated yet...' : 'debug 日志尚未生成...',
+    debugEmpty: UI_LANG === 'en' ? 'debug log is empty' : 'debug 日志为空',
+    phaseDone: UI_LANG === 'en' ? 'Phase: completed' : '阶段: 完成',
+    phaseFailed: UI_LANG === 'en' ? 'Phase: failed' : '阶段: 失败',
+    estimateLoading: UI_LANG === 'en' ? 'Estimate: calculating...' : '分析预估：计算中...',
+    estimateFailed: UI_LANG === 'en' ? 'Estimate failed' : '预估失败',
+    estimateNotCalculated: UI_LANG === 'en' ? 'Estimate: not calculated' : '分析预估：未计算',
+    estimateFailurePrefix: UI_LANG === 'en' ? 'Estimate: failed' : '分析预估：失败',
+    noAnalysisToSave: UI_LANG === 'en' ? 'No analysis result to save' : '暂无可保存的分析结果',
+    analysisFailed: UI_LANG === 'en' ? 'analysis failed' : '分析失败',
+    currentModel: UI_LANG === 'en' ? 'Current model' : '当前模型',
+    notStarted: UI_LANG === 'en' ? 'not started' : '未启动',
+  };
   let latestTask = null;
   let currentAnalysisId = null;
   let latestAnalysisText = '';
+  function el(id) { return document.getElementById(id); }
+  function val(id, fallback) {
+    const node = el(id);
+    const v = node && node.value != null ? node.value : '';
+    return v === '' ? fallback : v;
+  }
+  function checked(id) {
+    const node = el(id);
+    return !!(node && node.checked);
+  }
 
   function updateAnalysisProgress(visible, percent, text) {
     const box = document.getElementById('analysis-progress-box');
     const txt = document.getElementById('analysis-progress-text');
     const fill = document.getElementById('analysis-progress-fill');
     if (box) box.style.display = visible ? '' : 'none';
-    if (txt) txt.textContent = text || `进度: ${percent || 0}%`;
+    if (txt) txt.textContent = text || `${T.progress}: ${percent || 0}%`;
     if (fill) fill.style.width = `${Math.max(0, Math.min(100, Number(percent || 0)))}%`;
   }
 
@@ -147,15 +181,15 @@
     tbody.innerHTML = '';
     for (const d of task.devices) {
       const tr = document.createElement('tr');
-      const dl = d.filtered_log_path ? `<a href="/api/tasks/${task.task_id}/devices/${d.device_id}/log">filtered.log</a>` : '';
-      const dbg = d.debug_log_path ? `<a href="/api/tasks/${task.task_id}/devices/${d.device_id}/debug">debug.log</a>` : '';
+      const dl = d.filtered_log_path ? `<a href="/api/tasks/${task.task_id}/devices/${d.device_id}/log?lang=${LANG_Q}">filtered.log</a>` : '';
+      const dbg = d.debug_log_path ? `<a href="/api/tasks/${task.task_id}/devices/${d.device_id}/debug?lang=${LANG_Q}">debug.log</a>` : '';
       tr.innerHTML = `
         <td>${d.device_id}</td>
         <td>${d.device_ip}</td>
         <td>${d.status}</td>
         <td>${d.vendor || ''}</td>
-        <td>${d.offset_seconds ?? ''}</td>
-        <td>${d.hits_count ?? 0}</td>
+        <td>${d.offset_seconds == null ? '' : d.offset_seconds}</td>
+        <td>${d.hits_count == null ? 0 : d.hits_count}</td>
         <td>${d.reason || ''}</td>
         <td>${dl}</td>
         <td>${dbg}</td>`;
@@ -178,27 +212,29 @@
     const linkEl = document.getElementById('debug-download-link');
     if (!sel || !consoleEl || !linkEl) return;
     const deviceId = sel.value;
-    const devices = latestTask?.devices || [];
+    const devices = (latestTask && latestTask.devices) ? latestTask.devices : [];
     const dev = devices.find(d => d.device_id === deviceId);
     if (!dev || !dev.debug_log_path) {
       linkEl.removeAttribute('href');
-      consoleEl.textContent = 'debug 日志尚未生成...';
+      consoleEl.textContent = T.debugPending;
       return;
     }
-    const url = `/api/tasks/{{ task.task_id }}/devices/${deviceId}/debug`;
+    const url = `/api/tasks/{{ task.task_id }}/devices/${deviceId}/debug?lang=${LANG_Q}`;
     linkEl.href = url;
     try {
       const res = await fetch(url);
       if (res.ok) {
         const text = await res.text();
-        consoleEl.textContent = text || 'debug 日志为空';
+        consoleEl.textContent = text || T.debugEmpty;
         consoleEl.scrollTop = consoleEl.scrollHeight;
       }
     } catch (e) {
       // keep silent in polling
     }
   }
-  document.getElementById('debug-device')?.addEventListener('change', pollDebug);
+  if (document.getElementById('debug-device')) {
+    document.getElementById('debug-device').addEventListener('change', pollDebug);
+  }
   {% endif %}
 
   async function startAnalysis() {
@@ -207,19 +243,19 @@
     const outEl = document.getElementById('ai-output');
     if (!btn || !statusEl || !outEl) return;
     btn.disabled = true;
-    statusEl.textContent = '启动中...';
+    statusEl.textContent = T.starting;
     outEl.innerHTML = '';
-    updateAnalysisProgress(true, 0, '进度: 0%（准备中）');
+    updateAnalysisProgress(true, 0, `${T.progress}: 0% (${T.preparing})`);
     const payload = {
-      batched_analysis: document.getElementById('batched_analysis')?.checked || false,
-      fragmented_analysis: document.getElementById('fragmented_analysis')?.checked || false,
-      analysis_parallelism: parseInt(document.getElementById('analysis_parallelism')?.value || '2', 10),
-      chunk_parallelism: parseInt(document.getElementById('chunk_parallelism')?.value || '1', 10),
-      max_tokens_per_chunk: parseInt(document.getElementById('max_tokens_per_chunk')?.value || '4500', 10),
-      max_chunks_per_device: parseInt(document.getElementById('max_chunks_per_device')?.value || '12', 10),
-      chunk_strategy: document.getElementById('chunk_strategy')?.value || 'hybrid',
-      analysis_retries: parseInt(document.getElementById('analysis_retries')?.value || '1', 10),
-      llm_call_timeout_sec: parseInt(document.getElementById('llm_call_timeout_sec')?.value || '240', 10),
+      batched_analysis: checked('batched_analysis'),
+      fragmented_analysis: checked('fragmented_analysis'),
+      analysis_parallelism: parseInt(val('analysis_parallelism', '2'), 10),
+      chunk_parallelism: parseInt(val('chunk_parallelism', '1'), 10),
+      max_tokens_per_chunk: parseInt(val('max_tokens_per_chunk', '4500'), 10),
+      max_chunks_per_device: parseInt(val('max_chunks_per_device', '12'), 10),
+      chunk_strategy: val('chunk_strategy', 'hybrid'),
+      analysis_retries: parseInt(val('analysis_retries', '1'), 10),
+      llm_call_timeout_sec: parseInt(val('llm_call_timeout_sec', '240'), 10),
     };
     const res = await fetch('/api/tasks/{{ task.task_id }}/analysis/start', {
       method: 'POST',
@@ -228,12 +264,12 @@
     });
     if (!res.ok) {
       btn.disabled = false;
-      statusEl.textContent = '启动失败';
+      statusEl.textContent = T.startFailed;
       return;
     }
     const data = await res.json();
     currentAnalysisId = data.analysis_id;
-    statusEl.textContent = `运行中 (${currentAnalysisId})`;
+    statusEl.textContent = `${T.running} (${currentAnalysisId})`;
     setTimeout(pollAnalysis, 1000);
   }
 
@@ -244,7 +280,7 @@
     if (!currentAnalysisId || !statusEl || !outEl || !btn) return;
     const res = await fetch(`/api/analysis/${currentAnalysisId}`);
     if (!res.ok) {
-      statusEl.textContent = '查询失败';
+      statusEl.textContent = T.queryFailed;
       btn.disabled = false;
       return;
     }
@@ -252,7 +288,7 @@
     statusEl.textContent = `${data.status} | provider=${data.provider_used || '-'} | model=${data.model_used || '-'}`;
     const p = Number(data.progress_percent || 0);
     const stageText = data.progress_text || '';
-    const progressLine = stageText ? `进度: ${p}% | ${stageText}` : `进度: ${p}%`;
+    const progressLine = stageText ? `${T.progress}: ${p}% | ${stageText}` : `${T.progress}: ${p}%`;
     updateAnalysisProgress(
       true,
       p,
@@ -261,13 +297,13 @@
     if (data.status === 'success') {
       latestAnalysisText = data.result || '';
       outEl.innerHTML = renderMarkdown(latestAnalysisText);
-      updateAnalysisProgress(true, 100, `进度: 100% | ${data.progress_text || '阶段: 完成'}`);
+      updateAnalysisProgress(true, 100, `${T.progress}: 100% | ${data.progress_text || T.phaseDone}`);
       btn.disabled = false;
       return;
     }
     if (data.status === 'failed') {
-      outEl.innerHTML = renderMarkdown(data.error || 'analysis failed');
-      updateAnalysisProgress(true, p || 1, `进度: ${p || 1}% | ${data.progress_text || '阶段: 失败'}`);
+      outEl.innerHTML = renderMarkdown(data.error || T.analysisFailed);
+      updateAnalysisProgress(true, p || 1, `${T.progress}: ${p || 1}% | ${data.progress_text || T.phaseFailed}`);
       btn.disabled = false;
       return;
     }
@@ -276,17 +312,17 @@
 
   async function runPrecheck() {
     const box = document.getElementById('analysis-precheck-box');
-    if (box) box.textContent = '分析预估：计算中...';
+    if (box) box.textContent = T.estimateLoading;
     const payload = {
-      batched_analysis: document.getElementById('batched_analysis')?.checked || false,
-      fragmented_analysis: document.getElementById('fragmented_analysis')?.checked || false,
-      analysis_parallelism: parseInt(document.getElementById('analysis_parallelism')?.value || '2', 10),
-      chunk_parallelism: parseInt(document.getElementById('chunk_parallelism')?.value || '1', 10),
-      max_tokens_per_chunk: parseInt(document.getElementById('max_tokens_per_chunk')?.value || '4500', 10),
-      max_chunks_per_device: parseInt(document.getElementById('max_chunks_per_device')?.value || '12', 10),
-      chunk_strategy: document.getElementById('chunk_strategy')?.value || 'hybrid',
-      analysis_retries: parseInt(document.getElementById('analysis_retries')?.value || '1', 10),
-      llm_call_timeout_sec: parseInt(document.getElementById('llm_call_timeout_sec')?.value || '240', 10),
+      batched_analysis: checked('batched_analysis'),
+      fragmented_analysis: checked('fragmented_analysis'),
+      analysis_parallelism: parseInt(val('analysis_parallelism', '2'), 10),
+      chunk_parallelism: parseInt(val('chunk_parallelism', '1'), 10),
+      max_tokens_per_chunk: parseInt(val('max_tokens_per_chunk', '4500'), 10),
+      max_chunks_per_device: parseInt(val('max_chunks_per_device', '12'), 10),
+      chunk_strategy: val('chunk_strategy', 'hybrid'),
+      analysis_retries: parseInt(val('analysis_retries', '1'), 10),
+      llm_call_timeout_sec: parseInt(val('llm_call_timeout_sec', '240'), 10),
     };
     try {
       const res = await fetch('/api/tasks/{{ task.task_id }}/analysis/precheck', {
@@ -296,18 +332,19 @@
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        throw new Error(data.detail || data.error || '预估失败');
+        throw new Error(data.detail || data.error || T.estimateFailed);
       }
-      if (box) box.textContent = data.line || '分析预估：未计算';
+      if (box) box.textContent = data.line || T.estimateNotCalculated;
     } catch (e) {
-      if (box) box.textContent = `分析预估：失败 (${e})`;
+      if (box) box.textContent = `${T.estimateFailurePrefix} (${e})`;
     }
   }
 
   function saveAnalysis() {
-    const text = latestAnalysisText || document.getElementById('ai-output')?.innerText || '';
+    const outNode = document.getElementById('ai-output');
+    const text = latestAnalysisText || ((outNode && outNode.innerText) ? outNode.innerText : '');
     if (!text.trim()) {
-      alert('暂无可保存的分析结果');
+      alert(T.noAnalysisToSave);
       return;
     }
     const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
@@ -428,24 +465,26 @@
       const cfg = data.cfg || {};
       if (document.getElementById('batched_analysis')) document.getElementById('batched_analysis').checked = !!cfg.batched_analysis;
       if (document.getElementById('fragmented_analysis')) document.getElementById('fragmented_analysis').checked = !!cfg.fragmented_analysis;
-      if (document.getElementById('analysis_parallelism')) document.getElementById('analysis_parallelism').value = cfg.analysis_parallelism ?? 2;
-      if (document.getElementById('chunk_parallelism')) document.getElementById('chunk_parallelism').value = cfg.chunk_parallelism ?? 1;
-      if (document.getElementById('max_tokens_per_chunk')) document.getElementById('max_tokens_per_chunk').value = cfg.max_tokens_per_chunk ?? 4500;
+      if (document.getElementById('analysis_parallelism')) document.getElementById('analysis_parallelism').value = cfg.analysis_parallelism == null ? 2 : cfg.analysis_parallelism;
+      if (document.getElementById('chunk_parallelism')) document.getElementById('chunk_parallelism').value = cfg.chunk_parallelism == null ? 1 : cfg.chunk_parallelism;
+      if (document.getElementById('max_tokens_per_chunk')) document.getElementById('max_tokens_per_chunk').value = cfg.max_tokens_per_chunk == null ? 4500 : cfg.max_tokens_per_chunk;
       if (document.getElementById('max_chunks_per_device')) {
-        document.getElementById('max_chunks_per_device').value = cfg.max_chunks_per_device ?? cfg.large_report_chunk_items ?? 12;
+        document.getElementById('max_chunks_per_device').value = cfg.max_chunks_per_device == null ? ((cfg.large_report_chunk_items == null) ? 12 : cfg.large_report_chunk_items) : cfg.max_chunks_per_device;
       }
       if (document.getElementById('chunk_strategy')) document.getElementById('chunk_strategy').value = cfg.chunk_strategy || 'hybrid';
-      if (document.getElementById('analysis_retries')) document.getElementById('analysis_retries').value = cfg.analysis_retries ?? 1;
-      if (document.getElementById('llm_call_timeout_sec')) document.getElementById('llm_call_timeout_sec').value = cfg.llm_call_timeout_sec ?? 240;
+      if (document.getElementById('analysis_retries')) document.getElementById('analysis_retries').value = cfg.analysis_retries == null ? 1 : cfg.analysis_retries;
+      if (document.getElementById('llm_call_timeout_sec')) document.getElementById('llm_call_timeout_sec').value = cfg.llm_call_timeout_sec == null ? 240 : cfg.llm_call_timeout_sec;
       const model = cfg.provider ? `${cfg.provider} | ${cfg[cfg.provider + '_model'] || '-'}` : '-';
       const aiStatus = document.getElementById('ai-status');
-      if (aiStatus) aiStatus.textContent = `当前模型: ${model} | 未启动`;
+      if (aiStatus) aiStatus.textContent = `${T.currentModel}: ${model} | ${T.notStarted}`;
     } catch (e) {
       // ignore
     }
   }
 
-  document.getElementById('analysis-precheck-btn')?.addEventListener('click', runPrecheck);
+  if (document.getElementById('analysis-precheck-btn')) {
+    document.getElementById('analysis-precheck-btn').addEventListener('click', runPrecheck);
+  }
   loadAiDefaults();
   setTimeout(poll, 1000);
 </script>

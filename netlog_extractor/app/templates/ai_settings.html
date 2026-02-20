@@ -1,224 +1,226 @@
 {% extends "base.html" %}
 {% block content %}
+{% set lang_raw = request.query_params.get('lang', 'zh') %}
+{% set is_en = lang_raw.lower().startswith('en') %}
 <div class="card ai-card">
   <div class="ai-head">
-    <span id="provider_brand_inline" class="ai-brand" title="Provider"></span>
-    <h2>AI 分析设置</h2>
+    <span id="provider_brand_inline" class="ai-brand"></span>
+    <h2>{{ 'AI Analysis Settings' if is_en else 'AI 分析设置' }}</h2>
   </div>
 
-  {% if saved %}<div class="ok-msg">已保存</div>{% endif %}
+  {% if saved %}<div class="ok-msg">{{ 'Saved' if is_en else '已保存' }}</div>{% endif %}
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
 
   <div class="ai-section">
-    <div class="ai-section-title">大模型配置</div>
+    <div class="ai-section-title">{{ 'LLM Configuration' if is_en else '大模型配置' }}</div>
     <div class="ai-grid">
       <div>
-        <label>大模型选择</label>
+        <label>{{ 'Provider' if is_en else '大模型选择' }}</label>
         <select id="provider_select">
           <option value="chatgpt" {% if cfg.provider=='chatgpt' %}selected{% endif %}>ChatGPT</option>
           <option value="deepseek" {% if cfg.provider=='deepseek' %}selected{% endif %}>DeepSeek</option>
           <option value="qwen" {% if cfg.provider=='qwen' %}selected{% endif %}>QWEN</option>
           <option value="gemini" {% if cfg.provider=='gemini' %}selected{% endif %}>Gemini</option>
           <option value="nvidia" {% if cfg.provider=='nvidia' %}selected{% endif %}>NVIDIA</option>
-          <option value="local" {% if cfg.provider=='local' %}selected{% endif %}>本地大模型</option>
+          <option value="local" {% if cfg.provider=='local' %}selected{% endif %}>{{ 'Local Model' if is_en else '本地大模型' }}</option>
         </select>
-        <div id="llm_test_result" class="hint">模型连接测试结果将在此显示。</div>
+        <div id="llm_test_result" class="hint">{{ 'Connection test result will be shown here.' if is_en else '模型连接测试结果将在此显示。' }}</div>
       </div>
       <div>
-        <label>API Key 管理</label>
+        <label>{{ 'API Key Management' if is_en else 'API Key 管理' }}</label>
         <div class="actions" style="margin-top:0;">
-          <button class="btn" id="import_api_key_btn" type="button">导入 API Key</button>
-          <button class="btn" id="test_llm_btn" type="button">模型连接测试</button>
-          <button class="btn" id="save_llm_btn" type="button">保存模型配置</button>
+          <button class="btn" id="import_api_key_btn" type="button">{{ 'Import API Key' if is_en else '导入 API Key' }}</button>
+          <button class="btn" id="test_llm_btn" type="button">{{ 'Test Connection' if is_en else '模型连接测试' }}</button>
+          <button class="btn" id="save_llm_btn" type="button">{{ 'Save Config' if is_en else '保存模型配置' }}</button>
         </div>
-        <div class="hint">用途：保存当前大模型来源、模型名、本地地址、已选提示词模板。下次打开页面自动带出。</div>
+        <div class="hint">{{ 'Saves provider, model, local endpoint and selected prompts for next visit.' if is_en else '用途：保存当前大模型来源、模型名、本地地址、已选提示词模板。下次打开页面自动带出。' }}</div>
         <div id="api_key_state" class="hint"></div>
       </div>
     </div>
 
-    <div id="chatgpt_settings" class="ai-grid ai-row">
+    <div id="chatgpt_settings" class="ai-grid ai-row" {% if cfg.provider != 'chatgpt' %}style="display:none;"{% endif %}>
       <div>
-        <label>ChatGPT 模型</label>
+        <label>{{ 'ChatGPT Model' if is_en else 'ChatGPT 模型' }}</label>
         <select id="chatgpt_model_select">
           {% for m in chatgpt_model_options %}
           <option value="{{ m }}" {% if cfg.chatgpt_model == m %}selected{% endif %}>{{ m }}</option>
           {% endfor %}
-          <option value="__custom__" {% if cfg.chatgpt_model not in chatgpt_model_options %}selected{% endif %}>自定义...</option>
+          <option value="__custom__" {% if cfg.chatgpt_model not in chatgpt_model_options %}selected{% endif %}>{{ 'Custom...' if is_en else '自定义...' }}</option>
         </select>
       </div>
       <div id="chatgpt_custom_wrap" {% if cfg.chatgpt_model in chatgpt_model_options %}style="display:none;"{% endif %}>
-        <label>自定义 ChatGPT 模型</label>
-        <input id="chatgpt_model_custom" value="{% if cfg.chatgpt_model in chatgpt_model_options %}{% else %}{{ cfg.chatgpt_model }}{% endif %}" placeholder="例如 gpt-4.1-mini" />
+        <label>{{ 'Custom ChatGPT Model' if is_en else '自定义 ChatGPT 模型' }}</label>
+        <input id="chatgpt_model_custom" value="{% if cfg.chatgpt_model in chatgpt_model_options %}{% else %}{{ cfg.chatgpt_model }}{% endif %}" placeholder="{{ 'e.g. gpt-4.1-mini' if is_en else '例如 gpt-4.1-mini' }}" />
       </div>
     </div>
 
-    <div id="deepseek_settings" class="ai-grid ai-row">
+    <div id="deepseek_settings" class="ai-grid ai-row" {% if cfg.provider != 'deepseek' %}style="display:none;"{% endif %}>
       <div>
-        <label>DeepSeek 模型</label>
+        <label>{{ 'DeepSeek Model' if is_en else 'DeepSeek 模型' }}</label>
         <select id="deepseek_model_select">
           {% for m in deepseek_model_options %}
           <option value="{{ m }}" {% if cfg.deepseek_model == m %}selected{% endif %}>{{ m }}</option>
           {% endfor %}
-          <option value="__custom__" {% if cfg.deepseek_model not in deepseek_model_options %}selected{% endif %}>自定义...</option>
+          <option value="__custom__" {% if cfg.deepseek_model not in deepseek_model_options %}selected{% endif %}>{{ 'Custom...' if is_en else '自定义...' }}</option>
         </select>
       </div>
       <div id="deepseek_custom_wrap" {% if cfg.deepseek_model in deepseek_model_options %}style="display:none;"{% endif %}>
-        <label>自定义 DeepSeek 模型</label>
-        <input id="deepseek_model_custom" value="{% if cfg.deepseek_model in deepseek_model_options %}{% else %}{{ cfg.deepseek_model }}{% endif %}" placeholder="例如 deepseek-chat" />
+        <label>{{ 'Custom DeepSeek Model' if is_en else '自定义 DeepSeek 模型' }}</label>
+        <input id="deepseek_model_custom" value="{% if cfg.deepseek_model in deepseek_model_options %}{% else %}{{ cfg.deepseek_model }}{% endif %}" placeholder="{{ 'e.g. deepseek-chat' if is_en else '例如 deepseek-chat' }}" />
       </div>
     </div>
 
-    <div id="qwen_settings" class="ai-grid ai-row">
+    <div id="qwen_settings" class="ai-grid ai-row" {% if cfg.provider != 'qwen' %}style="display:none;"{% endif %}>
       <div>
-        <label>QWEN 模型</label>
+        <label>{{ 'QWEN Model' if is_en else 'QWEN 模型' }}</label>
         <select id="qwen_model_select">
           {% for m in qwen_model_options %}
           <option value="{{ m }}" {% if cfg.qwen_model == m %}selected{% endif %}>{{ m }}</option>
           {% endfor %}
-          <option value="__custom__" {% if cfg.qwen_model not in qwen_model_options %}selected{% endif %}>自定义...</option>
+          <option value="__custom__" {% if cfg.qwen_model not in qwen_model_options %}selected{% endif %}>{{ 'Custom...' if is_en else '自定义...' }}</option>
         </select>
       </div>
       <div id="qwen_custom_wrap" {% if cfg.qwen_model in qwen_model_options %}style="display:none;"{% endif %}>
-        <label>自定义 QWEN 模型</label>
-        <input id="qwen_model_custom" value="{% if cfg.qwen_model in qwen_model_options %}{% else %}{{ cfg.qwen_model }}{% endif %}" placeholder="例如 qwen-plus" />
+        <label>{{ 'Custom QWEN Model' if is_en else '自定义 QWEN 模型' }}</label>
+        <input id="qwen_model_custom" value="{% if cfg.qwen_model in qwen_model_options %}{% else %}{{ cfg.qwen_model }}{% endif %}" placeholder="{{ 'e.g. qwen-plus' if is_en else '例如 qwen-plus' }}" />
       </div>
     </div>
 
-    <div id="gemini_settings" class="ai-grid ai-row">
+    <div id="gemini_settings" class="ai-grid ai-row" {% if cfg.provider != 'gemini' %}style="display:none;"{% endif %}>
       <div>
-        <label>Gemini 模型</label>
+        <label>{{ 'Gemini Model' if is_en else 'Gemini 模型' }}</label>
         <select id="gemini_model_select">
           {% for m in gemini_model_options %}
           <option value="{{ m }}" {% if cfg.gemini_model == m %}selected{% endif %}>{{ m }}</option>
           {% endfor %}
-          <option value="__custom__" {% if cfg.gemini_model not in gemini_model_options %}selected{% endif %}>自定义...</option>
+          <option value="__custom__" {% if cfg.gemini_model not in gemini_model_options %}selected{% endif %}>{{ 'Custom...' if is_en else '自定义...' }}</option>
         </select>
       </div>
       <div id="gemini_custom_wrap" {% if cfg.gemini_model in gemini_model_options %}style="display:none;"{% endif %}>
-        <label>自定义 Gemini 模型</label>
-        <input id="gemini_model_custom" value="{% if cfg.gemini_model in gemini_model_options %}{% else %}{{ cfg.gemini_model }}{% endif %}" placeholder="例如 gemini-2.5-flash" />
+        <label>{{ 'Custom Gemini Model' if is_en else '自定义 Gemini 模型' }}</label>
+        <input id="gemini_model_custom" value="{% if cfg.gemini_model in gemini_model_options %}{% else %}{{ cfg.gemini_model }}{% endif %}" placeholder="{{ 'e.g. gemini-2.5-flash' if is_en else '例如 gemini-2.5-flash' }}" />
       </div>
     </div>
 
-    <div id="nvidia_settings" class="ai-grid ai-row">
+    <div id="nvidia_settings" class="ai-grid ai-row" {% if cfg.provider != 'nvidia' %}style="display:none;"{% endif %}>
       <div>
-        <label>NVIDIA 模型</label>
+        <label>{{ 'NVIDIA Model' if is_en else 'NVIDIA 模型' }}</label>
         <select id="nvidia_model_select">
           {% for m in nvidia_model_options %}
           <option value="{{ m }}" {% if cfg.nvidia_model == m %}selected{% endif %}>{{ m }}</option>
           {% endfor %}
-          <option value="__custom__" {% if cfg.nvidia_model not in nvidia_model_options %}selected{% endif %}>自定义...</option>
+          <option value="__custom__" {% if cfg.nvidia_model not in nvidia_model_options %}selected{% endif %}>{{ 'Custom...' if is_en else '自定义...' }}</option>
         </select>
       </div>
       <div id="nvidia_custom_wrap" {% if cfg.nvidia_model in nvidia_model_options %}style="display:none;"{% endif %}>
-        <label>自定义 NVIDIA 模型</label>
-        <input id="nvidia_model_custom" value="{% if cfg.nvidia_model in nvidia_model_options %}{% else %}{{ cfg.nvidia_model }}{% endif %}" placeholder="例如 meta/llama-3.1-405b-instruct" />
+        <label>{{ 'Custom NVIDIA Model' if is_en else '自定义 NVIDIA 模型' }}</label>
+        <input id="nvidia_model_custom" value="{% if cfg.nvidia_model in nvidia_model_options %}{% else %}{{ cfg.nvidia_model }}{% endif %}" placeholder="{{ 'e.g. meta/llama-3.1-405b-instruct' if is_en else '例如 meta/llama-3.1-405b-instruct' }}" />
       </div>
     </div>
 
-    <div id="local_settings" class="ai-grid ai-row">
+    <div id="local_settings" class="ai-grid ai-row" {% if cfg.provider != 'local' %}style="display:none;"{% endif %}>
       <div>
-        <label>本地大模型地址</label>
+        <label>{{ 'Local Model Endpoint' if is_en else '本地大模型地址' }}</label>
         <input id="local_base_url" value="{{ cfg.local_base_url }}" placeholder="http://127.0.0.1:1234" />
       </div>
       <div>
-        <label>本地大模型模型</label>
+        <label>{{ 'Local Model Name' if is_en else '本地大模型模型' }}</label>
         <select id="local_model_select">
           {% for m in local_model_options %}
           <option value="{{ m }}" {% if cfg.local_model == m %}selected{% endif %}>{{ m }}</option>
           {% endfor %}
-          <option value="__custom__" {% if cfg.local_model not in local_model_options %}selected{% endif %}>自定义...</option>
+          <option value="__custom__" {% if cfg.local_model not in local_model_options %}selected{% endif %}>{{ 'Custom...' if is_en else '自定义...' }}</option>
         </select>
       </div>
       <div id="local_custom_wrap" {% if cfg.local_model in local_model_options %}style="display:none;"{% endif %}>
-        <label>自定义本地模型</label>
-        <input id="local_model_custom" value="{% if cfg.local_model in local_model_options %}{% else %}{{ cfg.local_model }}{% endif %}" placeholder="例如 qwen/qwen3-coder-30b" />
+        <label>{{ 'Custom Local Model' if is_en else '自定义本地模型' }}</label>
+        <input id="local_model_custom" value="{% if cfg.local_model in local_model_options %}{% else %}{{ cfg.local_model }}{% endif %}" placeholder="{{ 'e.g. qwen/qwen3-coder-30b' if is_en else '例如 qwen/qwen3-coder-30b' }}" />
       </div>
     </div>
   </div>
 
   <div class="ai-section">
-    <div class="ai-section-title">提示词设置</div>
+    <div class="ai-section-title">{{ 'Prompt Settings' if is_en else '提示词设置' }}</div>
     <div class="ai-grid">
       <div>
-        <label>系统提示词模板（严格约束）</label>
+        <label>{{ 'System Prompt Template (strict)' if is_en else '系统提示词模板（严格约束）' }}</label>
         <select id="selected_system_prompt">
           {% for k,v in system_prompts.items() %}
-          <option value="{{ k }}" {% if cfg.selected_system_prompt==k %}selected{% endif %}>{{ k }}</option>
+          <option value="{{ k }}" {% if cfg.selected_system_prompt==k %}selected{% endif %}>{{ system_prompt_labels.get(k, k) }}</option>
           {% endfor %}
         </select>
-        <div class="hint">系统提示词用于约束 AI 行为与输出规范，建议固定使用“网络日志诊断专家-严格模式”。</div>
+        <div class="hint">{{ 'System prompt constrains AI behavior/output. Recommended: "Network Log Diagnosis Expert - Strict".' if is_en else '系统提示词用于约束 AI 行为与输出规范，建议固定使用“网络日志诊断专家-严格模式”。' }}</div>
       </div>
       <div>
-        <label>系统模板查看</label>
+        <label>{{ 'System Template Preview' if is_en else '系统模板查看' }}</label>
         <div class="actions" style="margin-top:0;">
-          <button class="btn" id="review_system_template_btn" type="button">Review 系统提示词</button>
+          <button class="btn" id="review_system_template_btn" type="button">{{ 'Review System Prompt' if is_en else 'Review 系统提示词' }}</button>
         </div>
-        <div class="hint">点击弹窗查看当前系统模板内容。</div>
+        <div class="hint">{{ 'Click to preview current system template.' if is_en else '点击弹窗查看当前系统模板内容。' }}</div>
       </div>
     </div>
 
     <div class="ai-grid ai-row">
       <div>
-        <label>任务提示词模板</label>
+        <label>{{ 'Task Prompt Template' if is_en else '任务提示词模板' }}</label>
         <select id="selected_task_prompt">
           {% for k,v in task_prompts.items() %}
-          <option value="{{ k }}" {% if cfg.selected_task_prompt==k %}selected{% endif %}>{{ k }}</option>
+          <option value="{{ k }}" {% if cfg.selected_task_prompt==k %}selected{% endif %}>{{ task_prompt_labels.get(k, k) }}</option>
           {% endfor %}
         </select>
-        <div class="hint">任务提示词描述本次分析目标；可选择不使用模板。</div>
+        <div class="hint">{{ 'Task prompt describes analysis goals; you can choose not to use a template.' if is_en else '任务提示词描述本次分析目标；可选择不使用模板。' }}</div>
       </div>
       <div>
-        <label>模板查看</label>
+        <label>{{ 'Template Preview' if is_en else '模板查看' }}</label>
         <div class="actions" style="margin-top:0;">
-          <button class="btn" id="review_task_template_btn" type="button">Review 任务提示词</button>
+          <button class="btn" id="review_task_template_btn" type="button">{{ 'Review Task Prompt' if is_en else 'Review 任务提示词' }}</button>
         </div>
-        <div class="hint">点击弹窗查看当前任务模板内容。</div>
+        <div class="hint">{{ 'Click to preview current task template.' if is_en else '点击弹窗查看当前任务模板内容。' }}</div>
       </div>
     </div>
 
     <details class="ai-details ai-row">
-      <summary>提示词管理（可选）</summary>
+      <summary>{{ 'Prompt Management (optional)' if is_en else '提示词管理（可选）' }}</summary>
       <div class="prompt-stack">
         <div>
-          <label>导入提示词文件（.txt）</label>
+          <label>{{ 'Import Prompt File (.txt)' if is_en else '导入提示词文件（.txt）' }}</label>
           <div class="file-picker">
-            <label for="prompt_file" class="file-btn">选择文件</label>
-            <span id="prompt_file_name" class="file-name">未选择文件</span>
+            <label for="prompt_file" class="file-btn">{{ 'Choose File' if is_en else '选择文件' }}</label>
+            <span id="prompt_file_name" class="file-name">{{ 'No file selected' if is_en else '未选择文件' }}</span>
           </div>
           <input id="prompt_file" class="file-real" type="file" accept=".txt" />
-          <div class="hint">留空名称时自动使用文件名。</div>
+          <div class="hint">{{ 'If name is empty, file name will be used.' if is_en else '留空名称时自动使用文件名。' }}</div>
         </div>
         <div class="ai-grid">
           <div>
-            <label>导入到</label>
+            <label>{{ 'Import to' if is_en else '导入到' }}</label>
             <select id="prompt_kind_select">
-              <option value="task" selected>任务提示词</option>
-              <option value="system">系统提示词</option>
+              <option value="task" selected>{{ 'Task Prompt' if is_en else '任务提示词' }}</option>
+              <option value="system">{{ 'System Prompt' if is_en else '系统提示词' }}</option>
             </select>
           </div>
           <div>
-            <label>导入时命名（可选）</label>
-            <input id="prompt_name" type="text" placeholder="例如：网络日志根因追踪模板" />
+            <label>{{ 'Name on import (optional)' if is_en else '导入时命名（可选）' }}</label>
+            <input id="prompt_name" type="text" placeholder="{{ 'e.g. network-log-root-cause-template' if is_en else '例如：网络日志根因追踪模板' }}" />
           </div>
         </div>
-        <div class="actions"><button class="btn" id="import_prompt_btn" type="button">导入提示词</button></div>
+        <div class="actions"><button class="btn" id="import_prompt_btn" type="button">{{ 'Import Prompt' if is_en else '导入提示词' }}</button></div>
       </div>
     </details>
 
     <div class="ai-row">
-      <label>系统补充约束（可选）</label>
-      <textarea id="system_prompt_extra" placeholder="可追加系统级约束，例如：每条结论必须给证据链。">{{ cfg.system_prompt_extra }}</textarea>
+      <label>{{ 'Extra System Constraints (optional)' if is_en else '系统补充约束（可选）' }}</label>
+      <textarea id="system_prompt_extra" placeholder="{{ 'Add system-level constraints, e.g. every conclusion must include evidence chain.' if is_en else '可追加系统级约束，例如：每条结论必须给证据链。' }}">{{ cfg.system_prompt_extra }}</textarea>
     </div>
 
     <div class="ai-row">
-      <label>任务补充要求（可选）</label>
-      <textarea id="task_prompt_extra" placeholder="会追加在任务模板后面。">{{ cfg.task_prompt_extra }}</textarea>
+      <label>{{ 'Extra Task Requirements (optional)' if is_en else '任务补充要求（可选）' }}</label>
+      <textarea id="task_prompt_extra" placeholder="{{ 'Appended after the selected task template.' if is_en else '会追加在任务模板后面。' }}">{{ cfg.task_prompt_extra }}</textarea>
     </div>
   </div>
 
   <details class="ai-details" style="margin-top:10px;">
-    <summary>Token 统计</summary>
+    <summary>{{ 'Token Statistics' if is_en else 'Token 统计' }}</summary>
     <pre style="white-space:pre-wrap;">{{ stats | tojson(indent=2) }}</pre>
   </details>
 </div>
@@ -226,12 +228,22 @@
 <div id="prompt_modal" class="modal-mask">
   <div class="modal-box">
     <div class="modal-head">
-      <div id="prompt_modal_title" class="modal-title">模板内容</div>
-      <button id="prompt_modal_close" class="modal-close" type="button">关闭</button>
+      <div id="prompt_modal_title" class="modal-title">{{ 'Template Content' if is_en else '模板内容' }}</div>
+      <button id="prompt_modal_close" class="modal-close" type="button">{{ 'Close' if is_en else '关闭' }}</button>
     </div>
-    <div class="modal-body"><textarea id="prompt_modal_text" readonly></textarea></div>
+    <div class="modal-body"><textarea id="prompt_modal_text"></textarea></div>
+    <div class="actions">
+      <button class="btn" id="save_prompt_edit_btn" type="button">{{ 'Save Changes' if is_en else '保存修改' }}</button>
+      <button class="btn" id="delete_prompt_btn" type="button" style="color:#b91c1c;border-color:#fca5a5;">{{ 'Delete Prompt' if is_en else '删除模板' }}</button>
+      <button class="btn" id="cancel_prompt_edit_btn" type="button">{{ 'Cancel' if is_en else '取消修改' }}</button>
+    </div>
+    <div class="hint">{{ 'Delete only removes custom overrides; built-in templates are kept.' if is_en else '删除仅对自定义模板生效；默认模板会保留。' }}</div>
   </div>
 </div>
+<script id="system_prompt_map_json" type="application/json">{{ system_prompts | tojson }}</script>
+<script id="task_prompt_map_json" type="application/json">{{ task_prompts | tojson }}</script>
+<script id="system_prompt_labels_json" type="application/json">{{ system_prompt_labels | tojson }}</script>
+<script id="task_prompt_labels_json" type="application/json">{{ task_prompt_labels | tojson }}</script>
 
 <style>
   .ai-card { background: #f8fafc; }
@@ -274,6 +286,20 @@
 
 <script>
   function id(v) { return document.getElementById(v); }
+  function on(v, ev, fn) {
+    const el = id(v);
+    if (el) el.addEventListener(ev, fn);
+  }
+  function parseJsonFromScript(idName) {
+    try {
+      const el = id(idName);
+      const raw = el ? (el.textContent || '{}') : '{}';
+      return JSON.parse(raw);
+    } catch (e) {
+      return {};
+    }
+  }
+  const UI_LANG = {{ ('"en"' if is_en else '"zh"') | safe }};
   let savedKeyState = {
     chatgpt: {{ 'true' if has_keys.chatgpt else 'false' }},
     deepseek: {{ 'true' if has_keys.deepseek else 'false' }},
@@ -288,12 +314,34 @@
     gemini: '',
     nvidia: ''
   };
+  let systemPromptMap = parseJsonFromScript('system_prompt_map_json');
+  let taskPromptMap = parseJsonFromScript('task_prompt_map_json');
+  let systemPromptLabels = parseJsonFromScript('system_prompt_labels_json');
+  let taskPromptLabels = parseJsonFromScript('task_prompt_labels_json');
 
   function selectedModel(selectEl, customEl) {
     if (!selectEl) return '';
     const val = (selectEl.value || '').trim();
-    if (val === '__custom__') return (customEl?.value || '').trim();
+    if (val === '__custom__') return ((customEl && customEl.value) || '').trim();
     return val;
+  }
+
+  function refreshPromptSelect(kind, prompts, selectedName) {
+    const selectEl = kind === 'system' ? id('selected_system_prompt') : id('selected_task_prompt');
+    const labels = kind === 'system' ? systemPromptLabels : taskPromptLabels;
+    if (!selectEl) return;
+    while (selectEl.firstChild) selectEl.removeChild(selectEl.firstChild);
+    Object.keys(prompts || {}).forEach((k) => {
+      const opt = document.createElement('option');
+      opt.value = k;
+      opt.textContent = labels && labels[k] ? labels[k] : k;
+      selectEl.appendChild(opt);
+    });
+    if (selectedName && (prompts || {})[selectedName]) {
+      selectEl.value = selectedName;
+    } else if (selectEl.options.length > 0) {
+      selectEl.selectedIndex = 0;
+    }
   }
 
   function syncCustomModelInput(selectId, wrapId, inputId) {
@@ -471,12 +519,14 @@
   }
 
   function updateApiKeyState() {
+    const savedTxt = UI_LANG === 'en' ? 'Saved' : '已保存';
+    const missTxt = UI_LANG === 'en' ? 'Not saved' : '未保存';
     const state = [
-      `ChatGPT Key: ${(savedKeyState.chatgpt || !!apiKeys.chatgpt) ? '已保存' : '未保存'}`,
-      `DeepSeek Key: ${(savedKeyState.deepseek || !!apiKeys.deepseek) ? '已保存' : '未保存'}`,
-      `QWEN Key: ${(savedKeyState.qwen || !!apiKeys.qwen) ? '已保存' : '未保存'}`,
-      `Gemini Key: ${(savedKeyState.gemini || !!apiKeys.gemini) ? '已保存' : '未保存'}`,
-      `NVIDIA Key: ${(savedKeyState.nvidia || !!apiKeys.nvidia) ? '已保存' : '未保存'}`,
+      `ChatGPT Key: ${(savedKeyState.chatgpt || !!apiKeys.chatgpt) ? savedTxt : missTxt}`,
+      `DeepSeek Key: ${(savedKeyState.deepseek || !!apiKeys.deepseek) ? savedTxt : missTxt}`,
+      `QWEN Key: ${(savedKeyState.qwen || !!apiKeys.qwen) ? savedTxt : missTxt}`,
+      `Gemini Key: ${(savedKeyState.gemini || !!apiKeys.gemini) ? savedTxt : missTxt}`,
+      `NVIDIA Key: ${(savedKeyState.nvidia || !!apiKeys.nvidia) ? savedTxt : missTxt}`,
     ];
     id('api_key_state').textContent = state.join(' | ');
   }
@@ -488,7 +538,7 @@
       body: JSON.stringify(getConfigFromUI())
     });
     if (!res.ok) {
-      alert('保存失败');
+      alert(UI_LANG === 'en' ? 'Save failed' : '保存失败');
       return;
     }
     const data = await res.json();
@@ -497,7 +547,7 @@
     }
     apiKeys = { chatgpt: '', deepseek: '', qwen: '', gemini: '', nvidia: '' };
     updateApiKeyState();
-    id('llm_test_result').textContent = '模型配置已保存。';
+    id('llm_test_result').textContent = UI_LANG === 'en' ? 'Configuration saved.' : '模型配置已保存。';
   }
 
   async function testConnection() {
@@ -505,41 +555,124 @@
     const fd = new FormData();
     Object.entries(cfg).forEach(([k, v]) => {
       if (typeof v === 'boolean') return;
-      fd.append(k, String(v ?? ''));
+      fd.append(k, String(v == null ? '' : v));
     });
     fd.append('provider', cfg.provider);
-    id('llm_test_result').textContent = '连接测试中...';
+    id('llm_test_result').textContent = UI_LANG === 'en' ? 'Testing connection...' : '连接测试中...';
     try {
       const res = await fetch('/api/ai/test_connection', { method: 'POST', body: fd });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        id('llm_test_result').textContent = data.error || data.detail || '连接测试失败';
+        id('llm_test_result').textContent = data.error || data.detail || (UI_LANG === 'en' ? 'Connection test failed' : '连接测试失败');
         return;
       }
-      id('llm_test_result').textContent = data.message || '连接测试成功。';
+      id('llm_test_result').textContent = data.message || (UI_LANG === 'en' ? 'Connection test succeeded.' : '连接测试成功。');
     } catch (e) {
-      id('llm_test_result').textContent = `连接测试失败: ${e}`;
+      id('llm_test_result').textContent = `${UI_LANG === 'en' ? 'Connection test failed' : '连接测试失败'}: ${e}`;
     }
   }
 
-  async function reviewPrompt(kind) {
-    const name = kind === 'system' ? id('selected_system_prompt').value : id('selected_task_prompt').value;
-    const url = `/api/ai/prompt_preview?kind=${encodeURIComponent(kind)}&name=${encodeURIComponent(name)}`;
-    const res = await fetch(url);
-    if (!res.ok) {
-      alert('模板读取失败');
+  function reviewPrompt(kind) {
+    const systemSel = id('selected_system_prompt');
+    const taskSel = id('selected_task_prompt');
+    const name = kind === 'system' ? ((systemSel && systemSel.value) || '') : ((taskSel && taskSel.value) || '');
+    if (!name) {
+      alert(UI_LANG === 'en' ? 'No template selected' : '未选择模板');
       return;
     }
+    const src = kind === 'system' ? systemPromptMap : taskPromptMap;
+    const content = src && src[name] ? String(src[name]) : '';
+    if (!content) {
+      alert(UI_LANG === 'en' ? 'Template content is empty' : '模板内容为空');
+      return;
+    }
+    const titlePrefix = kind === 'system'
+      ? (UI_LANG === 'en' ? 'System template' : '系统模板')
+      : (UI_LANG === 'en' ? 'Task template' : '任务模板');
+    const labels = kind === 'system' ? systemPromptLabels : taskPromptLabels;
+    const shownName = labels && labels[name] ? labels[name] : name;
+    id('prompt_modal_title').textContent = `${titlePrefix}: ${shownName}`;
+    id('prompt_modal_text').value = content;
+    const modal = id('prompt_modal');
+    if (modal) {
+      modal.dataset.kind = kind;
+      modal.dataset.name = name;
+    }
+    const delBtn = id('delete_prompt_btn');
+    if (delBtn) delBtn.disabled = false;
+    if (modal) modal.style.display = 'flex';
+  }
+
+  async function savePromptEdit() {
+    const modal = id('prompt_modal');
+    const textEl = id('prompt_modal_text');
+    if (!modal || !textEl) return;
+    const kind = String(modal.dataset.kind || '').trim();
+    const name = String(modal.dataset.name || '').trim();
+    const text = String(textEl.value || '').trim();
+    if (!kind || !name) {
+      alert(UI_LANG === 'en' ? 'No template selected' : '未选择模板');
+      return;
+    }
+    if (!text) {
+      alert(UI_LANG === 'en' ? 'Template content cannot be empty' : '模板内容不能为空');
+      return;
+    }
+    const res = await fetch('/api/ai/prompt_update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, name, text }),
+    });
     const data = await res.json();
-    id('prompt_modal_title').textContent = `${kind === 'system' ? '系统' : '任务'}模板：${data.name}`;
-    id('prompt_modal_text').value = data.text || '';
-    id('prompt_modal').style.display = 'flex';
+    if (!res.ok || !data.ok) {
+      alert(data.detail || data.error || (UI_LANG === 'en' ? 'Save failed' : '保存失败'));
+      return;
+    }
+    if (kind === 'system') {
+      systemPromptMap = data.prompts || {};
+    } else {
+      taskPromptMap = data.prompts || {};
+    }
+    refreshPromptSelect(kind, kind === 'system' ? systemPromptMap : taskPromptMap, data.name || name);
+    modal.dataset.name = data.name || name;
+    alert(UI_LANG === 'en' ? 'Prompt saved' : '提示词已保存');
+  }
+
+  async function deletePromptEdit() {
+    const modal = id('prompt_modal');
+    if (!modal) return;
+    const kind = String(modal.dataset.kind || '').trim();
+    const name = String(modal.dataset.name || '').trim();
+    if (!kind || !name) {
+      alert(UI_LANG === 'en' ? 'No template selected' : '未选择模板');
+      return;
+    }
+    const ok = window.confirm(UI_LANG === 'en' ? `Delete custom prompt "${name}"?` : `确认删除自定义模板「${name}」吗？`);
+    if (!ok) return;
+    const res = await fetch('/api/ai/prompt_delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, name }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      alert(data.detail || data.error || (UI_LANG === 'en' ? 'Delete failed' : '删除失败'));
+      return;
+    }
+    if (kind === 'system') {
+      systemPromptMap = data.prompts || {};
+    } else {
+      taskPromptMap = data.prompts || {};
+    }
+    refreshPromptSelect(kind, kind === 'system' ? systemPromptMap : taskPromptMap, '');
+    modal.style.display = 'none';
+    alert(UI_LANG === 'en' ? 'Custom prompt deleted' : '自定义模板已删除');
   }
 
   async function importPrompt() {
     const file = id('prompt_file').files[0];
     if (!file) {
-      alert('请选择提示词文件');
+      alert(UI_LANG === 'en' ? 'Please select a prompt file' : '请选择提示词文件');
       return;
     }
     const fd = new FormData();
@@ -549,33 +682,33 @@
     const res = await fetch('/api/ai/import_prompt', { method: 'POST', body: fd });
     const data = await res.json();
     if (!res.ok || !data.ok) {
-      alert(data.detail || data.message || '导入失败');
+      alert(data.detail || data.message || (UI_LANG === 'en' ? 'Import failed' : '导入失败'));
       return;
     }
     window.location.reload();
   }
 
-  id('provider_select').addEventListener('change', updateProviderSection);
-  id('chatgpt_model_select').addEventListener('change', updateProviderSection);
-  id('deepseek_model_select').addEventListener('change', updateProviderSection);
-  id('qwen_model_select').addEventListener('change', updateProviderSection);
-  id('gemini_model_select').addEventListener('change', updateProviderSection);
-  id('nvidia_model_select').addEventListener('change', updateProviderSection);
-  id('local_model_select').addEventListener('change', updateProviderSection);
-  id('chatgpt_model_custom').addEventListener('input', updateProviderIcon);
-  id('deepseek_model_custom').addEventListener('input', updateProviderIcon);
-  id('qwen_model_custom').addEventListener('input', updateProviderIcon);
-  id('gemini_model_custom').addEventListener('input', updateProviderIcon);
-  id('nvidia_model_custom').addEventListener('input', updateProviderIcon);
-  id('local_model_custom').addEventListener('input', updateProviderIcon);
-  id('save_llm_btn').addEventListener('click', saveSettings);
-  id('test_llm_btn').addEventListener('click', testConnection);
-  id('review_system_template_btn').addEventListener('click', () => reviewPrompt('system'));
-  id('review_task_template_btn').addEventListener('click', () => reviewPrompt('task'));
-  id('import_prompt_btn').addEventListener('click', importPrompt);
-  id('import_api_key_btn').addEventListener('click', () => {
+  on('provider_select', 'change', updateProviderSection);
+  on('chatgpt_model_select', 'change', updateProviderSection);
+  on('deepseek_model_select', 'change', updateProviderSection);
+  on('qwen_model_select', 'change', updateProviderSection);
+  on('gemini_model_select', 'change', updateProviderSection);
+  on('nvidia_model_select', 'change', updateProviderSection);
+  on('local_model_select', 'change', updateProviderSection);
+  on('chatgpt_model_custom', 'input', updateProviderIcon);
+  on('deepseek_model_custom', 'input', updateProviderIcon);
+  on('qwen_model_custom', 'input', updateProviderIcon);
+  on('gemini_model_custom', 'input', updateProviderIcon);
+  on('nvidia_model_custom', 'input', updateProviderIcon);
+  on('local_model_custom', 'input', updateProviderIcon);
+  on('save_llm_btn', 'click', saveSettings);
+  on('test_llm_btn', 'click', testConnection);
+  on('review_system_template_btn', 'click', () => reviewPrompt('system'));
+  on('review_task_template_btn', 'click', () => reviewPrompt('task'));
+  on('import_prompt_btn', 'click', importPrompt);
+  on('import_api_key_btn', 'click', () => {
     const provider = id('provider_select').value;
-    const key = window.prompt(`请输入 ${provider.toUpperCase()} API Key`);
+    const key = window.prompt(UI_LANG === 'en' ? `Enter ${provider.toUpperCase()} API Key` : `请输入 ${provider.toUpperCase()} API Key`);
     if (!key) return;
     const map = {
       chatgpt: 'chatgpt',
@@ -588,13 +721,33 @@
     if (target) apiKeys[target] = key;
     updateApiKeyState();
   });
-  id('prompt_modal_close').addEventListener('click', () => { id('prompt_modal').style.display = 'none'; });
-  id('prompt_modal').addEventListener('click', (e) => {
-    if (e.target === id('prompt_modal')) id('prompt_modal').style.display = 'none';
+  on('prompt_modal_close', 'click', () => {
+    const modal = id('prompt_modal');
+    if (modal) {
+      modal.style.display = 'none';
+      modal.dataset.kind = '';
+      modal.dataset.name = '';
+    }
   });
-  id('prompt_file').addEventListener('change', () => {
-    const f = id('prompt_file').files[0];
-    id('prompt_file_name').textContent = f ? f.name : '未选择文件';
+  on('save_prompt_edit_btn', 'click', savePromptEdit);
+  on('delete_prompt_btn', 'click', deletePromptEdit);
+  on('cancel_prompt_edit_btn', 'click', () => {
+    const modal = id('prompt_modal');
+    if (modal) {
+      modal.style.display = 'none';
+      modal.dataset.kind = '';
+      modal.dataset.name = '';
+    }
+  });
+  on('prompt_modal', 'click', (e) => {
+    const modal = id('prompt_modal');
+    if (modal && e.target === modal) modal.style.display = 'none';
+  });
+  on('prompt_file', 'change', () => {
+    const fileEl = id('prompt_file');
+    const fileNameEl = id('prompt_file_name');
+    const f = fileEl && fileEl.files ? fileEl.files[0] : null;
+    if (fileNameEl) fileNameEl.textContent = f ? f.name : (UI_LANG === 'en' ? 'No file selected' : '未选择文件');
   });
 
   updateProviderSection();

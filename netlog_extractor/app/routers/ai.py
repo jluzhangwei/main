@@ -9,7 +9,15 @@ from fastapi import APIRouter, Body, File, Form, HTTPException, Request, UploadF
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
-from ..ai.prompt_store import merged_system_prompt_catalog, merged_task_prompt_catalog, save_custom_prompt
+from ..ai.prompt_store import (
+    delete_custom_prompt,
+    is_custom_prompt,
+    localized_prompt_catalog,
+    localized_prompt_labels,
+    merged_system_prompt_catalog,
+    merged_task_prompt_catalog,
+    save_custom_prompt,
+)
 from ..ai.state_store import load_gpt_config, load_token_stats, save_gpt_config
 from ..ai.llm_client import (
     detect_qwen_endpoint,
@@ -251,9 +259,14 @@ def _estimate_precheck(task: Any, task_id: str, request: Request, payload: dict[
 
 @router.get("/ai/settings", response_class=HTMLResponse)
 async def ai_settings_page(request: Request):
+    lang = str(request.query_params.get("lang", "zh") or "zh")
     cfg = load_gpt_config()
     stats = load_token_stats()
     has_keys = _has_keys(cfg)
+    system_prompts = localized_prompt_catalog("system", lang)
+    task_prompts = localized_prompt_catalog("task", lang)
+    system_prompt_labels = localized_prompt_labels("system", lang)
+    task_prompt_labels = localized_prompt_labels("task", lang)
     return templates.TemplateResponse(
         "ai_settings.html",
         {
@@ -261,8 +274,10 @@ async def ai_settings_page(request: Request):
             "cfg": _redact_cfg(cfg),
             "has_keys": has_keys,
             "stats": stats,
-            "system_prompts": merged_system_prompt_catalog(),
-            "task_prompts": merged_task_prompt_catalog(),
+            "system_prompts": system_prompts,
+            "task_prompts": task_prompts,
+            "system_prompt_labels": system_prompt_labels,
+            "task_prompt_labels": task_prompt_labels,
             "chatgpt_model_options": CHATGPT_MODEL_OPTIONS,
             "deepseek_model_options": DEEPSEEK_MODEL_OPTIONS,
             "qwen_model_options": QWEN_MODEL_OPTIONS,
@@ -301,6 +316,7 @@ async def ai_settings_save(
     large_report_chunk_items: int = Form(4),
     analysis_retries: int = Form(1),
 ):
+    lang = str(request.query_params.get("lang", "zh") or "zh")
     cfg = load_gpt_config()
     cfg = _merge_cfg(
         cfg,
@@ -331,6 +347,10 @@ async def ai_settings_save(
     )
     save_gpt_config(cfg)
     has_keys = _has_keys(cfg)
+    system_prompts = localized_prompt_catalog("system", lang)
+    task_prompts = localized_prompt_catalog("task", lang)
+    system_prompt_labels = localized_prompt_labels("system", lang)
+    task_prompt_labels = localized_prompt_labels("task", lang)
 
     return templates.TemplateResponse(
         "ai_settings.html",
@@ -339,8 +359,10 @@ async def ai_settings_save(
             "cfg": _redact_cfg(cfg),
             "has_keys": has_keys,
             "stats": load_token_stats(),
-            "system_prompts": merged_system_prompt_catalog(),
-            "task_prompts": merged_task_prompt_catalog(),
+            "system_prompts": system_prompts,
+            "task_prompts": task_prompts,
+            "system_prompt_labels": system_prompt_labels,
+            "task_prompt_labels": task_prompt_labels,
             "chatgpt_model_options": CHATGPT_MODEL_OPTIONS,
             "deepseek_model_options": DEEPSEEK_MODEL_OPTIONS,
             "qwen_model_options": QWEN_MODEL_OPTIONS,
@@ -567,3 +589,30 @@ async def import_prompt(kind: str = Form("task"), name: str = Form(""), prompt_f
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "name": final_name, "kind": kind}
+
+
+@router.post("/api/ai/prompt_update")
+async def prompt_update(payload: dict[str, Any] = Body(default={})):
+    kind = str((payload or {}).get("kind", "") or "").strip().lower()
+    name = str((payload or {}).get("name", "") or "").strip()
+    text = str((payload or {}).get("text", "") or "").strip()
+    try:
+        final_name = save_custom_prompt(kind, name, text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    prompts = merged_system_prompt_catalog() if kind == "system" else merged_task_prompt_catalog()
+    return {"ok": True, "kind": kind, "name": final_name, "prompts": prompts, "is_custom": is_custom_prompt(kind, final_name)}
+
+
+@router.post("/api/ai/prompt_delete")
+async def prompt_delete(payload: dict[str, Any] = Body(default={})):
+    kind = str((payload or {}).get("kind", "") or "").strip().lower()
+    name = str((payload or {}).get("name", "") or "").strip()
+    try:
+        deleted = delete_custom_prompt(kind, name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=400, detail="Only custom prompts can be deleted")
+    prompts = merged_system_prompt_catalog() if kind == "system" else merged_task_prompt_catalog()
+    return {"ok": True, "kind": kind, "name": name, "prompts": prompts}

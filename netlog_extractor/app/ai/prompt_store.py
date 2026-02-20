@@ -48,6 +48,54 @@ DEFAULT_TASK_PROMPTS: dict[str, str] = {
     ),
 }
 
+EN_SYSTEM_PROMPT_NAMES: dict[str, str] = {
+    "网络日志诊断专家-严格模式": "Network Log Diagnosis Expert - Strict",
+    "网络日志诊断专家-变更评审": "Network Log Diagnosis Expert - Change Review",
+}
+
+EN_TASK_PROMPT_NAMES: dict[str, str] = {
+    "日志异常诊断-标准版": "Log Anomaly Diagnosis - Standard",
+    "BGP会话波动专项": "BGP Session Flap Analysis",
+    "链路抖动与接口告警专项": "Link Flap & Interface Alarm Analysis",
+}
+
+EN_SYSTEM_PROMPTS: dict[str, str] = {
+    "网络日志诊断专家-严格模式": (
+        "You are a senior network device log diagnosis expert. "
+        "Only draw conclusions from provided logs and metadata; no speculation.\n"
+        "You must output:\n"
+        "1) Key anomaly summary (by severity)\n"
+        "2) Evidence chain (device/time/log snippet)\n"
+        "3) Root-cause hypothesis with confidence\n"
+        "4) Mitigation steps (stop bleeding first, then fix root cause)\n"
+        "5) Validation commands and expected results\n"
+        "If evidence is insufficient, explicitly state: 'insufficient evidence; more data required'."
+    ),
+    "网络日志诊断专家-变更评审": (
+        "You are a network change-review engineer. Based on logs, determine whether issues are "
+        "related to recent changes, and provide rollback triggers, minimum-risk validation steps, "
+        "and impact assessment."
+    ),
+}
+
+EN_TASK_PROMPTS: dict[str, str] = {
+    "日志异常诊断-标准版": (
+        "Based on task summary and each device filtered/raw logs, output:\n"
+        "- Top risk events\n"
+        "- Per-device conclusions\n"
+        "- Correlation analysis (shared root cause or not)\n"
+        "- Prioritized action list"
+    ),
+    "BGP会话波动专项": (
+        "Focus on BGP neighbor flap/holdtime expired/max-prefix events, assess impact scope, "
+        "and provide stabilization/recovery steps."
+    ),
+    "链路抖动与接口告警专项": (
+        "Focus on link up/down, CRC/error, and port-channel state transitions. "
+        "Provide troubleshooting path and validation steps for link stability."
+    ),
+}
+
 
 def sanitize_prompt_name(name: str) -> str:
     cleaned = re.sub(r"\s+", " ", (name or "").strip())
@@ -125,6 +173,35 @@ def merged_task_prompt_catalog() -> dict[str, str]:
     return merged_prompt_catalog(DEFAULT_TASK_PROMPTS, TASK_DEFAULT_PROMPTS_DIR, TASK_CUSTOM_PROMPTS_DIR)
 
 
+def _is_en(lang: str | None) -> bool:
+    return str(lang or "").lower().startswith("en")
+
+
+def localized_prompt_catalog(kind: str, lang: str | None = None) -> dict[str, str]:
+    kind = (kind or "").strip().lower()
+    catalog = merged_system_prompt_catalog() if kind == "system" else merged_task_prompt_catalog()
+    if not _is_en(lang):
+        return catalog
+    translated = dict(catalog)
+    overrides = EN_SYSTEM_PROMPTS if kind == "system" else EN_TASK_PROMPTS
+    for k, v in overrides.items():
+        if k in translated:
+            translated[k] = v
+    return translated
+
+
+def localized_prompt_labels(kind: str, lang: str | None = None) -> dict[str, str]:
+    kind = (kind or "").strip().lower()
+    catalog = merged_system_prompt_catalog() if kind == "system" else merged_task_prompt_catalog()
+    if not _is_en(lang):
+        return {k: k for k in catalog.keys()}
+    name_map = EN_SYSTEM_PROMPT_NAMES if kind == "system" else EN_TASK_PROMPT_NAMES
+    out: dict[str, str] = {}
+    for k in catalog.keys():
+        out[k] = name_map.get(k, k)
+    return out
+
+
 def save_custom_prompt(kind: str, name: str, content: str) -> str:
     ensure_prompt_dirs()
     prompt_kind = (kind or "").strip().lower()
@@ -143,3 +220,40 @@ def save_custom_prompt(kind: str, name: str, content: str) -> str:
     target = target_dir / file_name
     target.write_text(text + "\n", encoding="utf-8")
     return prompt_name
+
+
+def _prompt_dirs(kind: str) -> tuple[Path, Path]:
+    prompt_kind = (kind or "").strip().lower()
+    if prompt_kind == "system":
+        return SYSTEM_DEFAULT_PROMPTS_DIR, SYSTEM_CUSTOM_PROMPTS_DIR
+    if prompt_kind == "task":
+        return TASK_DEFAULT_PROMPTS_DIR, TASK_CUSTOM_PROMPTS_DIR
+    raise ValueError("kind must be system or task")
+
+
+def is_custom_prompt(kind: str, name: str) -> bool:
+    ensure_prompt_dirs()
+    prompt_name = sanitize_prompt_name(name)
+    if not prompt_name:
+        return False
+    _, custom_dir = _prompt_dirs(kind)
+    f = prompt_file_name(prompt_name)
+    if not f:
+        return False
+    return (custom_dir / f).is_file()
+
+
+def delete_custom_prompt(kind: str, name: str) -> bool:
+    ensure_prompt_dirs()
+    prompt_name = sanitize_prompt_name(name)
+    if not prompt_name:
+        raise ValueError("prompt name is required")
+    _, custom_dir = _prompt_dirs(kind)
+    f = prompt_file_name(prompt_name)
+    if not f:
+        raise ValueError("invalid prompt name")
+    target = custom_dir / f
+    if not target.is_file():
+        return False
+    target.unlink(missing_ok=True)
+    return True

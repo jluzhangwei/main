@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{ 'en' if request and request.query_params.get('lang', 'zh').lower().startswith('en') else 'zh-CN' }}">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -51,8 +51,27 @@
       opacity:.9;
       letter-spacing:.1px;
     }
-    .top-links { display:flex; align-items:center; gap:12px; font-size:14px; color:#e5e7eb; white-space:nowrap; }
-    .top-links a { color:#e5e7eb; text-decoration:none; }
+    .top-links { display:flex; align-items:center; gap:8px; font-size:14px; color:#e5e7eb; white-space:nowrap; }
+    .top-links a, .top-links button { color:#e5e7eb; text-decoration:none; }
+    .app-circle-btn {
+      width: 28px;
+      height: 28px;
+      min-width: 28px;
+      border-radius: 999px;
+      border: 1px solid #8c96a8;
+      background: transparent !important;
+      color: #e5e7eb !important;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    .app-circle-btn:hover { background: #1f2937; }
     .mainnav {
       background: var(--navbg);
       border-bottom: 1px solid var(--line);
@@ -110,6 +129,8 @@
 </head>
 <body>
 {% set path = request.url.path if request and request.url else '/' %}
+{% set lang_raw = request.query_params.get('lang', 'zh') if request else 'zh' %}
+{% set lang = 'en' if lang_raw.lower().startswith('en') else 'zh' %}
 <div class="topbar">
   <div class="brand">
     <div class="sea-lockup" aria-label="Sea Limited logo">
@@ -132,24 +153,39 @@
         <span class="sea-text-sub">connecting the dots</span>
       </div>
     </div>
-    <div class="brand-name">SEA</div>
+    <div class="brand-name">SEA NOC</div>
   </div>
   <div class="top-links">
-    <a href="/help">Help</a>
+    <a class="app-circle-btn" href="/help?lang={{ lang }}" title="{{ 'View Docs' if lang == 'en' else '查看说明文档' }}">?</a>
+    <button id="lang_toggle_btn" class="app-circle-btn" type="button" title="{{ 'Switch Language' if lang == 'en' else '切换语言' }}">{{ 'ZH' if lang == 'en' else 'EN' }}</button>
   </div>
 </div>
 <div class="mainnav">
   <div class="mainnav-left">
     <div class="site-title">AIOps - Netlog Extractor</div>
     <div class="menu">
-      <a href="/" class="{{ 'active' if path == '/' else '' }}">Create Task</a>
-      <a href="/tasks" class="{{ 'active' if path.startswith('/tasks') else '' }}">Tasks</a>
-      <a href="/ai/settings" class="{{ 'active' if path.startswith('/ai/settings') else '' }}">AI Settings</a>
+      <a href="/?lang={{ lang }}" class="{{ 'active' if path == '/' else '' }}">{{ 'Create Task' if lang == 'en' else '创建任务' }}</a>
+      <a href="/tasks?lang={{ lang }}" class="{{ 'active' if path.startswith('/tasks') else '' }}">{{ 'Tasks' if lang == 'en' else '任务页面' }}</a>
+      <a href="/ai/settings?lang={{ lang }}" class="{{ 'active' if path.startswith('/ai/settings') else '' }}">{{ 'AI Settings' if lang == 'en' else 'AI 设置' }}</a>
     </div>
   </div>
 </div>
 <div class="wrap">
   {% block content %}{% endblock %}
 </div>
+<script>
+  (function () {
+    const btn = document.getElementById('lang_toggle_btn');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      const url = new URL(window.location.href);
+      const cur = (url.searchParams.get('lang') || 'zh').toLowerCase();
+      const target = cur.startsWith('en') ? 'zh' : 'en';
+      try { localStorage.setItem('netlog_ui_lang', target); } catch (e) {}
+      url.searchParams.set('lang', target);
+      window.location.href = url.toString();
+    });
+  })();
+</script>
 </body>
 </html>

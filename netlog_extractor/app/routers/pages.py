@@ -24,6 +24,7 @@ async def home(request: Request):
 @router.post("/tasks/create", response_class=HTMLResponse)
 async def create_task(
     request: Request,
+    lang: str = Form("zh"),
     mode: str = Form("single"),
     jump_mode: str = Form("direct"),
     device_ip: str = Form(""),
@@ -103,7 +104,8 @@ async def create_task(
             devices,
         )
         task = request.app.state.task_manager.create_task(payload)
-        return RedirectResponse(url=f"/tasks/{task.task_id}", status_code=303)
+        lang_norm = "en" if str(lang or "").strip().lower().startswith("en") else "zh"
+        return RedirectResponse(url=f"/tasks/{task.task_id}?lang={lang_norm}", status_code=303)
     except Exception as exc:
         return templates.TemplateResponse("index.html", {"request": request, "error": str(exc)}, status_code=400)
 
