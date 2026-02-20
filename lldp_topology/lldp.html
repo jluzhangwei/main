@@ -420,6 +420,7 @@
   let degreeMap = new Map();
   let baseEdges = [];
   let mergedMode = true;
+  let cliTimer = null;
   // 注册 fCoSE 扩展（兼容不同全局名），避免引用未定义导致脚本中断
 (() => {
     const extFcose = window.cytoscapeFcose || window.cytoFcose || window.fcose || window.fCoSE;
@@ -432,6 +433,25 @@
   const setStatus = (t) => $('status').textContent = t;
   const setOK = (t) => $('ok').textContent = t || '';
   const setErr = (t) => $('err').textContent = t || '';
+
+  function stopCliTimer() {
+    if (cliTimer) {
+      clearInterval(cliTimer);
+      cliTimer = null;
+    }
+  }
+
+  function startCliTimer(prefix) {
+    stopCliTimer();
+    const startedAt = Date.now();
+    const tick = () => {
+      const sec = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+      setStatus(`${prefix}（总用时 ${sec}s）`);
+    };
+    tick();
+    cliTimer = setInterval(tick, 1000);
+    return startedAt;
+  }
 
   function stripAfterDot(s) {
     if (typeof s !== 'string') return s;
@@ -1449,7 +1469,7 @@
     if (!addr) { setErr('请先输入设备地址'); return; }
     setErr('');
     setOK('');
-    setStatus('CLI 查询中...');
+    const cliStartedAt = startCliTimer('CLI 查询中...');
     $('cliResultHintModal').textContent = '';
     const reqPayload = {
       device_address: addr,
@@ -1474,22 +1494,25 @@
         const data = await resp.json();
         if (!resp.ok) throw new Error(data?.detail || `HTTP ${resp.status}`);
         if (!data.csv_text) throw new Error('CLI 返回为空');
+        stopCliTimer();
         lastSqlDownloadUrl = data.download_url ? `${base}${data.download_url}` : '';
         lastCliDebugUrl = data.debug_download_url ? `${base}${data.debug_download_url}` : '';
         const workersShown = data.cli_max_workers || maxWorkers;
-        $('cliResultHintModal').textContent = `CLI 返回 ${data.row_count} 行，已查询设备 ${data.queried_count} 台，并发 ${workersShown}`;
+        const elapsedSec = Math.max(0, Math.floor((Date.now() - cliStartedAt) / 1000));
+        $('cliResultHintModal').textContent = `CLI 返回 ${data.row_count} 行，已查询设备 ${data.queried_count} 台，并发 ${workersShown}，总用时 ${elapsedSec}s`;
         loadDataFromText(data.csv_text);
         if ((data.row_count || 0) > 0) {
           buildGraph();
-          setStatus('CLI 数据已载入并生成拓扑');
+          setStatus(`CLI 数据已载入并生成拓扑（总用时 ${elapsedSec}s）`);
         } else {
-          setStatus('CLI 查询完成（无可用邻接）');
+          setStatus(`CLI 查询完成（无可用邻接，总用时 ${elapsedSec}s）`);
           setErr('CLI 查询成功，但未解析到可用 LLDP 邻接记录。请下载 CLI 调试日志检查原始回显。');
         }
         const vendors = data.detected_vendors ? Object.values(data.detected_vendors).join(', ') : 'unknown';
-        setOK(`已完成 CLI 递归采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}，结果 ${data.row_count} 行。自动识别厂商：${vendors}`);
+        setOK(`已完成 CLI 递归采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}，总用时 ${elapsedSec}s，结果 ${data.row_count} 行。自动识别厂商：${vendors}`);
       })
       .catch((e) => {
+        stopCliTimer();
         setStatus('CLI 查询失败');
         setErr(`CLI 查询失败：${String(e && e.message ? e.message : e)}`);
       });

@@ -214,12 +214,14 @@ TOKEN_RETRY_PATTERN = re.compile(
     r"(try\s+login\s+with\s+the\s+old\s+token.*?\(y/n\).*?(?:default\s*:\s*n|\[default:n\]))",
     re.IGNORECASE | re.DOTALL,
 )
+OLD_TOKEN_PATTERN = re.compile(r"old\s+token.*?\(y/n\)", re.IGNORECASE | re.DOTALL)
 PASSWORD_PATTERN = re.compile(r"(enter\s+password|password)\s*:\s*$", re.IGNORECASE | re.MULTILINE)
 FAIL_PATTERN = re.compile(
     r"(permission denied|connection timed out|could not resolve|connection refused|no route to host|closed by remote host)",
     re.IGNORECASE,
 )
 ANSI_PATTERN = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+MORE_PROMPT_PATTERN = re.compile(r"(?:----\s*More\s*----|--\s*More\s*--|\bMore\b)", re.IGNORECASE)
 INVALID_CMD_PATTERN = re.compile(
     r"(invalid input|unknown command|unrecognized command|error:\s*invalid|ambiguous command)",
     re.IGNORECASE,
@@ -296,6 +298,10 @@ class SmcShellClient:
                 chunks.append(piece)
                 last_recv_ts = time.time()
                 tail = self._clean_ansi("".join(chunks)[-3000:])
+                # Auto-advance paged output (Huawei/H3C/Cisco variants).
+                if MORE_PROMPT_PATTERN.search(tail):
+                    self._smc_send(" ")
+                    continue
                 if PROMPT_PATTERN.search(tail) and (time.time() - last_recv_ts) >= 0.1:
                     break
             else:
@@ -315,6 +321,8 @@ class SmcShellClient:
             stripped = line.strip()
             if not command_skipped and stripped == command.strip():
                 command_skipped = True
+                continue
+            if MORE_PROMPT_PATTERN.search(stripped):
                 continue
             if PROMPT_PATTERN.match(stripped):
                 continue
@@ -366,8 +374,9 @@ class SmcShellClient:
                 raise RuntimeError("SMC jump command failed before device login")
             if YES_PATTERN.search(normalized):
                 self._smc_send("yes\n")
+                jump_buffer = ""
                 continue
-            if TOKEN_RETRY_PATTERN.search(normalized):
+            if TOKEN_RETRY_PATTERN.search(normalized) or OLD_TOKEN_PATTERN.search(normalized):
                 self._smc_send("y\n")
                 jump_buffer = ""
                 continue
@@ -398,11 +407,13 @@ class SmcShellClient:
             normalized = self._clean_ansi(buffer)
 
             if FAIL_PATTERN.search(normalized):
-                raise RuntimeError("SMC jump login failed while ssh to target device")
+                reason = classify_ssh_failure(normalized)
+                raise RuntimeError(f"SMC jump login failed while ssh to target device: {reason}")
             if YES_PATTERN.search(normalized):
                 self._smc_send("yes\n")
+                buffer = ""
                 continue
-            if TOKEN_RETRY_PATTERN.search(normalized):
+            if TOKEN_RETRY_PATTERN.search(normalized) or OLD_TOKEN_PATTERN.search(normalized):
                 self._smc_send("y\n")
                 buffer = ""
                 continue
@@ -422,17 +433,6 @@ class SmcShellClient:
 
         if not self.smc_mode_active:
             raise RuntimeError("SMC mode timeout: cannot reach target device prompt")
-
-        for pager_cmd in (
-            "screen-length 0 temporary",
-            "screen-length 0",
-            "terminal length 0",
-            "set cli screen-length 0",
-        ):
-            try:
-                self.exec(pager_cmd, timeout=3)
-            except Exception:
-                continue
 
     def _execute_command_via_smc(self, cmd: str, timeout: int = 30) -> str:
         if not self.smc_mode_active:
@@ -560,14 +560,29 @@ def _looks_like_ip(s: str) -> bool:
     return all(0 <= n <= 255 for n in nums)
 
 
+def classify_ssh_failure(text: str) -> str:
+    low = (text or "").lower()
+    if "connection timed out" in low:
+        return "ssh_timeout"
+    if "permission denied" in low:
+        return "ssh_auth_failed"
+    if "could not resolve" in low:
+        return "ssh_dns_failed"
+    if "connection refused" in low:
+        return "ssh_connection_refused"
+    if "no route to host" in low:
+        return "ssh_no_route"
+    if "closed by remote host" in low:
+        return "ssh_closed_by_remote"
+    return "ssh_login_failed"
+
+
 def run_lldp_commands(cli: SmcShellClient, timeout: int, vendor: str = "huawei") -> str:
     v = (vendor or "").strip().lower()
     if v == "huawei":
         commands = [
             "dis lldp neighbor",
             "display lldp neighbor",
-            "dis lldp neighbor verbose",
-            "display lldp neighbor verbose",
         ]
     elif v == "cisco":
         commands = [
@@ -583,7 +598,7 @@ def run_lldp_commands(cli: SmcShellClient, timeout: int, vendor: str = "huawei")
         commands = [
             "dis lldp neighbor",
             "show lldp neighbors detail",
-            "display lldp neighbor verbose",
+            "display lldp neighbor",
         ]
     best = ""
     for cmd in commands:
@@ -613,6 +628,27 @@ def run_lldp_commands(cli: SmcShellClient, timeout: int, vendor: str = "huawei")
         if len(out) > len(best):
             best = out
     return best
+
+
+def disable_paging(cli: SmcShellClient, vendor: str, timeout: int = 3) -> None:
+    v = (vendor or "").strip().lower()
+    if v == "huawei":
+        # Different Huawei platforms accept different variants.
+        candidates = ["screen-length 0 temporary", "screen-length 0"]
+    elif v in {"cisco", "arista"}:
+        candidates = ["terminal length 0"]
+    else:
+        # Unknown vendor: try Huawei then Cisco-style, first success stops.
+        candidates = ["screen-length 0 temporary", "terminal length 0"]
+
+    for cmd in candidates:
+        try:
+            out = cli.exec(cmd, timeout=timeout)
+        except Exception:
+            continue
+        if out and INVALID_CMD_PATTERN.search(out):
+            continue
+        return
 
 
 def detect_vendor(cli: SmcShellClient, timeout: int = 15) -> str:
@@ -648,13 +684,13 @@ def detect_device_name(cli: SmcShellClient, vendor: str, timeout: int = 15) -> s
                 out = cli.exec(cmd, timeout=timeout)
             except Exception:
                 continue
-            m = re.search(r"(?im)^\\s*sysname\\s+(.+?)\\s*$", out)
+            m = re.search(r"(?im)^\s*sysname\s+(.+?)\s*$", out)
             if m:
                 return m.group(1).strip()
     elif v == "cisco":
         try:
             out = cli.exec("show running-config | include ^hostname", timeout=timeout)
-            m = re.search(r"(?im)^\\s*hostname\\s+(.+?)\\s*$", out)
+            m = re.search(r"(?im)^\s*hostname\s+(.+?)\s*$", out)
             if m:
                 return m.group(1).strip()
         except Exception:
@@ -662,7 +698,7 @@ def detect_device_name(cli: SmcShellClient, vendor: str, timeout: int = 15) -> s
     elif v == "arista":
         try:
             out = cli.exec("show running-config | include ^hostname", timeout=timeout)
-            m = re.search(r"(?im)^\\s*hostname\\s+(.+?)\\s*$", out)
+            m = re.search(r"(?im)^\s*hostname\s+(.+?)\s*$", out)
             if m:
                 return m.group(1).strip()
         except Exception:
@@ -850,6 +886,7 @@ def collect_device_lldp_once(source: str, depth: int, cfg: CliRuntimeConfig) -> 
     try:
         cli.connect()
         vendor = detect_vendor(cli, timeout=min(cfg.command_timeout, 20))
+        disable_paging(cli, vendor, timeout=3)
         device_name = detect_device_name(cli, vendor, timeout=min(cfg.command_timeout, 20))
         output = run_lldp_commands(cli, timeout=cfg.command_timeout, vendor=vendor)
         parsed = parse_lldp_neighbors(output, vendor=vendor)
