@@ -587,7 +587,6 @@ def run_lldp_commands(cli: SmcShellClient, timeout: int, vendor: str = "huawei")
     elif v == "cisco":
         commands = [
             "show lldp neighbors detail",
-            "show lldp neighbors",
         ]
     elif v == "arista":
         commands = [
@@ -688,13 +687,22 @@ def detect_device_name(cli: SmcShellClient, vendor: str, timeout: int = 15) -> s
             if m:
                 return m.group(1).strip()
     elif v == "cisco":
-        try:
-            out = cli.exec("show running-config | include ^hostname", timeout=timeout)
+        cmds = [
+            "show running-config | include ^hostname",
+            "show version",
+            "show ver",
+        ]
+        for cmd in cmds:
+            try:
+                out = cli.exec(cmd, timeout=timeout)
+            except Exception:
+                continue
             m = re.search(r"(?im)^\s*hostname\s+(.+?)\s*$", out)
             if m:
                 return m.group(1).strip()
-        except Exception:
-            pass
+            m = re.search(r"(?im)^\s*Device name\s*:\s*(.+?)\s*$", out)
+            if m:
+                return m.group(1).strip()
     elif v == "arista":
         try:
             out = cli.exec("show running-config | include ^hostname", timeout=timeout)
@@ -850,10 +858,87 @@ def parse_lldp_neighbors_generic(output: str) -> list[dict[str, str]]:
     return dedup
 
 
+def parse_lldp_neighbors_cisco(output: str) -> list[dict[str, str]]:
+    """Cisco NX-OS/IOS style LLDP detail parser."""
+    text = (output or "").replace("\r", "")
+    if not text.strip():
+        return []
+
+    blocks = re.split(r"(?im)^\s*Chassis id\s*:\s*", text)
+    records: list[dict[str, str]] = []
+
+    for blk in blocks[1:]:
+        chunk = "Chassis id: " + blk
+
+        def pick(pattern: str) -> str:
+            m = re.search(pattern, chunk, re.IGNORECASE | re.MULTILINE)
+            return (m.group(1).strip() if m else "")
+
+        local_if = pick(r"^\s*Local\s+Port\s+id\s*:\s*(.+?)\s*$")
+        remote_if = pick(r"^\s*Port\s+id\s*:\s*(.+?)\s*$")
+        remote_host = pick(r"^\s*System\s+Name\s*:\s*(.+?)\s*$")
+        mgmt_addr = pick(r"^\s*Management\s+Address\s*:\s*(.+?)\s*$")
+
+        # Normalize null/not advertised values.
+        for key, value in {
+            "local_if": local_if,
+            "remote_if": remote_if,
+            "remote_host": remote_host,
+            "mgmt_addr": mgmt_addr,
+        }.items():
+            vlow = value.lower()
+            if vlow in {"null", "not advertised", "--", ""}:
+                if key == "local_if":
+                    local_if = ""
+                elif key == "remote_if":
+                    remote_if = ""
+                elif key == "remote_host":
+                    remote_host = ""
+                else:
+                    mgmt_addr = ""
+
+        remote_ip = ""
+        ip_match = IPV4_PATTERN.search(mgmt_addr)
+        if ip_match:
+            remote_ip = ip_match.group(0)
+
+        remote_candidate = remote_host or remote_ip
+        if not remote_candidate:
+            continue
+
+        records.append(
+            {
+                "local_if": local_if or "unknown",
+                "remote_host": remote_host,
+                "remote_ip": remote_ip,
+                "remote_if": remote_if,
+            }
+        )
+
+    seen: set[str] = set()
+    dedup: list[dict[str, str]] = []
+    for r in records:
+        k = "||".join(
+            [
+                (r.get("local_if") or "").lower(),
+                (r.get("remote_host") or "").lower(),
+                (r.get("remote_ip") or "").lower(),
+                (r.get("remote_if") or "").lower(),
+            ]
+        )
+        if k in seen:
+            continue
+        seen.add(k)
+        dedup.append(r)
+    return dedup
+
+
 def parse_lldp_neighbors(output: str, vendor: str = "huawei") -> list[dict[str, str]]:
     v = (vendor or "").strip().lower()
     if v == "huawei":
         return parse_lldp_neighbors_huawei(output)
+    if v == "cisco":
+        return parse_lldp_neighbors_cisco(output)
     return parse_lldp_neighbors_generic(output)
 
 
