@@ -370,6 +370,8 @@
       <input id="cliDeviceAddrModal" type="text" placeholder="例如：10.0.0.1 或 hostname" />
       <label>递归次数（1-5）</label>
       <input id="cliMaxDepthModal" type="number" min="1" max="5" step="1" value="3" />
+      <label>并发查询数（1-16）</label>
+      <input id="cliMaxWorkersModal" type="number" min="1" max="16" step="1" value="4" />
       <label>设备 SSH 用户名</label>
       <input id="cliUsernameModal" type="text" placeholder="例如：netops" />
       <label>设备 SSH 密码</label>
@@ -1334,6 +1336,7 @@
       const p = JSON.parse(raw);
       if (p.device_address) $('cliDeviceAddrModal').value = p.device_address;
       if (p.max_depth) $('cliMaxDepthModal').value = String(p.max_depth);
+      if (p.cli_max_workers) $('cliMaxWorkersModal').value = String(p.cli_max_workers);
       if (p.device_username) $('cliUsernameModal').value = p.device_username;
       if (p.smc_jump_host) $('cliSmcJumpHostModal').value = p.smc_jump_host;
       if (p.smc_jump_port) $('cliSmcJumpPortModal').value = String(p.smc_jump_port);
@@ -1350,6 +1353,7 @@
       const safe = {
         device_address: payload.device_address || '',
         max_depth: payload.max_depth || 3,
+        cli_max_workers: payload.cli_max_workers || 4,
         device_username: payload.device_username || '',
         smc_jump_host: payload.smc_jump_host || '',
         smc_jump_port: payload.smc_jump_port || 22,
@@ -1430,6 +1434,8 @@
     const addr = ($('cliDeviceAddrModal').value || '').trim();
     const depthRaw = parseInt(($('cliMaxDepthModal').value || '3').trim(), 10);
     const maxDepth = Number.isFinite(depthRaw) ? Math.min(5, Math.max(1, depthRaw)) : 3;
+    const workersRaw = parseInt(($('cliMaxWorkersModal').value || '4').trim(), 10);
+    const maxWorkers = Number.isFinite(workersRaw) ? Math.min(16, Math.max(1, workersRaw)) : 4;
     const username = ($('cliUsernameModal').value || '').trim();
     const password = $('cliPasswordModal').value || '';
     const smcJumpHost = ($('cliSmcJumpHostModal').value || '').trim();
@@ -1448,6 +1454,7 @@
     const reqPayload = {
       device_address: addr,
       max_depth: maxDepth,
+      cli_max_workers: maxWorkers,
       device_username: username || null,
       device_password: password || null,
       smc_jump_host: smcJumpHost || null,
@@ -1469,7 +1476,8 @@
         if (!data.csv_text) throw new Error('CLI 返回为空');
         lastSqlDownloadUrl = data.download_url ? `${base}${data.download_url}` : '';
         lastCliDebugUrl = data.debug_download_url ? `${base}${data.debug_download_url}` : '';
-        $('cliResultHintModal').textContent = `CLI 返回 ${data.row_count} 行，已查询设备 ${data.queried_count} 台`;
+        const workersShown = data.cli_max_workers || maxWorkers;
+        $('cliResultHintModal').textContent = `CLI 返回 ${data.row_count} 行，已查询设备 ${data.queried_count} 台，并发 ${workersShown}`;
         loadDataFromText(data.csv_text);
         if ((data.row_count || 0) > 0) {
           buildGraph();
@@ -1479,7 +1487,7 @@
           setErr('CLI 查询成功，但未解析到可用 LLDP 邻接记录。请下载 CLI 调试日志检查原始回显。');
         }
         const vendors = data.detected_vendors ? Object.values(data.detected_vendors).join(', ') : 'unknown';
-        setOK(`已完成 CLI 递归采集：起始设备 ${addr}，递归 ${maxDepth} 层，结果 ${data.row_count} 行。自动识别厂商：${vendors}`);
+        setOK(`已完成 CLI 递归采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}，结果 ${data.row_count} 行。自动识别厂商：${vendors}`);
       })
       .catch((e) => {
         setStatus('CLI 查询失败');

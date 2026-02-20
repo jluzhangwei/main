@@ -23,6 +23,7 @@ import select
 import signal
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -820,10 +821,87 @@ def parse_lldp_neighbors(output: str, vendor: str = "huawei") -> list[dict[str, 
     return parse_lldp_neighbors_generic(output)
 
 
+def collect_device_lldp_once(source: str, depth: int, cfg: CliRuntimeConfig) -> dict[str, Any]:
+    transcript: list[str] = []
+
+    def dbg(msg: str) -> None:
+        if len(transcript) < 600:
+            transcript.append(msg)
+
+    cli = SmcShellClient(
+        SmcShellConfig(
+            smc_command=cfg.smc_command,
+            jump_host=cfg.jump_host,
+            jump_port=cfg.jump_port,
+            device_ip=source,
+            username=cfg.username,
+            password=cfg.password,
+            timeout=cfg.connect_timeout,
+            debug=dbg,
+        )
+    )
+
+    vendor = "unknown"
+    device_name = ""
+    parsed_rows: list[dict[str, Any]] = []
+    next_ips: set[str] = set()
+    error = ""
+
+    try:
+        cli.connect()
+        vendor = detect_vendor(cli, timeout=min(cfg.command_timeout, 20))
+        device_name = detect_device_name(cli, vendor, timeout=min(cfg.command_timeout, 20))
+        output = run_lldp_commands(cli, timeout=cfg.command_timeout, vendor=vendor)
+        parsed = parse_lldp_neighbors(output, vendor=vendor)
+        for rec in parsed:
+            remote_host = (rec.get("remote_host") or "").strip()
+            remote_ip = (rec.get("remote_ip") or "").strip()
+            remote_candidate = remote_host or remote_ip
+            if not remote_candidate:
+                continue
+            row = {
+                "depth": depth,
+                "localhostname": source,
+                "localinterface": (rec.get("local_if") or "").strip(),
+                "remotehostname": remote_candidate,
+                "remoteinterface": (rec.get("remote_if") or "").strip(),
+                "remotevendor": "",
+                "remoteip": remote_ip,
+            }
+            parsed_rows.append(row)
+            if remote_ip and _looks_like_ip(remote_ip):
+                next_ips.add(remote_ip)
+    except Exception as exc:
+        error = str(exc)
+    finally:
+        cli.close()
+
+    return {
+        "source": source,
+        "depth": depth,
+        "vendor": vendor,
+        "device_name": device_name,
+        "rows": parsed_rows,
+        "next_ips": sorted(next_ips),
+        "error": error,
+        "debug_entry": {
+            "device": source,
+            "depth": depth,
+            "status": "failed" if error else "ok",
+            "vendor": vendor,
+            "device_name": device_name,
+            "neighbor_count": len(parsed_rows),
+            "error": error,
+            "transcript": transcript[:],
+        },
+    }
+
+
 def build_cli_lldp_rows(
     start_device: str,
     max_depth: int,
     *,
+    cli_max_workers: int | None = None,
     device_username: str | None = None,
     device_password: str | None = None,
     smc_jump_host: str | None = None,
@@ -842,121 +920,84 @@ def build_cli_lldp_rows(
         cli_connect_timeout=cli_connect_timeout,
     )
 
-    q: deque[tuple[str, int]] = deque([(normalize_device_id(start_device), 1)])
     visited_sources: set[str] = set()
-    queued: set[str] = {normalize_device_id(start_device)}
     failed: list[dict[str, str]] = []
     debug_entries: list[dict[str, Any]] = []
     detected_vendors: dict[str, str] = {}
     detected_device_names: dict[str, str] = {}
     rows: list[dict[str, Any]] = []
     edge_seen: set[str] = set()
+    env_workers = int(get_env("CLI_MAX_WORKERS", "4") or "4")
+    workers = int(cli_max_workers if cli_max_workers is not None else env_workers)
+    workers = max(1, min(16, workers))
 
-    while q:
-        source, depth = q.popleft()
-        if not source:
-            continue
-        if depth > max_depth:
-            continue
-        if source in visited_sources:
-            continue
+    current_layer: list[str] = [normalize_device_id(start_device)]
+    for depth in range(1, max_depth + 1):
+        targets = [t for t in current_layer if t and t not in visited_sources]
+        if not targets:
+            break
+        visited_sources.update(targets)
 
-        visited_sources.add(source)
-
-        transcript: list[str] = []
-
-        def dbg(msg: str) -> None:
-            if len(transcript) < 400:
-                transcript.append(msg)
-
-        cli = SmcShellClient(
-            SmcShellConfig(
-                smc_command=cfg.smc_command,
-                jump_host=cfg.jump_host,
-                jump_port=cfg.jump_port,
-                device_ip=source,
-                username=cfg.username,
-                password=cfg.password,
-                timeout=cfg.connect_timeout,
-                debug=dbg,
-            )
-        )
-
-        try:
-            cli.connect()
-            detected_vendor = detect_vendor(cli, timeout=min(cfg.command_timeout, 20))
-            detected_vendors[source] = detected_vendor
-            detected_name = detect_device_name(cli, detected_vendor, timeout=min(cfg.command_timeout, 20))
-            if detected_name:
-                detected_device_names[source] = detected_name
-            output = run_lldp_commands(cli, timeout=cfg.command_timeout, vendor=detected_vendor)
-            parsed = parse_lldp_neighbors(output, vendor=detected_vendor)
-
-            for rec in parsed:
-                remote_host = (rec.get("remote_host") or "").strip()
-                remote_ip = (rec.get("remote_ip") or "").strip()
-                remote_candidate = remote_host or remote_ip
-                if not remote_candidate:
+        next_layer: set[str] = set()
+        with ThreadPoolExecutor(max_workers=min(workers, len(targets))) as pool:
+            future_map = {
+                pool.submit(collect_device_lldp_once, source, depth, cfg): source
+                for source in targets
+            }
+            for fut in as_completed(future_map):
+                source = future_map.get(fut, "")
+                try:
+                    res = fut.result()
+                except Exception as exc:
+                    failed.append({"device": str(source), "error": f"worker_exception: {exc}"})
+                    debug_entries.append(
+                        {
+                            "device": source,
+                            "depth": depth,
+                            "status": "failed",
+                            "vendor": "unknown",
+                            "device_name": "",
+                            "neighbor_count": 0,
+                            "error": f"worker_exception: {exc}",
+                            "transcript": [],
+                        }
+                    )
                     continue
-                local_if = (rec.get("local_if") or "").strip()
-                remote_if = (rec.get("remote_if") or "").strip()
-                row = {
-                    "depth": depth,
-                    "localhostname": source,
-                    "localinterface": local_if,
-                    "remotehostname": remote_candidate,
-                    "remoteinterface": remote_if,
-                    "remotevendor": "",
-                    "remoteip": remote_ip,
-                }
-                edge_key = "||".join(
-                    [
-                        str(row["depth"]),
-                        row["localhostname"].lower(),
-                        row["localinterface"].lower(),
-                        row["remotehostname"].lower(),
-                        row["remoteinterface"].lower(),
-                    ]
-                )
-                if edge_key not in edge_seen:
+                source = str(res.get("source", "") or "")
+                vendor = str(res.get("vendor", "unknown") or "unknown")
+                device_name = str(res.get("device_name", "") or "")
+                error = str(res.get("error", "") or "")
+                debug_entries.append(res.get("debug_entry", {}))
+
+                if vendor and vendor != "unknown":
+                    detected_vendors[source] = vendor
+                if device_name:
+                    detected_device_names[source] = device_name
+                if error:
+                    failed.append({"device": source, "error": error})
+                    continue
+
+                for row in res.get("rows", []):
+                    edge_key = "||".join(
+                        [
+                            str(row.get("depth", "")),
+                            str(row.get("localhostname", "")).lower(),
+                            str(row.get("localinterface", "")).lower(),
+                            str(row.get("remotehostname", "")).lower(),
+                            str(row.get("remoteinterface", "")).lower(),
+                        ]
+                    )
+                    if edge_key in edge_seen:
+                        continue
                     edge_seen.add(edge_key)
                     rows.append(row)
 
-                # Enrich destination vendor if this neighbor was already queried before.
-                if remote_candidate in detected_vendors:
-                    row["remotevendor"] = detected_vendors[remote_candidate]
+                if depth < max_depth:
+                    for ip in res.get("next_ips", []):
+                        if ip and ip not in visited_sources:
+                            next_layer.add(ip)
 
-                if depth < max_depth and remote_ip and remote_ip not in visited_sources and remote_ip not in queued:
-                    # Recursion uses neighbor management address as next query target.
-                    # Skip pure hostnames by default to avoid unreachable SSH targets.
-                    if _looks_like_ip(remote_ip):
-                        q.append((remote_ip, depth + 1))
-                        queued.add(remote_ip)
-            debug_entries.append(
-                {
-                    "device": source,
-                    "depth": depth,
-                    "status": "ok",
-                    "vendor": detected_vendor,
-                    "device_name": detected_name,
-                    "neighbor_count": len(parsed),
-                    "transcript": transcript[:],
-                }
-            )
-        except Exception as exc:
-            failed.append({"device": source, "error": str(exc)})
-            debug_entries.append(
-                {
-                    "device": source,
-                    "depth": depth,
-                    "status": "failed",
-                    "vendor": detected_vendors.get(source, "unknown"),
-                    "error": str(exc),
-                    "transcript": transcript[:],
-                }
-            )
-        finally:
-            cli.close()
+        current_layer = sorted(next_layer)
 
     meta = {
         "queried_devices": sorted(visited_sources),
@@ -964,6 +1005,7 @@ def build_cli_lldp_rows(
         "debug_entries": debug_entries,
         "detected_vendors": detected_vendors,
         "detected_device_names": detected_device_names,
+        "cli_max_workers": workers,
     }
     # Pass 1: fill destination name from same-IP rows where name exists.
     ip_to_name: dict[str, str] = {}
@@ -1003,6 +1045,7 @@ class QueryRequest(BaseModel):
 class CliQueryRequest(BaseModel):
     device_address: str
     max_depth: int = Field(default=3, ge=1, le=5)
+    cli_max_workers: int | None = Field(default=None, ge=1, le=16)
     device_username: str | None = None
     device_password: str | None = None
     smc_jump_host: str | None = None
@@ -1140,6 +1183,7 @@ def query_lldp_csv_via_cli(payload: CliQueryRequest) -> dict[str, Any]:
         rows, meta = build_cli_lldp_rows(
             device_address,
             max_depth=max_depth,
+            cli_max_workers=payload.cli_max_workers,
             device_username=payload.device_username,
             device_password=payload.device_password,
             smc_jump_host=payload.smc_jump_host,
@@ -1165,6 +1209,7 @@ def query_lldp_csv_via_cli(payload: CliQueryRequest) -> dict[str, Any]:
         "mode": "cli",
         "device_address": device_address,
         "max_depth": max_depth,
+        "cli_max_workers": meta.get("cli_max_workers"),
         "vendor_mode": "auto-detect-by-version",
         "detected_vendors": meta.get("detected_vendors", {}),
         "row_count": len(rows),
