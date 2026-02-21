@@ -859,52 +859,37 @@ def parse_lldp_neighbors_generic(output: str) -> list[dict[str, str]]:
 
 
 def parse_lldp_neighbors_cisco(output: str) -> list[dict[str, str]]:
-    """Cisco NX-OS/IOS style LLDP detail parser."""
+    """Cisco NX-OS + IOS-XR style LLDP detail parser."""
     text = (output or "").replace("\r", "")
     if not text.strip():
         return []
 
-    blocks = re.split(r"(?im)^\s*Chassis id\s*:\s*", text)
+    lines = text.splitlines()
     records: list[dict[str, str]] = []
+    cur: dict[str, str] = {
+        "local_if": "",
+        "remote_if": "",
+        "remote_host": "",
+        "remote_ip": "",
+        "chassis": "",
+    }
 
-    for blk in blocks[1:]:
-        chunk = "Chassis id: " + blk
+    def _empty_like(v: str) -> bool:
+        return (v or "").strip().lower() in {"", "null", "not advertised", "--"}
 
-        def pick(pattern: str) -> str:
-            m = re.search(pattern, chunk, re.IGNORECASE | re.MULTILINE)
-            return (m.group(1).strip() if m else "")
+    def flush() -> None:
+        local_if = "" if _empty_like(cur["local_if"]) else cur["local_if"].strip()
+        remote_if = "" if _empty_like(cur["remote_if"]) else cur["remote_if"].strip()
+        remote_host = "" if _empty_like(cur["remote_host"]) else cur["remote_host"].strip()
+        remote_ip = "" if _empty_like(cur["remote_ip"]) else cur["remote_ip"].strip()
 
-        local_if = pick(r"^\s*Local\s+Port\s+id\s*:\s*(.+?)\s*$")
-        remote_if = pick(r"^\s*Port\s+id\s*:\s*(.+?)\s*$")
-        remote_host = pick(r"^\s*System\s+Name\s*:\s*(.+?)\s*$")
-        mgmt_addr = pick(r"^\s*Management\s+Address\s*:\s*(.+?)\s*$")
+        if not remote_ip:
+            ip_match = IPV4_PATTERN.search(cur.get("remote_ip", ""))
+            if ip_match:
+                remote_ip = ip_match.group(0)
 
-        # Normalize null/not advertised values.
-        for key, value in {
-            "local_if": local_if,
-            "remote_if": remote_if,
-            "remote_host": remote_host,
-            "mgmt_addr": mgmt_addr,
-        }.items():
-            vlow = value.lower()
-            if vlow in {"null", "not advertised", "--", ""}:
-                if key == "local_if":
-                    local_if = ""
-                elif key == "remote_if":
-                    remote_if = ""
-                elif key == "remote_host":
-                    remote_host = ""
-                else:
-                    mgmt_addr = ""
-
-        remote_ip = ""
-        ip_match = IPV4_PATTERN.search(mgmt_addr)
-        if ip_match:
-            remote_ip = ip_match.group(0)
-
-        remote_candidate = remote_host or remote_ip
-        if not remote_candidate:
-            continue
+        if not (remote_host or remote_ip):
+            return
 
         records.append(
             {
@@ -914,6 +899,196 @@ def parse_lldp_neighbors_cisco(output: str) -> list[dict[str, str]]:
                 "remote_if": remote_if,
             }
         )
+
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+
+        # IOS-XR section separator
+        if re.fullmatch(r"-{20,}", line):
+            if cur["chassis"] or cur["local_if"] or cur["remote_host"] or cur["remote_ip"]:
+                flush()
+                cur = {"local_if": "", "remote_if": "", "remote_host": "", "remote_ip": "", "chassis": ""}
+            continue
+
+        m = re.match(r"(?i)^chassis id\s*:\s*(.+)$", line)
+        if m:
+            # NX-OS uses consecutive chassis blocks without separators.
+            if cur["chassis"] or cur["remote_host"] or cur["remote_ip"]:
+                flush()
+                cur = {"local_if": "", "remote_if": "", "remote_host": "", "remote_ip": "", "chassis": ""}
+            cur["chassis"] = m.group(1).strip()
+            continue
+
+        m = re.match(r"(?i)^local\s+interface\s*:\s*(.+)$", line)
+        if m:
+            cur["local_if"] = m.group(1).strip()
+            continue
+
+        m = re.match(r"(?i)^local\s+port\s+id\s*:\s*(.+)$", line)
+        if m and not cur["local_if"]:
+            cur["local_if"] = m.group(1).strip()
+            continue
+
+        m = re.match(r"(?i)^port\s+id\s*:\s*(.+)$", line)
+        if m:
+            cur["remote_if"] = m.group(1).strip()
+            continue
+
+        m = re.match(r"(?i)^system\s+name\s*:\s*(.+)$", line)
+        if m:
+            cur["remote_host"] = m.group(1).strip()
+            continue
+
+        # NX-OS single-line
+        m = re.match(r"(?i)^management\s+address\s*:\s*(.+)$", line)
+        if m:
+            ip_match = IPV4_PATTERN.search(m.group(1))
+            if ip_match:
+                cur["remote_ip"] = ip_match.group(0)
+            continue
+
+        # IOS-XR multi-line section
+        m = re.match(r"(?i)^ipv4\s+address\s*:\s*(.+)$", line)
+        if m:
+            ip_match = IPV4_PATTERN.search(m.group(1))
+            if ip_match:
+                cur["remote_ip"] = ip_match.group(0)
+            continue
+
+        if re.match(r"(?i)^management\s+addresses\s*-\s*not\s+advertised$", line):
+            if not cur["remote_ip"]:
+                cur["remote_ip"] = ""
+            continue
+
+    flush()
+
+    seen: set[str] = set()
+    dedup: list[dict[str, str]] = []
+    for r in records:
+        k = "||".join(
+            [
+                (r.get("local_if") or "").lower(),
+                (r.get("remote_host") or "").lower(),
+                (r.get("remote_ip") or "").lower(),
+                (r.get("remote_if") or "").lower(),
+            ]
+        )
+        if k in seen:
+            continue
+        seen.add(k)
+        dedup.append(r)
+    return dedup
+
+
+def parse_lldp_neighbors_arista(output: str) -> list[dict[str, str]]:
+    """Arista EOS LLDP detail parser."""
+    text = (output or "").replace("\r", "")
+    if not text.strip():
+        return []
+
+    lines = text.splitlines()
+    records: list[dict[str, str]] = []
+    current_local_if = ""
+    cur: dict[str, str] | None = None
+
+    def _empty_like(v: str) -> bool:
+        return (v or "").strip().strip('"').lower() in {"", "null", "not advertised", "--"}
+
+    def flush() -> None:
+        nonlocal cur
+        if not cur:
+            return
+        local_if = (cur.get("local_if") or "").strip().strip('"')
+        remote_if = (cur.get("remote_if") or "").strip().strip('"')
+        remote_host = (cur.get("remote_host") or "").strip().strip('"')
+        remote_ip = (cur.get("remote_ip") or "").strip().strip('"')
+
+        if _empty_like(local_if):
+            local_if = ""
+        if _empty_like(remote_if):
+            remote_if = ""
+        if _empty_like(remote_host):
+            remote_host = ""
+        if _empty_like(remote_ip):
+            remote_ip = ""
+
+        if remote_ip:
+            ip_match = IPV4_PATTERN.search(remote_ip)
+            remote_ip = ip_match.group(0) if ip_match else ""
+
+        if not (remote_host or remote_ip):
+            cur = None
+            return
+
+        records.append(
+            {
+                "local_if": local_if or "unknown",
+                "remote_host": remote_host,
+                "remote_ip": remote_ip,
+                "remote_if": remote_if,
+            }
+        )
+        cur = None
+
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+
+        m_if = re.match(r"(?i)^Interface\s+(\S+)\s+detected\s+(\d+)\s+LLDP\s+neighbors?\s*:\s*$", line)
+        if m_if:
+            flush()
+            current_local_if = m_if.group(1).strip().strip('"')
+            continue
+
+        if re.match(r"(?i)^Neighbor\s+", line):
+            flush()
+            cur = {
+                "local_if": current_local_if,
+                "remote_if": "",
+                "remote_host": "",
+                "remote_ip": "",
+            }
+            continue
+
+        if cur is None:
+            continue
+
+        m = re.match(r"(?i)^-\s*System\s+Name\s*:\s*(.+?)\s*$", line)
+        if m:
+            cur["remote_host"] = m.group(1).strip()
+            continue
+
+        m = re.match(r"(?i)^-\s*Management\s+Address\s+Subtype\s*:\s*IPv4\b", line)
+        if m:
+            # marker line; actual address is usually on following line.
+            continue
+
+        m = re.match(r"(?i)^Management\s+Address\s*:\s*(.+?)\s*$", line)
+        if m:
+            ip_match = IPV4_PATTERN.search(m.group(1))
+            if ip_match:
+                cur["remote_ip"] = ip_match.group(0)
+            continue
+
+        # Common indentation variant in EOS output.
+        m = re.match(r"(?i)^-\s*Port\s+ID\s*:\s*(.+?)\s*$", line)
+        if m and not cur.get("remote_if"):
+            val = m.group(1).strip().strip('"')
+            if val and val != "0":
+                cur["remote_if"] = val
+            continue
+
+        m = re.match(r"(?i)^Port\s+ID\s*:\s*(.+?)\s*$", line)
+        if m and not cur.get("remote_if"):
+            val = m.group(1).strip().strip('"')
+            if val and val != "0":
+                cur["remote_if"] = val
+            continue
+
+    flush()
 
     seen: set[str] = set()
     dedup: list[dict[str, str]] = []
@@ -939,10 +1114,14 @@ def parse_lldp_neighbors(output: str, vendor: str = "huawei") -> list[dict[str, 
         return parse_lldp_neighbors_huawei(output)
     if v == "cisco":
         return parse_lldp_neighbors_cisco(output)
+    if v == "arista":
+        return parse_lldp_neighbors_arista(output)
     return parse_lldp_neighbors_generic(output)
 
 
 def collect_device_lldp_once(source: str, depth: int, cfg: CliRuntimeConfig) -> dict[str, Any]:
+    started_at = time.time()
+    started_perf = time.perf_counter()
     transcript: list[str] = []
 
     def dbg(msg: str) -> None:
@@ -997,6 +1176,8 @@ def collect_device_lldp_once(source: str, depth: int, cfg: CliRuntimeConfig) -> 
         error = str(exc)
     finally:
         cli.close()
+    finished_at = time.time()
+    duration_sec = max(0.0, finished_at - started_at)
 
     return {
         "source": source,
@@ -1006,6 +1187,7 @@ def collect_device_lldp_once(source: str, depth: int, cfg: CliRuntimeConfig) -> 
         "rows": parsed_rows,
         "next_ips": sorted(next_ips),
         "error": error,
+        "duration_sec": duration_sec,
         "debug_entry": {
             "device": source,
             "depth": depth,
@@ -1014,6 +1196,9 @@ def collect_device_lldp_once(source: str, depth: int, cfg: CliRuntimeConfig) -> 
             "device_name": device_name,
             "neighbor_count": len(parsed_rows),
             "error": error,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "duration_sec": duration_sec,
             "transcript": transcript[:],
         },
     }
@@ -1024,6 +1209,7 @@ def build_cli_lldp_rows(
     max_depth: int,
     *,
     cli_max_workers: int | None = None,
+    recursive_only_172: bool = False,
     device_username: str | None = None,
     device_password: str | None = None,
     smc_jump_host: str | None = None,
@@ -1032,6 +1218,7 @@ def build_cli_lldp_rows(
     cli_command_timeout: int | None = None,
     cli_connect_timeout: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    total_start = time.perf_counter()
     cfg = get_cli_runtime_config(
         device_username=device_username,
         device_password=device_password,
@@ -1116,6 +1303,10 @@ def build_cli_lldp_rows(
 
                 if depth < max_depth:
                     for ip in res.get("next_ips", []):
+                        if not ip or ip in visited_sources:
+                            continue
+                        if recursive_only_172 and not str(ip).startswith("172."):
+                            continue
                         if ip and ip not in visited_sources:
                             next_layer.add(ip)
 
@@ -1128,6 +1319,8 @@ def build_cli_lldp_rows(
         "detected_vendors": detected_vendors,
         "detected_device_names": detected_device_names,
         "cli_max_workers": workers,
+        "recursive_only_172": bool(recursive_only_172),
+        "total_elapsed_seconds": max(0.0, time.perf_counter() - total_start),
     }
     # Pass 1: fill destination name from same-IP rows where name exists.
     ip_to_name: dict[str, str] = {}
@@ -1168,6 +1361,7 @@ class CliQueryRequest(BaseModel):
     device_address: str
     max_depth: int = Field(default=3, ge=1, le=5)
     cli_max_workers: int | None = Field(default=None, ge=1, le=16)
+    recursive_only_172: bool = False
     device_username: str | None = None
     device_password: str | None = None
     smc_jump_host: str | None = None
@@ -1230,12 +1424,15 @@ def write_cli_debug_text(file_prefix: str, meta: dict[str, Any]) -> tuple[str, P
     lines.append("LLDP CLI Recursive Collection Debug")
     lines.append(f"queried_count={len(meta.get('queried_devices', []))}")
     lines.append(f"failed_count={len(meta.get('failed_devices', []))}")
+    lines.append(f"total_elapsed_seconds={float(meta.get('total_elapsed_seconds', 0.0)):.3f}")
     lines.append("")
     for entry in meta.get("debug_entries", []):
         lines.append("=" * 80)
+        duration = float(entry.get("duration_sec", 0.0) or 0.0)
         lines.append(
             f"device={entry.get('device')} depth={entry.get('depth')} "
-            f"status={entry.get('status')} neighbor_count={entry.get('neighbor_count', 0)}"
+            f"status={entry.get('status')} neighbor_count={entry.get('neighbor_count', 0)} "
+            f"duration_sec={duration:.3f}"
         )
         err = entry.get("error")
         if err:
@@ -1306,6 +1503,7 @@ def query_lldp_csv_via_cli(payload: CliQueryRequest) -> dict[str, Any]:
             device_address,
             max_depth=max_depth,
             cli_max_workers=payload.cli_max_workers,
+            recursive_only_172=payload.recursive_only_172,
             device_username=payload.device_username,
             device_password=payload.device_password,
             smc_jump_host=payload.smc_jump_host,
@@ -1332,6 +1530,8 @@ def query_lldp_csv_via_cli(payload: CliQueryRequest) -> dict[str, Any]:
         "device_address": device_address,
         "max_depth": max_depth,
         "cli_max_workers": meta.get("cli_max_workers"),
+        "recursive_only_172": meta.get("recursive_only_172", False),
+        "total_elapsed_seconds": meta.get("total_elapsed_seconds"),
         "vendor_mode": "auto-detect-by-version",
         "detected_vendors": meta.get("detected_vendors", {}),
         "row_count": len(rows),

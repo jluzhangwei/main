@@ -5,109 +5,250 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>LLDP 拓扑工具使用手册</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; line-height: 1.6; color: #0f172a; }
-    h1 { margin-bottom: 8px; }
-    h2 { margin-top: 22px; margin-bottom: 8px; }
-    .card { border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px 18px; box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06); max-width: 1100px; }
-    ul { padding-left: 20px; }
-    code { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-size: 90%; }
-    .badge { display: inline-block; margin-left: 6px; padding: 2px 8px; border-radius: 999px; background: #dbeafe; color: #1d4ed8; font-size: 12px; }
-    .pill { display: inline-block; margin-right: 6px; padding: 2px 8px; border-radius: 999px; background: #ecfeff; color: #0891b2; font-size: 12px; }
+    :root {
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --border: #e2e8f0;
+      --text: #0f172a;
+      --muted: #475569;
+      --link: #2563eb;
+      --pill-bg: #ecfeff;
+      --pill-fg: #0891b2;
+      --badge-bg: #dbeafe;
+      --badge-fg: #1d4ed8;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      line-height: 1.6;
+    }
+    .layout {
+      max-width: 1300px;
+      margin: 0 auto;
+      padding: 20px;
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      gap: 18px;
+      min-height: 100vh;
+    }
+    .toc {
+      position: sticky;
+      top: 16px;
+      align-self: start;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+    }
+    .toc h2 {
+      margin: 0 0 10px;
+      font-size: 16px;
+    }
+    .toc a {
+      display: block;
+      text-decoration: none;
+      color: #1e293b;
+      padding: 6px 8px;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    .toc a:hover { background: #eef2ff; color: #1d4ed8; }
+
+    .content {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 22px;
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+    }
+    h1 { margin: 0 0 10px; font-size: 28px; }
+    h2 { margin: 24px 0 10px; font-size: 21px; }
+    p { margin: 8px 0 12px; color: var(--muted); }
+    ul { margin: 0; padding-left: 20px; }
+    li { margin: 6px 0; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 6px;
+      font-size: 90%;
+    }
+    .badge {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--badge-bg);
+      color: var(--badge-fg);
+      font-size: 12px;
+    }
+    .pill {
+      display: inline-block;
+      margin-right: 6px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--pill-bg);
+      color: var(--pill-fg);
+      font-size: 12px;
+    }
+    @media (max-width: 980px) {
+      .layout {
+        grid-template-columns: 1fr;
+        padding: 12px;
+      }
+      .toc {
+        position: static;
+      }
+      .toc .links {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 4px;
+      }
+    }
+    @media (max-width: 640px) {
+      .toc .links { grid-template-columns: 1fr; }
+      .content { padding: 14px; }
+      h1 { font-size: 24px; }
+      h2 { font-size: 19px; }
+    }
   </style>
 </head>
 <body>
-  <h1>LLDP 拓扑工具使用手册</h1>
-  <div class="card">
-    <p><strong>一句话：</strong>导入/追加 LLDP CSV，自动去重生成拓扑；支持分层/分散布局、过滤/搜索、多选/右键操作、邻接高亮；可导入导出 PNG/JSON/坐标，支持多链路合并切换。</p>
+  <div class="layout">
+    <aside class="toc">
+      <h2>目录</h2>
+      <div class="links">
+        <a href="#overview">概览</a>
+        <a href="#startup">启动方式</a>
+        <a href="#oneclick">一键启动</a>
+        <a href="#sql">SQL 导入</a>
+        <a href="#cli">CLI 导入</a>
+        <a href="#import">数据导入</a>
+        <a href="#layout">布局与分层</a>
+        <a href="#interaction">显示与交互</a>
+        <a href="#links">链路显示</a>
+        <a href="#export">坐标与导出</a>
+        <a href="#workflow">常用操作流</a>
+      </div>
+    </aside>
 
-    <h2>启动方式</h2>
-    <ul>
-      <li><span class="pill">仅离线导入 CSV</span> 直接用浏览器打开 <code>lldp.html</code> 即可使用原有「导入 CSV / 追加 CSV / 粘贴 CSV」功能。</li>
-      <li><span class="pill">启用 SQL 生成 CSV</span> 需要启动本地服务，再通过 <code>http://127.0.0.1:18080/lldp.html</code> 访问页面。</li>
-      <li><span class="pill">依赖安装</span> 在虚拟环境执行：<code>pip install fastapi uvicorn pymysql</code>。</li>
-      <li><span class="pill">数据库配置</span> 在项目目录复制 <code>.env.mysql.example</code> 为 <code>.env.mysql</code> 并填写只读账号密码。</li>
-      <li><span class="pill">启动命令</span> 在 <code>/Users/zhangwei/python/lldp_topology</code> 运行：<code>DB_ENV_FILE=/Users/zhangwei/python/lldp_topology/.env.mysql python lldp_sql_service.py</code>。</li>
-    </ul>
+    <main class="content">
+      <h1>LLDP 拓扑工具使用手册 <span class="badge">v2</span></h1>
 
-    <h2>一键启动（推荐）</h2>
-    <ul>
-      <li><span class="pill">脚本路径</span> <code>/Users/zhangwei/python/lldp_topology/start_lldp_service.sh</code></li>
-      <li><span class="pill">启动服务</span> <code>cd /Users/zhangwei/python/lldp_topology &amp;&amp; ./start_lldp_service.sh start</code></li>
-      <li><span class="pill">查看状态</span> <code>./start_lldp_service.sh status</code>（包含环境检查、进程 PID、18080 端口监听信息）</li>
-      <li><span class="pill">查看日志</span> <code>./start_lldp_service.sh logs</code></li>
-      <li><span class="pill">重启服务</span> <code>./start_lldp_service.sh restart</code></li>
-      <li><span class="pill">停止服务</span> <code>./start_lldp_service.sh stop</code></li>
-      <li><span class="pill">访问页面</span> 启动成功后打开 <code>http://127.0.0.1:18080/lldp.html</code></li>
-    </ul>
+      <section id="overview">
+        <h2>概览</h2>
+        <p><strong>一句话：</strong>支持 CSV / SQL / CLI 三种导入，自动去重生成拓扑，支持分层布局、过滤定位、多选操作、导出 PNG/JSON/坐标。</p>
+      </section>
 
-    <h2>SQL 生成 CSV（start_hostname）</h2>
-    <ul>
-      <li><span class="pill">入口</span> 页面「导入数据」区域新增：输入设备名 + 按钮「SQL 生成并建图」。</li>
-      <li><span class="pill">输入</span> 只需填写 <code>start_hostname</code>，例如 <code>ID-DCI2-GENERAL.CONNECTION-R003-BRIDGE-02</code>。</li>
-      <li><span class="pill">行为</span> 点击后会调用后端 SQL，生成临时 CSV，并自动载入页面生成拓扑。</li>
-      <li><span class="pill">下载</span> 可点击「下载临时 CSV」获取本次查询结果文件。</li>
-      <li><span class="pill">兼容</span> 不影响原有手动导入 CSV 功能，两种方式可并存使用。</li>
-      <li><span class="pill">临时文件位置</span> 服务写入 <code>tmp_csv/</code> 目录。</li>
-    </ul>
+      <section id="startup">
+        <h2>启动方式</h2>
+        <ul>
+          <li><span class="pill">仅离线导入 CSV</span> 直接打开 <code>lldp.html</code>。</li>
+          <li><span class="pill">启用 SQL/CLI</span> 需启动服务后访问 <code>http://127.0.0.1:18080/lldp.html</code>。</li>
+          <li><span class="pill">依赖安装</span> <code>pip install fastapi uvicorn pymysql</code>。</li>
+          <li><span class="pill">数据库配置</span> 复制 <code>.env.mysql.example</code> 为 <code>.env.mysql</code> 并填写参数。</li>
+        </ul>
+      </section>
 
-    <h2>CLI 递归导入（SMC 跳板）</h2>
-    <ul>
-      <li><span class="pill">入口</span> 导入方式选择 <code>CLI 导入</code>，点击「导入输入」。</li>
-      <li><span class="pill">输入项</span> 设备地址 + 递归次数（1-5，默认 3）。</li>
-      <li><span class="pill">SMC 参数</span> 弹窗可填写设备账号、跳板地址/端口、SMC 命令、超时参数；优先使用弹窗值，其次回退到 <code>.env.mysql</code>。</li>
-      <li><span class="pill">本地记忆</span> 弹窗会在浏览器本地保存上次输入（密码除外），下次自动回填。</li>
-      <li><span class="pill">登录方式</span> 复用 Netlog 项目的 SMC 两阶段登录思路（先跳板 shell，再 SSH 目标设备）。</li>
-      <li><span class="pill">执行命令</span> 自动尝试：<code>show lldp neighbor details</code> / <code>dis lldp neighbor</code>（含常见变体）。</li>
-      <li><span class="pill">递归规则</span> 起始设备记为 depth=1，邻居设备继续 depth+1；已查询过的源设备不重复查询，直到达到递归次数。</li>
-      <li><span class="pill">输出</span> 提取 LLDP 邻接关系并生成临时 CSV，再自动载入页面生成拓扑。</li>
-      <li><span class="pill">调试日志</span> 每次 CLI 查询会生成调试日志文件，可在弹窗点击「下载 CLI 调试日志」获取。</li>
-      <li><span class="pill">必要配置</span> 在 <code>.env.mysql</code> 中补充：<code>CLI_DEVICE_USERNAME</code>、<code>CLI_DEVICE_PASSWORD</code>、<code>SMC_JUMP_HOST</code>、<code>SMC_COMMAND</code>。</li>
-    </ul>
+      <section id="oneclick">
+        <h2>一键启动（推荐）</h2>
+        <ul>
+          <li><span class="pill">脚本</span> <code>/Users/zhangwei/python/lldp_topology/start_lldp_service.sh</code></li>
+          <li><span class="pill">启动</span> <code>cd /Users/zhangwei/python/lldp_topology &amp;&amp; ./start_lldp_service.sh start</code></li>
+          <li><span class="pill">状态</span> <code>./start_lldp_service.sh status</code></li>
+          <li><span class="pill">日志</span> <code>./start_lldp_service.sh logs</code></li>
+          <li><span class="pill">重启</span> <code>./start_lldp_service.sh restart</code></li>
+          <li><span class="pill">停止</span> <code>./start_lldp_service.sh stop</code></li>
+        </ul>
+      </section>
 
-    <h2>数据导入</h2>
-    <ul>
-      <li><span class="pill">导入</span> 选择或拖拽 CSV，或粘贴文本；自动去重（按 <code>localhostname/localinterface/remotehostname/remoteinterface</code>）。</li>
-      <li><span class="pill">列映射</span> 默认自动匹配，列名异常时展开「列映射」下拉手动调整。</li>
-      <li><span class="pill">追加</span> 使用「追加 CSV」添加新设备，保留已有节点坐标不动。</li>
-      <li><span class="pill">去后缀</span> 选项可去掉 hostname 域名后缀。</li>
-    </ul>
+      <section id="sql">
+        <h2>SQL 导入（start_hostname）</h2>
+        <ul>
+          <li><span class="pill">入口</span> 导入方式选 <code>SQL 导入</code>，可点「导入输入」或「追加输入」。</li>
+          <li><span class="pill">输入</span> 设备名 <code>start_hostname</code>。</li>
+          <li><span class="pill">行为</span> 「导入输入」会覆盖当前结果；「追加输入」会把本次结果合并到当前图中补链路。</li>
+          <li><span class="pill">下载</span> 支持下载本次查询的临时 CSV。</li>
+          <li><span class="pill">临时文件</span> 写入 <code>tmp_csv/</code>。</li>
+        </ul>
+      </section>
 
-    <h2>布局与分散</h2>
-    <ul>
-      <li><span class="pill">布局模式</span> 仅强分散（默认 fCoSE）、上下分层、圆形。</li>
-      <li><span class="pill">分散强度</span> 0.1–1 滑杆，默认 0.5。</li>
-      <li><span class="pill">分层关键字</span> 逗号分层，斜杠 <code>/</code> 表示同层同义词，<code>&amp;</code> 表示同层内全部命中才算匹配。示例：<code>EDGE&amp;CORE,CORE,AGGR/SPINE,LEAF/tor</code>。</li>
-      <li><span class="pill">上下分层</span> 选择布局模式为「上下分层」或点击「应用分层」后「重新布局」。</li>
-    </ul>
+      <section id="cli">
+        <h2>CLI 导入（SMC 跳板）</h2>
+        <ul>
+          <li><span class="pill">入口</span> 导入方式选 <code>CLI 导入</code>，可点「导入输入」或「追加输入」。</li>
+          <li><span class="pill">参数</span> 设备地址、递归层数、并发数、SSH 账号、SMC 参数、超时参数。</li>
+          <li><span class="pill">本地记忆</span> 自动记住上次输入（密码除外）。</li>
+          <li><span class="pill">会话密码复用</span> 页面不刷新时，CLI 可复用本次会话里最近一次输入的密码。</li>
+          <li><span class="pill">流程</span> 跳板登录 → 设备登录 → 厂商识别 → LLDP 采集 → 递归。</li>
+          <li><span class="pill">过滤递归</span> 支持「仅递归 172.* 网段」，跳过 10.* / 143.*。</li>
+          <li><span class="pill">调试</span> 支持下载 CLI 调试日志。</li>
+        </ul>
+      </section>
 
-    <h2>显示与交互</h2>
-    <ul>
-      <li><span class="pill">标签</span> 节点标签缩略/全名切换；端口标签可显示/隐藏。</li>
-      <li><span class="pill">过滤</span> 逗号分隔关键词，命中节点隐藏并同步隐藏相关边。</li>
-      <li><span class="pill">搜索</span> 逗号分隔关键词，回车批量选中匹配节点。</li>
-      <li><span class="pill">多选</span> Ctrl/Cmd 或 Shift；「仅显示邻接」高亮选中及其邻接并暗化其他。</li>
-      <li><span class="pill">右键菜单</span> 固定/取消固定、删除（可恢复）、复制名称。</li>
-      <li><span class="pill">删除/恢复</span> 「删除选中」移除节点及边，「恢复删除设备」撤销最近删除。</li>
-    </ul>
+      <section id="import">
+        <h2>数据导入</h2>
+        <ul>
+          <li><span class="pill">CSV</span> 选择文件、拖拽、或粘贴内容。</li>
+          <li><span class="pill">去重</span> 按 <code>localhostname/localinterface/remotehostname/remoteinterface</code> 去重。</li>
+          <li><span class="pill">追加</span> 追加 CSV 时保留当前坐标。</li>
+          <li><span class="pill">去后缀</span> 可去掉 hostname 域名后缀。</li>
+        </ul>
+      </section>
 
-    <h2>链路显示</h2>
-    <ul>
-      <li><span class="pill">多链路合并</span> 按钮「合并多条链路」可在合并/拆分模式间切换：同一对节点的多条链路合并为单条并显示计数。</li>
-    </ul>
+      <section id="layout">
+        <h2>布局与分层</h2>
+        <ul>
+          <li><span class="pill">布局</span> 上下分层 / 强分散 / 圆形。</li>
+          <li><span class="pill">分层关键字</span> 逗号分层，斜杠同层，<code>&amp;</code> 同层内全命中。示例：<code>EDGE&amp;CORE,CORE,AGGR/SPINE,LEAF/tor</code></li>
+          <li><span class="pill">默认</span> 布局模式默认上下分层。</li>
+        </ul>
+      </section>
 
-    <h2>坐标与导出</h2>
-    <ul>
-      <li><span class="pill">坐标</span> 「导出坐标」保存当前节点位置 JSON；「导入坐标」直接应用到拓扑（再居中缩放）。</li>
-      <li><span class="pill">导出</span> PNG（修复空白问题，使用 blob）、JSON（当前画布状态）。</li>
-    </ul>
+      <section id="interaction">
+        <h2>显示与交互</h2>
+        <ul>
+          <li><span class="pill">标签</span> 节点名全名/缩略，端口标签显示/隐藏。</li>
+          <li><span class="pill">过滤</span> 「不显示」关键词回车生效。</li>
+          <li><span class="pill">定位</span> 「定位设备」关键词回车多选。</li>
+          <li><span class="pill">右键</span> 固定/删除/复制名称/复制地址。</li>
+          <li><span class="pill">右键追加查询</span> 按当前导入方式执行一次追加查询；SQL 用设备名，CLI 优先用管理地址。</li>
+          <li><span class="pill">单轮追加</span> 右键追加查询固定只跑 1 轮，避免长时间递归。</li>
+          <li><span class="pill">恢复</span> 支持恢复删除节点。</li>
+        </ul>
+      </section>
 
-    <h2>常用操作流</h2>
-    <ul>
-      <li>SQL 模式：启动服务 → 打开 <code>http://127.0.0.1:18080/lldp.html</code> → 输入 <code>start_hostname</code> → SQL 生成并建图。</li>
-      <li>导入或追加 CSV → 选布局模式/分层关键字 → 生成或重新布局。</li>
-      <li>调整分散强度、标签显示；用过滤/搜索快速筛选；多选 + 右键固定或删除。</li>
-      <li>需要复用位置时导出坐标，下次导入坐标；若链路过多可开启「合并多条链路」。</li>
-    </ul>
+      <section id="links">
+        <h2>链路显示</h2>
+        <ul>
+          <li><span class="pill">多链路合并</span> 同一对节点可合并显示并统计条数。</li>
+        </ul>
+      </section>
+
+      <section id="export">
+        <h2>坐标与导出</h2>
+        <ul>
+          <li><span class="pill">坐标</span> 导出/导入坐标 JSON。</li>
+          <li><span class="pill">图片</span> 导出 PNG。</li>
+          <li><span class="pill">数据</span> 导出 JSON。</li>
+        </ul>
+      </section>
+
+      <section id="workflow">
+        <h2>常用操作流</h2>
+        <ul>
+          <li>启动服务 → 打开页面 → 选择 SQL/CLI/CSV 导入。</li>
+          <li>先用「导入输入」建立基线拓扑，再用「追加输入」补充新链路。</li>
+          <li>需要针对某个设备补链路时，右键节点点「追加查询」（单轮）。</li>
+          <li>生成拓扑后，用分层关键字和不显示规则调整视图。</li>
+          <li>确认结果后导出 PNG/JSON/坐标。</li>
+        </ul>
+      </section>
+    </main>
   </div>
 </body>
 </html>

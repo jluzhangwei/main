@@ -27,10 +27,13 @@
     .row.inline { grid-template-columns: 1fr 1fr; gap: 10px; }
     label { font-size: 12px; color: #111827; font-weight: 600; }
     input, select, textarea, button { width: 100%; box-sizing: border-box; }
-    input[type="text"], select, textarea {
+    input[type="text"], input[type="number"], input[type="password"], select, textarea {
       padding: 9px 11px; border: 1px solid #d1d5db; border-radius: 10px; font-size: 13px; outline: none; transition: border-color .15s, box-shadow .15s;
+      appearance: none;
+      -webkit-appearance: none;
+      background: #fff;
     }
-    input[type="text"]:focus, select:focus, textarea:focus {
+    input[type="text"]:focus, input[type="number"]:focus, input[type="password"]:focus, select:focus, textarea:focus {
       border-color: var(--sea-blue); box-shadow: 0 0 0 2px rgba(15,111,255,0.16);
     }
     textarea { resize: vertical; min-height: 90px; }
@@ -160,9 +163,33 @@
       padding: 14px;
     }
     .modal-title { font-size: 16px; font-weight: 700; margin: 0 0 8px; color: #111827; }
-    .modal-actions { display: flex; gap: 8px; margin-top: 10px; }
+    .modal-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
     .modal-actions button { width: auto; min-width: 110px; }
+    .modal-form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 10px;
+      align-items: end;
+    }
+    .modal-form-grid .span-2 {
+      grid-column: 1 / -1;
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .field label {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 600;
+      color: #111827;
+    }
     .hidden { display: none !important; }
+    @media (max-width: 740px) {
+      .modal-form-grid { grid-template-columns: 1fr; }
+      .modal-form-grid .span-2 { grid-column: auto; }
+    }
   </style>
 </head>
 <body>
@@ -212,10 +239,13 @@
       </div>
       <div>
         <label>&nbsp;</label>
-        <button id="openImportModal" class="primary">导入输入</button>
+        <div class="row inline" style="margin:0;">
+          <button id="openImportModalImport" class="primary">导入输入</button>
+          <button id="openImportModalAppend">追加输入</button>
+        </div>
       </div>
     </div>
-    <div class="hint">选择导入方式后点击“导入输入”，按弹窗提示执行。</div>
+    <div class="hint">导入输入会覆盖当前结果；追加输入会把新查询结果合并到当前图中，补充链路。</div>
 
     <div id="legacyImportControls" class="hidden">
     <div class="row">
@@ -350,6 +380,8 @@
   <button id="ctxLock">固定位置</button>
   <button id="ctxDelete">删除设备</button>
   <button id="ctxCopy">复制名称</button>
+  <button id="ctxCopyIp">复制地址</button>
+  <button id="ctxAppendQuery">追加查询</button>
 </div>
 <div id="importModal" class="modal-backdrop">
   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="importModalTitle">
@@ -361,34 +393,66 @@
       <div class="modal-actions">
         <button id="runSqlGenerateModal" class="primary">执行 SQL 查询</button>
         <button id="downloadSqlCsvModal">下载临时 CSV</button>
+        <button class="closeImportModalBtn">关闭</button>
       </div>
       <div class="hint" id="sqlResultHintModal"></div>
     </div>
 
     <div id="importCliPanel" class="row hidden">
-      <label>设备地址</label>
-      <input id="cliDeviceAddrModal" type="text" placeholder="例如：10.0.0.1 或 hostname" />
-      <label>递归次数（1-5）</label>
-      <input id="cliMaxDepthModal" type="number" min="1" max="5" step="1" value="3" />
-      <label>并发查询数（1-16）</label>
-      <input id="cliMaxWorkersModal" type="number" min="1" max="16" step="1" value="4" />
-      <label>设备 SSH 用户名</label>
-      <input id="cliUsernameModal" type="text" placeholder="例如：netops" />
-      <label>设备 SSH 密码</label>
-      <input id="cliPasswordModal" type="password" placeholder="每次输入，不在本地保存" />
-      <label>SMC 跳板地址</label>
-      <input id="cliSmcJumpHostModal" type="text" placeholder="例如：103.115.79.114" />
-      <label>SMC 跳板端口</label>
-      <input id="cliSmcJumpPortModal" type="number" min="1" max="65535" step="1" value="22" />
-      <label>SMC 命令</label>
-      <input id="cliSmcCommandModal" type="text" value="smc server toc {jump_host}" />
-      <label>登录超时（秒）</label>
-      <input id="cliConnectTimeoutModal" type="number" min="5" max="300" step="1" value="60" />
-      <label>命令超时（秒）</label>
-      <input id="cliCommandTimeoutModal" type="number" min="5" max="300" step="1" value="45" />
+      <div class="modal-form-grid">
+        <div class="field span-2">
+          <label>设备地址</label>
+          <input id="cliDeviceAddrModal" type="text" placeholder="例如：10.0.0.1 或 hostname" />
+        </div>
+
+        <div class="field">
+          <label>递归次数（1-5）</label>
+          <input id="cliMaxDepthModal" type="number" min="1" max="5" step="1" value="3" />
+        </div>
+        <div class="field">
+          <label>并发查询数（1-16）</label>
+          <input id="cliMaxWorkersModal" type="number" min="1" max="16" step="1" value="4" />
+        </div>
+        <div class="field span-2">
+          <label><input id="cliOnly172Modal" type="checkbox" checked style="width:auto; margin-right:8px;" />只递归查询 172.* 网段（跳过 10.* / 143.* 等）</label>
+        </div>
+
+        <div class="field">
+          <label>设备 SSH 用户名</label>
+          <input id="cliUsernameModal" type="text" placeholder="例如：netops" />
+        </div>
+        <div class="field">
+          <label>设备 SSH 密码</label>
+          <input id="cliPasswordModal" type="password" placeholder="每次输入，不在本地保存" />
+        </div>
+
+        <div class="field">
+          <label>SMC 跳板地址</label>
+          <input id="cliSmcJumpHostModal" type="text" placeholder="例如：103.115.79.114" />
+        </div>
+        <div class="field">
+          <label>SMC 跳板端口</label>
+          <input id="cliSmcJumpPortModal" type="number" min="1" max="65535" step="1" value="22" />
+        </div>
+
+        <div class="field span-2">
+          <label>SMC 命令</label>
+          <input id="cliSmcCommandModal" type="text" value="smc server toc {jump_host}" />
+        </div>
+
+        <div class="field">
+          <label>登录超时（秒）</label>
+          <input id="cliConnectTimeoutModal" type="number" min="5" max="300" step="1" value="60" />
+        </div>
+        <div class="field">
+          <label>命令超时（秒）</label>
+          <input id="cliCommandTimeoutModal" type="number" min="5" max="300" step="1" value="45" />
+        </div>
+      </div>
       <div class="modal-actions">
         <button id="runCliGenerateModal" class="primary">执行 CLI 查询</button>
         <button id="downloadCliDebugModal">下载 CLI 调试日志</button>
+        <button class="closeImportModalBtn">关闭</button>
       </div>
       <div class="hint" id="cliResultHintModal"></div>
     </div>
@@ -403,11 +467,8 @@
       <textarea id="pasteModal" class="mono" placeholder='"depth","localhostname","localinterface","remotehostname","remoteinterface"&#10;"1","SW1","Eth1/1","SW2.garena.tw","Eth1/2"'></textarea>
       <div class="modal-actions">
         <button id="loadPasteModal">从粘贴内容载入</button>
+        <button class="closeImportModalBtn">关闭</button>
       </div>
-    </div>
-
-    <div class="modal-actions">
-      <button id="closeImportModal">关闭</button>
     </div>
   </div>
 </div>
@@ -421,6 +482,9 @@
   let baseEdges = [];
   let mergedMode = true;
   let cliTimer = null;
+  let nodeIpMap = new Map();
+  let lastCliPassword = '';
+  let ctxAppendSingleHop = false;
   // 注册 fCoSE 扩展（兼容不同全局名），避免引用未定义导致脚本中断
 (() => {
     const extFcose = window.cytoscapeFcose || window.cytoFcose || window.fcose || window.fCoSE;
@@ -720,10 +784,20 @@
     const edges = [];
     const edgeSet = new Set();
     degreeMap = new Map(); // reset global
+    nodeIpMap = new Map();
 
     let rawEdgeCnt = 0;
 
     const rows = dedupeRows(rawRows);
+
+    // Build hostname -> management IP map from CSV extended columns.
+    for (const r of rows) {
+      const rh = String(r[colRH] || '').trim();
+      const rip = String(r['目的设备IP'] || r['remoteip'] || '').trim();
+      if (rh && rip && /^(?:\d{1,3}\.){3}\d{1,3}$/.test(rip)) {
+        nodeIpMap.set(rh, rip);
+      }
+    }
 
     for (const r of rows) {
       let lh = (r[colLH] || '').trim();
@@ -739,8 +813,10 @@
       const aRole = roleOf(lh);
       const bRole = roleOf(rh);
 
-      nodes.set(aId, { id: aId, label: lh, short: shortLabel(lh), role: aRole, rank: roleRank(aRole) });
-      nodes.set(bId, { id: bId, label: rh, short: shortLabel(rh), role: bRole, rank: roleRank(bRole) });
+      const aIp = nodeIpMap.get(lh) || (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(lh) ? lh : '');
+      const bIp = nodeIpMap.get(rh) || (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(rh) ? rh : '');
+      nodes.set(aId, { id: aId, label: lh, short: shortLabel(lh), role: aRole, rank: roleRank(aRole), ip: aIp });
+      nodes.set(bId, { id: bId, label: rh, short: shortLabel(rh), role: bRole, rank: roleRank(bRole), ip: bIp });
 
       const edgeLabel = `${li} ↔ ${ri}`.trim();
       const k1 = `${aId}||${bId}||${edgeLabel}`;
@@ -1282,14 +1358,47 @@
 
   let lastSqlDownloadUrl = '';
   let lastCliDebugUrl = '';
+  let importInputAction = 'import'; // import | append
   const CLI_PREF_KEY = 'lldp_cli_import_prefs_v1';
+  const TOPOLOGY_UI_PREF_KEY = 'lldp_topology_ui_prefs_v1';
   function apiBaseUrl() {
     // If opened as file://, use local service endpoint explicitly.
     if (window.location.protocol === 'file:') return 'http://127.0.0.1:18080';
     return '';
   }
 
-  async function runSqlGenerateAndBuild(startHostnameInputId = 'sqlStartHostname', hintId = 'sqlResultHint') {
+  function applyQueryCsvText(csvText, opts = {}) {
+    const append = !!opts.append;
+    const sourceName = opts.sourceName || 'query';
+    if (!append) {
+      loadDataFromText(csvText);
+      if (rawRows.length) buildGraph();
+      return { mergedRows: rawRows.length, addedRows: rawRows.length };
+    }
+
+    const pos = capturePositions();
+    const before = rawRows.length;
+    const parsed = parseCSV(csvText);
+    mergeParsed(parsed, `${sourceName}-append`);
+
+    $('nRows').textContent = rawRows.length;
+    $('nCols').textContent = headers.length;
+    if (!headers.length) {
+      setStatus('追加失败：无表头');
+      setErr('返回内容未检测到有效表头，无法追加。');
+      return { mergedRows: 0, addedRows: 0 };
+    }
+
+    fillSelect('colLocalHost', autoPickColumn(['localhostname','local_host','src','from']));
+    fillSelect('colRemoteHost', autoPickColumn(['remotehostname','remote_host','dst','to']));
+    fillSelect('colLocalIf', autoPickColumn(['localinterface','local_if','src_if','from_if']));
+    fillSelect('colRemoteIf', autoPickColumn(['remoteinterface','remote_if','dst_if','to_if']));
+
+    if (rawRows.length) buildGraph(pos);
+    return { mergedRows: rawRows.length, addedRows: Math.max(0, rawRows.length - before) };
+  }
+
+  async function runSqlGenerateAndBuild(startHostnameInputId = 'sqlStartHostname', hintId = 'sqlResultHint', action = 'import') {
     const startHostname = ($(startHostnameInputId)?.value || '').trim();
     if (!startHostname) {
       setErr('请先输入 start_hostname');
@@ -1315,15 +1424,37 @@
       }
 
       lastSqlDownloadUrl = data.download_url ? `${base}${data.download_url}` : '';
-      if ($(hintId)) $(hintId).textContent = `SQL 返回 ${data.row_count} 行，临时文件：${data.temp_file}`;
-      loadDataFromText(data.csv_text);
-      buildGraph();
-      setStatus('SQL 数据已载入并生成拓扑');
-      setOK(`已按 ${startHostname} 生成拓扑，结果 ${data.row_count} 行。`);
+      let csvText = data.csv_text || '';
+      let shownRows = Number(data.row_count || 0);
+      // Context-menu append should run one cycle only.
+      if (ctxAppendSingleHop && csvText) {
+        const parsed = parseCSV(csvText);
+        const d1 = parsed.rows.filter(r => String(r.depth || '').trim() === '1');
+        const hdr = parsed.headers.length ? parsed.headers : ['depth','localhostname','localinterface','remotehostname','remoteinterface','目的设备Vendor','目的设备IP'];
+        const esc = (v) => {
+          const s = String(v ?? '');
+          return /[\",\\n]/.test(s) ? `\"${s.replace(/\"/g, '\"\"')}\"` : s;
+        };
+        const out = [hdr.map(esc).join(',')];
+        for (const r of d1) out.push(hdr.map(h => esc(r[h] ?? '')).join(','));
+        csvText = out.join('\n');
+        shownRows = d1.length;
+      }
+      if ($(hintId)) $(hintId).textContent = `SQL 返回 ${shownRows} 行，临时文件：${data.temp_file}${ctxAppendSingleHop ? '（右键单轮）' : ''}`;
+      const merged = applyQueryCsvText(csvText, { append: action === 'append', sourceName: 'sql' });
+      if (action === 'append') {
+        setStatus('SQL 数据已追加并生成拓扑');
+        setOK(`已按 ${startHostname} 追加查询，新增 ${merged.addedRows} 行，当前总计 ${merged.mergedRows} 行。`);
+      } else {
+        setStatus('SQL 数据已载入并生成拓扑');
+        setOK(`已按 ${startHostname} 生成拓扑，结果 ${data.row_count} 行。`);
+      }
     } catch (e) {
       setStatus('SQL 生成失败');
       setErr(`SQL 查询失败：${String(e && e.message ? e.message : e)}`);
       if ($(hintId)) $(hintId).textContent = '请确认通过服务启动页面：http://127.0.0.1:18080/lldp.html';
+    } finally {
+      ctxAppendSingleHop = false;
     }
   }
 
@@ -1357,6 +1488,7 @@
       if (p.device_address) $('cliDeviceAddrModal').value = p.device_address;
       if (p.max_depth) $('cliMaxDepthModal').value = String(p.max_depth);
       if (p.cli_max_workers) $('cliMaxWorkersModal').value = String(p.cli_max_workers);
+      if (typeof p.recursive_only_172 === 'boolean') $('cliOnly172Modal').checked = p.recursive_only_172;
       if (p.device_username) $('cliUsernameModal').value = p.device_username;
       if (p.smc_jump_host) $('cliSmcJumpHostModal').value = p.smc_jump_host;
       if (p.smc_jump_port) $('cliSmcJumpPortModal').value = String(p.smc_jump_port);
@@ -1374,6 +1506,7 @@
         device_address: payload.device_address || '',
         max_depth: payload.max_depth || 3,
         cli_max_workers: payload.cli_max_workers || 4,
+        recursive_only_172: payload.recursive_only_172 !== false,
         device_username: payload.device_username || '',
         smc_jump_host: payload.smc_jump_host || '',
         smc_jump_port: payload.smc_jump_port || 22,
@@ -1382,6 +1515,30 @@
         cli_command_timeout: payload.cli_command_timeout || 45
       };
       localStorage.setItem(CLI_PREF_KEY, JSON.stringify(safe));
+    } catch (_) {
+      // Ignore local storage errors.
+    }
+  }
+
+  function loadTopologyUiPrefs() {
+    try {
+      const raw = localStorage.getItem(TOPOLOGY_UI_PREF_KEY);
+      if (!raw) return;
+      const p = JSON.parse(raw);
+      if (typeof p.layer_terms === 'string') $('layerTerms').value = p.layer_terms;
+      if (typeof p.filter_terms === 'string') $('filter').value = p.filter_terms;
+    } catch (_) {
+      // Ignore local storage errors.
+    }
+  }
+
+  function saveTopologyUiPrefs() {
+    try {
+      const safe = {
+        layer_terms: ($('layerTerms')?.value || '').trim(),
+        filter_terms: ($('filter')?.value || '').trim()
+      };
+      localStorage.setItem(TOPOLOGY_UI_PREF_KEY, JSON.stringify(safe));
     } catch (_) {
       // Ignore local storage errors.
     }
@@ -1400,9 +1557,12 @@
     else csv.classList.remove('hidden');
   }
 
-  function openImportModal() {
+  function openImportModal(action = 'import') {
+    importInputAction = action === 'append' ? 'append' : 'import';
     const mode = $('importMode')?.value || 'sql';
     showImportPanel(mode);
+    const title = $('importModalTitle');
+    if (title) title.textContent = importInputAction === 'append' ? '追加输入' : '导入输入';
     const m = $('importModal');
     if (m) m.style.display = 'flex';
   }
@@ -1445,19 +1605,25 @@
   });
   $('runSqlGenerate').addEventListener('click', runSqlGenerateAndBuild);
   $('downloadSqlCsv').addEventListener('click', downloadLastSqlCsv);
-  $('openImportModal').addEventListener('click', openImportModal);
-  $('closeImportModal').addEventListener('click', closeImportModal);
+  $('openImportModalImport').addEventListener('click', () => openImportModal('import'));
+  $('openImportModalAppend').addEventListener('click', () => openImportModal('append'));
+  document.querySelectorAll('.closeImportModalBtn').forEach((btn) => {
+    btn.addEventListener('click', closeImportModal);
+  });
   $('importMode').addEventListener('change', (e) => showImportPanel(e.target.value));
-  $('runSqlGenerateModal').addEventListener('click', () => runSqlGenerateAndBuild('sqlStartHostnameModal', 'sqlResultHintModal'));
+  $('runSqlGenerateModal').addEventListener('click', () => runSqlGenerateAndBuild('sqlStartHostnameModal', 'sqlResultHintModal', importInputAction));
   $('downloadSqlCsvModal').addEventListener('click', downloadLastSqlCsv);
   $('runCliGenerateModal').addEventListener('click', () => {
     const addr = ($('cliDeviceAddrModal').value || '').trim();
     const depthRaw = parseInt(($('cliMaxDepthModal').value || '3').trim(), 10);
-    const maxDepth = Number.isFinite(depthRaw) ? Math.min(5, Math.max(1, depthRaw)) : 3;
+    const maxDepth = ctxAppendSingleHop ? 1 : (Number.isFinite(depthRaw) ? Math.min(5, Math.max(1, depthRaw)) : 3);
     const workersRaw = parseInt(($('cliMaxWorkersModal').value || '4').trim(), 10);
     const maxWorkers = Number.isFinite(workersRaw) ? Math.min(16, Math.max(1, workersRaw)) : 4;
+    const recursiveOnly172 = !!$('cliOnly172Modal').checked;
     const username = ($('cliUsernameModal').value || '').trim();
-    const password = $('cliPasswordModal').value || '';
+    const enteredPassword = $('cliPasswordModal').value || '';
+    const password = enteredPassword || lastCliPassword || '';
+    if (enteredPassword) lastCliPassword = enteredPassword;
     const smcJumpHost = ($('cliSmcJumpHostModal').value || '').trim();
     const smcJumpPortRaw = parseInt(($('cliSmcJumpPortModal').value || '22').trim(), 10);
     const smcJumpPort = Number.isFinite(smcJumpPortRaw) ? Math.min(65535, Math.max(1, smcJumpPortRaw)) : 22;
@@ -1475,6 +1641,7 @@
       device_address: addr,
       max_depth: maxDepth,
       cli_max_workers: maxWorkers,
+      recursive_only_172: recursiveOnly172,
       device_username: username || null,
       device_password: password || null,
       smc_jump_host: smcJumpHost || null,
@@ -1499,22 +1666,34 @@
         lastCliDebugUrl = data.debug_download_url ? `${base}${data.debug_download_url}` : '';
         const workersShown = data.cli_max_workers || maxWorkers;
         const elapsedSec = Math.max(0, Math.floor((Date.now() - cliStartedAt) / 1000));
-        $('cliResultHintModal').textContent = `CLI 返回 ${data.row_count} 行，已查询设备 ${data.queried_count} 台，并发 ${workersShown}，总用时 ${elapsedSec}s`;
-        loadDataFromText(data.csv_text);
+        const only172Text = (data.recursive_only_172 ? '，仅172递归' : '');
+        $('cliResultHintModal').textContent = `CLI 返回 ${data.row_count} 行，已查询设备 ${data.queried_count} 台，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s`;
+        const merged = applyQueryCsvText(data.csv_text, { append: importInputAction === 'append', sourceName: 'cli' });
         if ((data.row_count || 0) > 0) {
-          buildGraph();
-          setStatus(`CLI 数据已载入并生成拓扑（总用时 ${elapsedSec}s）`);
+          if (importInputAction === 'append') {
+            setStatus(`CLI 数据已追加并生成拓扑（总用时 ${elapsedSec}s）`);
+          } else {
+            setStatus(`CLI 数据已载入并生成拓扑（总用时 ${elapsedSec}s）`);
+          }
         } else {
           setStatus(`CLI 查询完成（无可用邻接，总用时 ${elapsedSec}s）`);
           setErr('CLI 查询成功，但未解析到可用 LLDP 邻接记录。请下载 CLI 调试日志检查原始回显。');
         }
         const vendors = data.detected_vendors ? Object.values(data.detected_vendors).join(', ') : 'unknown';
-        setOK(`已完成 CLI 递归采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}，总用时 ${elapsedSec}s，结果 ${data.row_count} 行。自动识别厂商：${vendors}`);
+        if (importInputAction === 'append') {
+          setOK(`已完成 CLI 追加采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s，新增 ${merged.addedRows} 行，当前总计 ${merged.mergedRows} 行。自动识别厂商：${vendors}`);
+        } else {
+          setOK(`已完成 CLI 递归采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s，结果 ${data.row_count} 行。自动识别厂商：${vendors}`);
+        }
       })
       .catch((e) => {
         stopCliTimer();
         setStatus('CLI 查询失败');
         setErr(`CLI 查询失败：${String(e && e.message ? e.message : e)}`);
+      })
+      .finally(() => {
+        stopCliTimer();
+        ctxAppendSingleHop = false;
       });
   });
   $('pickCsvModal').addEventListener('click', () => $('file').click());
@@ -1530,6 +1709,7 @@
     if (e.target && e.target.id === 'importModal') closeImportModal();
   });
   loadCliPrefs();
+  loadTopologyUiPrefs();
 
   $('build').addEventListener('click', buildGraph);
   $('relayout').addEventListener('click', relayout);
@@ -1590,11 +1770,13 @@
 
   $('layerTerms').addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
+    saveTopologyUiPrefs();
     if (!cy) return;
     applyLayersToNodes(cy.nodes());
     runLayout();
     setOK('已应用分层关键字并重新布局');
   });
+  $('layerTerms').addEventListener('input', saveTopologyUiPrefs);
 
   $('ctxLock').addEventListener('click', () => {
     const nodes = ctxNodes();
@@ -1629,6 +1811,66 @@
       setErr('复制失败，可能浏览器不支持或权限受限');
     }
     hideCtx();
+  });
+
+  $('ctxCopyIp').addEventListener('click', async () => {
+    const nodes = ctxNodes();
+    if (!nodes.length) return hideCtx();
+    const ips = nodes
+      .map(n => (n.data('ip') || '').trim())
+      .filter(Boolean);
+    if (!ips.length) {
+      setErr('选中节点未找到可复制地址');
+      return hideCtx();
+    }
+    const text = Array.from(new Set(ips)).join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      setOK(`已复制 ${ips.length} 个地址`);
+    } catch (_) {
+      setErr('复制失败，可能浏览器不支持或权限受限');
+    }
+    hideCtx();
+  });
+
+  $('ctxAppendQuery').addEventListener('click', async () => {
+    const nodes = ctxNodes();
+    if (!nodes.length) return hideCtx();
+    const node = nodes[0];
+    const label = (node.data('label') || '').trim();
+    const ip = (node.data('ip') || '').trim();
+    const mode = ($('importMode')?.value || 'sql').toLowerCase();
+
+    if (mode === 'csv') {
+      setErr('CSV 模式不支持右键追加查询，请切换为 SQL 或 CLI。');
+      return hideCtx();
+    }
+
+    importInputAction = 'append';
+    ctxAppendSingleHop = true;
+    hideCtx();
+
+    if (mode === 'sql') {
+      const target = label || ip;
+      if (!target) {
+        setErr('当前节点没有可用于 SQL 查询的设备名称。');
+        return;
+      }
+      $('sqlStartHostnameModal').value = target;
+      setOK(`正在以 SQL 方式追加查询：${target}`);
+      await runSqlGenerateAndBuild('sqlStartHostnameModal', 'sqlResultHintModal', 'append');
+      return;
+    }
+
+    // CLI mode: prefer management IP, fallback to node label.
+    const target = ip || label;
+    if (!target) {
+      setErr('当前节点没有可用于 CLI 查询的设备地址/名称。');
+      return;
+    }
+    $('cliDeviceAddrModal').value = target;
+    setOK(`正在以 CLI 方式追加查询：${target}`);
+    $('runCliGenerateModal').click();
   });
 
   $('nodeLabelMode').addEventListener('change', (e) => updateNodeLabels(e.target.value));
@@ -1673,8 +1915,12 @@
     if (e.key === 'Enter') applyShowOnly();
   });
 $('filter').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') applyFilter();
+  if (e.key === 'Enter') {
+    saveTopologyUiPrefs();
+    applyFilter();
+  }
 });
+  $('filter').addEventListener('input', saveTopologyUiPrefs);
 
   $('restoreDeleted').addEventListener('click', () => {
     if (!cy) return;
