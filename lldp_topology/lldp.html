@@ -23,6 +23,12 @@
     h2 { font-size: 13px; margin: 14px 0 6px; color: #374151; }
     .hint { font-size: 12px; color: #6b7280; line-height: 1.45; }
     .box { padding: 10px; border: 1px solid #e5e7eb; border-radius: 12px; margin: 10px 0; background: linear-gradient(180deg,#fff,#f9fafb); }
+    .section-box { padding: 10px; border: 1px solid #e5e7eb; border-radius: 12px; margin: 10px 0; background: linear-gradient(180deg,#fff,#f9fafb); }
+    .section-box h2 { margin: 0 0 8px; }
+    .util-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .util-grid .span-2 { grid-column: 1 / -1; }
+    .util-grid .check-row { display:flex; align-items:center; gap:8px; font-size:12px; color:#111827; font-weight:600; }
+    .util-grid .check-row input[type="checkbox"] { width:auto; margin:0; }
     .row { display: grid; grid-template-columns: 1fr; gap: 8px; margin: 10px 0; }
     .row.inline { grid-template-columns: 1fr 1fr; gap: 10px; }
     label { font-size: 12px; color: #111827; font-weight: 600; }
@@ -120,6 +126,8 @@
       .app-logo-sea { font-size: 16px; }
       .app-title { font-size: 18px; }
       .app-top-links { right: 12px; }
+      .util-grid { grid-template-columns: 1fr; }
+      .util-grid .span-2 { grid-column: auto; }
     }
     #ctxMenu {
       position: fixed;
@@ -227,51 +235,53 @@
       <div class="err" id="err"></div>
     </div>
 
-    <h2>导入数据</h2>
-    <div class="row inline">
-      <div>
-        <label>导入方式</label>
-        <select id="importMode">
-          <option value="sql">SQL 导入</option>
-          <option value="cli">CLI 导入</option>
-          <option value="csv">CSV 导入</option>
-        </select>
-      </div>
-      <div>
-        <label>&nbsp;</label>
-        <div class="row inline" style="margin:0;">
-          <button id="openImportModalImport" class="primary">导入输入</button>
-          <button id="openImportModalAppend">追加输入</button>
+    <div class="section-box">
+      <h2>导入数据</h2>
+      <div class="row inline">
+        <div>
+          <label>导入方式</label>
+          <select id="importMode">
+            <option value="sql">SQL 导入</option>
+            <option value="cli">CLI 导入</option>
+            <option value="csv">CSV 导入</option>
+          </select>
+        </div>
+        <div>
+          <label>&nbsp;</label>
+          <div class="row inline" style="margin:0;">
+            <button id="openImportModalImport" class="primary">导入输入</button>
+            <button id="openImportModalAppend">追加输入</button>
+          </div>
         </div>
       </div>
-    </div>
-    <div class="hint">导入输入会覆盖当前结果；追加输入会把新查询结果合并到当前图中，补充链路。</div>
+      <div class="hint">导入输入会覆盖当前结果；追加输入会把新查询结果合并到当前图中，补充链路。</div>
 
-    <div id="legacyImportControls" class="hidden">
-    <div class="row">
-      <label>导入 CSV 文件</label>
-      <input id="file" type="file" accept=".csv,text/csv" multiple />
-      <div class="drop" id="dropzone"><div class="hint">也可以把 CSV 文件直接拖到这里。</div></div>
-    </div>
-    <div class="row">
-      <label>追加 CSV（保持已有节点坐标不变）</label>
-      <input id="appendFile" type="file" accept=".csv,text/csv" multiple />
-    </div>
-    <div class="row">
-      <label>或输入设备名直接跑 SQL 生成临时 CSV（不影响现有导入功能）</label>
-      <div class="row inline">
-        <input id="sqlStartHostname" type="text" placeholder="例如：ID-DCI2-GENERAL.CONNECTION-R003-BRIDGE-02" />
-        <button id="runSqlGenerate">SQL 生成并建图</button>
-        <button id="downloadSqlCsv">下载临时 CSV</button>
+      <div id="legacyImportControls" class="hidden">
+      <div class="row">
+        <label>导入 CSV 文件</label>
+        <input id="file" type="file" accept=".csv,text/csv" multiple />
+        <div class="drop" id="dropzone"><div class="hint">也可以把 CSV 文件直接拖到这里。</div></div>
       </div>
-      <div class="hint" id="sqlResultHint"></div>
-    </div>
+      <div class="row">
+        <label>追加 CSV（保持已有节点坐标不变）</label>
+        <input id="appendFile" type="file" accept=".csv,text/csv" multiple />
+      </div>
+      <div class="row">
+        <label>或输入设备名直接跑 SQL 生成临时 CSV（不影响现有导入功能）</label>
+        <div class="row inline">
+          <input id="sqlStartHostname" type="text" placeholder="例如：ID-DCI2-GENERAL.CONNECTION-R003-BRIDGE-02" />
+          <button id="runSqlGenerate">SQL 生成并建图</button>
+          <button id="downloadSqlCsv">下载临时 CSV</button>
+        </div>
+        <div class="hint" id="sqlResultHint"></div>
+      </div>
 
-    <div class="row">
-      <label>或直接粘贴 CSV 内容</label>
-      <textarea id="paste" class="mono" placeholder='"depth","localhostname","localinterface","remotehostname","remoteinterface"&#10;"1","SW1","Eth1/1","SW2.garena.tw","Eth1/2"'></textarea>
-      <button id="loadPaste">从粘贴内容载入</button>
-    </div>
+      <div class="row">
+        <label>或直接粘贴 CSV 内容</label>
+        <textarea id="paste" class="mono" placeholder='"depth","localhostname","localinterface","remotehostname","remoteinterface"&#10;"1","SW1","Eth1/1","SW2.garena.tw","Eth1/2"'></textarea>
+        <button id="loadPaste">从粘贴内容载入</button>
+      </div>
+      </div>
     </div>
 
     <div class="hidden">
@@ -281,117 +291,132 @@
       <select id="colRemoteIf"></select>
     </div>
 
-    <h2>布局 & 分散</h2>
-    <div class="row inline">
-      <div>
-        <label>布局模式</label>
-        <select id="layoutMode">
-          <option value="force">仅强分散（COSE）</option>
-          <option value="layer" selected>上下分层（手动关键字）</option>
-          <option value="circle">圆形环状</option>
-        </select>
-      </div>
-      <div>
-        <label>去掉 hostname 域名后缀</label>
-        <select id="stripDomain">
-          <option value="yes" selected>是（删掉 '.' 后面）</option>
-          <option value="no">否</option>
-        </select>
-      </div>
-    </div>
-
-    <div class="row inline">
-      <div>
-        <label>节点标签</label>
-        <select id="nodeLabelMode">
-          <option value="short">缩略（推荐）</option>
-          <option value="full" selected>全名（容易挤）</option>
-        </select>
-      </div>
-      <div>
-        <label>端口标签</label>
-        <select id="edgeLabelMode">
-          <option value="none" selected>不显示</option>
-          <option value="both">一直显示（可能拥挤）</option>
-        </select>
-      </div>
-    </div>
-
-    <div class="row">
-      <label>分散强度（越大越分散） <span class="badge">建议 0.3~0.8</span></label>
-      <input id="spacing" type="range" min="0.1" max="1" step="0.05" value="0.5" />
-    </div>
-
-    <div class="row inline">
-      <button id="build" class="primary">生成拓扑</button>
-      <button id="relayout">重新布局</button>
-    </div>
-    <div class="row inline">
-      <button id="fit">适配画布（慎用）</button>
-      <button id="center">居中 + 放大</button>
-      <button id="toggleMerge">合并多条链路：开启</button>
-    </div>
-
-    <div class="row">
-      <label>定位设备（关键字逗号分隔，回车多选）</label>
-      <input id="search" type="text" placeholder="例如：MGMT,AGGR" />
-      <div class="hint" id="searchResult"></div>
-    </div>
-    <div class="row">
-      <label>不显示：逗号分隔，命中的设备会被隐藏</label>
-      <input id="filter" type="text" placeholder="例如：lab,backup" value="MGMT,null,ACC,SA" />
-    </div>
-    <div class="row">
-      <label>只显示：逗号分隔，回车生效（仅显示命中的设备，其余隐藏）</label>
-      <input id="showOnly" type="text" placeholder="例如：CORE,EDGE" />
-    </div>
-    <div class="row">
-      <label>分层关键字（高->低，逗号分层，斜杠同层，&需全部命中，如 EDGE&CORE,CORE,AGGR/SPINE,LEAF/tor）</label>
-      <input id="layerTerms" type="text" value="EDGE,CORE,AGGR,LEAF" />
-    </div>
-
-    <h2>多选/操作</h2>
-    <div class="row">
-      <div class="hint">按住 Ctrl/Cmd 或 Shift 进行多选（框选已关闭）。</div>
-    </div>
-    <div class="row inline">
-      <button id="fitSelection">定位选中</button>
-      <button id="isolateSelection">仅显示邻接</button>
-    </div>
-    <div class="row inline">
-      <button id="clearSelectionHide">恢复显示</button>
-      <button id="show172Only">只显示172设备</button>
-      <button id="deleteSelection">删除选中</button>
-      <button id="restoreDeleted">恢复删除设备</button>
-    </div>
-
-    <h2>导出</h2>
-    <div class="row inline">
-      <button id="exportPng">导出 PNG</button>
-      <button id="exportJson">导出 JSON</button>
-      <button id="exportPos">导出坐标</button>
-      <button id="importPosBtn">导入坐标</button>
-      <input id="importPosFile" type="file" accept=".json,application/json" style="display:none" />
-    </div>
-    <div class="row">
+    <div class="section-box">
+      <h2>布局 & 分散</h2>
       <div class="row inline">
-        <button id="refreshUtilization" class="primary">刷新链路利用率</button>
-        <button id="downloadUtilCache" type="button">下载链路缓存CSV</button>
-        <select id="utilMetric">
-          <option value="tx" selected>使用率口径：TX</option>
-          <option value="rx">使用率口径：RX</option>
-          <option value="max">使用率口径：MAX(TX,RX)</option>
-        </select>
+        <div>
+          <label>布局模式</label>
+          <select id="layoutMode">
+            <option value="force">仅强分散（COSE）</option>
+            <option value="layer" selected>上下分层（手动关键字）</option>
+            <option value="circle">圆形环状</option>
+          </select>
+        </div>
+        <div>
+          <label>去掉 hostname 域名后缀</label>
+          <select id="stripDomain">
+            <option value="yes" selected>是（删掉 '.' 后面）</option>
+            <option value="no">否</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row inline">
+        <div>
+          <label>节点标签</label>
+          <select id="nodeLabelMode">
+            <option value="short">缩略（推荐）</option>
+            <option value="full" selected>全名（容易挤）</option>
+          </select>
+        </div>
+        <div>
+          <label>端口标签</label>
+          <select id="edgeLabelMode">
+            <option value="none" selected>不显示</option>
+            <option value="both">一直显示（可能拥挤）</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row">
+        <label>分散强度（越大越分散） <span class="badge">建议 0.3~0.8</span></label>
+        <input id="spacing" type="range" min="0.1" max="1" step="0.05" value="0.5" />
+      </div>
+
+      <div class="row inline">
+        <button id="build" class="primary">生成拓扑</button>
+        <button id="relayout">重新布局</button>
       </div>
       <div class="row inline">
-        <label><input id="utilColorEnabled" type="checkbox" checked style="width:auto; margin-right:6px;" />链路颜色映射</label>
-        <label><input id="utilLabelEnabled" type="checkbox" checked style="width:auto; margin-right:6px;" />显示利用率标签</label>
+        <button id="fit">适配画布（慎用）</button>
+        <button id="center">居中 + 放大</button>
+        <button id="toggleMerge">合并多条链路：开启</button>
+      </div>
+
+      <div class="row">
+        <label>定位设备（关键字逗号分隔，回车多选）</label>
+        <input id="search" type="text" placeholder="例如：MGMT,AGGR" />
+        <div class="hint" id="searchResult"></div>
+      </div>
+      <div class="row">
+        <label>不显示：逗号分隔，命中的设备会被隐藏</label>
+        <input id="filter" type="text" placeholder="例如：lab,backup" value="MGMT,null,ACC,SA" />
+      </div>
+      <div class="row">
+        <label>只显示：逗号分隔，回车生效（仅显示命中的设备，其余隐藏）</label>
+        <input id="showOnly" type="text" placeholder="例如：CORE,EDGE" />
+      </div>
+      <div class="row">
+        <label>分层关键字（高->低，逗号分层，斜杠同层，&需全部命中，如 EDGE&CORE,CORE,AGGR/SPINE,LEAF/tor）</label>
+        <input id="layerTerms" type="text" value="EDGE,CORE,AGGR,LEAF" />
+      </div>
+    </div>
+
+    <div class="section-box">
+      <h2>多选/操作</h2>
+      <div class="row">
+        <div class="hint">按住 Ctrl/Cmd 或 Shift 进行多选（框选已关闭）。</div>
       </div>
       <div class="row inline">
-        <label><input id="utilDebugEnabled" type="checkbox" style="width:auto; margin-right:6px;" />开启调试日志</label>
-        <button id="downloadUtilDebug" type="button">下载利用率调试日志</button>
+        <button id="fitSelection">定位选中</button>
+        <button id="isolateSelection">仅显示邻接</button>
       </div>
-      <div class="hint" id="utilResultHint">阈值：绿色 &lt; 40%，黄色 40-70%，红色 ≥ 70%。</div>
+      <div class="row inline">
+        <button id="clearSelectionHide">恢复显示</button>
+        <button id="show172Only">只显示172设备</button>
+        <button id="deleteSelection">删除选中</button>
+        <button id="restoreDeleted">恢复删除设备</button>
+      </div>
+    </div>
+
+    <div class="section-box">
+      <h2>导出</h2>
+      <div class="row inline">
+        <button id="exportPng">导出 PNG</button>
+        <button id="exportJson">导出 JSON</button>
+        <button id="exportPos">导出坐标</button>
+        <button id="importPosBtn">导入坐标</button>
+        <input id="importPosFile" type="file" accept=".json,application/json" style="display:none" />
+      </div>
+    </div>
+
+    <div class="section-box">
+      <h2>链路利用率</h2>
+      <div class="util-grid">
+        <div>
+          <button id="refreshUtilization" class="primary">CLI 链路利用率</button>
+        </div>
+        <div>
+          <button id="refreshUtilizationZbx" type="button">Zabbix链路利用率</button>
+        </div>
+        <div>
+          <button id="downloadUtilCache" type="button">下载链路缓存CSV</button>
+        </div>
+        <div>
+          <button id="downloadUtilDebug" type="button">下载利用率调试日志</button>
+        </div>
+        <label class="check-row"><input id="utilDebugEnabled" type="checkbox" />开启调试日志</label>
+        <div class="span-2">
+          <select id="utilMetric">
+            <option value="tx" selected>使用率口径：TX</option>
+            <option value="rx">使用率口径：RX</option>
+            <option value="max">使用率口径：MAX(TX,RX)</option>
+          </select>
+        </div>
+        <label class="check-row"><input id="utilColorEnabled" type="checkbox" checked />链路颜色映射</label>
+        <label class="check-row"><input id="utilLabelEnabled" type="checkbox" checked />显示利用率标签</label>
+        <div class="hint span-2" id="utilResultHint">阈值：绿色 &lt; 40%，黄色 40-70%，红色 ≥ 70%。</div>
+      </div>
     </div>
   </div>
 
@@ -2216,12 +2241,15 @@
   });
 
   $('refreshUtilization').addEventListener('click', refreshLinkUtilization);
+  $('refreshUtilizationZbx').addEventListener('click', () => {
+    setOK('Zabbix 链路利用率：预留功能，待对接数据源。');
+  });
   $('utilColorEnabled').addEventListener('change', () => applyUtilizationToEdges());
   $('utilLabelEnabled').addEventListener('change', () => refreshEdgeLabelDisplay());
   $('utilMetric').addEventListener('change', () => {
     if (utilByKey.size) {
       applyUtilizationToEdges();
-      $('utilResultHint').textContent = '口径已切换，已按缓存结果重新渲染；点击“刷新链路利用率”仅会增量查询新链路。';
+      $('utilResultHint').textContent = '口径已切换，已按缓存结果重新渲染；点击“CLI 链路利用率”仅会增量查询新链路。';
     }
   });
 
