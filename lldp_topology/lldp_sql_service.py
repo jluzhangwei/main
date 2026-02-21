@@ -668,7 +668,7 @@ def detect_vendor(cli: SmcShellClient, timeout: int = 15) -> str:
             return "arista"
         if "cisco" in low or "ios" in low or "nx-os" in low:
             return "cisco"
-    return "huawei"
+    return "unknown"
 
 
 def detect_device_name(cli: SmcShellClient, vendor: str, timeout: int = 15) -> str:
@@ -1371,6 +1371,26 @@ class CliQueryRequest(BaseModel):
     cli_command_timeout: int | None = None
 
 
+class LinkUtilTarget(BaseModel):
+    source_device: str
+    source_interface: str
+    util_key: str | None = None
+
+
+class LinkUtilRequest(BaseModel):
+    targets: list[LinkUtilTarget]
+    metric: str = Field(default="tx")
+    cli_max_workers: int | None = Field(default=None, ge=1, le=16)
+    device_username: str | None = None
+    device_password: str | None = None
+    smc_jump_host: str | None = None
+    smc_jump_port: int | None = None
+    smc_command: str | None = None
+    cli_connect_timeout: int | None = None
+    cli_command_timeout: int | None = None
+    debug_enabled: bool = False
+
+
 app = FastAPI(title="LLDP SQL Service", version="1.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -1447,6 +1467,407 @@ def write_cli_debug_text(file_prefix: str, meta: dict[str, Any]) -> tuple[str, P
 
     out_path.write_text("\n".join(lines), encoding="utf-8")
     return safe_name, out_path
+
+
+def write_link_util_debug_text(file_prefix: str, meta: dict[str, Any]) -> tuple[str, Path]:
+    filename = f"{file_prefix}.txt"
+    safe_name = "".join(ch for ch in filename if ch.isalnum() or ch in "._-")[:140]
+    out_path = TMP_DIR / safe_name
+
+    results = meta.get("results") or []
+    ok_count = len([x for x in results if x.get("status") == "ok"])
+    fail_count = len([x for x in results if x.get("status") == "failed"])
+    no_data_count = len([x for x in results if x.get("status") == "no_data"])
+
+    lines: list[str] = []
+    lines.append("LLDP Link Utilization Debug")
+    lines.append(f"metric={meta.get('metric', 'tx')}")
+    lines.append(f"result_count={len(results)}")
+    lines.append(f"ok_count={ok_count}")
+    lines.append(f"failed_count={fail_count}")
+    lines.append(f"no_data_count={no_data_count}")
+    lines.append(f"queried_devices={len(meta.get('queried_devices', []))}")
+    lines.append(f"cli_max_workers={meta.get('cli_max_workers')}")
+    lines.append(f"total_elapsed_seconds={float(meta.get('total_elapsed_seconds', 0.0)):.3f}")
+    lines.append("")
+
+    lines.append("[Per-Port Results]")
+    for r in results:
+        lines.append(
+            f"{r.get('source_device')} {r.get('source_interface')} status={r.get('status')} "
+            f"vendor={r.get('vendor')} tx={r.get('tx_pct')} rx={r.get('rx_pct')} "
+            f"used={r.get('used_pct')} err={r.get('error', '')}"
+        )
+    lines.append("")
+
+    lines.append("[Per-Device Debug]")
+    for entry in meta.get("debug_entries", []):
+        lines.append("=" * 80)
+        duration = float(entry.get("duration_sec", 0.0) or 0.0)
+        lines.append(
+            f"device={entry.get('device')} status={entry.get('status')} vendor={entry.get('vendor', 'unknown')} "
+            f"duration_sec={duration:.3f}"
+        )
+        err = entry.get("error")
+        if err:
+            lines.append(f"error={err}")
+        lines.append("-" * 80)
+        transcript = entry.get("transcript") or []
+        if transcript:
+            lines.extend(str(x) for x in transcript)
+        else:
+            lines.append("(no transcript)")
+        lines.append("")
+
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+    return safe_name, out_path
+
+
+def _unit_multiplier(unit: str) -> float:
+    u = (unit or "").strip().lower()
+    if u in {"g", "gb", "gbit", "gbps"}:
+        return 1_000_000_000.0
+    if u in {"m", "mb", "mbit", "mbps"}:
+        return 1_000_000.0
+    if u in {"k", "kb", "kbit", "kbps"}:
+        return 1_000.0
+    return 1.0
+
+
+def _parse_float_num(s: str) -> float | None:
+    try:
+        return float((s or "").replace(",", "").strip())
+    except Exception:
+        return None
+
+
+def _extract_first_pct(text: str, patterns: list[str]) -> float | None:
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE | re.MULTILINE)
+        if not m:
+            continue
+        val = _parse_float_num(m.group(1))
+        if val is None:
+            continue
+        return max(0.0, min(100.0, val))
+    return None
+
+
+def _extract_first_bps(text: str, patterns: list[str]) -> float | None:
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE | re.MULTILINE)
+        if not m:
+            continue
+        val = _parse_float_num(m.group(1))
+        if val is None:
+            continue
+        unit = (m.group(2) if m.lastindex and m.lastindex >= 2 else "") or ""
+        return max(0.0, val * _unit_multiplier(unit))
+    return None
+
+
+def _extract_bandwidth_bps(text: str) -> float | None:
+    patterns = [
+        r"\bBW\s*[:=]?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kmg]?)\s*(?:bits?/s(?:ec)?|bps|bit)",
+        r"\bBandwidth\s*[:=]?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kmg]?)\s*(?:bits?/s(?:ec)?|bps|bit)",
+        r"\bline\s+rate\s*[:=]?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kmg])\s*(?:bps|bit)",
+    ]
+    return _extract_first_bps(text, patterns)
+
+
+def parse_interface_utilization(output: str, metric: str = "tx") -> dict[str, Any]:
+    text = (output or "").replace("\r", "")
+    tx_pct = _extract_first_pct(
+        text,
+        [
+            r"\boutput\s+utili[sz]ation[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*%",
+            r"\boutput\s+utility\s+rate[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*%",
+            r"\boutput[^\n]{0,160},\s*([0-9]+(?:\.[0-9]+)?)\s*%",
+            r"\boutput[^\n]{0,160}\(([0-9]+(?:\.[0-9]+)?)%\)",
+            r"\btx[^%\n]{0,40}([0-9]+(?:\.[0-9]+)?)\s*%",
+            r"\boutput\s+rate\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*%",
+        ],
+    )
+    rx_pct = _extract_first_pct(
+        text,
+        [
+            r"\binput\s+utili[sz]ation[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*%",
+            r"\binput\s+utility\s+rate[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*%",
+            r"\binput[^\n]{0,160},\s*([0-9]+(?:\.[0-9]+)?)\s*%",
+            r"\binput[^\n]{0,160}\(([0-9]+(?:\.[0-9]+)?)%\)",
+            r"\brx[^%\n]{0,40}([0-9]+(?:\.[0-9]+)?)\s*%",
+            r"\binput\s+rate\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*%",
+        ],
+    )
+
+    tx_bps = _extract_first_bps(
+        text,
+        [
+            r"(?:30\s+seconds?\s+|5\s+minutes?\s+)?output\s+rate[^0-9\n]*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kmg]?)\s*(?:bits?/s(?:ec)?|bps|bit)",
+            r"(?:5\s+minutes?\s+)?output\s+rate[^0-9\n]*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kmg]?)\s*(?:bits?/s(?:ec)?|bps|bit)",
+            r"\btx[^0-9\n]{0,40}([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kmg]?)\s*(?:bits?/s(?:ec)?|bps|bit)",
+        ],
+    )
+    rx_bps = _extract_first_bps(
+        text,
+        [
+            r"(?:30\s+seconds?\s+|5\s+minutes?\s+)?input\s+rate[^0-9\n]*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kmg]?)\s*(?:bits?/s(?:ec)?|bps|bit)",
+            r"(?:5\s+minutes?\s+)?input\s+rate[^0-9\n]*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kmg]?)\s*(?:bits?/s(?:ec)?|bps|bit)",
+            r"\brx[^0-9\n]{0,40}([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kmg]?)\s*(?:bits?/s(?:ec)?|bps|bit)",
+        ],
+    )
+    bw_bps = _extract_bandwidth_bps(text)
+
+    if tx_pct is None and tx_bps is not None and bw_bps and bw_bps > 0:
+        tx_pct = max(0.0, min(100.0, (tx_bps / bw_bps) * 100.0))
+    if rx_pct is None and rx_bps is not None and bw_bps and bw_bps > 0:
+        rx_pct = max(0.0, min(100.0, (rx_bps / bw_bps) * 100.0))
+
+    m = (metric or "tx").lower()
+    if m == "rx":
+        used_pct = rx_pct
+    elif m == "max":
+        cands = [x for x in (tx_pct, rx_pct) if x is not None]
+        used_pct = max(cands) if cands else None
+    else:
+        used_pct = tx_pct
+
+    status = "ok" if used_pct is not None or tx_pct is not None or rx_pct is not None else "no_data"
+    return {
+        "status": status,
+        "tx_pct": tx_pct,
+        "rx_pct": rx_pct,
+        "used_pct": used_pct,
+        "tx_bps": tx_bps,
+        "rx_bps": rx_bps,
+        "bw_bps": bw_bps,
+    }
+
+
+def run_interface_utilization_command(cli: SmcShellClient, vendor: str, ifname: str, timeout: int) -> str:
+    v = (vendor or "").strip().lower()
+    iface = (ifname or "").strip()
+    if v == "huawei":
+        cmds = [f"display interface {iface}", f"dis interface {iface}"]
+    elif v == "cisco":
+        cmds = [f"show interface {iface}", f"show interfaces {iface}"]
+    elif v == "arista":
+        cmds = [f"show interfaces {iface}", f"show interface {iface}"]
+    else:
+        cmds = [f"show interface {iface}", f"display interface {iface}", f"show interfaces {iface}"]
+    best = ""
+    invalid_outputs: list[str] = []
+    for cmd in cmds:
+        try:
+            out = cli.exec(cmd, timeout=timeout)
+        except Exception:
+            continue
+        if not out.strip():
+            continue
+        if INVALID_CMD_PATTERN.search(out):
+            invalid_outputs.append(cmd)
+            continue
+        return out
+    if invalid_outputs:
+        raise RuntimeError(f"invalid interface command for {iface}: tried {', '.join(invalid_outputs)}")
+    return best
+
+
+def collect_device_interface_utils_once(
+    source: str,
+    iface_targets: dict[str, list[LinkUtilTarget]],
+    metric: str,
+    cfg: CliRuntimeConfig,
+) -> dict[str, Any]:
+    transcript: list[str] = []
+    started = time.time()
+
+    def dbg(msg: str) -> None:
+        if len(transcript) < 600:
+            transcript.append(msg)
+
+    cli = SmcShellClient(
+        SmcShellConfig(
+            smc_command=cfg.smc_command,
+            jump_host=cfg.jump_host,
+            jump_port=cfg.jump_port,
+            device_ip=source,
+            username=cfg.username,
+            password=cfg.password,
+            timeout=cfg.connect_timeout,
+            debug=dbg,
+        )
+    )
+    vendor = "unknown"
+    results: list[dict[str, Any]] = []
+    error = ""
+    try:
+        cli.connect()
+        vendor = detect_vendor(cli, timeout=min(cfg.command_timeout, 20))
+        disable_paging(cli, vendor, timeout=3)
+        for ifname, refs in iface_targets.items():
+            parsed = {
+                "status": "no_data",
+                "tx_pct": None,
+                "rx_pct": None,
+                "used_pct": None,
+                "tx_bps": None,
+                "rx_bps": None,
+                "bw_bps": None,
+            }
+            cmd_error = ""
+            try:
+                out = run_interface_utilization_command(cli, vendor, ifname, timeout=cfg.command_timeout)
+                if not (out or "").strip():
+                    raise RuntimeError(f"empty interface output for {ifname}")
+                parsed = parse_interface_utilization(out, metric=metric)
+                if parsed.get("status") == "no_data":
+                    # Surface parsing misses as failed so frontend can distinguish from true zero-utilization.
+                    cmd_error = f"no parsable utilization fields for {ifname}"
+                    parsed["status"] = "failed"
+            except Exception as exc:
+                cmd_error = str(exc)
+                parsed["status"] = "failed"
+            for ref in refs:
+                results.append(
+                    {
+                        "source_device": source,
+                        "source_interface": ifname,
+                        "util_key": ref.util_key or "",
+                        "vendor": vendor,
+                        "status": parsed.get("status", "no_data"),
+                        "tx_pct": parsed.get("tx_pct"),
+                        "rx_pct": parsed.get("rx_pct"),
+                        "used_pct": parsed.get("used_pct"),
+                        "tx_bps": parsed.get("tx_bps"),
+                        "rx_bps": parsed.get("rx_bps"),
+                        "bw_bps": parsed.get("bw_bps"),
+                        "error": cmd_error,
+                    }
+                )
+    except Exception as exc:
+        error = str(exc)
+    finally:
+        cli.close()
+
+    if error:
+        results = []
+        for ifname, refs in iface_targets.items():
+            for ref in refs:
+                results.append(
+                    {
+                        "source_device": source,
+                        "source_interface": ifname,
+                        "util_key": ref.util_key or "",
+                        "vendor": vendor,
+                        "status": "failed",
+                        "tx_pct": None,
+                        "rx_pct": None,
+                        "used_pct": None,
+                        "tx_bps": None,
+                        "rx_bps": None,
+                        "bw_bps": None,
+                        "error": error,
+                    }
+                )
+    return {
+        "device": source,
+        "vendor": vendor,
+        "error": error,
+        "duration_sec": max(0.0, time.time() - started),
+        "results": results,
+        "transcript": transcript[:],
+    }
+
+
+def collect_link_utilization(
+    targets: list[LinkUtilTarget],
+    metric: str,
+    *,
+    cli_max_workers: int | None = None,
+    device_username: str | None = None,
+    device_password: str | None = None,
+    smc_jump_host: str | None = None,
+    smc_jump_port: int | None = None,
+    smc_command: str | None = None,
+    cli_command_timeout: int | None = None,
+    cli_connect_timeout: int | None = None,
+    debug_enabled: bool = False,
+) -> dict[str, Any]:
+    cfg = get_cli_runtime_config(
+        device_username=device_username,
+        device_password=device_password,
+        smc_jump_host=smc_jump_host,
+        smc_jump_port=smc_jump_port,
+        smc_command=smc_command,
+        cli_command_timeout=cli_command_timeout,
+        cli_connect_timeout=cli_connect_timeout,
+    )
+    env_workers = int(get_env("CLI_MAX_WORKERS", "4") or "4")
+    workers = int(cli_max_workers if cli_max_workers is not None else env_workers)
+    workers = max(1, min(16, workers))
+
+    grouped: dict[str, dict[str, list[LinkUtilTarget]]] = {}
+    for t in targets:
+        dev = normalize_device_id(t.source_device)
+        iface = (t.source_interface or "").strip()
+        if not dev or not iface:
+            continue
+        grouped.setdefault(dev, {}).setdefault(iface, []).append(t)
+
+    out_results: list[dict[str, Any]] = []
+    debug_entries: list[dict[str, Any]] = []
+    total_start = time.perf_counter()
+    devices = sorted(grouped.keys())
+    if devices:
+        with ThreadPoolExecutor(max_workers=min(workers, len(devices))) as pool:
+            fmap = {
+                pool.submit(collect_device_interface_utils_once, dev, grouped[dev], metric, cfg): dev
+                for dev in devices
+            }
+            for fut in as_completed(fmap):
+                dev = fmap[fut]
+                try:
+                    res = fut.result()
+                except Exception as exc:
+                    out_results.extend(
+                        {
+                            "source_device": dev,
+                            "source_interface": iface,
+                            "util_key": ref.util_key or "",
+                            "vendor": "unknown",
+                            "status": "failed",
+                            "tx_pct": None,
+                            "rx_pct": None,
+                            "used_pct": None,
+                            "tx_bps": None,
+                            "rx_bps": None,
+                            "bw_bps": None,
+                            "error": f"worker_exception: {exc}",
+                        }
+                        for iface, refs in grouped.get(dev, {}).items()
+                        for ref in refs
+                    )
+                    debug_entries.append({"device": dev, "status": "failed", "error": f"worker_exception: {exc}"})
+                    continue
+                out_results.extend(res.get("results", []))
+                debug_entries.append(
+                    {
+                        "device": dev,
+                        "status": "failed" if res.get("error") else "ok",
+                        "vendor": res.get("vendor", "unknown"),
+                        "error": res.get("error", ""),
+                        "duration_sec": res.get("duration_sec", 0.0),
+                        "transcript": (res.get("transcript", []) if debug_enabled else []),
+                    }
+                )
+    return {
+        "results": out_results,
+        "debug_entries": debug_entries,
+        "cli_max_workers": workers,
+        "queried_devices": devices,
+        "total_elapsed_seconds": max(0.0, time.perf_counter() - total_start),
+    }
 
 
 @app.post("/api/sql/lldp-csv")
@@ -1534,6 +1955,7 @@ def query_lldp_csv_via_cli(payload: CliQueryRequest) -> dict[str, Any]:
         "total_elapsed_seconds": meta.get("total_elapsed_seconds"),
         "vendor_mode": "auto-detect-by-version",
         "detected_vendors": meta.get("detected_vendors", {}),
+        "detected_device_names": meta.get("detected_device_names", {}),
         "row_count": len(rows),
         "queried_count": len(meta.get("queried_devices", [])),
         "queried_devices": meta.get("queried_devices", []),
@@ -1543,6 +1965,55 @@ def query_lldp_csv_via_cli(payload: CliQueryRequest) -> dict[str, Any]:
         "debug_file": str(debug_path),
         "debug_download_url": f"/api/lldp-debug/file/{debug_safe_name}",
         "csv_text": csv_text,
+    }
+
+
+@app.post("/api/cli/link-utilization")
+def query_link_utilization(payload: LinkUtilRequest) -> dict[str, Any]:
+    if not payload.targets:
+        raise HTTPException(status_code=400, detail="targets is required")
+    metric = (payload.metric or "tx").strip().lower()
+    if metric not in {"tx", "rx", "max"}:
+        metric = "tx"
+    try:
+        meta = collect_link_utilization(
+            payload.targets,
+            metric=metric,
+            cli_max_workers=payload.cli_max_workers,
+            device_username=payload.device_username,
+            device_password=payload.device_password,
+            smc_jump_host=payload.smc_jump_host,
+            smc_jump_port=payload.smc_jump_port,
+            smc_command=payload.smc_command,
+            cli_command_timeout=payload.cli_command_timeout,
+            cli_connect_timeout=payload.cli_connect_timeout,
+            debug_enabled=payload.debug_enabled,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"CLI link utilization failed: {exc}") from exc
+
+    debug_download_url = ""
+    debug_file = ""
+    if payload.debug_enabled:
+        safe_name, debug_path = write_link_util_debug_text(
+            f"link_util_debug_{int(time.time())}",
+            {**meta, "metric": metric},
+        )
+        debug_file = str(debug_path)
+        debug_download_url = f"/api/lldp-debug/file/{safe_name}"
+
+    return {
+        "ok": True,
+        "mode": "cli-link-utilization",
+        "metric": metric,
+        "result_count": len(meta.get("results", [])),
+        "results": meta.get("results", []),
+        "queried_devices": meta.get("queried_devices", []),
+        "cli_max_workers": meta.get("cli_max_workers"),
+        "total_elapsed_seconds": meta.get("total_elapsed_seconds"),
+        "debug_entries": meta.get("debug_entries", []),
+        "debug_file": debug_file,
+        "debug_download_url": debug_download_url,
     }
 
 

@@ -372,6 +372,25 @@
       <button id="importPosBtn">导入坐标</button>
       <input id="importPosFile" type="file" accept=".json,application/json" style="display:none" />
     </div>
+    <div class="row">
+      <div class="row inline">
+        <button id="refreshUtilization" class="primary">刷新链路利用率</button>
+        <select id="utilMetric">
+          <option value="tx" selected>使用率口径：TX</option>
+          <option value="rx">使用率口径：RX</option>
+          <option value="max">使用率口径：MAX(TX,RX)</option>
+        </select>
+      </div>
+      <div class="row inline">
+        <label><input id="utilColorEnabled" type="checkbox" checked style="width:auto; margin-right:6px;" />链路颜色映射</label>
+        <label><input id="utilLabelEnabled" type="checkbox" checked style="width:auto; margin-right:6px;" />显示利用率标签</label>
+      </div>
+      <div class="row inline">
+        <label><input id="utilDebugEnabled" type="checkbox" style="width:auto; margin-right:6px;" />开启调试日志</label>
+        <button id="downloadUtilDebug" type="button">下载利用率调试日志</button>
+      </div>
+      <div class="hint" id="utilResultHint">阈值：绿色 &lt; 40%，黄色 40-70%，红色 ≥ 70%。</div>
+    </div>
   </div>
 
   <div id="cy"></div>
@@ -483,8 +502,10 @@
   let mergedMode = true;
   let cliTimer = null;
   let nodeIpMap = new Map();
+  let deviceNameToIpMap = new Map();
   let lastCliPassword = '';
   let ctxAppendSingleHop = false;
+  let utilByKey = new Map();
   // 注册 fCoSE 扩展（兼容不同全局名），避免引用未定义导致脚本中断
 (() => {
     const extFcose = window.cytoscapeFcose || window.cytoFcose || window.fcose || window.fCoSE;
@@ -819,6 +840,7 @@
       nodes.set(bId, { id: bId, label: rh, short: shortLabel(rh), role: bRole, rank: roleRank(bRole), ip: bIp });
 
       const edgeLabel = `${li} ↔ ${ri}`.trim();
+      const utilKey = `${lh}||${li}`.toLowerCase();
       const k1 = `${aId}||${bId}||${edgeLabel}`;
       const k2 = `${bId}||${aId}||${edgeLabel}`;
       rawEdgeCnt++;
@@ -826,7 +848,7 @@
       if (edgeSet.has(k1) || edgeSet.has(k2)) continue;
       edgeSet.add(k1);
 
-      edges.push({ data: { id: `e_${edges.length}`, source: aId, target: bId, label: edgeLabel } });
+      edges.push({ data: { id: `e_${edges.length}`, source: aId, target: bId, label: edgeLabel, labelShown: '', utilKey, utilKeys: [utilKey] } });
       degreeMap.set(aId, (degreeMap.get(aId) || 0) + 1);
       degreeMap.set(bId, (degreeMap.get(bId) || 0) + 1);
     }
@@ -890,7 +912,7 @@
             'width': 1.2,
             'line-color': '#9ca3af',
             'target-arrow-color': '#9ca3af',
-            'label': edgeMode === 'both' ? 'data(label)' : '',
+            'label': 'data(labelShown)',
             'font-size': 9,
             'text-background-color': '#ffffff',
             'text-background-opacity': 0.85,
@@ -899,6 +921,10 @@
             'color': '#374151'
           }
         },
+        { selector: 'edge.util-low', style: { 'line-color': '#16a34a', 'target-arrow-color': '#16a34a' } },
+        { selector: 'edge.util-mid', style: { 'line-color': '#ca8a04', 'target-arrow-color': '#ca8a04' } },
+        { selector: 'edge.util-high', style: { 'line-color': '#dc2626', 'target-arrow-color': '#dc2626' } },
+        { selector: 'edge.util-na', style: { 'line-style': 'dashed', 'line-color': '#9ca3af', 'target-arrow-color': '#9ca3af' } },
         { selector: 'edge.hovered', style: { 'label': 'data(label)' } },
 
         { selector: '.hit', style: { 'border-width': 2, 'border-color': '#111827' } },
@@ -942,6 +968,7 @@
     updateNodeLabels(nodeLabelMode);
     // 使边标签模式与当前选择同步
     updateEdgeLabels(edgeMode);
+    applyUtilizationToEdges();
 
     // click highlight：仅高亮选中节点本身，不再自动高亮邻居
     cy.on('tap', 'node', () => {
@@ -1275,7 +1302,8 @@
       const count = list.length;
       const labels = list.map(x => x.data.label).filter(Boolean);
       const label = count > 1 ? `${count} 条链路` : (labels[0] || '');
-      merged.push({ data: { id: `m_${idx++}`, source: a, target: b, label } });
+      const utilKeys = Array.from(new Set(list.flatMap(x => Array.isArray(x.data.utilKeys) ? x.data.utilKeys : (x.data.utilKey ? [x.data.utilKey] : []))));
+      merged.push({ data: { id: `m_${idx++}`, source: a, target: b, label, labelShown: '', utilKeys } });
     });
     return merged;
   }
@@ -1318,8 +1346,67 @@
 
   function updateEdgeLabels(mode) {
     if (!cy) return;
-    const val = mode === 'both' ? 'data(label)' : '';
-    cy.style().selector('edge').style('label', val).update();
+    refreshEdgeLabelDisplay();
+  }
+
+  function refreshEdgeLabelDisplay() {
+    if (!cy) return;
+    const edgeMode = $('edgeLabelMode')?.value || 'none';
+    const showUtilLabel = !!$('utilLabelEnabled')?.checked;
+    cy.edges().forEach((e) => {
+      const base = String(e.data('label') || '').trim();
+      const util = String(e.data('utilText') || '').trim();
+      let shown = '';
+      if (edgeMode === 'both' && showUtilLabel) shown = [base, util].filter(Boolean).join(' | ');
+      else if (edgeMode === 'both') shown = base;
+      else if (showUtilLabel) shown = util;
+      e.data('labelShown', shown);
+    });
+  }
+
+  function edgeUtilFromKeys(edge) {
+    const metric = (($('utilMetric')?.value || 'tx').trim().toLowerCase());
+    const pickPct = (entry) => {
+      if (!entry || typeof entry !== 'object') return null;
+      const tx = (typeof entry.tx_pct === 'number') ? entry.tx_pct : null;
+      const rx = (typeof entry.rx_pct === 'number') ? entry.rx_pct : null;
+      if (metric === 'rx') return rx;
+      if (metric === 'max') {
+        const cands = [tx, rx].filter(v => typeof v === 'number');
+        return cands.length ? Math.max(...cands) : null;
+      }
+      if (typeof tx === 'number') return tx;
+      return (typeof entry.used_pct === 'number') ? entry.used_pct : null;
+    };
+    const keys = edge.data('utilKeys');
+    const arr = Array.isArray(keys) ? keys : [];
+    const values = arr
+      .map(k => utilByKey.get(String(k || '').toLowerCase()))
+      .map(v => pickPct(v))
+      .filter(v => typeof v === 'number');
+    if (!values.length) return null;
+    return Math.max(...values);
+  }
+
+  function applyUtilizationToEdges() {
+    if (!cy) return;
+    const enableColor = !!$('utilColorEnabled')?.checked;
+    cy.edges().forEach((e) => {
+      const pct = edgeUtilFromKeys(e);
+      e.removeClass('util-low util-mid util-high util-na');
+      if (pct == null) {
+        e.data('utilText', 'U:N/A');
+        if (enableColor) e.addClass('util-na');
+      } else {
+        e.data('utilText', `U:${pct.toFixed(1)}%`);
+        if (enableColor) {
+          if (pct >= 70) e.addClass('util-high');
+          else if (pct >= 40) e.addClass('util-mid');
+          else e.addClass('util-low');
+        }
+      }
+    });
+    refreshEdgeLabelDisplay();
   }
 
   function showCtx(evt) {
@@ -1350,10 +1437,13 @@
     const blob = new Blob([text], { type: mime });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = filename;
+    a.href = url;
+    a.download = filename;
     document.body.appendChild(a);
-    a.click(); a.remove();
-    URL.revokeObjectURL(url);
+    a.click();
+    a.remove();
+    // Safari may cancel download if revoked immediately.
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
 
   function downloadBlob(filename, blob, fallbackDataUrl = '') {
@@ -1365,7 +1455,7 @@
       document.body.appendChild(a);
       a.click();
       a.remove();
-      URL.revokeObjectURL(url);
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
       return true;
     } catch (_) {
       if (!fallbackDataUrl) return false;
@@ -1385,6 +1475,7 @@
 
   let lastSqlDownloadUrl = '';
   let lastCliDebugUrl = '';
+  let lastUtilDebugUrl = '';
   let importInputAction = 'import'; // import | append
   const CLI_PREF_KEY = 'lldp_cli_import_prefs_v1';
   const TOPOLOGY_UI_PREF_KEY = 'lldp_topology_ui_prefs_v1';
@@ -1398,6 +1489,7 @@
     const append = !!opts.append;
     const sourceName = opts.sourceName || 'query';
     if (!append) {
+      utilByKey = new Map();
       loadDataFromText(csvText);
       if (rawRows.length) buildGraph();
       return { mergedRows: rawRows.length, addedRows: rawRows.length };
@@ -1507,6 +1599,17 @@
     a.click();
   }
 
+  function downloadLastUtilDebug() {
+    if (!lastUtilDebugUrl) {
+      setErr('暂无可下载的利用率调试日志，请先勾选“开启调试日志”并执行一次利用率刷新。');
+      return;
+    }
+    const a = document.createElement('a');
+    a.href = lastUtilDebugUrl;
+    a.target = '_blank';
+    a.click();
+  }
+
   function loadCliPrefs() {
     try {
       const raw = localStorage.getItem(CLI_PREF_KEY);
@@ -1568,6 +1671,181 @@
       localStorage.setItem(TOPOLOGY_UI_PREF_KEY, JSON.stringify(safe));
     } catch (_) {
       // Ignore local storage errors.
+    }
+  }
+
+  function readCliRuntimeInputs() {
+    const username = ($('cliUsernameModal')?.value || '').trim();
+    const enteredPassword = $('cliPasswordModal')?.value || '';
+    const password = enteredPassword || lastCliPassword || '';
+    if (enteredPassword) lastCliPassword = enteredPassword;
+    const smcJumpHost = ($('cliSmcJumpHostModal')?.value || '').trim();
+    const smcJumpPortRaw = parseInt((($('cliSmcJumpPortModal')?.value || '22')).trim(), 10);
+    const smcJumpPort = Number.isFinite(smcJumpPortRaw) ? Math.min(65535, Math.max(1, smcJumpPortRaw)) : 22;
+    const smcCommand = ($('cliSmcCommandModal')?.value || '').trim();
+    const connectTimeoutRaw = parseInt((($('cliConnectTimeoutModal')?.value || '60')).trim(), 10);
+    const connectTimeout = Number.isFinite(connectTimeoutRaw) ? Math.min(300, Math.max(5, connectTimeoutRaw)) : 60;
+    const commandTimeoutRaw = parseInt((($('cliCommandTimeoutModal')?.value || '45')).trim(), 10);
+    const commandTimeout = Number.isFinite(commandTimeoutRaw) ? Math.min(300, Math.max(5, commandTimeoutRaw)) : 45;
+    return {
+      device_username: username || null,
+      device_password: password || null,
+      smc_jump_host: smcJumpHost || null,
+      smc_jump_port: smcJumpPort,
+      smc_command: smcCommand || null,
+      cli_connect_timeout: connectTimeout,
+      cli_command_timeout: commandTimeout
+    };
+  }
+
+  function buildUtilTargetsFromRows() {
+    const colLH = $('colLocalHost').value;
+    const colLI = $('colLocalIf').value;
+    const strip = $('stripDomain').value === 'yes';
+    const allByUtilKey = new Map();
+    const ipv4 = (s) => /^(?:\d{1,3}\.){3}\d{1,3}$/.test(String(s || '').trim());
+    for (const r of rawRows) {
+      const srcRaw = String(r[colLH] || '').trim();
+      const srcIf = String(r[colLI] || '').trim();
+      if (!srcRaw || !srcIf) continue;
+      const srcDisplay = strip ? stripAfterDot(srcRaw) : srcRaw;
+      const utilKey = `${srcDisplay}||${srcIf}`.toLowerCase();
+      const dedupeKey = `${srcRaw}||${srcIf}`.toLowerCase();
+      let queryDevice = srcRaw;
+      if (!ipv4(queryDevice)) {
+        const mapHit = deviceNameToIpMap.get(srcRaw) || deviceNameToIpMap.get(stripAfterDot(srcRaw));
+        const hit1 = nodeIpMap.get(srcRaw);
+        const hit2 = nodeIpMap.get(stripAfterDot(srcRaw));
+        const hit3 = nodeIpMap.get(srcDisplay);
+        const cand = mapHit || hit1 || hit2 || hit3;
+        if (cand && ipv4(cand)) queryDevice = cand;
+      }
+      if (!allByUtilKey.has(utilKey)) {
+        allByUtilKey.set(utilKey, {
+          source_device: queryDevice,
+          source_interface: srcIf,
+          util_key: utilKey,
+          dedupe_key: dedupeKey
+        });
+      }
+    }
+
+    // Only query currently visible topology edges to match user's on-screen graph.
+    const neededUtilKeys = new Set();
+    if (cy) {
+      cy.edges(':visible').forEach((e) => {
+        const keys = e.data('utilKeys');
+        if (Array.isArray(keys)) {
+          // In merged-edge mode, query one representative source port per visible edge,
+          // so query count tracks what user sees on screen.
+          if (mergedMode) {
+            const first = keys.find(Boolean);
+            if (first) neededUtilKeys.add(String(first).toLowerCase());
+          } else {
+            keys.forEach((k) => { if (k) neededUtilKeys.add(String(k).toLowerCase()); });
+          }
+          return;
+        }
+        const single = e.data('utilKey');
+        if (single) neededUtilKeys.add(String(single).toLowerCase());
+      });
+    }
+
+    const out = [];
+    const seenDedupe = new Set();
+    const source = neededUtilKeys.size ? neededUtilKeys : new Set(allByUtilKey.keys());
+    source.forEach((k) => {
+      const item = allByUtilKey.get(k);
+      if (!item) return;
+      if (seenDedupe.has(item.dedupe_key)) return;
+      seenDedupe.add(item.dedupe_key);
+      out.push({
+        source_device: item.source_device,
+        source_interface: item.source_interface,
+        util_key: item.util_key
+      });
+    });
+    return out;
+  }
+
+  function hasSuccessfulUtilCache(utilKey) {
+    const k = String(utilKey || '').toLowerCase();
+    if (!k) return false;
+    const hit = utilByKey.get(k);
+    return !!(hit && hit.status === 'ok' && typeof hit.used_pct === 'number');
+  }
+
+  async function refreshLinkUtilization() {
+    if (!cy || !rawRows.length) {
+      setErr('请先生成拓扑，再刷新链路利用率');
+      return;
+    }
+    const allTargets = buildUtilTargetsFromRows();
+    if (!allTargets.length) {
+      setErr('未找到可查询的 source 设备端口');
+      return;
+    }
+    const targets = allTargets.filter(t => !hasSuccessfulUtilCache(t.util_key));
+    const skippedCached = allTargets.length - targets.length;
+    if (!targets.length) {
+      applyUtilizationToEdges();
+      $('utilResultHint').textContent = `无需刷新：当前可见链路端口 ${allTargets.length} 个，已缓存成功 ${skippedCached} 个。`;
+      setOK('链路利用率已是最新缓存结果（仅新增链路会触发查询）');
+      return;
+    }
+    const btn = $('refreshUtilization');
+    const old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '查询中...';
+    setErr('');
+    $('utilResultHint').textContent = `正在增量查询 ${targets.length} 个 source 端口（跳过已缓存 ${skippedCached} 个）...`;
+    const workersRaw = parseInt(($('cliMaxWorkersModal')?.value || '4').trim(), 10);
+    const maxWorkers = Number.isFinite(workersRaw) ? Math.min(16, Math.max(1, workersRaw)) : 4;
+    const metric = (($('utilMetric')?.value || 'tx').trim().toLowerCase());
+    const reqPayload = {
+      targets,
+      metric,
+      cli_max_workers: maxWorkers,
+      debug_enabled: !!$('utilDebugEnabled')?.checked,
+      ...readCliRuntimeInputs()
+    };
+    const base = apiBaseUrl();
+    try {
+      const resp = await fetch(`${base}/api/cli/link-utilization`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(reqPayload)
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data?.detail || `HTTP ${resp.status}`);
+      lastUtilDebugUrl = data.debug_download_url ? `${base}${data.debug_download_url}` : '';
+      const beforeOkCount = Array.from(utilByKey.values()).filter(v => v && v.status === 'ok').length;
+      for (const r of (data.results || [])) {
+        const key = String(r.util_key || `${r.source_device || ''}||${r.source_interface || ''}`).toLowerCase();
+        if (!key) continue;
+        utilByKey.set(key, r);
+      }
+      applyUtilizationToEdges();
+      const results = Array.isArray(data.results) ? data.results : [];
+      const okCount = results.filter(r => r && r.status === 'ok').length;
+      const noDataCount = results.filter(r => r && r.status === 'no_data').length;
+      const failCount = results.filter(r => r && r.status === 'failed').length;
+      const firstErr = results.find(r => r && r.error)?.error || '';
+      const secs = Number(data.total_elapsed_seconds || 0).toFixed(1);
+      const totalOkCount = Array.from(utilByKey.values()).filter(v => v && v.status === 'ok').length;
+      const debugText = (reqPayload.debug_enabled && lastUtilDebugUrl) ? '，已生成调试日志' : '';
+      $('utilResultHint').textContent = `利用率已增量更新：本次查询 ${targets.length}（跳过已缓存 ${skippedCached}），查询设备 ${(data.queried_devices || []).length}，耗时 ${secs}s，口径 ${metric.toUpperCase()}，本次成功 ${okCount}，无数据 ${noDataCount}，失败 ${failCount}，累计成功 ${totalOkCount}${debugText}`;
+      if (okCount === 0) {
+        const sample = targets.slice(0, 5).map(t => t.source_device).join(', ');
+        setErr(`链路利用率未获取到有效结果。${firstErr ? `首个错误：${firstErr}。` : ''}样例查询设备：${sample}`);
+      } else {
+        setOK(`链路利用率刷新成功（新增成功 ${Math.max(0, totalOkCount - beforeOkCount)}）`);
+      }
+    } catch (e) {
+      setErr(`刷新链路利用率失败：${String(e && e.message ? e.message : e)}`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = old;
     }
   }
 
@@ -1694,6 +1972,14 @@
         const workersShown = data.cli_max_workers || maxWorkers;
         const elapsedSec = Math.max(0, Math.floor((Date.now() - cliStartedAt) / 1000));
         const only172Text = (data.recursive_only_172 ? '，仅172递归' : '');
+        const detectedNames = data.detected_device_names || {};
+        Object.entries(detectedNames).forEach(([ip, name]) => {
+          const n = String(name || '').trim();
+          const p = String(ip || '').trim();
+          if (!n || !p) return;
+          deviceNameToIpMap.set(n, p);
+          deviceNameToIpMap.set(stripAfterDot(n), p);
+        });
         $('cliResultHintModal').textContent = `CLI 返回 ${data.row_count} 行，已查询设备 ${data.queried_count} 台，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s`;
         const merged = applyQueryCsvText(data.csv_text, { append: importInputAction === 'append', sourceName: 'cli' });
         if ((data.row_count || 0) > 0) {
@@ -1726,6 +2012,7 @@
   $('pickCsvModal').addEventListener('click', () => $('file').click());
   $('appendCsvModal').addEventListener('click', () => $('appendFile').click());
   $('downloadCliDebugModal').addEventListener('click', downloadLastCliDebug);
+  $('downloadUtilDebug').addEventListener('click', downloadLastUtilDebug);
   $('loadPasteModal').addEventListener('click', () => {
     const t = ($('pasteModal').value || '').trim();
     if (!t) { setErr('粘贴内容为空'); return; }
@@ -1826,6 +2113,16 @@
       setOK('已导出坐标');
     } catch (e) {
       setErr(`导出坐标失败：${String(e && e.message ? e.message : e)}`);
+    }
+  });
+
+  $('refreshUtilization').addEventListener('click', refreshLinkUtilization);
+  $('utilColorEnabled').addEventListener('change', () => applyUtilizationToEdges());
+  $('utilLabelEnabled').addEventListener('change', () => refreshEdgeLabelDisplay());
+  $('utilMetric').addEventListener('change', () => {
+    if (utilByKey.size) {
+      applyUtilizationToEdges();
+      $('utilResultHint').textContent = '口径已切换，已按缓存结果重新渲染；点击“刷新链路利用率”仅会增量查询新链路。';
     }
   });
 
