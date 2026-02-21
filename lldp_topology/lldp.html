@@ -1356,6 +1356,33 @@
     URL.revokeObjectURL(url);
   }
 
+  function downloadBlob(filename, blob, fallbackDataUrl = '') {
+    try {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      return true;
+    } catch (_) {
+      if (!fallbackDataUrl) return false;
+      try {
+        const a = document.createElement('a');
+        a.href = fallbackDataUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        return true;
+      } catch (__ ) {
+        return false;
+      }
+    }
+  }
+
   let lastSqlDownloadUrl = '';
   let lastCliDebugUrl = '';
   let importInputAction = 'import'; // import | append
@@ -1724,30 +1751,82 @@
   });
 
   $('exportPng').addEventListener('click', async () => {
-    if (!cy) return;
-    // 直接用 blob-promise，避免 data URL fetch 可能的空白问题
-    const blob = await cy.png({
-      bg: '#ffffff',
-      full: true,
-      scale: 2,
-      output: 'blob-promise'
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = 'lldp-topology.png';
-    a.click();
-    URL.revokeObjectURL(url);
+    if (!cy) { setErr('请先生成拓扑，再导出 PNG'); return; }
+    const btn = $('exportPng');
+    const oldText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '导出中...';
+    setErr('');
+    setOK('正在导出 PNG...');
+
+    const attempts = [
+      { bg: '#ffffff', full: true, scale: 2, output: 'blob-promise' },
+      { bg: '#ffffff', full: true, scale: 1, output: 'blob-promise' },
+      { bg: '#ffffff', full: false, scale: 2, output: 'blob-promise' },
+      { bg: '#ffffff', full: false, scale: 1, output: 'blob-promise' }
+    ];
+
+    let blob = null;
+    let lastErr = null;
+    let fallbackDataUrl = '';
+    for (const cfg of attempts) {
+      try {
+        blob = await cy.png(cfg);
+        if (blob) break;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+
+    if (!blob) {
+      try {
+        fallbackDataUrl = cy.png({ bg: '#ffffff', full: false, scale: 1 });
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+
+    if (!blob && !fallbackDataUrl) {
+      const msg = lastErr && lastErr.message ? lastErr.message : String(lastErr || '未知错误');
+      setErr(`导出 PNG 失败：${msg}`);
+      btn.disabled = false;
+      btn.textContent = oldText;
+      return;
+    }
+
+    const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+    const ok = blob
+      ? downloadBlob(`lldp-topology-${ts}.png`, blob, fallbackDataUrl)
+      : downloadBlob(`lldp-topology-${ts}.png`, new Blob(), fallbackDataUrl);
+    if (!ok) {
+      setErr('导出 PNG 失败：浏览器阻止下载或数据不可用');
+      btn.disabled = false;
+      btn.textContent = oldText;
+      return;
+    }
+    setOK('PNG 导出成功');
+    btn.disabled = false;
+    btn.textContent = oldText;
   });
 
   $('exportJson').addEventListener('click', () => {
-    if (!cy) return;
-    download('lldp-topology.json', JSON.stringify(cy.json(), null, 2), 'application/json');
+    if (!cy) { setErr('请先生成拓扑，再导出 JSON'); return; }
+    try {
+      download('lldp-topology.json', JSON.stringify(cy.json(), null, 2), 'application/json');
+      setOK('JSON 导出成功');
+    } catch (e) {
+      setErr(`导出 JSON 失败：${String(e && e.message ? e.message : e)}`);
+    }
   });
 
   $('exportPos').addEventListener('click', () => {
-    if (!cy) return;
-    download('lldp-positions.json', JSON.stringify(capturePositions(), null, 2), 'application/json');
-    setOK('已导出坐标');
+    if (!cy) { setErr('请先生成拓扑，再导出坐标'); return; }
+    try {
+      download('lldp-positions.json', JSON.stringify(capturePositions(), null, 2), 'application/json');
+      setOK('已导出坐标');
+    } catch (e) {
+      setErr(`导出坐标失败：${String(e && e.message ? e.message : e)}`);
+    }
   });
 
   $('importPosBtn').addEventListener('click', () => {
