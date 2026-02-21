@@ -360,6 +360,7 @@
     </div>
     <div class="row inline">
       <button id="clearSelectionHide">恢复显示</button>
+      <button id="show172Only">只显示172设备</button>
       <button id="deleteSelection">删除选中</button>
       <button id="restoreDeleted">恢复删除设备</button>
     </div>
@@ -375,6 +376,7 @@
     <div class="row">
       <div class="row inline">
         <button id="refreshUtilization" class="primary">刷新链路利用率</button>
+        <button id="downloadUtilCache" type="button">下载链路缓存CSV</button>
         <select id="utilMetric">
           <option value="tx" selected>使用率口径：TX</option>
           <option value="rx">使用率口径：RX</option>
@@ -470,6 +472,7 @@
       </div>
       <div class="modal-actions">
         <button id="runCliGenerateModal" class="primary">执行 CLI 查询</button>
+        <button id="downloadCliCsvModal">导出临时 CSV</button>
         <button id="downloadCliDebugModal">下载 CLI 调试日志</button>
         <button class="closeImportModalBtn">关闭</button>
       </div>
@@ -506,6 +509,7 @@
   let lastCliPassword = '';
   let ctxAppendSingleHop = false;
   let utilByKey = new Map();
+  let primaryCliSource = '';
   // 注册 fCoSE 扩展（兼容不同全局名），避免引用未定义导致脚本中断
 (() => {
     const extFcose = window.cytoscapeFcose || window.cytoFcose || window.fcose || window.fCoSE;
@@ -834,8 +838,14 @@
       const aRole = roleOf(lh);
       const bRole = roleOf(rh);
 
-      const aIp = nodeIpMap.get(lh) || (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(lh) ? lh : '');
-      const bIp = nodeIpMap.get(rh) || (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(rh) ? rh : '');
+      const aIp = nodeIpMap.get(lh)
+        || deviceNameToIpMap.get(lh)
+        || deviceNameToIpMap.get(stripAfterDot(lh))
+        || (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(lh) ? lh : '');
+      const bIp = nodeIpMap.get(rh)
+        || deviceNameToIpMap.get(rh)
+        || deviceNameToIpMap.get(stripAfterDot(rh))
+        || (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(rh) ? rh : '');
       nodes.set(aId, { id: aId, label: lh, short: shortLabel(lh), role: aRole, rank: roleRank(aRole), ip: aIp });
       nodes.set(bId, { id: bId, label: rh, short: shortLabel(rh), role: bRole, rank: roleRank(bRole), ip: bIp });
 
@@ -1158,6 +1168,60 @@
     setOK(`只显示 ${hits.length} 个节点，条件：${terms.join(', ')}`);
   }
 
+  function applyShowOnly172() {
+    if (!cy) return;
+    cy.elements().removeClass('onlyHidden');
+    const colLH = $('colLocalHost')?.value || 'localhostname';
+    const colRH = $('colRemoteHost')?.value || 'remotehostname';
+    const colRIP = headers.find((h) => ['目的设备ip', 'remoteip', 'remote_ip', 'mgmtip'].includes(String(h || '').toLowerCase()));
+    const hostToIp = new Map();
+    if (colRIP) {
+      for (const r of rawRows) {
+        const rh = String(r[colRH] || '').trim();
+        const rip = String(r[colRIP] || '').trim();
+        if (!rh || !rip) continue;
+        if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(rip)) {
+          hostToIp.set(rh, rip);
+          hostToIp.set(stripAfterDot(rh), rip);
+        }
+      }
+    }
+
+    const resolveNodeIpv4 = (n) => {
+      const label = String(n.data('label') || '').trim();
+      const short = stripAfterDot(label);
+      const ip = String(n.data('ip') || '').trim();
+      if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(ip)) return ip;
+      const cand = hostToIp.get(label)
+        || hostToIp.get(short)
+        || deviceNameToIpMap.get(label)
+        || deviceNameToIpMap.get(short)
+        || nodeIpMap.get(label)
+        || nodeIpMap.get(short)
+        || (label.match(/^(?:\d{1,3}\.){3}\d{1,3}$/) ? label : '');
+      return /^(?:\d{1,3}\.){3}\d{1,3}$/.test(String(cand || '').trim()) ? String(cand).trim() : '';
+    };
+
+    const core = cy.nodes().filter(n => {
+      const resolvedIp = resolveNodeIpv4(n);
+      return resolvedIp.startsWith('172.');
+    });
+    if (!core.length) {
+      setErr('未找到172地址节点');
+      return;
+    }
+    const keepNodes = core;
+    const hideNodes = cy.nodes().not(core);
+    hideNodes.addClass('onlyHidden');
+    cy.edges().forEach((e) => {
+      const sHidden = e.source().hasClass('onlyHidden');
+      const tHidden = e.target().hasClass('onlyHidden');
+      if (sHidden || tHidden) e.addClass('onlyHidden');
+      else e.removeClass('onlyHidden');
+    });
+    setOK(`只显示172设备：${core.length} 个（192/无IP已隐藏）`);
+  }
+
   function parseTerms(raw) {
     return String(raw || '')
       .split(',')
@@ -1259,8 +1323,8 @@
 
   function clearSelectionHide() {
     if (!cy) return;
-    cy.elements().removeClass('sel-hidden');
-    setOK('已恢复显示全部节点。');
+    cy.elements().removeClass('sel-hidden onlyHidden filtered dim hit');
+    setOK('已恢复显示全部节点与链路。');
   }
 
   function updateCounts() {
@@ -1476,6 +1540,7 @@
   let lastSqlDownloadUrl = '';
   let lastCliDebugUrl = '';
   let lastUtilDebugUrl = '';
+  let utilCacheLoadedAt = '';
   let importInputAction = 'import'; // import | append
   const CLI_PREF_KEY = 'lldp_cli_import_prefs_v1';
   const TOPOLOGY_UI_PREF_KEY = 'lldp_topology_ui_prefs_v1';
@@ -1489,7 +1554,6 @@
     const append = !!opts.append;
     const sourceName = opts.sourceName || 'query';
     if (!append) {
-      utilByKey = new Map();
       loadDataFromText(csvText);
       if (rawRows.length) buildGraph();
       return { mergedRows: rawRows.length, addedRows: rawRows.length };
@@ -1608,6 +1672,41 @@
     a.href = lastUtilDebugUrl;
     a.target = '_blank';
     a.click();
+  }
+
+  function downloadUtilCacheCsv() {
+    const base = apiBaseUrl();
+    const a = document.createElement('a');
+    a.href = `${base}/api/cli/link-utilization-cache/file`;
+    a.target = '_blank';
+    a.click();
+  }
+
+  async function loadUtilCacheFromServer() {
+    const base = apiBaseUrl();
+    try {
+      const resp = await fetch(`${base}/api/cli/link-utilization-cache`);
+      if (!resp.ok) return false;
+      const data = await resp.json();
+      const rows = Array.isArray(data?.rows) ? data.rows : [];
+      const map = new Map();
+      rows.forEach((r) => {
+        const key = String(r?.util_key || '').toLowerCase();
+        if (!key) return;
+        map.set(key, {
+          ...r,
+          tx_pct: (typeof r.tx_pct === 'number') ? r.tx_pct : (r.tx_pct === null || r.tx_pct === '' ? null : Number(r.tx_pct)),
+          rx_pct: (typeof r.rx_pct === 'number') ? r.rx_pct : (r.rx_pct === null || r.rx_pct === '' ? null : Number(r.rx_pct)),
+          used_pct: (typeof r.used_pct === 'number') ? r.used_pct : (r.used_pct === null || r.used_pct === '' ? null : Number(r.used_pct)),
+        });
+      });
+      utilByKey = map;
+      utilCacheLoadedAt = new Date().toISOString();
+      if (cy) applyUtilizationToEdges();
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   function loadCliPrefs() {
@@ -1730,20 +1829,13 @@
       }
     }
 
-    // Only query currently visible topology edges to match user's on-screen graph.
+    // Query all currently visible source ports; cache skip happens later.
     const neededUtilKeys = new Set();
     if (cy) {
       cy.edges(':visible').forEach((e) => {
         const keys = e.data('utilKeys');
         if (Array.isArray(keys)) {
-          // In merged-edge mode, query one representative source port per visible edge,
-          // so query count tracks what user sees on screen.
-          if (mergedMode) {
-            const first = keys.find(Boolean);
-            if (first) neededUtilKeys.add(String(first).toLowerCase());
-          } else {
-            keys.forEach((k) => { if (k) neededUtilKeys.add(String(k).toLowerCase()); });
-          }
+          keys.forEach((k) => { if (k) neededUtilKeys.add(String(k).toLowerCase()); });
           return;
         }
         const single = e.data('utilKey');
@@ -1834,7 +1926,8 @@
       const secs = Number(data.total_elapsed_seconds || 0).toFixed(1);
       const totalOkCount = Array.from(utilByKey.values()).filter(v => v && v.status === 'ok').length;
       const debugText = (reqPayload.debug_enabled && lastUtilDebugUrl) ? '，已生成调试日志' : '';
-      $('utilResultHint').textContent = `利用率已增量更新：本次查询 ${targets.length}（跳过已缓存 ${skippedCached}），查询设备 ${(data.queried_devices || []).length}，耗时 ${secs}s，口径 ${metric.toUpperCase()}，本次成功 ${okCount}，无数据 ${noDataCount}，失败 ${failCount}，累计成功 ${totalOkCount}${debugText}`;
+      const cacheText = `，缓存更新 ${Number(data.cache_updates || 0)}，缓存总计 ${Number(data.cache_total || 0)}`;
+      $('utilResultHint').textContent = `利用率已增量更新：本次查询 ${targets.length}（跳过已缓存 ${skippedCached}），查询设备 ${(data.queried_devices || []).length}，耗时 ${secs}s，口径 ${metric.toUpperCase()}，本次成功 ${okCount}，无数据 ${noDataCount}，失败 ${failCount}，累计成功 ${totalOkCount}${cacheText}${debugText}`;
       if (okCount === 0) {
         const sample = targets.slice(0, 5).map(t => t.source_device).join(', ');
         setErr(`链路利用率未获取到有效结果。${firstErr ? `首个错误：${firstErr}。` : ''}样例查询设备：${sample}`);
@@ -1982,6 +2075,9 @@
         });
         $('cliResultHintModal').textContent = `CLI 返回 ${data.row_count} 行，已查询设备 ${data.queried_count} 台，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s`;
         const merged = applyQueryCsvText(data.csv_text, { append: importInputAction === 'append', sourceName: 'cli' });
+        if (importInputAction !== 'append' && addr) {
+          primaryCliSource = addr;
+        }
         if ((data.row_count || 0) > 0) {
           if (importInputAction === 'append') {
             setStatus(`CLI 数据已追加并生成拓扑（总用时 ${elapsedSec}s）`);
@@ -2011,8 +2107,10 @@
   });
   $('pickCsvModal').addEventListener('click', () => $('file').click());
   $('appendCsvModal').addEventListener('click', () => $('appendFile').click());
+  $('downloadCliCsvModal').addEventListener('click', downloadLastSqlCsv);
   $('downloadCliDebugModal').addEventListener('click', downloadLastCliDebug);
   $('downloadUtilDebug').addEventListener('click', downloadLastUtilDebug);
+  $('downloadUtilCache').addEventListener('click', downloadUtilCacheCsv);
   $('loadPasteModal').addEventListener('click', () => {
     const t = ($('pasteModal').value || '').trim();
     if (!t) { setErr('粘贴内容为空'); return; }
@@ -2024,6 +2122,7 @@
   });
   loadCliPrefs();
   loadTopologyUiPrefs();
+  loadUtilCacheFromServer();
 
   $('build').addEventListener('click', buildGraph);
   $('relayout').addEventListener('click', relayout);
@@ -2209,6 +2308,40 @@
     hideCtx();
   });
 
+  function resolveCliQueryTargetForNode(node) {
+    if (!node) return '';
+    const label = (node.data('label') || '').trim();
+    const shortLabelText = stripAfterDot(label);
+    const nodeIp = (node.data('ip') || '').trim();
+    const ipv4 = (s) => /^(?:\d{1,3}\.){3}\d{1,3}$/.test(String(s || '').trim());
+    if (nodeIp && ipv4(nodeIp)) return nodeIp;
+    if (label && ipv4(label)) return label;
+
+    const mapHits = [
+      deviceNameToIpMap.get(label),
+      deviceNameToIpMap.get(shortLabelText),
+      nodeIpMap.get(label),
+      nodeIpMap.get(shortLabelText),
+    ].filter(Boolean);
+    const direct = mapHits.find(ipv4);
+    if (direct) return direct;
+
+    // Fallback: scan current raw rows for matching remote host -> remote IP column.
+    const colRH = $('colRemoteHost')?.value || 'remotehostname';
+    const colRIP = headers.find((h) => ['目的设备ip', 'remoteip', 'remote_ip', 'mgmtip'].includes(String(h || '').toLowerCase()));
+    if (colRIP) {
+      for (const r of rawRows) {
+        const rh = String(r[colRH] || '').trim();
+        const rip = String(r[colRIP] || '').trim();
+        if (!rip || !ipv4(rip)) continue;
+        if (rh === label || stripAfterDot(rh) === shortLabelText) return rip;
+      }
+    }
+
+    // Last fallback to label (for environments where jump host can resolve it).
+    return label;
+  }
+
   $('ctxAppendQuery').addEventListener('click', async () => {
     const nodes = ctxNodes();
     if (!nodes.length) return hideCtx();
@@ -2238,14 +2371,14 @@
       return;
     }
 
-    // CLI mode: prefer management IP, fallback to node label.
-    const target = ip || label;
+    // CLI mode: strongly prefer management IP to avoid jump-host DNS resolution failures.
+    const target = resolveCliQueryTargetForNode(node);
     if (!target) {
       setErr('当前节点没有可用于 CLI 查询的设备地址/名称。');
       return;
     }
     $('cliDeviceAddrModal').value = target;
-    setOK(`正在以 CLI 方式追加查询：${target}`);
+    setOK(`正在以 CLI 方式追加查询：${target}${target !== label ? `（节点：${label}）` : ''}`);
     $('runCliGenerateModal').click();
   });
 
@@ -2290,6 +2423,7 @@
   $('showOnly').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') applyShowOnly();
   });
+  $('show172Only').addEventListener('click', applyShowOnly172);
 $('filter').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     saveTopologyUiPrefs();

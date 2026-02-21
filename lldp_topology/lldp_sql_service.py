@@ -39,6 +39,22 @@ from pydantic import BaseModel, Field
 BASE_DIR = Path(__file__).resolve().parent
 TMP_DIR = BASE_DIR / "tmp_csv"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
+LINK_UTIL_CACHE_FILE = TMP_DIR / "link_util_cache.csv"
+LINK_UTIL_CACHE_FIELDS = [
+    "util_key",
+    "source_device",
+    "source_interface",
+    "vendor",
+    "status",
+    "tx_pct",
+    "rx_pct",
+    "used_pct",
+    "tx_bps",
+    "rx_bps",
+    "bw_bps",
+    "error",
+    "updated_at",
+]
 
 
 def load_dotenv_file(path: str) -> None:
@@ -207,7 +223,9 @@ JOIN (
 
 
 # Keep these patterns aligned with netlog_extractor SMC flow.
-PROMPT_PATTERN = re.compile(r"(?m)^([A-Za-z0-9_.-]+(?:\([^)]+\))?[>#]|<[^>\r\n]+>|\[[^\]\r\n]+\])\s*$")
+# Device prompts include Huawei (<host>), NX-OS/Arista (host#), and IOS-XR
+# forms like "RP/0/RSP1/CPU0:HOST#". Keep this broad but line-anchored.
+PROMPT_PATTERN = re.compile(r"(?m)^([\w./:-]+(?:\([^)]+\))?[>#]|<[^>\r\n]+>|\[[^\]\r\n]+\])\s*$")
 JUMP_PROMPT_PATTERN = re.compile(r"(?m)^.*[@].*[$#]\s*$")
 YES_PATTERN = re.compile(r"\(yes/no(?:/\[fingerprint\])?\)\??", re.IGNORECASE)
 TOKEN_RETRY_PATTERN = re.compile(
@@ -772,7 +790,10 @@ def parse_lldp_neighbors_huawei(output: str) -> list[dict[str, str]]:
                 if ip_match:
                     cur[field] = ip_match.group(0)
                 elif clean_value(value):
-                    cur[field] = clean_value(value)
+                    # Prefer IPv4 for recursion/query. Do not overwrite an existing IPv4
+                    # with IPv6 or other non-IPv4 tokens.
+                    if not cur[field]:
+                        cur[field] = clean_value(value)
                 else:
                     wait_mgmt_value = True
             elif field == "remote_if":
@@ -1523,6 +1544,122 @@ def write_link_util_debug_text(file_prefix: str, meta: dict[str, Any]) -> tuple[
     return safe_name, out_path
 
 
+def _num_or_empty(v: Any) -> str:
+    if v is None:
+        return ""
+    try:
+        return str(float(v))
+    except Exception:
+        return ""
+
+
+def _parse_num(v: Any) -> float | None:
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def read_link_util_cache_rows() -> list[dict[str, Any]]:
+    if not LINK_UTIL_CACHE_FILE.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        with LINK_UTIL_CACHE_FILE.open("r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                util_key = str(r.get("util_key", "")).strip().lower()
+                if not util_key:
+                    continue
+                rows.append(
+                    {
+                        "util_key": util_key,
+                        "source_device": str(r.get("source_device", "")).strip(),
+                        "source_interface": str(r.get("source_interface", "")).strip(),
+                        "vendor": str(r.get("vendor", "")).strip(),
+                        "status": str(r.get("status", "")).strip() or "no_data",
+                        "tx_pct": _parse_num(r.get("tx_pct")),
+                        "rx_pct": _parse_num(r.get("rx_pct")),
+                        "used_pct": _parse_num(r.get("used_pct")),
+                        "tx_bps": _parse_num(r.get("tx_bps")),
+                        "rx_bps": _parse_num(r.get("rx_bps")),
+                        "bw_bps": _parse_num(r.get("bw_bps")),
+                        "error": str(r.get("error", "")).strip(),
+                        "updated_at": str(r.get("updated_at", "")).strip(),
+                    }
+                )
+    except Exception:
+        return []
+    return rows
+
+
+def merge_link_util_cache(results: list[dict[str, Any]]) -> int:
+    by_key: dict[str, dict[str, Any]] = {
+        str(r.get("util_key", "")).strip().lower(): r
+        for r in read_link_util_cache_rows()
+        if str(r.get("util_key", "")).strip()
+    }
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    updates = 0
+    for r in results or []:
+        util_key = str(r.get("util_key", "")).strip().lower()
+        if not util_key:
+            src = str(r.get("source_device", "")).strip().lower()
+            sif = str(r.get("source_interface", "")).strip()
+            if src and sif:
+                util_key = f"{src}||{sif}".lower()
+        if not util_key:
+            continue
+        by_key[util_key] = {
+            "util_key": util_key,
+            "source_device": str(r.get("source_device", "")).strip(),
+            "source_interface": str(r.get("source_interface", "")).strip(),
+            "vendor": str(r.get("vendor", "")).strip(),
+            "status": str(r.get("status", "")).strip() or "no_data",
+            "tx_pct": r.get("tx_pct"),
+            "rx_pct": r.get("rx_pct"),
+            "used_pct": r.get("used_pct"),
+            "tx_bps": r.get("tx_bps"),
+            "rx_bps": r.get("rx_bps"),
+            "bw_bps": r.get("bw_bps"),
+            "error": str(r.get("error", "")).strip(),
+            "updated_at": now,
+        }
+        updates += 1
+
+    try:
+        with LINK_UTIL_CACHE_FILE.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=LINK_UTIL_CACHE_FIELDS, extrasaction="ignore")
+            writer.writeheader()
+            for k in sorted(by_key.keys()):
+                row = by_key[k]
+                writer.writerow(
+                    {
+                        "util_key": row.get("util_key", ""),
+                        "source_device": row.get("source_device", ""),
+                        "source_interface": row.get("source_interface", ""),
+                        "vendor": row.get("vendor", ""),
+                        "status": row.get("status", ""),
+                        "tx_pct": _num_or_empty(row.get("tx_pct")),
+                        "rx_pct": _num_or_empty(row.get("rx_pct")),
+                        "used_pct": _num_or_empty(row.get("used_pct")),
+                        "tx_bps": _num_or_empty(row.get("tx_bps")),
+                        "rx_bps": _num_or_empty(row.get("rx_bps")),
+                        "bw_bps": _num_or_empty(row.get("bw_bps")),
+                        "error": row.get("error", ""),
+                        "updated_at": row.get("updated_at", ""),
+                    }
+                )
+    except Exception:
+        return 0
+    return updates
+
+
 def _unit_multiplier(unit: str) -> float:
     u = (unit or "").strip().lower()
     if u in {"g", "gb", "gbit", "gbps"}:
@@ -1992,6 +2129,9 @@ def query_link_utilization(payload: LinkUtilRequest) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"CLI link utilization failed: {exc}") from exc
 
+    cache_updates = merge_link_util_cache(meta.get("results", []))
+    cache_total = len(read_link_util_cache_rows())
+
     debug_download_url = ""
     debug_file = ""
     if payload.debug_enabled:
@@ -2012,9 +2152,30 @@ def query_link_utilization(payload: LinkUtilRequest) -> dict[str, Any]:
         "cli_max_workers": meta.get("cli_max_workers"),
         "total_elapsed_seconds": meta.get("total_elapsed_seconds"),
         "debug_entries": meta.get("debug_entries", []),
+        "cache_updates": cache_updates,
+        "cache_total": cache_total,
         "debug_file": debug_file,
         "debug_download_url": debug_download_url,
     }
+
+
+@app.get("/api/cli/link-utilization-cache")
+def get_link_utilization_cache() -> dict[str, Any]:
+    rows = read_link_util_cache_rows()
+    return {
+        "ok": True,
+        "row_count": len(rows),
+        "rows": rows,
+    }
+
+
+@app.get("/api/cli/link-utilization-cache/file")
+def download_link_utilization_cache():
+    if not LINK_UTIL_CACHE_FILE.exists():
+        with LINK_UTIL_CACHE_FILE.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=LINK_UTIL_CACHE_FIELDS, extrasaction="ignore")
+            writer.writeheader()
+    return FileResponse(LINK_UTIL_CACHE_FILE, media_type="text/csv", filename=LINK_UTIL_CACHE_FILE.name)
 
 
 @app.get("/api/lldp-csv/file/{filename}")
