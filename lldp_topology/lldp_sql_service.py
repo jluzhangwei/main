@@ -23,7 +23,7 @@ import select
 import signal
 import subprocess
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -2071,16 +2071,44 @@ def collect_link_utilization(
     debug_entries: list[dict[str, Any]] = []
     total_start = time.perf_counter()
     devices = sorted(grouped.keys())
+    per_device_timeout = max(15, min(90, int(cfg.connect_timeout) + int(cfg.command_timeout) + 10))
     if devices:
-        with ThreadPoolExecutor(max_workers=min(workers, len(devices))) as pool:
-            fmap = {
-                pool.submit(collect_device_interface_utils_once, dev, grouped[dev], metric, cfg): dev
+        pool = ThreadPoolExecutor(max_workers=min(workers, len(devices)))
+        try:
+            by_dev = {
+                dev: pool.submit(collect_device_interface_utils_once, dev, grouped[dev], metric, cfg)
                 for dev in devices
             }
-            for fut in as_completed(fmap):
-                dev = fmap[fut]
+            for dev, fut in by_dev.items():
                 try:
-                    res = fut.result()
+                    res = fut.result(timeout=per_device_timeout)
+                except FuturesTimeoutError:
+                    out_results.extend(
+                        {
+                            "source_device": dev,
+                            "source_interface": iface,
+                            "util_key": ref.util_key or "",
+                            "vendor": "unknown",
+                            "status": "failed",
+                            "tx_pct": None,
+                            "rx_pct": None,
+                            "used_pct": None,
+                            "tx_bps": None,
+                            "rx_bps": None,
+                            "bw_bps": None,
+                            "error": f"device_timeout: exceeded {per_device_timeout}s",
+                        }
+                        for iface, refs in grouped.get(dev, {}).items()
+                        for ref in refs
+                    )
+                    debug_entries.append(
+                        {
+                            "device": dev,
+                            "status": "failed",
+                            "error": f"device_timeout: exceeded {per_device_timeout}s",
+                        }
+                    )
+                    continue
                 except Exception as exc:
                     out_results.extend(
                         {
@@ -2113,12 +2141,15 @@ def collect_link_utilization(
                         "transcript": (res.get("transcript", []) if debug_enabled else []),
                     }
                 )
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
     return {
         "results": out_results,
         "debug_entries": debug_entries,
         "cli_max_workers": workers,
         "queried_devices": devices,
         "total_elapsed_seconds": max(0.0, time.perf_counter() - total_start),
+        "per_device_timeout": per_device_timeout,
     }
 
 
@@ -2251,7 +2282,14 @@ def query_link_utilization(payload: LinkUtilRequest) -> dict[str, Any]:
             debug_enabled=payload.debug_enabled,
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"CLI link utilization failed: {exc}") from exc
+        msg = str(exc)
+        if (
+            "Missing CLI device credentials" in msg
+            or "Missing SMC_COMMAND" in msg
+            or "config error" in msg.lower()
+        ):
+            raise HTTPException(status_code=400, detail=f"CLI link utilization config error: {msg}") from exc
+        raise HTTPException(status_code=500, detail=f"CLI link utilization failed: {msg}") from exc
 
     cache_updates = merge_link_util_cache(meta.get("results", []))
     cache_total = len(read_link_util_cache_rows())
@@ -2274,6 +2312,7 @@ def query_link_utilization(payload: LinkUtilRequest) -> dict[str, Any]:
         "results": meta.get("results", []),
         "queried_devices": meta.get("queried_devices", []),
         "cli_max_workers": meta.get("cli_max_workers"),
+        "per_device_timeout": meta.get("per_device_timeout"),
         "total_elapsed_seconds": meta.get("total_elapsed_seconds"),
         "debug_entries": meta.get("debug_entries", []),
         "cache_updates": cache_updates,

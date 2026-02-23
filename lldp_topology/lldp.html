@@ -1938,23 +1938,38 @@
     btn.disabled = true;
     btn.textContent = '查询中...';
     setErr('');
-    $('utilResultHint').textContent = `正在增量查询 ${targets.length} 个 source 端口（跳过已缓存 ${skippedCached} 个）...`;
+    const startedAt = Date.now();
+    const hintBase = `正在增量查询 ${targets.length} 个 source 端口（跳过已缓存 ${skippedCached} 个）`;
+    $('utilResultHint').textContent = `${hintBase}...`;
+    const hintTimer = setInterval(() => {
+      const sec = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+      $('utilResultHint').textContent = `${hintBase}，已耗时 ${sec}s ...`;
+    }, 1000);
     const workersRaw = parseInt(($('cliMaxWorkersModal')?.value || '4').trim(), 10);
     const maxWorkers = Number.isFinite(workersRaw) ? Math.min(16, Math.max(1, workersRaw)) : 4;
     const metric = (($('utilMetric')?.value || 'tx').trim().toLowerCase());
+    const runtimeCfg = readCliRuntimeInputs();
+    // Utilization query should fail fast; avoid inheriting overly large CLI import timeouts.
+    runtimeCfg.cli_connect_timeout = Math.min(20, Math.max(5, Number(runtimeCfg.cli_connect_timeout || 20)));
+    runtimeCfg.cli_command_timeout = Math.min(20, Math.max(5, Number(runtimeCfg.cli_command_timeout || 20)));
     const reqPayload = {
       targets,
       metric,
       cli_max_workers: maxWorkers,
       debug_enabled: !!$('utilDebugEnabled')?.checked,
-      ...readCliRuntimeInputs()
+      ...runtimeCfg
     };
     const base = apiBaseUrl();
+    const controller = new AbortController();
+    // Let backend timeout policy decide; avoid frontend false timeout aborts.
+    const requestTimeoutMs = 0;
+    const timeoutId = requestTimeoutMs > 0 ? setTimeout(() => controller.abort(), requestTimeoutMs) : null;
     try {
       const resp = await fetch(`${base}/api/cli/link-utilization`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(reqPayload)
+        body: JSON.stringify(reqPayload),
+        signal: controller.signal
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data?.detail || `HTTP ${resp.status}`);
@@ -1975,7 +1990,8 @@
       const totalOkCount = Array.from(utilByKey.values()).filter(v => v && v.status === 'ok').length;
       const debugText = (reqPayload.debug_enabled && lastUtilDebugUrl) ? '，已生成调试日志' : '';
       const cacheText = `，缓存更新 ${Number(data.cache_updates || 0)}，缓存总计 ${Number(data.cache_total || 0)}`;
-      $('utilResultHint').textContent = `利用率已增量更新：本次查询 ${targets.length}（跳过已缓存 ${skippedCached}），查询设备 ${(data.queried_devices || []).length}，耗时 ${secs}s，口径 ${metric.toUpperCase()}，本次成功 ${okCount}，无数据 ${noDataCount}，失败 ${failCount}，累计成功 ${totalOkCount}${cacheText}${debugText}`;
+      const perDevTimeoutText = data.per_device_timeout ? `，单设备超时 ${data.per_device_timeout}s` : '';
+      $('utilResultHint').textContent = `利用率已增量更新：本次查询 ${targets.length}（跳过已缓存 ${skippedCached}），查询设备 ${(data.queried_devices || []).length}，耗时 ${secs}s，口径 ${metric.toUpperCase()}，本次成功 ${okCount}，无数据 ${noDataCount}，失败 ${failCount}，累计成功 ${totalOkCount}${perDevTimeoutText}${cacheText}${debugText}`;
       if (okCount === 0) {
         const sample = targets.slice(0, 5).map(t => t.source_device).join(', ');
         setErr(`链路利用率未获取到有效结果。${firstErr ? `首个错误：${firstErr}。` : ''}样例查询设备：${sample}`);
@@ -1983,8 +1999,14 @@
         setOK(`链路利用率刷新成功（新增成功 ${Math.max(0, totalOkCount - beforeOkCount)}）`);
       }
     } catch (e) {
-      setErr(`刷新链路利用率失败：${String(e && e.message ? e.message : e)}`);
+      const msg = (e && e.name === 'AbortError')
+        ? '请求被中断，请重试。'
+        : String(e && e.message ? e.message : e);
+      setErr(`刷新链路利用率失败：${msg}`);
+      $('utilResultHint').textContent = `链路利用率查询失败：${msg}`;
     } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+      clearInterval(hintTimer);
       btn.disabled = false;
       btn.textContent = old;
     }
