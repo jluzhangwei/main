@@ -571,9 +571,21 @@
     if (typeof s !== 'string') return s;
     const t = s.trim();
     // Keep IPv4 intact even when strip-domain is enabled.
-    if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(t)) return t;
+    if (isIpv4(t)) return t;
     const idx = s.indexOf('.');
     return idx >= 0 ? s.slice(0, idx) : s;
+  }
+
+  function isIpv4(s) {
+    return /^(?:\d{1,3}\.){3}\d{1,3}$/.test(String(s || '').trim());
+  }
+
+  function rowValue(row, keys) {
+    for (const k of keys) {
+      const v = row?.[k];
+      if (v != null && String(v).trim() !== '') return String(v).trim();
+    }
+    return '';
   }
 
   // ✅ 关键：hash id，避免 hostname 清洗后冲突导致节点叠在一起
@@ -842,10 +854,17 @@
 
     // Build hostname -> management IP map from CSV extended columns.
     for (const r of rows) {
+      const lh = String(r[colLH] || '').trim();
       const rh = String(r[colRH] || '').trim();
-      const rip = String(r['目的设备IP'] || r['remoteip'] || '').trim();
-      if (rh && rip && /^(?:\d{1,3}\.){3}\d{1,3}$/.test(rip)) {
+      const sip = rowValue(r, ['源设备IP', '源设备ip', 'ipaddr', 'sourceip']);
+      const rip = rowValue(r, ['目的设备IP', '目的设备ip', 'remoteip']);
+      if (lh && sip && isIpv4(sip)) {
+        nodeIpMap.set(lh, sip);
+        nodeIpMap.set(stripAfterDot(lh), sip);
+      }
+      if (rh && rip && isIpv4(rip)) {
         nodeIpMap.set(rh, rip);
+        nodeIpMap.set(stripAfterDot(rh), rip);
       }
     }
 
@@ -863,14 +882,18 @@
       const aRole = roleOf(lh);
       const bRole = roleOf(rh);
 
-      const aIp = nodeIpMap.get(lh)
+      const rowSourceIp = rowValue(r, ['源设备IP', '源设备ip', 'ipaddr', 'sourceip']);
+      const rowRemoteIp = rowValue(r, ['目的设备IP', '目的设备ip', 'remoteip']);
+      const aIp = (isIpv4(rowSourceIp) ? rowSourceIp : '')
+        || nodeIpMap.get(lh)
         || deviceNameToIpMap.get(lh)
         || deviceNameToIpMap.get(stripAfterDot(lh))
-        || (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(lh) ? lh : '');
-      const bIp = nodeIpMap.get(rh)
+        || (isIpv4(lh) ? lh : '');
+      const bIp = (isIpv4(rowRemoteIp) ? rowRemoteIp : '')
+        || nodeIpMap.get(rh)
         || deviceNameToIpMap.get(rh)
         || deviceNameToIpMap.get(stripAfterDot(rh))
-        || (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(rh) ? rh : '');
+        || (isIpv4(rh) ? rh : '');
       nodes.set(aId, { id: aId, label: lh, short: shortLabel(lh), role: aRole, rank: roleRank(aRole), ip: aIp });
       nodes.set(bId, { id: bId, label: rh, short: shortLabel(rh), role: bRole, rank: roleRank(bRole), ip: bIp });
 
@@ -1638,7 +1661,7 @@
       if (ctxAppendSingleHop && csvText) {
         const parsed = parseCSV(csvText);
         const d1 = parsed.rows.filter(r => String(r.depth || '').trim() === '1');
-        const hdr = parsed.headers.length ? parsed.headers : ['depth','localhostname','localinterface','remotehostname','remoteinterface','目的设备Vendor','目的设备IP'];
+        const hdr = parsed.headers.length ? parsed.headers : ['depth','localhostname','ipaddr','源设备IP','localinterface','remotehostname','remoteinterface','目的设备Vendor','目的设备IP'];
         const esc = (v) => {
           const s = String(v ?? '');
           return /[\",\\n]/.test(s) ? `\"${s.replace(/\"/g, '\"\"')}\"` : s;
@@ -1827,7 +1850,6 @@
     const colLI = $('colLocalIf').value;
     const strip = $('stripDomain').value === 'yes';
     const allByUtilKey = new Map();
-    const ipv4 = (s) => /^(?:\d{1,3}\.){3}\d{1,3}$/.test(String(s || '').trim());
     for (const r of rawRows) {
       const srcRaw = String(r[colLH] || '').trim();
       const srcIf = String(r[colLI] || '').trim();
@@ -1835,14 +1857,15 @@
       const srcDisplay = strip ? stripAfterDot(srcRaw) : srcRaw;
       const utilKey = `${srcDisplay}||${srcIf}`.toLowerCase();
       const dedupeKey = `${srcRaw}||${srcIf}`.toLowerCase();
-      let queryDevice = srcRaw;
-      if (!ipv4(queryDevice)) {
+      const sourceIpHint = rowValue(r, ['源设备IP', '源设备ip', 'ipaddr', 'sourceip']);
+      let queryDevice = isIpv4(sourceIpHint) ? sourceIpHint : srcRaw;
+      if (!isIpv4(queryDevice)) {
         const mapHit = deviceNameToIpMap.get(srcRaw) || deviceNameToIpMap.get(stripAfterDot(srcRaw));
         const hit1 = nodeIpMap.get(srcRaw);
         const hit2 = nodeIpMap.get(stripAfterDot(srcRaw));
         const hit3 = nodeIpMap.get(srcDisplay);
         const cand = mapHit || hit1 || hit2 || hit3;
-        if (cand && ipv4(cand)) queryDevice = cand;
+        if (cand && isIpv4(cand)) queryDevice = cand;
       }
       if (!allByUtilKey.has(utilKey)) {
         allByUtilKey.set(utilKey, {
@@ -2319,9 +2342,13 @@
   $('ctxCopyIp').addEventListener('click', async () => {
     const nodes = ctxNodes();
     if (!nodes.length) return hideCtx();
-    const ips = nodes
-      .map(n => (n.data('ip') || '').trim())
-      .filter(Boolean);
+    const ips = [];
+    nodes.forEach((n) => {
+      const fromNode = String(n.data('ip') || '').trim();
+      if (fromNode && isIpv4(fromNode)) ips.push(fromNode);
+      const fallback = collectNodeIpsFromRows(n);
+      fallback.forEach((ip) => ips.push(ip));
+    });
     if (!ips.length) {
       setErr('选中节点未找到可复制地址');
       return hideCtx();
@@ -2335,6 +2362,29 @@
     }
     hideCtx();
   });
+
+  function collectNodeIpsFromRows(node) {
+    if (!node) return [];
+    const label = String(node.data('label') || '').trim();
+    const shortLabelText = stripAfterDot(label);
+    if (!label) return [];
+    const colLH = $('colLocalHost')?.value || 'localhostname';
+    const colRH = $('colRemoteHost')?.value || 'remotehostname';
+    const out = new Set();
+    for (const r of rawRows) {
+      const lh = String(r[colLH] || '').trim();
+      const rh = String(r[colRH] || '').trim();
+      const srcIp = rowValue(r, ['源设备IP', '源设备ip', 'ipaddr', 'sourceip']);
+      const dstIp = rowValue(r, ['目的设备IP', '目的设备ip', 'remoteip']);
+      if (lh && (lh === label || stripAfterDot(lh) === shortLabelText) && isIpv4(srcIp)) {
+        out.add(srcIp);
+      }
+      if (rh && (rh === label || stripAfterDot(rh) === shortLabelText) && isIpv4(dstIp)) {
+        out.add(dstIp);
+      }
+    }
+    return Array.from(out);
+  }
 
   function resolveCliQueryTargetForNode(node) {
     if (!node) return '';

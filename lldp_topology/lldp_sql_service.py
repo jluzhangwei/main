@@ -114,6 +114,7 @@ LLDP_DEPTH3_SQL = """
 SELECT DISTINCT
     1 AS depth,
     L1.localhostname,
+    L1.ipaddr AS sourceip,
     L1.localinterface,
     SUBSTRING_INDEX(L1.remotehostname, '.', 1) AS remotehostname,
     L1.remoteinterface
@@ -135,6 +136,7 @@ UNION ALL
 SELECT DISTINCT
     2 AS depth,
     L2.localhostname,
+    L2.ipaddr AS sourceip,
     L2.localinterface,
     SUBSTRING_INDEX(L2.remotehostname, '.', 1) AS remotehostname,
     L2.remoteinterface
@@ -172,6 +174,7 @@ UNION ALL
 SELECT DISTINCT
     3 AS depth,
     L3.localhostname,
+    L3.ipaddr AS sourceip,
     L3.localinterface,
     SUBSTRING_INDEX(L3.remotehostname, '.', 1) AS remotehostname,
     L3.remoteinterface
@@ -1430,6 +1433,8 @@ def write_rows_to_csv(file_prefix: str, rows: list[dict[str, Any]]) -> tuple[str
     fieldnames = [
         "depth",
         "localhostname",
+        "ipaddr",
+        "源设备IP",
         "localinterface",
         "remotehostname",
         "remoteinterface",
@@ -1444,6 +1449,8 @@ def write_rows_to_csv(file_prefix: str, rows: list[dict[str, Any]]) -> tuple[str
                 {
                     "depth": r.get("depth", ""),
                     "localhostname": r.get("localhostname", ""),
+                    "ipaddr": r.get("sourceip", ""),
+                    "源设备IP": r.get("sourceip", ""),
                     "localinterface": r.get("localinterface", ""),
                     "remotehostname": r.get("remotehostname", ""),
                     "remoteinterface": r.get("remoteinterface", ""),
@@ -2028,7 +2035,9 @@ def query_lldp_csv(payload: QueryRequest) -> dict[str, Any]:
         conn.close()
 
     for r in rows:
+        sip = str(r.get("sourceip", "") or "").strip()
         rh = str(r.get("remotehostname", "") or "").strip()
+        r["sourceip"] = sip if _looks_like_ip(sip) else ""
         r["remotevendor"] = ""
         r["remoteip"] = rh if _looks_like_ip(rh) else ""
 
