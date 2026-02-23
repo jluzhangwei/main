@@ -111,25 +111,29 @@ def connect_db() -> pymysql.connections.Connection:
 
 
 LLDP_DEPTH3_SQL = """
+/* MySQL 5.6-compatible targeted depth expansion (start-host scoped). */
 SELECT DISTINCT
     1 AS depth,
     L1.localhostname,
     L1.ipaddr AS sourceip,
     L1.localinterface,
     SUBSTRING_INDEX(L1.remotehostname, '.', 1) AS remotehostname,
-    L1.remoteinterface
-FROM (
-    SELECT t.*
-    FROM lldpinformation t
-    INNER JOIN (
-        SELECT localhostname, MAX(create_time) AS m
-        FROM lldpinformation
-        GROUP BY localhostname
-    ) tm
-      ON t.localhostname = tm.localhostname
-     AND t.create_time = tm.m
-) L1
+    L1.remoteinterface,
+    R1.ipaddr AS remoteip
+FROM lldpinformation L1
+LEFT JOIN lldpinformation R1
+  ON R1.localhostname = SUBSTRING_INDEX(L1.remotehostname, '.', 1)
+ AND R1.create_time = (
+      SELECT MAX(rr.create_time)
+      FROM lldpinformation rr
+      WHERE rr.localhostname = R1.localhostname
+ )
 WHERE L1.localhostname = %s
+  AND L1.create_time = (
+      SELECT MAX(x1.create_time)
+      FROM lldpinformation x1
+      WHERE x1.localhostname = L1.localhostname
+  )
 
 UNION ALL
 
@@ -139,35 +143,30 @@ SELECT DISTINCT
     L2.ipaddr AS sourceip,
     L2.localinterface,
     SUBSTRING_INDEX(L2.remotehostname, '.', 1) AS remotehostname,
-    L2.remoteinterface
-FROM (
-    SELECT DISTINCT SUBSTRING_INDEX(L1.remotehostname, '.', 1) AS next_host
-    FROM (
-        SELECT t.*
-        FROM lldpinformation t
-        INNER JOIN (
-            SELECT localhostname, MAX(create_time) AS m
-            FROM lldpinformation
-            GROUP BY localhostname
-        ) tm
-          ON t.localhostname = tm.localhostname
-         AND t.create_time = tm.m
-    ) L1
-    WHERE L1.localhostname = %s
-      AND L1.remotehostname IS NOT NULL AND L1.remotehostname <> ''
-) seed2
-JOIN (
-    SELECT t.*
-    FROM lldpinformation t
-    INNER JOIN (
-        SELECT localhostname, MAX(create_time) AS m
-        FROM lldpinformation
-        GROUP BY localhostname
-    ) tm
-      ON t.localhostname = tm.localhostname
-     AND t.create_time = tm.m
-) L2
-  ON seed2.next_host = L2.localhostname
+    L2.remoteinterface,
+    R2.ipaddr AS remoteip
+FROM lldpinformation L1
+JOIN lldpinformation L2
+  ON SUBSTRING_INDEX(L1.remotehostname, '.', 1) = L2.localhostname
+ AND L2.create_time = (
+      SELECT MAX(x2.create_time)
+      FROM lldpinformation x2
+      WHERE x2.localhostname = L2.localhostname
+ )
+LEFT JOIN lldpinformation R2
+  ON R2.localhostname = SUBSTRING_INDEX(L2.remotehostname, '.', 1)
+ AND R2.create_time = (
+      SELECT MAX(rr2.create_time)
+      FROM lldpinformation rr2
+      WHERE rr2.localhostname = R2.localhostname
+ )
+WHERE L1.localhostname = %s
+  AND L1.create_time = (
+      SELECT MAX(x1.create_time)
+      FROM lldpinformation x1
+      WHERE x1.localhostname = L1.localhostname
+  )
+  AND L1.remotehostname IS NOT NULL AND L1.remotehostname <> ''
 
 UNION ALL
 
@@ -177,51 +176,38 @@ SELECT DISTINCT
     L3.ipaddr AS sourceip,
     L3.localinterface,
     SUBSTRING_INDEX(L3.remotehostname, '.', 1) AS remotehostname,
-    L3.remoteinterface
-FROM (
-    SELECT DISTINCT SUBSTRING_INDEX(L2.remotehostname, '.', 1) AS next_host
-    FROM (
-        SELECT DISTINCT SUBSTRING_INDEX(L1.remotehostname, '.', 1) AS next_host
-        FROM (
-            SELECT t.*
-            FROM lldpinformation t
-            INNER JOIN (
-                SELECT localhostname, MAX(create_time) AS m
-                FROM lldpinformation
-                GROUP BY localhostname
-            ) tm
-              ON t.localhostname = tm.localhostname
-             AND t.create_time = tm.m
-        ) L1
-        WHERE L1.localhostname = %s
-          AND L1.remotehostname IS NOT NULL AND L1.remotehostname <> ''
-    ) seed2
-    JOIN (
-        SELECT t.*
-        FROM lldpinformation t
-        INNER JOIN (
-            SELECT localhostname, MAX(create_time) AS m
-            FROM lldpinformation
-            GROUP BY localhostname
-        ) tm
-          ON t.localhostname = tm.localhostname
-         AND t.create_time = tm.m
-    ) L2
-      ON seed2.next_host = L2.localhostname
-    WHERE L2.remotehostname IS NOT NULL AND L2.remotehostname <> ''
-) seed3
-JOIN (
-    SELECT t.*
-    FROM lldpinformation t
-    INNER JOIN (
-        SELECT localhostname, MAX(create_time) AS m
-        FROM lldpinformation
-        GROUP BY localhostname
-    ) tm
-      ON t.localhostname = tm.localhostname
-     AND t.create_time = tm.m
-) L3
-  ON seed3.next_host = L3.localhostname
+    L3.remoteinterface,
+    R3.ipaddr AS remoteip
+FROM lldpinformation L1
+JOIN lldpinformation L2
+  ON SUBSTRING_INDEX(L1.remotehostname, '.', 1) = L2.localhostname
+ AND L2.create_time = (
+      SELECT MAX(x2.create_time)
+      FROM lldpinformation x2
+      WHERE x2.localhostname = L2.localhostname
+ )
+JOIN lldpinformation L3
+  ON SUBSTRING_INDEX(L2.remotehostname, '.', 1) = L3.localhostname
+ AND L3.create_time = (
+      SELECT MAX(x3.create_time)
+      FROM lldpinformation x3
+      WHERE x3.localhostname = L3.localhostname
+ )
+LEFT JOIN lldpinformation R3
+  ON R3.localhostname = SUBSTRING_INDEX(L3.remotehostname, '.', 1)
+ AND R3.create_time = (
+      SELECT MAX(rr3.create_time)
+      FROM lldpinformation rr3
+      WHERE rr3.localhostname = R3.localhostname
+ )
+WHERE L1.localhostname = %s
+  AND L1.create_time = (
+      SELECT MAX(x1.create_time)
+      FROM lldpinformation x1
+      WHERE x1.localhostname = L1.localhostname
+  )
+  AND L1.remotehostname IS NOT NULL AND L1.remotehostname <> ''
+  AND L2.remotehostname IS NOT NULL AND L2.remotehostname <> ''
 """
 
 
@@ -1463,6 +1449,128 @@ def write_rows_to_csv(file_prefix: str, rows: list[dict[str, Any]]) -> tuple[str
     return safe_name, out_path, csv_text
 
 
+def _chunked(values: list[str], size: int = 200) -> list[list[str]]:
+    if size <= 0:
+        return [values]
+    return [values[i : i + size] for i in range(0, len(values), size)]
+
+
+def _fetch_latest_edges_for_hosts(cur: Any, hosts: list[str]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    if not hosts:
+        return out
+    uniq_hosts = sorted({h.strip() for h in hosts if h and h.strip()})
+    if not uniq_hosts:
+        return out
+
+    for part in _chunked(uniq_hosts, 180):
+        marks = ",".join(["%s"] * len(part))
+        sql = f"""
+SELECT
+    t.localhostname,
+    t.ipaddr AS sourceip,
+    t.localinterface,
+    SUBSTRING_INDEX(t.remotehostname, '.', 1) AS remotehostname,
+    t.remoteinterface
+FROM lldpinformation t
+INNER JOIN (
+    SELECT localhostname, MAX(create_time) AS m
+    FROM lldpinformation
+    WHERE localhostname IN ({marks})
+    GROUP BY localhostname
+) tm
+  ON t.localhostname = tm.localhostname
+ AND t.create_time = tm.m
+WHERE t.localhostname IN ({marks})
+  AND t.remotehostname IS NOT NULL
+  AND t.remotehostname <> ''
+"""
+        params = tuple(part + part)
+        cur.execute(sql, params)
+        out.extend(cur.fetchall() or [])
+    return out
+
+
+def _fetch_latest_ip_map_for_hosts(cur: Any, hosts: list[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not hosts:
+        return out
+    uniq_hosts = sorted({h.strip() for h in hosts if h and h.strip()})
+    if not uniq_hosts:
+        return out
+
+    for part in _chunked(uniq_hosts, 180):
+        marks = ",".join(["%s"] * len(part))
+        sql = f"""
+SELECT
+    t.localhostname,
+    t.ipaddr
+FROM lldpinformation t
+INNER JOIN (
+    SELECT localhostname, MAX(create_time) AS m
+    FROM lldpinformation
+    WHERE localhostname IN ({marks})
+    GROUP BY localhostname
+) tm
+  ON t.localhostname = tm.localhostname
+ AND t.create_time = tm.m
+WHERE t.localhostname IN ({marks})
+"""
+        params = tuple(part + part)
+        cur.execute(sql, params)
+        for r in cur.fetchall() or []:
+            h = str(r.get("localhostname", "") or "").strip()
+            ip = str(r.get("ipaddr", "") or "").strip()
+            if h and _looks_like_ip(ip):
+                out[h] = ip
+    return out
+
+
+def _query_lldp_depth_rows(cur: Any, start_hostname: str, max_depth: int = 3) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    frontier = [start_hostname]
+    expanded: set[str] = set()
+
+    for depth in range(1, max_depth + 1):
+        current_hosts = sorted({h for h in frontier if h and h not in expanded})
+        if not current_hosts:
+            break
+        batch = _fetch_latest_edges_for_hosts(cur, current_hosts)
+        if not batch:
+            expanded.update(current_hosts)
+            frontier = []
+            continue
+        for r in batch:
+            r["depth"] = depth
+            rows.append(r)
+        expanded.update(current_hosts)
+        next_hosts = []
+        for r in batch:
+            nh = str(r.get("remotehostname", "") or "").strip()
+            if nh and nh not in expanded:
+                next_hosts.append(nh)
+        frontier = next_hosts
+
+    if not rows:
+        return rows
+
+    remote_hosts = sorted(
+        {
+            str(r.get("remotehostname", "") or "").strip()
+            for r in rows
+            if str(r.get("remotehostname", "") or "").strip()
+        }
+    )
+    ip_map = _fetch_latest_ip_map_for_hosts(cur, remote_hosts)
+    for r in rows:
+        rh = str(r.get("remotehostname", "") or "").strip()
+        if _looks_like_ip(rh):
+            r["remoteip"] = rh
+        else:
+            r["remoteip"] = ip_map.get(rh, "")
+    return rows
+
+
 def write_cli_debug_text(file_prefix: str, meta: dict[str, Any]) -> tuple[str, Path]:
     filename = f"{file_prefix}.txt"
     safe_name = "".join(ch for ch in filename if ch.isalnum() or ch in "._-")[:140]
@@ -2025,21 +2133,27 @@ def query_lldp_csv(payload: QueryRequest) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"DB connect failed: {exc}") from exc
 
+    t0 = time.perf_counter()
     try:
+        rows: list[dict[str, Any]] = []
         with conn.cursor() as cur:
-            cur.execute(LLDP_DEPTH3_SQL, (start_hostname, start_hostname, start_hostname))
-            rows = cur.fetchall()
+            rows = _query_lldp_depth_rows(cur, start_hostname, max_depth=3)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"SQL execution failed: {exc}") from exc
+        elapsed = max(0.0, time.perf_counter() - t0)
+        raise HTTPException(status_code=500, detail=f"SQL execution failed after {elapsed:.1f}s: {exc}") from exc
     finally:
         conn.close()
 
     for r in rows:
         sip = str(r.get("sourceip", "") or "").strip()
         rh = str(r.get("remotehostname", "") or "").strip()
+        rip = str(r.get("remoteip", "") or "").strip()
         r["sourceip"] = sip if _looks_like_ip(sip) else ""
         r["remotevendor"] = ""
-        r["remoteip"] = rh if _looks_like_ip(rh) else ""
+        if _looks_like_ip(rip):
+            r["remoteip"] = rip
+        else:
+            r["remoteip"] = rh if _looks_like_ip(rh) else ""
 
     safe_name, out_path, csv_text = write_rows_to_csv(
         f"lldp_{start_hostname.replace('/', '_').replace(' ', '_')}",
@@ -2051,6 +2165,7 @@ def query_lldp_csv(payload: QueryRequest) -> dict[str, Any]:
         "mode": "sql",
         "start_hostname": start_hostname,
         "row_count": len(rows),
+        "elapsed_seconds": max(0.0, time.perf_counter() - t0),
         "temp_file": str(out_path),
         "download_url": f"/api/lldp-csv/file/{safe_name}",
         "csv_text": csv_text,
