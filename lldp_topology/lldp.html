@@ -329,6 +329,24 @@
       </div>
 
       <div class="row">
+        <label>定位设备（关键字逗号分隔，回车多选）</label>
+        <input id="search" type="text" placeholder="例如：MGMT,AGGR" />
+        <div class="hint" id="searchResult"></div>
+      </div>
+      <div class="row">
+        <label>不显示：逗号分隔，命中的设备会被隐藏</label>
+        <input id="filter" type="text" placeholder="例如：lab,backup" value="MGMT,null,ACC,SA" />
+      </div>
+      <div class="row">
+        <label>只显示：逗号分隔，回车生效（仅显示命中的设备，其余隐藏）</label>
+        <input id="showOnly" type="text" placeholder="例如：CORE,EDGE" />
+      </div>
+      <div class="row">
+        <label>分层关键字（高->低，逗号分层，斜杠同层，&需全部命中，如 EDGE&CORE,CORE,AGGR/SPINE,LEAF/tor）</label>
+        <input id="layerTerms" type="text" value="EDGE,CORE,AGGR,LEAF" />
+      </div>
+
+      <div class="row">
         <label>分散强度（越大越分散） <span class="badge">建议 0.3~0.8</span></label>
         <input id="spacing" type="range" min="0.1" max="1" step="0.05" value="0.5" />
       </div>
@@ -346,6 +364,9 @@
       <div class="row inline">
         <button id="fitSelection">定位选中</button>
         <button id="isolateSelection">仅显示邻接</button>
+      </div>
+      <div class="row inline">
+        <button id="buildScopedTopo">生成范围拓扑</button>
         <button id="keepAdjacentOnly">仅保留邻接</button>
       </div>
       <div class="row inline">
@@ -354,34 +375,17 @@
         <button id="deleteSelection">删除选中</button>
         <button id="restoreDeleted">恢复删除设备</button>
       </div>
-
-      <div class="row">
-        <label>定位设备（关键字逗号分隔，回车多选）</label>
-        <input id="search" type="text" placeholder="例如：MGMT,AGGR" />
-        <div class="hint" id="searchResult"></div>
-      </div>
-      <div class="row">
-        <label>不显示：逗号分隔，命中的设备会被隐藏</label>
-        <input id="filter" type="text" placeholder="例如：lab,backup" value="MGMT,null,ACC,SA" />
-      </div>
-      <div class="row">
-        <label>只显示：逗号分隔，回车生效（仅显示命中的设备，其余隐藏）</label>
-        <input id="showOnly" type="text" placeholder="例如：CORE,EDGE" />
-      </div>
-      <div class="row">
-        <label>分层关键字（高->低，逗号分层，斜杠同层，&需全部命中，如 EDGE&CORE,CORE,AGGR/SPINE,LEAF/tor）</label>
-        <input id="layerTerms" type="text" value="EDGE,CORE,AGGR,LEAF" />
-      </div>
     </div>
 
     <div class="section-box">
       <h2>导出</h2>
       <div class="row inline">
         <button id="exportPng">导出 PNG</button>
-        <button id="exportJson">导出 JSON</button>
-        <button id="exportPos">导出坐标</button>
-        <button id="importPosBtn">导入坐标</button>
-        <input id="importPosFile" type="file" accept=".json,application/json" style="display:none" />
+      </div>
+      <div class="row inline">
+        <button id="exportSession">导出会话</button>
+        <button id="importSessionBtn">导入会话</button>
+        <input id="importSessionFile" type="file" accept=".json,application/json" style="display:none" />
       </div>
     </div>
 
@@ -704,6 +708,7 @@
     // 单文本导入（粘贴）会重置数据
     setErr(''); setOK('');
     setStatus('解析中...');
+    deletedStack = [];
     const parsed = parseCSV(text);
     headers = parsed.headers;
     rawRows = parsed.rows;
@@ -748,6 +753,7 @@
     try {
       setErr(''); setOK('');
       setStatus('读取/解析中...');
+      deletedStack = [];
       headers = [];
       rawRows = [];
       let used = 0;
@@ -924,7 +930,6 @@
     ];
 
     if (cy) cy.destroy();
-    deletedStack = [];
 
     // ✅ 初始随机位置，或保持已有位置
     const rand = (min, max) => Math.random() * (max - min) + min;
@@ -1041,6 +1046,7 @@
     cy.on('tap', () => hideCtx());
     cy.on('zoom pan', () => hideCtx());
 
+    applyDeletedMaskAfterBuild();
     runLayout();
     if (hasKeep) {
       setTimeout(() => {
@@ -1379,8 +1385,8 @@
       setOK('当前已全部是邻接范围，无需删除。');
       return;
     }
-    const pack = removeNodes.union(removeNodes.connectedEdges()).jsons();
-    deletedStack.push(pack);
+    const ids = removeNodes.map(n => n.id());
+    deletedStack.push(ids);
     removeNodes.remove();
     updateCounts();
     sel.addClass('hit');
@@ -1393,9 +1399,96 @@
     setOK('已恢复显示全部节点与链路。');
   }
 
+  function buildScopedTopologyFromVisible() {
+    if (!cy || !rawRows.length) {
+      setErr('请先生成拓扑，再执行范围拓扑。');
+      return;
+    }
+    const visNodes = cy.nodes(':visible');
+    if (!visNodes.length) {
+      setErr('当前无可见设备，无法生成范围拓扑。');
+      return;
+    }
+
+    const colLH = $('colLocalHost').value;
+    const colRH = $('colRemoteHost').value;
+    const strip = $('stripDomain').value === 'yes';
+    const visibleHosts = new Set();
+    visNodes.forEach((n) => {
+      const label = String(n.data('label') || '').trim();
+      if (!label) return;
+      visibleHosts.add(label);
+      visibleHosts.add(stripAfterDot(label));
+    });
+
+    const before = rawRows.length;
+    const scopedRows = rawRows.filter((r) => {
+      let lh = String(r[colLH] || '').trim();
+      let rh = String(r[colRH] || '').trim();
+      if (!lh || !rh) return false;
+      if (strip) {
+        lh = stripAfterDot(lh);
+        rh = stripAfterDot(rh);
+      }
+      return visibleHosts.has(lh) && visibleHosts.has(rh);
+    });
+
+    if (!scopedRows.length) {
+      setErr('当前可见设备之间没有可用链路，未生成范围拓扑。');
+      return;
+    }
+
+    rawRows = scopedRows;
+    $('nRows').textContent = rawRows.length;
+    $('nCols').textContent = headers.length;
+    buildGraph();
+    setStatus('范围拓扑已生成');
+    setOK(`已基于当前显示设备重建拓扑：保留 ${rawRows.length} 行（原 ${before} 行）。`);
+  }
+
   function updateCounts() {
     $('nNodes').textContent = cy ? cy.nodes().length : '-';
     $('nEdges').textContent = cy ? cy.edges().length : '-';
+  }
+
+  function collectDeletedNodeIds() {
+    const ids = new Set();
+    for (const item of deletedStack) {
+      if (!Array.isArray(item)) continue;
+      for (const id of item) {
+        if (id != null && String(id).trim() !== '') ids.add(String(id));
+      }
+    }
+    return ids;
+  }
+
+  function applyDeletedMaskAfterBuild() {
+    if (!cy || !deletedStack.length) return;
+    const ids = collectDeletedNodeIds();
+    if (!ids.size) return;
+    const toRemove = cy.nodes().filter((n) => ids.has(n.id()));
+    if (!toRemove.length) return;
+    toRemove.remove();
+    updateCounts();
+  }
+
+  function hostValueFromRow(row, keys) {
+    for (const k of keys) {
+      const v = row?.[k];
+      if (v != null && String(v).trim() !== '') return String(v).trim();
+    }
+    return '';
+  }
+
+  function releaseNodesFromDeletedStack(nodeIds) {
+    if (!nodeIds || !nodeIds.size || !deletedStack.length) return;
+    const kept = [];
+    for (const item of deletedStack) {
+      if (!Array.isArray(item)) continue;
+      const filtered = item.filter((id) => !nodeIds.has(String(id || '')));
+      if (filtered.length) kept.push(filtered);
+    }
+    deletedStack = kept;
   }
 
   function updateSelectModeUi() {
@@ -1582,6 +1675,65 @@
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
 
+  function buildSessionSnapshot() {
+    return {
+      version: 1,
+      exported_at: new Date().toISOString(),
+      headers: headers.slice(),
+      rows: rawRows.slice(),
+      positions: capturePositions(),
+      ui: {
+        stripDomain: $('stripDomain')?.value || 'yes',
+        layoutMode: $('layoutMode')?.value || 'layer',
+        nodeLabelMode: $('nodeLabelMode')?.value || 'full',
+        edgeLabelMode: $('edgeLabelMode')?.value || 'none',
+        spacing: $('spacing')?.value || '0.5',
+        mergeMode: !!mergedMode,
+        colLocalHost: $('colLocalHost')?.value || '',
+        colRemoteHost: $('colRemoteHost')?.value || '',
+        colLocalIf: $('colLocalIf')?.value || '',
+        colRemoteIf: $('colRemoteIf')?.value || '',
+      }
+    };
+  }
+
+  function applySessionSnapshot(snapshot) {
+    const hs = Array.isArray(snapshot?.headers) ? snapshot.headers : [];
+    const rs = Array.isArray(snapshot?.rows) ? snapshot.rows : [];
+    if (!hs.length || !rs.length) {
+      throw new Error('会话文件缺少有效的表头或数据行');
+    }
+
+    headers = hs.slice();
+    rawRows = rs.slice();
+    deletedStack = [];
+
+    const ui = snapshot?.ui || {};
+    if ($('stripDomain') && ui.stripDomain) $('stripDomain').value = String(ui.stripDomain);
+    if ($('layoutMode') && ui.layoutMode) $('layoutMode').value = String(ui.layoutMode);
+    if ($('nodeLabelMode') && ui.nodeLabelMode) $('nodeLabelMode').value = String(ui.nodeLabelMode);
+    if ($('edgeLabelMode') && ui.edgeLabelMode) $('edgeLabelMode').value = String(ui.edgeLabelMode);
+    if ($('spacing') && ui.spacing != null) $('spacing').value = String(ui.spacing);
+    if (typeof ui.mergeMode === 'boolean') mergedMode = ui.mergeMode;
+    $('toggleMerge').textContent = `合并多条链路：${mergedMode ? '开启' : '关闭'}`;
+
+    $('nRows').textContent = rawRows.length;
+    $('nCols').textContent = headers.length;
+
+    fillSelect('colLocalHost', autoPickColumn(['localhostname','local_host','src','from']));
+    fillSelect('colRemoteHost', autoPickColumn(['remotehostname','remote_host','dst','to']));
+    fillSelect('colLocalIf', autoPickColumn(['localinterface','local_if','src_if','from_if']));
+    fillSelect('colRemoteIf', autoPickColumn(['remoteinterface','remote_if','dst_if','to_if']));
+    if (ui.colLocalHost && headers.includes(ui.colLocalHost)) $('colLocalHost').value = ui.colLocalHost;
+    if (ui.colRemoteHost && headers.includes(ui.colRemoteHost)) $('colRemoteHost').value = ui.colRemoteHost;
+    if (ui.colLocalIf && headers.includes(ui.colLocalIf)) $('colLocalIf').value = ui.colLocalIf;
+    if (ui.colRemoteIf && headers.includes(ui.colRemoteIf)) $('colRemoteIf').value = ui.colRemoteIf;
+
+    const pos = (snapshot?.positions && typeof snapshot.positions === 'object') ? snapshot.positions : {};
+    buildGraph(pos);
+    applyPositions(pos);
+  }
+
   function downloadBlob(filename, blob, fallbackDataUrl = '') {
     try {
       const url = URL.createObjectURL(blob);
@@ -1634,6 +1786,14 @@
     const pos = capturePositions();
     const before = rawRows.length;
     const parsed = parseCSV(csvText);
+    const releaseIds = new Set();
+    for (const r of parsed.rows || []) {
+      const lh = hostValueFromRow(r, ['localhostname', 'local_host', 'src', 'from']);
+      const rh = hostValueFromRow(r, ['remotehostname', 'remote_host', 'dst', 'to']);
+      if (lh) releaseIds.add(nodeIdFromLabel(stripAfterDot(lh)));
+      if (rh) releaseIds.add(nodeIdFromLabel(stripAfterDot(rh)));
+    }
+    releaseNodesFromDeletedStack(releaseIds);
     mergeParsed(parsed, `${sourceName}-append`);
 
     $('nRows').textContent = rawRows.length;
@@ -2283,23 +2443,34 @@
     btn.textContent = oldText;
   });
 
-  $('exportJson').addEventListener('click', () => {
-    if (!cy) { setErr('请先生成拓扑，再导出 JSON'); return; }
+  $('exportSession').addEventListener('click', () => {
+    if (!rawRows.length) { setErr('请先生成或导入拓扑数据，再导出会话'); return; }
     try {
-      download('lldp-topology.json', JSON.stringify(cy.json(), null, 2), 'application/json');
-      setOK('JSON 导出成功');
+      const snap = buildSessionSnapshot();
+      const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+      download(`lldp-session-${ts}.json`, JSON.stringify(snap, null, 2), 'application/json');
+      setOK(`会话导出成功：${snap.rows.length} 行，包含坐标。`);
     } catch (e) {
-      setErr(`导出 JSON 失败：${String(e && e.message ? e.message : e)}`);
+      setErr(`导出会话失败：${String(e && e.message ? e.message : e)}`);
     }
   });
 
-  $('exportPos').addEventListener('click', () => {
-    if (!cy) { setErr('请先生成拓扑，再导出坐标'); return; }
+  $('importSessionBtn').addEventListener('click', () => {
+    $('importSessionFile').value = '';
+    $('importSessionFile').click();
+  });
+  $('importSessionFile').addEventListener('change', async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
     try {
-      download('lldp-positions.json', JSON.stringify(capturePositions(), null, 2), 'application/json');
-      setOK('已导出坐标');
-    } catch (e) {
-      setErr(`导出坐标失败：${String(e && e.message ? e.message : e)}`);
+      const text = await f.text();
+      const obj = JSON.parse(text);
+      applySessionSnapshot(obj);
+      setStatus('会话已导入并恢复拓扑');
+      setOK(`会话导入成功：${rawRows.length} 行，坐标已恢复。`);
+      setErr('');
+    } catch (err) {
+      setErr(`导入会话失败：${String(err && err.message ? err.message : err)}`);
     }
   });
 
@@ -2313,24 +2484,6 @@
     if (utilByKey.size) {
       applyUtilizationToEdges();
       $('utilResultHint').textContent = '口径已切换，已按缓存结果重新渲染；点击“CLI 链路利用率”仅会增量查询新链路。';
-    }
-  });
-
-  $('importPosBtn').addEventListener('click', () => {
-    $('importPosFile').value = '';
-    $('importPosFile').click();
-  });
-
-  $('importPosFile').addEventListener('change', async (e) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    try {
-      const text = await f.text();
-      const obj = JSON.parse(text);
-      applyPositions(obj);
-      setOK('已导入并应用坐标');
-    } catch (err) {
-      setErr(`坐标导入失败：${err}`);
     }
   });
 
@@ -2357,8 +2510,8 @@
   $('ctxDelete').addEventListener('click', () => {
     const nodes = ctxNodes();
     if (!nodes.length) return hideCtx();
-    const pack = nodes.union(nodes.connectedEdges()).jsons();
-    deletedStack.push(pack);
+    const ids = nodes.map(n => n.id());
+    deletedStack.push(ids);
     nodes.remove();
     hideCtx();
     updateCounts();
@@ -2512,6 +2665,7 @@
   });
 
   $('isolateSelection').addEventListener('click', isolateSelection);
+  $('buildScopedTopo').addEventListener('click', buildScopedTopologyFromVisible);
   $('keepAdjacentOnly').addEventListener('click', keepAdjacentOnly);
   $('clearSelectionHide').addEventListener('click', clearSelectionHide);
 
@@ -2554,18 +2708,19 @@ $('filter').addEventListener('keydown', (e) => {
   $('restoreDeleted').addEventListener('click', () => {
     if (!cy) return;
     if (!deletedStack.length) { setOK('没有可恢复的删除记录'); return; }
-    const pack = deletedStack.pop();
-    cy.add(pack);
-    updateCounts();
-    setOK(`已恢复 ${pack.length} 个元素（节点及其相关边）。`);
+    const ids = new Set((deletedStack.pop() || []).map((x) => String(x || '')));
+    if (!ids.size) { setOK('没有可恢复的删除记录'); return; }
+    const pos = capturePositions();
+    buildGraph(pos);
+    setOK(`已恢复 ${ids.size} 个删除设备。`);
   });
 
   $('deleteSelection').addEventListener('click', () => {
     if (!cy) return;
     const nodes = cy.nodes(':selected');
     if (!nodes.length) { setOK('未选中节点'); return; }
-    const pack = nodes.union(nodes.connectedEdges()).jsons();
-    deletedStack.push(pack);
+    const ids = nodes.map(n => n.id());
+    deletedStack.push(ids);
     nodes.remove();
     updateCounts();
     setOK(`已删除选中 ${nodes.length} 个节点及其相关边`);
