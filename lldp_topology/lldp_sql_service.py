@@ -1365,6 +1365,7 @@ def build_cli_lldp_rows(
 
 class QueryRequest(BaseModel):
     start_hostname: str
+    max_depth: int = Field(default=3, ge=1, le=3)
 
 
 class CliQueryRequest(BaseModel):
@@ -2156,6 +2157,7 @@ def collect_link_utilization(
 @app.post("/api/sql/lldp-csv")
 def query_lldp_csv(payload: QueryRequest) -> dict[str, Any]:
     start_hostname = payload.start_hostname.strip()
+    max_depth = int(payload.max_depth)
     if not start_hostname:
         raise HTTPException(status_code=400, detail="start_hostname is required")
 
@@ -2168,7 +2170,7 @@ def query_lldp_csv(payload: QueryRequest) -> dict[str, Any]:
     try:
         rows: list[dict[str, Any]] = []
         with conn.cursor() as cur:
-            rows = _query_lldp_depth_rows(cur, start_hostname, max_depth=3)
+            rows = _query_lldp_depth_rows(cur, start_hostname, max_depth=max_depth)
     except Exception as exc:
         elapsed = max(0.0, time.perf_counter() - t0)
         raise HTTPException(status_code=500, detail=f"SQL execution failed after {elapsed:.1f}s: {exc}") from exc
@@ -2195,6 +2197,7 @@ def query_lldp_csv(payload: QueryRequest) -> dict[str, Any]:
         "ok": True,
         "mode": "sql",
         "start_hostname": start_hostname,
+        "max_depth": max_depth,
         "row_count": len(rows),
         "elapsed_seconds": max(0.0, time.perf_counter() - t0),
         "temp_file": str(out_path),

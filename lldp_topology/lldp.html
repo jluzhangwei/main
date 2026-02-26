@@ -341,6 +341,18 @@
         <button id="fit">适配画布（慎用）</button>
         <button id="center">居中 + 放大</button>
         <button id="toggleMerge">合并多条链路：开启</button>
+        <button id="toggleSelectMode">框选/单选：单选</button>
+      </div>
+      <div class="row inline">
+        <button id="fitSelection">定位选中</button>
+        <button id="isolateSelection">仅显示邻接</button>
+        <button id="keepAdjacentOnly">仅保留邻接</button>
+      </div>
+      <div class="row inline">
+        <button id="clearSelectionHide">恢复显示</button>
+        <button id="show172Only">只显示172设备</button>
+        <button id="deleteSelection">删除选中</button>
+        <button id="restoreDeleted">恢复删除设备</button>
       </div>
 
       <div class="row">
@@ -359,23 +371,6 @@
       <div class="row">
         <label>分层关键字（高->低，逗号分层，斜杠同层，&需全部命中，如 EDGE&CORE,CORE,AGGR/SPINE,LEAF/tor）</label>
         <input id="layerTerms" type="text" value="EDGE,CORE,AGGR,LEAF" />
-      </div>
-    </div>
-
-    <div class="section-box">
-      <h2>多选/操作</h2>
-      <div class="row">
-        <div class="hint">按住 Ctrl/Cmd 或 Shift 进行多选（框选已关闭）。</div>
-      </div>
-      <div class="row inline">
-        <button id="fitSelection">定位选中</button>
-        <button id="isolateSelection">仅显示邻接</button>
-      </div>
-      <div class="row inline">
-        <button id="clearSelectionHide">恢复显示</button>
-        <button id="show172Only">只显示172设备</button>
-        <button id="deleteSelection">删除选中</button>
-        <button id="restoreDeleted">恢复删除设备</button>
       </div>
     </div>
 
@@ -528,6 +523,7 @@
   let degreeMap = new Map();
   let baseEdges = [];
   let mergedMode = true;
+  let boxSelectMode = false;
   let cliTimer = null;
   let nodeIpMap = new Map();
   let deviceNameToIpMap = new Map();
@@ -1004,7 +1000,7 @@
     });
     cy.autoungrabify(false);
     cy.autounselectify(false);
-    cy.boxSelectionEnabled(false);
+    cy.boxSelectionEnabled(boxSelectMode);
     cy.userPanningEnabled(true);
     cy.userZoomingEnabled(true);
     cy.nodes().unlock().grabify();
@@ -1369,6 +1365,28 @@
     setOK(`已凸显选中及邻接节点：${sel.length} 个选中节点。`);
   }
 
+  function keepAdjacentOnly() {
+    if (!cy) return;
+    cy.elements().removeClass('sel-hidden dim hit');
+    const sel = cy.nodes(':selected');
+    if (!sel.length) {
+      setOK('未选中节点，无法仅保留邻接。');
+      return;
+    }
+    const neigh = sel.closedNeighborhood();
+    const removeNodes = cy.nodes().difference(neigh.nodes());
+    if (!removeNodes.length) {
+      setOK('当前已全部是邻接范围，无需删除。');
+      return;
+    }
+    const pack = removeNodes.union(removeNodes.connectedEdges()).jsons();
+    deletedStack.push(pack);
+    removeNodes.remove();
+    updateCounts();
+    sel.addClass('hit');
+    setOK(`已仅保留邻接：删除 ${removeNodes.length} 个非邻接节点（可恢复）。`);
+  }
+
   function clearSelectionHide() {
     if (!cy) return;
     cy.elements().removeClass('sel-hidden onlyHidden filtered dim hit');
@@ -1378,6 +1396,12 @@
   function updateCounts() {
     $('nNodes').textContent = cy ? cy.nodes().length : '-';
     $('nEdges').textContent = cy ? cy.edges().length : '-';
+  }
+
+  function updateSelectModeUi() {
+    const btn = $('toggleSelectMode');
+    if (btn) btn.textContent = `框选/单选：${boxSelectMode ? '框选' : '单选'}`;
+    if (cy) cy.boxSelectionEnabled(boxSelectMode);
   }
 
   function dedupeRows(rows) {
@@ -1629,8 +1653,10 @@
     return { mergedRows: rawRows.length, addedRows: Math.max(0, rawRows.length - before) };
   }
 
-  async function runSqlGenerateAndBuild(startHostnameInputId = 'sqlStartHostname', hintId = 'sqlResultHint', action = 'import') {
+  async function runSqlGenerateAndBuild(startHostnameInputId = 'sqlStartHostname', hintId = 'sqlResultHint', action = 'import', opts = {}) {
     const startHostname = ($(startHostnameInputId)?.value || '').trim();
+    const maxDepthOpt = Number.isFinite(Number(opts.maxDepth)) ? Number(opts.maxDepth) : null;
+    const maxDepth = maxDepthOpt ? Math.min(3, Math.max(1, Math.floor(maxDepthOpt))) : 3;
     if (!startHostname) {
       setErr('请先输入 start_hostname');
       return;
@@ -1644,7 +1670,7 @@
       const resp = await fetch(`${base}/api/sql/lldp-csv`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ start_hostname: startHostname })
+        body: JSON.stringify({ start_hostname: startHostname, max_depth: maxDepth })
       });
       const data = await resp.json();
       if (!resp.ok) {
@@ -1656,21 +1682,7 @@
 
       lastSqlDownloadUrl = data.download_url ? `${base}${data.download_url}` : '';
       let csvText = data.csv_text || '';
-      let shownRows = Number(data.row_count || 0);
-      // Context-menu append should run one cycle only.
-      if (ctxAppendSingleHop && csvText) {
-        const parsed = parseCSV(csvText);
-        const d1 = parsed.rows.filter(r => String(r.depth || '').trim() === '1');
-        const hdr = parsed.headers.length ? parsed.headers : ['depth','localhostname','ipaddr','源设备IP','localinterface','remotehostname','remoteinterface','目的设备Vendor','目的设备IP'];
-        const esc = (v) => {
-          const s = String(v ?? '');
-          return /[\",\\n]/.test(s) ? `\"${s.replace(/\"/g, '\"\"')}\"` : s;
-        };
-        const out = [hdr.map(esc).join(',')];
-        for (const r of d1) out.push(hdr.map(h => esc(r[h] ?? '')).join(','));
-        csvText = out.join('\n');
-        shownRows = d1.length;
-      }
+      const shownRows = Number(data.row_count || 0);
       if ($(hintId)) $(hintId).textContent = `SQL 返回 ${shownRows} 行，临时文件：${data.temp_file}${ctxAppendSingleHop ? '（右键单轮）' : ''}`;
       const merged = applyQueryCsvText(csvText, { append: action === 'append', sourceName: 'sql' });
       if (action === 'append') {
@@ -2193,6 +2205,7 @@
   loadCliPrefs();
   loadTopologyUiPrefs();
   loadUtilCacheFromServer();
+  updateSelectModeUi();
 
   $('build').addEventListener('click', buildGraph);
   $('relayout').addEventListener('click', relayout);
@@ -2204,6 +2217,11 @@
     if (!rawRows.length) return;
     const pos = capturePositions();
     buildGraph(pos);
+  });
+  $('toggleSelectMode').addEventListener('click', () => {
+    boxSelectMode = !boxSelectMode;
+    updateSelectModeUi();
+    setOK(`已切换为${boxSelectMode ? '框选' : '单选'}模式`);
   });
 
   $('exportPng').addEventListener('click', async () => {
@@ -2459,7 +2477,7 @@
     ctxAppendSingleHop = true;
     hideCtx();
 
-    if (mode === 'sql') {
+      if (mode === 'sql') {
       const target = label || ip;
       if (!target) {
         setErr('当前节点没有可用于 SQL 查询的设备名称。');
@@ -2467,7 +2485,7 @@
       }
       $('sqlStartHostnameModal').value = target;
       setOK(`正在以 SQL 方式追加查询：${target}`);
-      await runSqlGenerateAndBuild('sqlStartHostnameModal', 'sqlResultHintModal', 'append');
+      await runSqlGenerateAndBuild('sqlStartHostnameModal', 'sqlResultHintModal', 'append', { maxDepth: 1 });
       return;
     }
 
@@ -2494,6 +2512,7 @@
   });
 
   $('isolateSelection').addEventListener('click', isolateSelection);
+  $('keepAdjacentOnly').addEventListener('click', keepAdjacentOnly);
   $('clearSelectionHide').addEventListener('click', clearSelectionHide);
 
   $('search').addEventListener('keydown', (e) => {
