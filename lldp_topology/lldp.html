@@ -255,32 +255,9 @@
         </div>
       </div>
       <div class="hint">导入输入会覆盖当前结果；追加输入会把新查询结果合并到当前图中，补充链路。</div>
-
-      <div id="legacyImportControls" class="hidden">
-      <div class="row">
-        <label>导入 CSV 文件</label>
+      <div style="display:none">
         <input id="file" type="file" accept=".csv,text/csv" multiple />
-        <div class="drop" id="dropzone"><div class="hint">也可以把 CSV 文件直接拖到这里。</div></div>
-      </div>
-      <div class="row">
-        <label>追加 CSV（保持已有节点坐标不变）</label>
         <input id="appendFile" type="file" accept=".csv,text/csv" multiple />
-      </div>
-      <div class="row">
-        <label>或输入设备名直接跑 SQL 生成临时 CSV（不影响现有导入功能）</label>
-        <div class="row inline">
-          <input id="sqlStartHostname" type="text" placeholder="例如：ID-DCI2-GENERAL.CONNECTION-R003-BRIDGE-02" />
-          <button id="runSqlGenerate">SQL 生成并建图</button>
-          <button id="downloadSqlCsv">下载临时 CSV</button>
-        </div>
-        <div class="hint" id="sqlResultHint"></div>
-      </div>
-
-      <div class="row">
-        <label>或直接粘贴 CSV 内容</label>
-        <textarea id="paste" class="mono" placeholder='"depth","localhostname","localinterface","remotehostname","remoteinterface"&#10;"1","SW1","Eth1/1","SW2.garena.tw","Eth1/2"'></textarea>
-        <button id="loadPaste">从粘贴内容载入</button>
-      </div>
       </div>
     </div>
 
@@ -359,7 +336,6 @@
         <button id="fit">适配画布（慎用）</button>
         <button id="center">居中 + 放大</button>
         <button id="toggleMerge">合并多条链路：开启</button>
-        <button id="toggleSelectMode">框选/单选：单选</button>
       </div>
       <div class="row inline">
         <button id="fitSelection">定位选中</button>
@@ -518,23 +494,50 @@
     </div>
   </div>
 </div>
+<div id="cliCredModal" class="modal-backdrop">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="cliCredTitle">
+    <div class="modal-title" id="cliCredTitle">请输入 CLI 登录凭据</div>
+    <div class="row">
+      <label>设备 SSH 用户名</label>
+      <input id="cliCredUsername" type="text" placeholder="例如：netops" />
+    </div>
+    <div class="row">
+      <label>设备 SSH 密码</label>
+      <input id="cliCredPassword" type="password" placeholder="仅本次页面会话使用，不写入本地存储" />
+    </div>
+    <div class="modal-actions">
+      <button id="cliCredConfirm" class="primary">确认</button>
+      <button id="cliCredCancel">取消</button>
+    </div>
+    <div class="hint" id="cliCredHint"></div>
+  </div>
+</div>
 
 <script>
+  let sourceRows = [];
   let rawRows = [];
   let headers = [];
   let cy = null;
   let deletedStack = [];
+  let deletedNodeIds = new Set();
+  const viewState = {
+    filterTerms: [],
+    onlyMode: 'none', // none | showOnly | show172
+    onlyTerms: [],
+  };
   let degreeMap = new Map();
   let baseEdges = [];
   let mergedMode = true;
-  let boxSelectMode = false;
+  let boxSelectMode = true;
   let cliTimer = null;
+  let cliCredResolver = null;
   let nodeIpMap = new Map();
   let deviceNameToIpMap = new Map();
   let lastCliPassword = '';
   let ctxAppendSingleHop = false;
   let utilByKey = new Map();
   let primaryCliSource = '';
+  let dragPerfMode = false;
   // 注册 fCoSE 扩展（兼容不同全局名），避免引用未定义导致脚本中断
 (() => {
     const extFcose = window.cytoscapeFcose || window.cytoFcose || window.fcose || window.fCoSE;
@@ -547,6 +550,36 @@
   const setStatus = (t) => $('status').textContent = t;
   const setOK = (t) => $('ok').textContent = t || '';
   const setErr = (t) => $('err').textContent = t || '';
+
+  function resetViewState() {
+    viewState.filterTerms = [];
+    viewState.onlyMode = 'none';
+    viewState.onlyTerms = [];
+  }
+
+  function clearDeleteState() {
+    deletedStack = [];
+    deletedNodeIds = new Set();
+  }
+
+  function rebuildDeletedNodeIdsFromStack() {
+    const ids = new Set();
+    for (const item of deletedStack) {
+      if (!Array.isArray(item)) continue;
+      for (const id of item) {
+        if (id != null && String(id).trim() !== '') ids.add(String(id));
+      }
+    }
+    deletedNodeIds = ids;
+  }
+
+  function pushDeletedNodeIds(ids) {
+    const clean = Array.from(new Set((ids || []).map((x) => String(x || '').trim()).filter(Boolean)));
+    if (!clean.length) return 0;
+    deletedStack.push(clean);
+    clean.forEach((id) => deletedNodeIds.add(id));
+    return clean.length;
+  }
 
   function stopCliTimer() {
     if (cliTimer) {
@@ -597,15 +630,77 @@
     }
     return ('0000000' + h.toString(16)).slice(-8);
   }
+  function normalizeEntityName(name) {
+    return String(name || '').trim();
+  }
+  function normalizeUtilInterface(ifname) {
+    return String(ifname || '').trim().toLowerCase();
+  }
+  function entityKeyFromName(name) {
+    const s = normalizeEntityName(name);
+    return s ? `name:${s.toLowerCase()}` : '';
+  }
+  function entityKeyFromIp(ip) {
+    const s = String(ip || '').trim();
+    if (!isIpv4(s)) return '';
+    return `ip:${s}`;
+  }
+  function nodeIdFromEntityKey(entityKey) {
+    const k = String(entityKey || '').trim();
+    return k ? ('n_' + fnv1a(k)) : '';
+  }
   function nodeIdFromLabel(label) {
-    const s = String(label || '').trim();
-    return 'n_' + fnv1a(s);
+    const key = entityKeyFromName(label);
+    return nodeIdFromEntityKey(key);
+  }
+  function inferEntityKey(rawLabel, ip) {
+    const ipKey = entityKeyFromIp(ip);
+    if (ipKey) return ipKey;
+    return entityKeyFromName(rawLabel);
+  }
+  function inferUtilIdentity(deviceNameOrIp, ipHint = '') {
+    const ipKey = entityKeyFromIp(ipHint) || entityKeyFromIp(deviceNameOrIp);
+    if (ipKey) return ipKey;
+    const name = normalizeEntityName(deviceNameOrIp);
+    return name ? name.toLowerCase() : '';
+  }
+  function buildUtilKey(deviceNameOrIp, iface, ipHint = '') {
+    const ident = inferUtilIdentity(deviceNameOrIp, ipHint);
+    const nif = normalizeUtilInterface(iface);
+    return ident && nif ? `${ident}||${nif}` : '';
+  }
+  function collectCandidateNodeIds(name, ip = '') {
+    const ids = new Set();
+    const base = normalizeEntityName(name);
+    const ipKey = entityKeyFromIp(ip) || entityKeyFromIp(base);
+    if (ipKey) ids.add(nodeIdFromEntityKey(ipKey));
+    if (base) {
+      const n1 = entityKeyFromName(base);
+      const n2 = entityKeyFromName(stripAfterDot(base));
+      if (n1) ids.add(nodeIdFromEntityKey(n1));
+      if (n2) ids.add(nodeIdFromEntityKey(n2));
+    }
+    ids.delete('');
+    return ids;
   }
 
   function shortLabel(name) {
     const s = String(name || '');
     if (s.length <= 26) return s;
     return s.slice(0, 12) + '…' + s.slice(-10);
+  }
+
+  function choosePreferredLabel(existingLabel, incomingLabel, ip = '') {
+    const ex = String(existingLabel || '').trim();
+    const inb = String(incomingLabel || '').trim();
+    if (!ex) return inb;
+    if (!inb) return ex;
+    const exIsIp = isIpv4(ex);
+    const inIsIp = isIpv4(inb);
+    if (exIsIp && !inIsIp) return inb;
+    if (!exIsIp && inIsIp) return ex;
+    if (ip && ex === ip && inb !== ip) return inb;
+    return ex.length >= inb.length ? ex : inb;
   }
 
   function roleOf(hostname) {
@@ -708,10 +803,12 @@
     // 单文本导入（粘贴）会重置数据
     setErr(''); setOK('');
     setStatus('解析中...');
-    deletedStack = [];
+    clearDeleteState();
+    resetViewState();
     const parsed = parseCSV(text);
     headers = parsed.headers;
-    rawRows = parsed.rows;
+    sourceRows = parsed.rows.slice();
+    rawRows = parsed.rows.slice();
 
     $('nRows').textContent = rawRows.length;
     $('nCols').textContent = headers.length;
@@ -734,7 +831,7 @@
   function mergeParsed(parsed, sourceName) {
     if (!parsed.headers.length) {
       setErr(`文件 ${sourceName} 没有表头，已跳过`);
-      return;
+      return 0;
     }
     if (!headers.length) {
       headers = parsed.headers;
@@ -743,26 +840,30 @@
       const incoming = parsed.headers.map(h => h.toLowerCase()).join(',');
       if (base !== incoming) {
         setErr(`文件 ${sourceName} 表头不一致，已跳过`);
-        return;
+        return 0;
       }
     }
     rawRows.push(...parsed.rows);
+    return parsed.rows.length;
   }
 
   async function loadFiles(files) {
     try {
       setErr(''); setOK('');
       setStatus('读取/解析中...');
-      deletedStack = [];
+      clearDeleteState();
+      resetViewState();
       headers = [];
+      sourceRows = [];
       rawRows = [];
       let used = 0;
       for (const f of files) {
         const text = await f.text();
         const parsed = parseCSV(text);
-        mergeParsed(parsed, f.name);
-        if (parsed.rows.length) used++;
+        const added = mergeParsed(parsed, f.name);
+        if (added) used++;
       }
+      sourceRows = rawRows.slice();
 
       $('nRows').textContent = rawRows.length;
       $('nCols').textContent = headers.length;
@@ -795,8 +896,11 @@
       for (const f of files) {
         const text = await f.text();
         const parsed = parseCSV(text);
-        mergeParsed(parsed, f.name);
-        if (parsed.rows.length) used++;
+        const added = mergeParsed(parsed, f.name);
+        if (added) {
+          sourceRows.push(...parsed.rows);
+          used++;
+        }
       }
       $('nRows').textContent = rawRows.length;
       $('nCols').textContent = headers.length;
@@ -852,7 +956,7 @@
 
     let rawEdgeCnt = 0;
 
-    const rows = dedupeRows(rawRows);
+    const rows = dedupeRows(rawRows, { colLH, colLI, colRH, colRI });
 
     // Build hostname -> management IP map from CSV extended columns.
     for (const r of rows) {
@@ -871,15 +975,13 @@
     }
 
     for (const r of rows) {
-      let lh = (r[colLH] || '').trim();
-      let rh = (r[colRH] || '').trim();
+      const lhRaw = (r[colLH] || '').trim();
+      const rhRaw = (r[colRH] || '').trim();
       const li = (r[colLI] || '').trim();
       const ri = (r[colRI] || '').trim();
-      if (!lh || !rh) continue;
-      if (strip) { lh = stripAfterDot(lh); rh = stripAfterDot(rh); }
-
-      const aId = nodeIdFromLabel(lh);
-      const bId = nodeIdFromLabel(rh);
+      if (!lhRaw || !rhRaw) continue;
+      const lh = strip ? stripAfterDot(lhRaw) : lhRaw;
+      const rh = strip ? stripAfterDot(rhRaw) : rhRaw;
 
       const aRole = roleOf(lh);
       const bRole = roleOf(rh);
@@ -887,20 +989,35 @@
       const rowSourceIp = rowValue(r, ['源设备IP', '源设备ip', 'ipaddr', 'sourceip']);
       const rowRemoteIp = rowValue(r, ['目的设备IP', '目的设备ip', 'remoteip']);
       const aIp = (isIpv4(rowSourceIp) ? rowSourceIp : '')
+        || nodeIpMap.get(lhRaw)
+        || nodeIpMap.get(stripAfterDot(lhRaw))
         || nodeIpMap.get(lh)
-        || deviceNameToIpMap.get(lh)
-        || deviceNameToIpMap.get(stripAfterDot(lh))
-        || (isIpv4(lh) ? lh : '');
+        || deviceNameToIpMap.get(lhRaw)
+        || deviceNameToIpMap.get(stripAfterDot(lhRaw))
+        || (isIpv4(lhRaw) ? lhRaw : '');
       const bIp = (isIpv4(rowRemoteIp) ? rowRemoteIp : '')
+        || nodeIpMap.get(rhRaw)
+        || nodeIpMap.get(stripAfterDot(rhRaw))
         || nodeIpMap.get(rh)
-        || deviceNameToIpMap.get(rh)
-        || deviceNameToIpMap.get(stripAfterDot(rh))
-        || (isIpv4(rh) ? rh : '');
-      nodes.set(aId, { id: aId, label: lh, short: shortLabel(lh), role: aRole, rank: roleRank(aRole), ip: aIp });
-      nodes.set(bId, { id: bId, label: rh, short: shortLabel(rh), role: bRole, rank: roleRank(bRole), ip: bIp });
+        || deviceNameToIpMap.get(rhRaw)
+        || deviceNameToIpMap.get(stripAfterDot(rhRaw))
+        || (isIpv4(rhRaw) ? rhRaw : '');
+
+      const aEntityKey = inferEntityKey(lhRaw || lh, aIp);
+      const bEntityKey = inferEntityKey(rhRaw || rh, bIp);
+      const aId = nodeIdFromEntityKey(aEntityKey);
+      const bId = nodeIdFromEntityKey(bEntityKey);
+      if (!aId || !bId) continue;
+
+      const aExisting = nodes.get(aId);
+      const bExisting = nodes.get(bId);
+      const aLabel = choosePreferredLabel(aExisting?.label, lh, aIp);
+      const bLabel = choosePreferredLabel(bExisting?.label, rh, bIp);
+      nodes.set(aId, { id: aId, label: aLabel, short: shortLabel(aLabel), role: aRole, rank: roleRank(aRole), ip: aIp, entityKey: aEntityKey });
+      nodes.set(bId, { id: bId, label: bLabel, short: shortLabel(bLabel), role: bRole, rank: roleRank(bRole), ip: bIp, entityKey: bEntityKey });
 
       const edgeLabel = `${li} ↔ ${ri}`.trim();
-      const utilKey = `${lh}||${li}`.toLowerCase();
+      const utilKey = buildUtilKey(lhRaw || lh, li, aIp);
       const k1 = `${aId}||${bId}||${edgeLabel}`;
       const k2 = `${bId}||${aId}||${edgeLabel}`;
       rawEdgeCnt++;
@@ -908,7 +1025,7 @@
       if (edgeSet.has(k1) || edgeSet.has(k2)) continue;
       edgeSet.add(k1);
 
-      edges.push({ data: { id: `e_${edges.length}`, source: aId, target: bId, label: edgeLabel, labelShown: '', utilKey, utilKeys: [utilKey] } });
+      edges.push({ data: { id: `e_${edges.length}`, source: aId, target: bId, label: edgeLabel, labelShown: '', utilKey, utilKeys: utilKey ? [utilKey] : [] } });
       degreeMap.set(aId, (degreeMap.get(aId) || 0) + 1);
       degreeMap.set(bId, (degreeMap.get(bId) || 0) + 1);
     }
@@ -984,6 +1101,32 @@
         { selector: 'edge.util-mid', style: { 'line-color': '#ca8a04', 'target-arrow-color': '#ca8a04' } },
         { selector: 'edge.util-high', style: { 'line-color': '#dc2626', 'target-arrow-color': '#dc2626' } },
         { selector: 'edge.util-na', style: { 'line-style': 'dashed', 'line-color': '#9ca3af', 'target-arrow-color': '#9ca3af' } },
+        {
+          selector: 'edge.heavy',
+          style: {
+            'curve-style': 'bezier',
+            'target-arrow-shape': 'triangle',
+            'line-opacity': 0.75,
+            'arrow-scale': 0.65,
+            'text-background-opacity': 0.35
+          }
+        },
+        {
+          selector: 'edge.drag-lite',
+          style: {
+            'curve-style': 'haystack',
+            'target-arrow-shape': 'none',
+            'label': '',
+            'text-background-opacity': 0,
+            'arrow-scale': 0
+          }
+        },
+        {
+          selector: 'node.drag-lite',
+          style: {
+            'label': ''
+          }
+        },
         { selector: 'edge.hovered', style: { 'label': 'data(label)' } },
 
         { selector: '.hit', style: { 'border-width': 2, 'border-color': '#111827' } },
@@ -1001,7 +1144,10 @@
         } }
       ],
       layout: { name: 'preset' },
-      wheelSensitivity: 0.22
+      wheelSensitivity: 0.22,
+      pixelRatio: 1,
+      hideEdgesOnViewport: true,
+      textureOnViewport: true
     });
     cy.autoungrabify(false);
     cy.autounselectify(false);
@@ -1028,11 +1174,18 @@
     // 使边标签模式与当前选择同步
     updateEdgeLabels(edgeMode);
     applyUtilizationToEdges();
+    applyAdaptiveRenderMode();
 
     // click highlight：仅高亮选中节点本身，不再自动高亮邻居
     cy.on('tap', 'node', () => {
       cy.elements().removeClass('hit dim');
       cy.nodes(':selected').addClass('hit');
+    });
+    cy.on('grab', 'node', () => {
+      if (shouldUseDragLiteMode()) setDragPerfMode(true);
+    });
+    cy.on('free', 'node', () => {
+      if (dragPerfMode) setDragPerfMode(false);
     });
     cy.on('tap', (evt) => {
       if (evt.target === cy) cy.elements().removeClass('dim hit');
@@ -1046,6 +1199,7 @@
     cy.on('tap', () => hideCtx());
     cy.on('zoom pan', () => hideCtx());
 
+    reapplyViewStateAfterBuild();
     applyDeletedMaskAfterBuild();
     runLayout();
     if (hasKeep) {
@@ -1166,60 +1320,60 @@
     // gravity mode removed; keep hook for future use
   }
 
-  // 多条件过滤：逗号分隔，命中任何子串的节点隐藏，相关边同步隐藏
-  function applyFilter() {
+  function applyFilterTerms(terms, opts = {}) {
     if (!cy) return;
-    const terms = parseTerms($('filter').value);
-
+    const silent = !!opts.silent;
     cy.elements().removeClass('filtered');
     if (!terms.length) {
-      setOK('已清空过滤，全部显示。');
+      if (!silent) setOK('已清空过滤，全部显示。');
       return;
     }
-
     const nodeHits = cy.nodes().filter(n => {
       const label = (n.data('label') || '').toLowerCase();
       return terms.some(t => label.includes(t));
     });
     nodeHits.addClass('filtered');
-
     cy.edges().forEach(e => {
-      if (e.source().hasClass('filtered') || e.target().hasClass('filtered')) {
-        e.addClass('filtered');
-      }
+      if (e.source().hasClass('filtered') || e.target().hasClass('filtered')) e.addClass('filtered');
     });
-
-    setOK(`已隐藏 ${nodeHits.length} 个节点，过滤条件：${terms.join(', ')}`);
+    if (!silent) setOK(`已隐藏 ${nodeHits.length} 个节点，过滤条件：${terms.join(', ')}`);
   }
 
-  function applyShowOnly() {
+  function applyShowOnlyTerms(terms, opts = {}) {
     if (!cy) return;
-    const terms = parseTerms($('showOnly').value);
+    const silent = !!opts.silent;
     cy.elements().removeClass('onlyHidden');
     if (!terms.length) {
-      setOK('已取消“只显示”过滤，全部显示。');
+      if (!silent) setOK('已取消“只显示”过滤，全部显示。');
       return;
     }
-
     const hits = cy.nodes().filter(n => {
       const label = (n.data('label') || '').toLowerCase();
       return terms.some(t => label.includes(t));
     });
     const hideNodes = cy.nodes().not(hits);
     hideNodes.addClass('onlyHidden');
-
     cy.edges().forEach(e => {
       const sHidden = e.source().hasClass('onlyHidden');
       const tHidden = e.target().hasClass('onlyHidden');
       if (sHidden || tHidden) e.addClass('onlyHidden');
       else e.removeClass('onlyHidden');
     });
-
-    setOK(`只显示 ${hits.length} 个节点，条件：${terms.join(', ')}`);
+    if (!silent) setOK(`只显示 ${hits.length} 个节点，条件：${terms.join(', ')}`);
   }
 
-  function applyShowOnly172() {
+  function applyShowOnly() {
     if (!cy) return;
+    const terms = parseTerms($('showOnly').value);
+    viewState.onlyMode = terms.length ? 'showOnly' : 'none';
+    viewState.onlyTerms = terms;
+    saveTopologyUiPrefs();
+    applyShowOnlyTerms(terms);
+  }
+
+  function applyShowOnly172(opts = {}) {
+    if (!cy) return;
+    const silent = !!opts.silent;
     cy.elements().removeClass('onlyHidden');
     const colLH = $('colLocalHost')?.value || 'localhostname';
     const colRH = $('colRemoteHost')?.value || 'remotehostname';
@@ -1257,10 +1411,9 @@
       return resolvedIp.startsWith('172.');
     });
     if (!core.length) {
-      setErr('未找到172地址节点');
+      if (!silent) setErr('未找到172地址节点');
       return;
     }
-    const keepNodes = core;
     const hideNodes = cy.nodes().not(core);
     hideNodes.addClass('onlyHidden');
     cy.edges().forEach((e) => {
@@ -1269,7 +1422,28 @@
       if (sHidden || tHidden) e.addClass('onlyHidden');
       else e.removeClass('onlyHidden');
     });
-    setOK(`只显示172设备：${core.length} 个（192/无IP已隐藏）`);
+    if (!silent) setOK(`只显示172设备：${core.length} 个（192/无IP已隐藏）`);
+  }
+
+  function applyFilter() {
+    if (!cy) return;
+    const terms = parseTerms($('filter').value);
+    viewState.filterTerms = terms;
+    saveTopologyUiPrefs();
+    applyFilterTerms(terms);
+  }
+
+  function reapplyViewStateAfterBuild() {
+    if (!cy) return;
+    cy.elements().removeClass('filtered onlyHidden');
+    applyFilterTerms(viewState.filterTerms, { silent: true });
+    if (viewState.onlyMode === 'show172') {
+      applyShowOnly172({ silent: true });
+      return;
+    }
+    if (viewState.onlyMode === 'showOnly') {
+      applyShowOnlyTerms(viewState.onlyTerms, { silent: true });
+    }
   }
 
   function parseTerms(raw) {
@@ -1327,7 +1501,7 @@
         n.data('rank', matchedIdx);
       } else {
         // 未命中放最下层；如果没自定义层级则用默认角色层级
-        n.data('rank', layerCount ? layerCount : roleRank(n.data('label')));
+        n.data('rank', layerCount ? layerCount : roleRank(roleOf(n.data('label'))));
       }
     });
   }
@@ -1386,7 +1560,7 @@
       return;
     }
     const ids = removeNodes.map(n => n.id());
-    deletedStack.push(ids);
+    pushDeletedNodeIds(ids);
     removeNodes.remove();
     updateCounts();
     sel.addClass('hit');
@@ -1395,6 +1569,8 @@
 
   function clearSelectionHide() {
     if (!cy) return;
+    resetViewState();
+    saveTopologyUiPrefs();
     cy.elements().removeClass('sel-hidden onlyHidden filtered dim hit');
     setOK('已恢复显示全部节点与链路。');
   }
@@ -1439,11 +1615,12 @@
     }
 
     rawRows = scopedRows;
+    clearDeleteState();
     $('nRows').textContent = rawRows.length;
     $('nCols').textContent = headers.length;
     buildGraph();
     setStatus('范围拓扑已生成');
-    setOK(`已基于当前显示设备重建拓扑：保留 ${rawRows.length} 行（原 ${before} 行）。`);
+    setOK(`已基于当前显示设备重建工作集：保留 ${rawRows.length} 行（原 ${before} 行），源数据仍保留 ${sourceRows.length} 行。`);
   }
 
   function updateCounts() {
@@ -1451,22 +1628,9 @@
     $('nEdges').textContent = cy ? cy.edges().length : '-';
   }
 
-  function collectDeletedNodeIds() {
-    const ids = new Set();
-    for (const item of deletedStack) {
-      if (!Array.isArray(item)) continue;
-      for (const id of item) {
-        if (id != null && String(id).trim() !== '') ids.add(String(id));
-      }
-    }
-    return ids;
-  }
-
   function applyDeletedMaskAfterBuild() {
-    if (!cy || !deletedStack.length) return;
-    const ids = collectDeletedNodeIds();
-    if (!ids.size) return;
-    const toRemove = cy.nodes().filter((n) => ids.has(n.id()));
+    if (!cy || !deletedNodeIds.size) return;
+    const toRemove = cy.nodes().filter((n) => deletedNodeIds.has(n.id()));
     if (!toRemove.length) return;
     toRemove.remove();
     updateCounts();
@@ -1489,27 +1653,26 @@
       if (filtered.length) kept.push(filtered);
     }
     deletedStack = kept;
+    rebuildDeletedNodeIdsFromStack();
   }
 
-  function updateSelectModeUi() {
-    const btn = $('toggleSelectMode');
-    if (btn) btn.textContent = `框选/单选：${boxSelectMode ? '框选' : '单选'}`;
-    if (cy) cy.boxSelectionEnabled(boxSelectMode);
-  }
-
-  function dedupeRows(rows) {
+  function dedupeRows(rows, cols = {}) {
+    const lhKey = cols.colLH || 'localhostname';
+    const liKey = cols.colLI || 'localinterface';
+    const rhKey = cols.colRH || 'remotehostname';
+    const riKey = cols.colRI || 'remoteinterface';
     const seen = new Set();
     const out = [];
     for (const r of rows) {
-      const lh = (r.localhostname || '').trim();
-      const li = (r.localinterface || '').trim();
-      const rh = (r.remotehostname || '').trim();
-      const ri = (r.remoteinterface || '').trim();
+      const lh = String(r[lhKey] || r.localhostname || '').trim();
+      const li = String(r[liKey] || r.localinterface || '').trim();
+      const rh = String(r[rhKey] || r.remotehostname || '').trim();
+      const ri = String(r[riKey] || r.remoteinterface || '').trim();
       if (!lh || !li || !rh || !ri) continue;
       const key = [lh, li, rh, ri].map(s => s.toLowerCase()).join('||');
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push({ ...r, localhostname: lh, localinterface: li, remotehostname: rh, remoteinterface: ri });
+      out.push({ ...r, [lhKey]: lh, [liKey]: li, [rhKey]: rh, [riKey]: ri, localhostname: lh, localinterface: li, remotehostname: rh, remoteinterface: ri });
     }
     return out;
   }
@@ -1590,6 +1753,40 @@
       else if (edgeMode === 'both') shown = base;
       else if (showUtilLabel) shown = util;
       e.data('labelShown', shown);
+    });
+  }
+
+  function shouldUseHeavyEdgeMode() {
+    if (!cy) return false;
+    return cy.edges().length >= 1200;
+  }
+
+  function shouldUseDragLiteMode() {
+    if (!cy) return false;
+    return cy.edges().length >= 220;
+  }
+
+  function applyAdaptiveRenderMode() {
+    if (!cy) return;
+    const heavy = shouldUseHeavyEdgeMode();
+    cy.batch(() => {
+      if (heavy) cy.edges().addClass('heavy');
+      else cy.edges().removeClass('heavy');
+    });
+  }
+
+  function setDragPerfMode(enabled) {
+    if (!cy) return;
+    if (enabled === dragPerfMode) return;
+    dragPerfMode = enabled;
+    cy.batch(() => {
+      if (enabled) {
+        cy.edges().addClass('drag-lite');
+        cy.nodes().addClass('drag-lite');
+      } else {
+        cy.edges().removeClass('drag-lite');
+        cy.nodes().removeClass('drag-lite');
+      }
     });
   }
 
@@ -1681,6 +1878,8 @@
       exported_at: new Date().toISOString(),
       headers: headers.slice(),
       rows: rawRows.slice(),
+      source_rows: sourceRows.slice(),
+      working_rows: rawRows.slice(),
       positions: capturePositions(),
       ui: {
         stripDomain: $('stripDomain')?.value || 'yes',
@@ -1699,14 +1898,18 @@
 
   function applySessionSnapshot(snapshot) {
     const hs = Array.isArray(snapshot?.headers) ? snapshot.headers : [];
-    const rs = Array.isArray(snapshot?.rows) ? snapshot.rows : [];
+    const srcRows = Array.isArray(snapshot?.source_rows) ? snapshot.source_rows : [];
+    const workRows = Array.isArray(snapshot?.working_rows) ? snapshot.working_rows : [];
+    const rs = workRows.length ? workRows : (Array.isArray(snapshot?.rows) ? snapshot.rows : []);
     if (!hs.length || !rs.length) {
       throw new Error('会话文件缺少有效的表头或数据行');
     }
 
     headers = hs.slice();
+    sourceRows = (srcRows.length ? srcRows : rs).slice();
     rawRows = rs.slice();
-    deletedStack = [];
+    clearDeleteState();
+    resetViewState();
 
     const ui = snapshot?.ui || {};
     if ($('stripDomain') && ui.stripDomain) $('stripDomain').value = String(ui.stripDomain);
@@ -1790,11 +1993,14 @@
     for (const r of parsed.rows || []) {
       const lh = hostValueFromRow(r, ['localhostname', 'local_host', 'src', 'from']);
       const rh = hostValueFromRow(r, ['remotehostname', 'remote_host', 'dst', 'to']);
-      if (lh) releaseIds.add(nodeIdFromLabel(stripAfterDot(lh)));
-      if (rh) releaseIds.add(nodeIdFromLabel(stripAfterDot(rh)));
+      const srcIp = rowValue(r, ['源设备IP', '源设备ip', 'ipaddr', 'sourceip']);
+      const dstIp = rowValue(r, ['目的设备IP', '目的设备ip', 'remoteip']);
+      collectCandidateNodeIds(lh, srcIp).forEach((id) => releaseIds.add(id));
+      collectCandidateNodeIds(rh, dstIp).forEach((id) => releaseIds.add(id));
     }
     releaseNodesFromDeletedStack(releaseIds);
-    mergeParsed(parsed, `${sourceName}-append`);
+    const added = mergeParsed(parsed, `${sourceName}-append`);
+    if (added) sourceRows.push(...parsed.rows);
 
     $('nRows').textContent = rawRows.length;
     $('nCols').textContent = headers.length;
@@ -1813,7 +2019,7 @@
     return { mergedRows: rawRows.length, addedRows: Math.max(0, rawRows.length - before) };
   }
 
-  async function runSqlGenerateAndBuild(startHostnameInputId = 'sqlStartHostname', hintId = 'sqlResultHint', action = 'import', opts = {}) {
+  async function runSqlGenerateAndBuild(startHostnameInputId = 'sqlStartHostnameModal', hintId = 'sqlResultHintModal', action = 'import', opts = {}) {
     const startHostname = ($(startHostnameInputId)?.value || '').trim();
     const maxDepthOpt = Number.isFinite(Number(opts.maxDepth)) ? Number(opts.maxDepth) : null;
     const maxDepth = maxDepthOpt ? Math.min(3, Math.max(1, Math.floor(maxDepthOpt))) : 3;
@@ -1827,21 +2033,44 @@
     if ($(hintId)) $(hintId).textContent = '';
     try {
       const base = apiBaseUrl();
-      const resp = await fetch(`${base}/api/sql/lldp-csv`, {
+      const startResp = await fetch(`${base}/api/sql/lldp-csv/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ start_hostname: startHostname, max_depth: maxDepth })
       });
-      const data = await resp.json();
-      if (!resp.ok) {
-        throw new Error(data?.detail || `HTTP ${resp.status}`);
+      const startData = await startResp.json();
+      if (!startResp.ok) {
+        throw new Error(startData?.detail || `HTTP ${startResp.status}`);
       }
-      if (!data.csv_text) {
-        throw new Error('SQL 返回为空');
+      const taskId = String(startData.task_id || '').trim();
+      if (!taskId) throw new Error('SQL 任务创建失败：未返回 task_id');
+
+      let taskData = null;
+      const startedAt = Date.now();
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const pollResp = await fetch(`${base}/api/sql/lldp-csv/tasks/${taskId}`);
+        const pollData = await pollResp.json();
+        if (!pollResp.ok) throw new Error(pollData?.detail || `HTTP ${pollResp.status}`);
+        taskData = pollData;
+        const st = String(taskData.status || '');
+        const sec = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+        if ($(hintId) && (st === 'queued' || st === 'running')) {
+          $(hintId).textContent = `SQL 查询执行中，task=${taskId.slice(0, 8)}，已耗时 ${sec}s`;
+          continue;
+        }
+        if (st === 'failed') throw new Error(String(taskData.error || 'SQL 任务执行失败'));
+        if (st === 'completed') break;
+        throw new Error(`未知 SQL 任务状态：${st || 'N/A'}`);
       }
+      const data = taskData?.response || {};
+      if (!data.download_url) throw new Error('SQL 返回缺少下载地址');
+      const csvResp = await fetch(`${base}${data.download_url}`);
+      if (!csvResp.ok) throw new Error(`下载 SQL 结果失败：HTTP ${csvResp.status}`);
+      const csvText = await csvResp.text();
+      if (!csvText.trim()) throw new Error('SQL 返回为空');
 
       lastSqlDownloadUrl = data.download_url ? `${base}${data.download_url}` : '';
-      let csvText = data.csv_text || '';
       const shownRows = Number(data.row_count || 0);
       if ($(hintId)) $(hintId).textContent = `SQL 返回 ${shownRows} 行，临时文件：${data.temp_file}${ctxAppendSingleHop ? '（右键单轮）' : ''}`;
       const merged = applyQueryCsvText(csvText, { append: action === 'append', sourceName: 'sql' });
@@ -1976,6 +2205,12 @@
       const p = JSON.parse(raw);
       if (typeof p.layer_terms === 'string') $('layerTerms').value = p.layer_terms;
       if (typeof p.filter_terms === 'string') $('filter').value = p.filter_terms;
+      if (typeof p.show_only_terms === 'string') $('showOnly').value = p.show_only_terms;
+      if (typeof p.only_mode === 'string' && ['none', 'showOnly', 'show172'].includes(p.only_mode)) {
+        viewState.onlyMode = p.only_mode;
+      }
+      if (typeof p.filter_terms === 'string') viewState.filterTerms = parseTerms(p.filter_terms);
+      if (typeof p.show_only_terms === 'string') viewState.onlyTerms = parseTerms(p.show_only_terms);
     } catch (_) {
       // Ignore local storage errors.
     }
@@ -1985,7 +2220,9 @@
     try {
       const safe = {
         layer_terms: ($('layerTerms')?.value || '').trim(),
-        filter_terms: ($('filter')?.value || '').trim()
+        filter_terms: ($('filter')?.value || '').trim(),
+        show_only_terms: ($('showOnly')?.value || '').trim(),
+        only_mode: viewState.onlyMode || 'none'
       };
       localStorage.setItem(TOPOLOGY_UI_PREF_KEY, JSON.stringify(safe));
     } catch (_) {
@@ -2020,23 +2257,21 @@
   function buildUtilTargetsFromRows() {
     const colLH = $('colLocalHost').value;
     const colLI = $('colLocalIf').value;
-    const strip = $('stripDomain').value === 'yes';
     const allByUtilKey = new Map();
     for (const r of rawRows) {
       const srcRaw = String(r[colLH] || '').trim();
       const srcIf = String(r[colLI] || '').trim();
       if (!srcRaw || !srcIf) continue;
-      const srcDisplay = strip ? stripAfterDot(srcRaw) : srcRaw;
-      const utilKey = `${srcDisplay}||${srcIf}`.toLowerCase();
-      const dedupeKey = `${srcRaw}||${srcIf}`.toLowerCase();
       const sourceIpHint = rowValue(r, ['源设备IP', '源设备ip', 'ipaddr', 'sourceip']);
+      const utilKey = buildUtilKey(srcRaw, srcIf, sourceIpHint);
+      if (!utilKey) continue;
+      const dedupeKey = utilKey;
       let queryDevice = isIpv4(sourceIpHint) ? sourceIpHint : srcRaw;
       if (!isIpv4(queryDevice)) {
         const mapHit = deviceNameToIpMap.get(srcRaw) || deviceNameToIpMap.get(stripAfterDot(srcRaw));
         const hit1 = nodeIpMap.get(srcRaw);
         const hit2 = nodeIpMap.get(stripAfterDot(srcRaw));
-        const hit3 = nodeIpMap.get(srcDisplay);
-        const cand = mapHit || hit1 || hit2 || hit3;
+        const cand = mapHit || hit1 || hit2;
         if (cand && isIpv4(cand)) queryDevice = cand;
       }
       if (!allByUtilKey.has(utilKey)) {
@@ -2113,14 +2348,16 @@
     const startedAt = Date.now();
     const hintBase = `正在增量查询 ${targets.length} 个 source 端口（跳过已缓存 ${skippedCached} 个）`;
     $('utilResultHint').textContent = `${hintBase}...`;
-    const hintTimer = setInterval(() => {
-      const sec = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
-      $('utilResultHint').textContent = `${hintBase}，已耗时 ${sec}s ...`;
-    }, 1000);
     const workersRaw = parseInt(($('cliMaxWorkersModal')?.value || '4').trim(), 10);
     const maxWorkers = Number.isFinite(workersRaw) ? Math.min(16, Math.max(1, workersRaw)) : 4;
     const metric = (($('utilMetric')?.value || 'tx').trim().toLowerCase());
-    const runtimeCfg = readCliRuntimeInputs();
+    const runtimeCfg = await ensureCliCredentials('未检测到设备 SSH 用户名/密码，请先输入后再执行链路利用率查询。');
+    if (!runtimeCfg) {
+      setErr('已取消链路利用率查询：未提供设备用户名/密码');
+      btn.disabled = false;
+      btn.textContent = old;
+      return;
+    }
     // Utilization query should fail fast; avoid inheriting overly large CLI import timeouts.
     runtimeCfg.cli_connect_timeout = Math.min(20, Math.max(5, Number(runtimeCfg.cli_connect_timeout || 20)));
     runtimeCfg.cli_command_timeout = Math.min(20, Math.max(5, Number(runtimeCfg.cli_command_timeout || 20)));
@@ -2132,19 +2369,50 @@
       ...runtimeCfg
     };
     const base = apiBaseUrl();
-    const controller = new AbortController();
-    // Let backend timeout policy decide; avoid frontend false timeout aborts.
-    const requestTimeoutMs = 0;
-    const timeoutId = requestTimeoutMs > 0 ? setTimeout(() => controller.abort(), requestTimeoutMs) : null;
     try {
-      const resp = await fetch(`${base}/api/cli/link-utilization`, {
+      const startResp = await fetch(`${base}/api/cli/link-utilization/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(reqPayload),
-        signal: controller.signal
+        body: JSON.stringify(reqPayload)
       });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data?.detail || `HTTP ${resp.status}`);
+      const startData = await startResp.json();
+      if (!startResp.ok) throw new Error(startData?.detail || `HTTP ${startResp.status}`);
+      const taskId = String(startData.task_id || '').trim();
+      if (!taskId) throw new Error('任务创建失败：未返回 task_id');
+
+      let taskData = null;
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const pollResp = await fetch(`${base}/api/cli/link-utilization/tasks/${taskId}`);
+        const pollData = await pollResp.json();
+        if (!pollResp.ok) throw new Error(pollData?.detail || `HTTP ${pollResp.status}`);
+        taskData = pollData;
+        const st = String(taskData.status || '');
+        const prog = taskData.progress || {};
+        const finished = Number(prog.finished_devices || 0);
+        const total = Number(prog.total_devices || 0);
+        const cur = String(prog.current_device || '');
+        const sec = Math.max(
+          Math.floor((Date.now() - startedAt) / 1000),
+          Math.floor(Number(prog.elapsed_seconds || 0))
+        );
+        if (st === 'queued' || st === 'running') {
+          const doneText = total ? `${finished}/${total}` : `${finished}`;
+          $('utilResultHint').textContent = `${hintBase}，设备进度 ${doneText}，已耗时 ${sec}s${cur ? `，当前 ${cur}` : ''}`;
+          continue;
+        }
+        if (st === 'failed') {
+          throw new Error(String(taskData.error || '任务失败'));
+        }
+        if (st === 'cancelled') {
+          throw new Error('任务已取消');
+        }
+        if (st === 'completed') break;
+        throw new Error(`未知任务状态：${st || 'N/A'}`);
+      }
+
+      const data = taskData?.response || {};
+      if (!data || typeof data !== 'object') throw new Error('任务完成但结果为空');
       lastUtilDebugUrl = data.debug_download_url ? `${base}${data.debug_download_url}` : '';
       const beforeOkCount = Array.from(utilByKey.values()).filter(v => v && v.status === 'ok').length;
       for (const r of (data.results || [])) {
@@ -2170,15 +2438,12 @@
       } else {
         setOK(`链路利用率刷新成功（新增成功 ${Math.max(0, totalOkCount - beforeOkCount)}）`);
       }
+      applyAdaptiveRenderMode();
     } catch (e) {
-      const msg = (e && e.name === 'AbortError')
-        ? '请求被中断，请重试。'
-        : String(e && e.message ? e.message : e);
+      const msg = String(e && e.message ? e.message : e);
       setErr(`刷新链路利用率失败：${msg}`);
       $('utilResultHint').textContent = `链路利用率查询失败：${msg}`;
     } finally {
-      if (timeoutId) clearTimeout(timeoutId);
-      clearInterval(hintTimer);
       btn.disabled = false;
       btn.textContent = old;
     }
@@ -2212,6 +2477,42 @@
     if (m) m.style.display = 'none';
   }
 
+  function closeCliCredModal(result = null) {
+    const m = $('cliCredModal');
+    if (m) m.style.display = 'none';
+    const r = cliCredResolver;
+    cliCredResolver = null;
+    if (r) r(result);
+  }
+
+  function openCliCredModal(reason = '') {
+    const m = $('cliCredModal');
+    if (!m) return Promise.resolve(null);
+    const userInput = $('cliCredUsername');
+    const passInput = $('cliCredPassword');
+    const hint = $('cliCredHint');
+    const prefillUser = ($('cliUsernameModal')?.value || '').trim();
+    if (userInput) userInput.value = prefillUser;
+    if (passInput) passInput.value = '';
+    if (hint) hint.textContent = reason || '请填写设备 SSH 用户名和密码后继续。';
+    m.style.display = 'flex';
+    setTimeout(() => { if (userInput) userInput.focus(); }, 0);
+    return new Promise((resolve) => { cliCredResolver = resolve; });
+  }
+
+  async function ensureCliCredentials(reason = '') {
+    let runtime = readCliRuntimeInputs();
+    if (runtime.device_username && runtime.device_password) return runtime;
+    const creds = await openCliCredModal(reason);
+    if (!creds) return null;
+    if ($('cliUsernameModal')) $('cliUsernameModal').value = creds.username;
+    if ($('cliPasswordModal')) $('cliPasswordModal').value = creds.password;
+    if (creds.password) lastCliPassword = creds.password;
+    runtime = readCliRuntimeInputs();
+    if (runtime.device_username && runtime.device_password) return runtime;
+    return null;
+  }
+
   // ---- Events ----
   $('file').addEventListener('change', async (e) => {
     const files = e.target.files;
@@ -2228,51 +2529,43 @@
     e.target.value = '';
   });
 
-  $('dropzone').addEventListener('dragover', (e) => { e.preventDefault(); $('dropzone').style.borderColor = '#60a5fa'; });
-  $('dropzone').addEventListener('dragleave', () => { $('dropzone').style.borderColor = '#cbd5e1'; });
-  $('dropzone').addEventListener('drop', async (e) => {
-    e.preventDefault();
-    $('dropzone').style.borderColor = '#cbd5e1';
-    const files = e.dataTransfer.files;
-    if (!files || !files.length) return;
-    await loadFiles(files);
-  });
-
-  $('loadPaste').addEventListener('click', () => {
-    const t = $('paste').value;
-    if (!t.trim()) { setErr('粘贴内容为空'); return; }
-    loadDataFromText(t);
-  });
-  $('runSqlGenerate').addEventListener('click', runSqlGenerateAndBuild);
-  $('downloadSqlCsv').addEventListener('click', downloadLastSqlCsv);
   $('openImportModalImport').addEventListener('click', () => openImportModal('import'));
   $('openImportModalAppend').addEventListener('click', () => openImportModal('append'));
   document.querySelectorAll('.closeImportModalBtn').forEach((btn) => {
     btn.addEventListener('click', closeImportModal);
   });
+  $('cliCredConfirm').addEventListener('click', () => {
+    const u = ($('cliCredUsername')?.value || '').trim();
+    const p = ($('cliCredPassword')?.value || '').trim();
+    if (!u || !p) {
+      if ($('cliCredHint')) $('cliCredHint').textContent = '用户名和密码都不能为空';
+      return;
+    }
+    closeCliCredModal({ username: u, password: p });
+  });
+  $('cliCredCancel').addEventListener('click', () => closeCliCredModal(null));
+  $('cliCredPassword').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') $('cliCredConfirm').click();
+  });
+  $('cliCredModal').addEventListener('click', (e) => {
+    if (e.target && e.target.id === 'cliCredModal') closeCliCredModal(null);
+  });
   $('importMode').addEventListener('change', (e) => showImportPanel(e.target.value));
   $('runSqlGenerateModal').addEventListener('click', () => runSqlGenerateAndBuild('sqlStartHostnameModal', 'sqlResultHintModal', importInputAction));
   $('downloadSqlCsvModal').addEventListener('click', downloadLastSqlCsv);
-  $('runCliGenerateModal').addEventListener('click', () => {
+  $('runCliGenerateModal').addEventListener('click', async () => {
     const addr = ($('cliDeviceAddrModal').value || '').trim();
     const depthRaw = parseInt(($('cliMaxDepthModal').value || '3').trim(), 10);
     const maxDepth = ctxAppendSingleHop ? 1 : (Number.isFinite(depthRaw) ? Math.min(5, Math.max(1, depthRaw)) : 3);
     const workersRaw = parseInt(($('cliMaxWorkersModal').value || '4').trim(), 10);
     const maxWorkers = Number.isFinite(workersRaw) ? Math.min(16, Math.max(1, workersRaw)) : 4;
     const recursiveOnly172 = !!$('cliOnly172Modal').checked;
-    const username = ($('cliUsernameModal').value || '').trim();
-    const enteredPassword = $('cliPasswordModal').value || '';
-    const password = enteredPassword || lastCliPassword || '';
-    if (enteredPassword) lastCliPassword = enteredPassword;
-    const smcJumpHost = ($('cliSmcJumpHostModal').value || '').trim();
-    const smcJumpPortRaw = parseInt(($('cliSmcJumpPortModal').value || '22').trim(), 10);
-    const smcJumpPort = Number.isFinite(smcJumpPortRaw) ? Math.min(65535, Math.max(1, smcJumpPortRaw)) : 22;
-    const smcCommand = ($('cliSmcCommandModal').value || '').trim();
-    const connectTimeoutRaw = parseInt(($('cliConnectTimeoutModal').value || '60').trim(), 10);
-    const connectTimeout = Number.isFinite(connectTimeoutRaw) ? Math.min(300, Math.max(5, connectTimeoutRaw)) : 60;
-    const commandTimeoutRaw = parseInt(($('cliCommandTimeoutModal').value || '45').trim(), 10);
-    const commandTimeout = Number.isFinite(commandTimeoutRaw) ? Math.min(300, Math.max(5, commandTimeoutRaw)) : 45;
     if (!addr) { setErr('请先输入设备地址'); return; }
+    const runtimeCfg = await ensureCliCredentials('未检测到设备 SSH 用户名/密码，请先输入后再执行 CLI 查询。');
+    if (!runtimeCfg) {
+      setErr('已取消 CLI 查询：未提供设备用户名/密码');
+      return;
+    }
     setErr('');
     setOK('');
     const cliStartedAt = startCliTimer('CLI 查询中...');
@@ -2282,13 +2575,7 @@
       max_depth: maxDepth,
       cli_max_workers: maxWorkers,
       recursive_only_172: recursiveOnly172,
-      device_username: username || null,
-      device_password: password || null,
-      smc_jump_host: smcJumpHost || null,
-      smc_jump_port: smcJumpPort,
-      smc_command: smcCommand || null,
-      cli_connect_timeout: connectTimeout,
-      cli_command_timeout: commandTimeout
+      ...runtimeCfg
     };
     saveCliPrefs(reqPayload);
     const base = apiBaseUrl();
@@ -2365,7 +2652,6 @@
   loadCliPrefs();
   loadTopologyUiPrefs();
   loadUtilCacheFromServer();
-  updateSelectModeUi();
 
   $('build').addEventListener('click', buildGraph);
   $('relayout').addEventListener('click', relayout);
@@ -2378,12 +2664,6 @@
     const pos = capturePositions();
     buildGraph(pos);
   });
-  $('toggleSelectMode').addEventListener('click', () => {
-    boxSelectMode = !boxSelectMode;
-    updateSelectModeUi();
-    setOK(`已切换为${boxSelectMode ? '框选' : '单选'}模式`);
-  });
-
   $('exportPng').addEventListener('click', async () => {
     if (!cy) { setErr('请先生成拓扑，再导出 PNG'); return; }
     const btn = $('exportPng');
@@ -2479,7 +2759,10 @@
     setOK('Zabbix 链路利用率：预留功能，待对接数据源。');
   });
   $('utilColorEnabled').addEventListener('change', () => applyUtilizationToEdges());
-  $('utilLabelEnabled').addEventListener('change', () => refreshEdgeLabelDisplay());
+  $('utilLabelEnabled').addEventListener('change', () => {
+    refreshEdgeLabelDisplay();
+    applyAdaptiveRenderMode();
+  });
   $('utilMetric').addEventListener('change', () => {
     if (utilByKey.size) {
       applyUtilizationToEdges();
@@ -2511,7 +2794,7 @@
     const nodes = ctxNodes();
     if (!nodes.length) return hideCtx();
     const ids = nodes.map(n => n.id());
-    deletedStack.push(ids);
+    pushDeletedNodeIds(ids);
     nodes.remove();
     hideCtx();
     updateCounts();
@@ -2696,7 +2979,12 @@
   $('showOnly').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') applyShowOnly();
   });
-  $('show172Only').addEventListener('click', applyShowOnly172);
+  $('show172Only').addEventListener('click', () => {
+    viewState.onlyMode = 'show172';
+    viewState.onlyTerms = [];
+    saveTopologyUiPrefs();
+    applyShowOnly172();
+  });
 $('filter').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     saveTopologyUiPrefs();
@@ -2708,11 +2996,12 @@ $('filter').addEventListener('keydown', (e) => {
   $('restoreDeleted').addEventListener('click', () => {
     if (!cy) return;
     if (!deletedStack.length) { setOK('没有可恢复的删除记录'); return; }
-    const ids = new Set((deletedStack.pop() || []).map((x) => String(x || '')));
-    if (!ids.size) { setOK('没有可恢复的删除记录'); return; }
+    const popped = deletedStack.pop() || [];
+    const restored = Array.isArray(popped) ? popped.length : 0;
+    rebuildDeletedNodeIdsFromStack();
     const pos = capturePositions();
     buildGraph(pos);
-    setOK(`已恢复 ${ids.size} 个删除设备。`);
+    setOK(`已恢复 ${restored} 个删除设备。`);
   });
 
   $('deleteSelection').addEventListener('click', () => {
@@ -2720,7 +3009,7 @@ $('filter').addEventListener('keydown', (e) => {
     const nodes = cy.nodes(':selected');
     if (!nodes.length) { setOK('未选中节点'); return; }
     const ids = nodes.map(n => n.id());
-    deletedStack.push(ids);
+    pushDeletedNodeIds(ids);
     nodes.remove();
     updateCounts();
     setOK(`已删除选中 ${nodes.length} 个节点及其相关边`);

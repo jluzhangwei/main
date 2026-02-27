@@ -131,7 +131,7 @@
         <a href="#layout">布局与分层</a>
         <a href="#interaction">显示与交互</a>
         <a href="#links">链路显示</a>
-        <a href="#export">坐标与导出</a>
+        <a href="#export">会话与导出</a>
         <a href="#workflow">常用操作流</a>
       </div>
     </aside>
@@ -141,7 +141,7 @@
 
       <section id="overview">
         <h2>概览</h2>
-        <p><strong>一句话：</strong>支持 CSV / SQL / CLI 三种导入，自动去重生成拓扑，支持分层布局、过滤定位、多选操作、导出 PNG/JSON/坐标。</p>
+        <p><strong>一句话：</strong>支持 CSV / SQL / CLI 三种导入，自动去重生成拓扑，支持分层布局、过滤定位、多选操作、链路利用率刷新、导出 PNG 与会话快照。</p>
       </section>
 
       <section id="startup">
@@ -171,6 +171,7 @@
         <ul>
           <li><span class="pill">入口</span> 导入方式选 <code>SQL 导入</code>，可点「导入输入」或「追加输入」。</li>
           <li><span class="pill">输入</span> 设备名 <code>start_hostname</code>。</li>
+          <li><span class="pill">执行方式</span> 前端提交异步任务并轮询状态，任务完成后按下载地址读取结果，避免大结果直接回传导致超时。</li>
           <li><span class="pill">行为</span> 「导入输入」会覆盖当前结果；「追加输入」会把本次结果合并到当前图中补链路。</li>
           <li><span class="pill">下载</span> 支持下载本次查询的临时 CSV。</li>
           <li><span class="pill">临时文件</span> 写入 <code>tmp_csv/</code>。</li>
@@ -226,15 +227,16 @@
         <h2>链路显示</h2>
         <ul>
           <li><span class="pill">多链路合并</span> 同一对节点可合并显示并统计条数。</li>
+          <li><span class="pill">CLI 链路利用率</span> 采用任务化执行（提交任务 + 轮询进度），可查看累计耗时并下载调试日志。</li>
+          <li><span class="pill">缓存策略</span> 已成功链路结果写入缓存，仅新增链路增量查询。</li>
         </ul>
       </section>
 
       <section id="export">
-        <h2>坐标与导出</h2>
+        <h2>会话与导出</h2>
         <ul>
-          <li><span class="pill">坐标</span> 导出/导入坐标 JSON。</li>
           <li><span class="pill">图片</span> 导出 PNG。</li>
-          <li><span class="pill">数据</span> 导出 JSON。</li>
+          <li><span class="pill">会话</span> 导出会话 / 导入会话（包含当前数据与坐标，可继续后续追加查询与操作）。</li>
         </ul>
       </section>
 
@@ -245,7 +247,8 @@
           <li>先用「导入输入」建立基线拓扑，再用「追加输入」补充新链路。</li>
           <li>需要针对某个设备补链路时，右键节点点「追加查询」（单轮）。</li>
           <li>生成拓扑后，用分层关键字和不显示规则调整视图。</li>
-          <li>确认结果后导出 PNG/JSON/坐标。</li>
+          <li>需要链路占用率时执行「CLI 链路利用率」，查看进度和结果后再导出。</li>
+          <li>确认结果后导出 PNG 或会话快照。</li>
         </ul>
       </section>
     </main>

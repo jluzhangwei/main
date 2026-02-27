@@ -22,7 +22,9 @@ import re
 import select
 import signal
 import subprocess
+import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from collections import deque
 from dataclasses import dataclass
@@ -55,6 +57,12 @@ LINK_UTIL_CACHE_FIELDS = [
     "error",
     "updated_at",
 ]
+LINK_UTIL_JOBS: dict[str, dict[str, Any]] = {}
+LINK_UTIL_JOB_LOCK = threading.Lock()
+LINK_UTIL_JOB_TTL_SEC = int(os.getenv("LINK_UTIL_JOB_TTL_SEC", "21600") or "21600")
+SQL_QUERY_JOBS: dict[str, dict[str, Any]] = {}
+SQL_QUERY_JOB_LOCK = threading.Lock()
+SQL_QUERY_JOB_TTL_SEC = int(os.getenv("SQL_QUERY_JOB_TTL_SEC", "21600") or "21600")
 
 
 def load_dotenv_file(path: str) -> None:
@@ -1412,7 +1420,7 @@ app.add_middleware(
 )
 
 
-def write_rows_to_csv(file_prefix: str, rows: list[dict[str, Any]]) -> tuple[str, Path, str]:
+def write_rows_to_csv(file_prefix: str, rows: list[dict[str, Any]], *, include_csv_text: bool = True) -> tuple[str, Path, str]:
     filename = f"{file_prefix}.csv"
     safe_name = "".join(ch for ch in filename if ch.isalnum() or ch in "._-")[:140]
     out_path = TMP_DIR / safe_name
@@ -1446,7 +1454,7 @@ def write_rows_to_csv(file_prefix: str, rows: list[dict[str, Any]]) -> tuple[str
                 }
             )
 
-    csv_text = out_path.read_text(encoding="utf-8")
+    csv_text = out_path.read_text(encoding="utf-8") if include_csv_text else ""
     return safe_name, out_path, csv_text
 
 
@@ -1570,6 +1578,25 @@ def _query_lldp_depth_rows(cur: Any, start_hostname: str, max_depth: int = 3) ->
         else:
             r["remoteip"] = ip_map.get(rh, "")
     return rows
+
+
+def dedupe_lldp_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for r in rows or []:
+        depth = str(r.get("depth", "") or "").strip()
+        lh = str(r.get("localhostname", "") or "").strip()
+        li = str(r.get("localinterface", "") or "").strip()
+        rh = str(r.get("remotehostname", "") or "").strip()
+        ri = str(r.get("remoteinterface", "") or "").strip()
+        if not (lh and li and rh and ri):
+            continue
+        key = "||".join([depth.lower(), lh.lower(), li.lower(), rh.lower(), ri.lower()])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
 
 
 def write_cli_debug_text(file_prefix: str, meta: dict[str, Any]) -> tuple[str, Path]:
@@ -2046,6 +2073,8 @@ def collect_link_utilization(
     cli_command_timeout: int | None = None,
     cli_connect_timeout: int | None = None,
     debug_enabled: bool = False,
+    progress_cb: Callable[[dict[str, Any]], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     cfg = get_cli_runtime_config(
         device_username=device_username,
@@ -2070,9 +2099,31 @@ def collect_link_utilization(
 
     out_results: list[dict[str, Any]] = []
     debug_entries: list[dict[str, Any]] = []
+    device_timings: list[dict[str, Any]] = []
     total_start = time.perf_counter()
     devices = sorted(grouped.keys())
+    total_devices = len(devices)
+    finished_devices = 0
     per_device_timeout = max(15, min(90, int(cfg.connect_timeout) + int(cfg.command_timeout) + 10))
+
+    def emit_progress(status: str, current_device: str = "") -> None:
+        if not progress_cb:
+            return
+        try:
+            progress_cb(
+                {
+                    "status": status,
+                    "finished_devices": finished_devices,
+                    "total_devices": total_devices,
+                    "current_device": current_device,
+                    "elapsed_seconds": max(0.0, time.perf_counter() - total_start),
+                }
+            )
+        except Exception:
+            pass
+
+    emit_progress("running")
+
     if devices:
         pool = ThreadPoolExecutor(max_workers=min(workers, len(devices)))
         try:
@@ -2080,7 +2131,49 @@ def collect_link_utilization(
                 dev: pool.submit(collect_device_interface_utils_once, dev, grouped[dev], metric, cfg)
                 for dev in devices
             }
-            for dev, fut in by_dev.items():
+            pending = dict(by_dev)
+            while pending:
+                if cancel_event and cancel_event.is_set():
+                    for dev, fut in pending.items():
+                        try:
+                            fut.cancel()
+                        except Exception:
+                            pass
+                        out_results.extend(
+                            {
+                                "source_device": dev,
+                                "source_interface": iface,
+                                "util_key": ref.util_key or "",
+                                "vendor": "unknown",
+                                "status": "failed",
+                                "tx_pct": None,
+                                "rx_pct": None,
+                                "used_pct": None,
+                                "tx_bps": None,
+                                "rx_bps": None,
+                                "bw_bps": None,
+                                "error": "cancelled_by_user",
+                            }
+                            for iface, refs in grouped.get(dev, {}).items()
+                            for ref in refs
+                        )
+                        debug_entries.append({"device": dev, "status": "failed", "error": "cancelled_by_user"})
+                        device_timings.append(
+                            {
+                                "device": dev,
+                                "status": "cancelled",
+                                "duration_sec": 0.0,
+                                "vendor": "unknown",
+                                "queried_ports": len(grouped.get(dev, {})),
+                                "error": "cancelled_by_user",
+                            }
+                        )
+                    finished_devices = total_devices
+                    emit_progress("cancelled")
+                    break
+
+                dev, fut = next(iter(pending.items()))
+                pending.pop(dev, None)
                 try:
                     res = fut.result(timeout=per_device_timeout)
                 except FuturesTimeoutError:
@@ -2109,6 +2202,18 @@ def collect_link_utilization(
                             "error": f"device_timeout: exceeded {per_device_timeout}s",
                         }
                     )
+                    device_timings.append(
+                        {
+                            "device": dev,
+                            "status": "failed",
+                            "duration_sec": float(per_device_timeout),
+                            "vendor": "unknown",
+                            "queried_ports": len(grouped.get(dev, {})),
+                            "error": f"device_timeout: exceeded {per_device_timeout}s",
+                        }
+                    )
+                    finished_devices += 1
+                    emit_progress("running", dev)
                     continue
                 except Exception as exc:
                     out_results.extend(
@@ -2130,41 +2235,229 @@ def collect_link_utilization(
                         for ref in refs
                     )
                     debug_entries.append({"device": dev, "status": "failed", "error": f"worker_exception: {exc}"})
+                    device_timings.append(
+                        {
+                            "device": dev,
+                            "status": "failed",
+                            "duration_sec": 0.0,
+                            "vendor": "unknown",
+                            "queried_ports": len(grouped.get(dev, {})),
+                            "error": f"worker_exception: {exc}",
+                        }
+                    )
+                    finished_devices += 1
+                    emit_progress("running", dev)
                     continue
                 out_results.extend(res.get("results", []))
+                dev_status = "failed" if res.get("error") else "ok"
                 debug_entries.append(
                     {
                         "device": dev,
-                        "status": "failed" if res.get("error") else "ok",
+                        "status": dev_status,
                         "vendor": res.get("vendor", "unknown"),
                         "error": res.get("error", ""),
                         "duration_sec": res.get("duration_sec", 0.0),
                         "transcript": (res.get("transcript", []) if debug_enabled else []),
                     }
                 )
+                device_timings.append(
+                    {
+                        "device": dev,
+                        "status": dev_status,
+                        "duration_sec": float(res.get("duration_sec", 0.0) or 0.0),
+                        "vendor": res.get("vendor", "unknown"),
+                        "queried_ports": len(grouped.get(dev, {})),
+                        "error": str(res.get("error", "") or ""),
+                    }
+                )
+                finished_devices += 1
+                emit_progress("running", dev)
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
+
+    total_elapsed_seconds = max(0.0, time.perf_counter() - total_start)
+    emit_progress("cancelled" if (cancel_event and cancel_event.is_set()) else "completed")
     return {
         "results": out_results,
         "debug_entries": debug_entries,
+        "device_timings": device_timings,
         "cli_max_workers": workers,
         "queried_devices": devices,
-        "total_elapsed_seconds": max(0.0, time.perf_counter() - total_start),
+        "total_elapsed_seconds": total_elapsed_seconds,
         "per_device_timeout": per_device_timeout,
+        "cancelled": bool(cancel_event and cancel_event.is_set()),
+        "finished_devices": finished_devices,
+        "total_devices": total_devices,
     }
 
 
-@app.post("/api/sql/lldp-csv")
-def query_lldp_csv(payload: QueryRequest) -> dict[str, Any]:
-    start_hostname = payload.start_hostname.strip()
-    max_depth = int(payload.max_depth)
-    if not start_hostname:
-        raise HTTPException(status_code=400, detail="start_hostname is required")
+def _cleanup_expired_jobs(job_store: dict[str, dict[str, Any]], lock: threading.Lock, ttl_seconds: int) -> None:
+    if ttl_seconds <= 0:
+        return
+    now = time.time()
+    with lock:
+        stale = []
+        for job_id, job in job_store.items():
+            finished_at = float(job.get("finished_at") or 0.0)
+            status = str(job.get("status", ""))
+            base_ts = finished_at if finished_at > 0 else float(job.get("updated_at") or now)
+            if status in {"completed", "failed", "cancelled"} and (now - base_ts) > ttl_seconds:
+                stale.append(job_id)
+        for job_id in stale:
+            job_store.pop(job_id, None)
 
+
+def _link_util_job_public(job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "task_id": job.get("task_id"),
+        "status": job.get("status"),
+        "created_at": job.get("created_at"),
+        "started_at": job.get("started_at"),
+        "updated_at": job.get("updated_at"),
+        "finished_at": job.get("finished_at"),
+        "progress": job.get("progress", {}),
+        "error": job.get("error", ""),
+        "response": job.get("response"),
+    }
+
+
+def _run_link_utilization_task(task_id: str) -> None:
+    with LINK_UTIL_JOB_LOCK:
+        job = LINK_UTIL_JOBS.get(task_id)
+        if not job:
+            return
+        job["status"] = "running"
+        job["started_at"] = time.time()
+        job["updated_at"] = time.time()
+        payload = dict(job.get("payload", {}))
+        cancel_event = job.get("cancel_event")
+
+    def progress_cb(update: dict[str, Any]) -> None:
+        with LINK_UTIL_JOB_LOCK:
+            cur = LINK_UTIL_JOBS.get(task_id)
+            if not cur:
+                return
+            cur["progress"] = {
+                "finished_devices": int(update.get("finished_devices", 0) or 0),
+                "total_devices": int(update.get("total_devices", 0) or 0),
+                "current_device": str(update.get("current_device", "") or ""),
+                "elapsed_seconds": float(update.get("elapsed_seconds", 0.0) or 0.0),
+                "status": str(update.get("status", "running") or "running"),
+            }
+            cur["updated_at"] = time.time()
+
+    try:
+        target_objs = [LinkUtilTarget(**x) for x in (payload.get("targets") or [])]
+        metric = (payload.get("metric") or "tx").strip().lower()
+        meta = collect_link_utilization(
+            target_objs,
+            metric=metric,
+            cli_max_workers=payload.get("cli_max_workers"),
+            device_username=payload.get("device_username"),
+            device_password=payload.get("device_password"),
+            smc_jump_host=payload.get("smc_jump_host"),
+            smc_jump_port=payload.get("smc_jump_port"),
+            smc_command=payload.get("smc_command"),
+            cli_command_timeout=payload.get("cli_command_timeout"),
+            cli_connect_timeout=payload.get("cli_connect_timeout"),
+            debug_enabled=bool(payload.get("debug_enabled")),
+            progress_cb=progress_cb,
+            cancel_event=cancel_event if isinstance(cancel_event, threading.Event) else None,
+        )
+        cache_updates = merge_link_util_cache(meta.get("results", []))
+        cache_total = len(read_link_util_cache_rows())
+
+        debug_download_url = ""
+        debug_file = ""
+        if payload.get("debug_enabled"):
+            safe_name, debug_path = write_link_util_debug_text(
+                f"link_util_debug_{int(time.time())}",
+                {**meta, "metric": metric},
+            )
+            debug_file = str(debug_path)
+            debug_download_url = f"/api/lldp-debug/file/{safe_name}"
+
+        response = {
+            "ok": True,
+            "mode": "cli-link-utilization",
+            "metric": metric,
+            "result_count": len(meta.get("results", [])),
+            "results": meta.get("results", []),
+            "queried_devices": meta.get("queried_devices", []),
+            "cli_max_workers": meta.get("cli_max_workers"),
+            "per_device_timeout": meta.get("per_device_timeout"),
+            "total_elapsed_seconds": meta.get("total_elapsed_seconds"),
+            "debug_entries": meta.get("debug_entries", []),
+            "device_timings": meta.get("device_timings", []),
+            "finished_devices": meta.get("finished_devices"),
+            "total_devices": meta.get("total_devices"),
+            "cache_updates": cache_updates,
+            "cache_total": cache_total,
+            "debug_file": debug_file,
+            "debug_download_url": debug_download_url,
+        }
+        final_status = "cancelled" if meta.get("cancelled") else "completed"
+        with LINK_UTIL_JOB_LOCK:
+            cur = LINK_UTIL_JOBS.get(task_id)
+            if not cur:
+                return
+            cur["status"] = final_status
+            cur["response"] = response
+            cur["error"] = ""
+            cur["finished_at"] = time.time()
+            cur["updated_at"] = time.time()
+            cur["progress"] = {
+                "finished_devices": int(meta.get("finished_devices", 0) or 0),
+                "total_devices": int(meta.get("total_devices", 0) or 0),
+                "current_device": "",
+                "elapsed_seconds": float(meta.get("total_elapsed_seconds", 0.0) or 0.0),
+                "status": final_status,
+            }
+    except Exception as exc:
+        with LINK_UTIL_JOB_LOCK:
+            cur = LINK_UTIL_JOBS.get(task_id)
+            if not cur:
+                return
+            cur["status"] = "failed"
+            cur["error"] = str(exc)
+            cur["response"] = None
+            cur["finished_at"] = time.time()
+            cur["updated_at"] = time.time()
+
+
+def _create_link_utilization_task(payload: LinkUtilRequest) -> dict[str, Any]:
+    _cleanup_expired_jobs(LINK_UTIL_JOBS, LINK_UTIL_JOB_LOCK, LINK_UTIL_JOB_TTL_SEC)
+    task_id = uuid.uuid4().hex
+    body = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    # Password is used only in worker process memory; do not expose it through task query API.
+    body_sanitized = dict(body)
+    body_sanitized["device_password"] = body.get("device_password")
+    created = time.time()
+    job = {
+        "task_id": task_id,
+        "status": "queued",
+        "payload": body_sanitized,
+        "cancel_event": threading.Event(),
+        "created_at": created,
+        "started_at": 0.0,
+        "updated_at": created,
+        "finished_at": 0.0,
+        "progress": {"finished_devices": 0, "total_devices": 0, "current_device": "", "elapsed_seconds": 0.0, "status": "queued"},
+        "error": "",
+        "response": None,
+    }
+    with LINK_UTIL_JOB_LOCK:
+        LINK_UTIL_JOBS[task_id] = job
+    t = threading.Thread(target=_run_link_utilization_task, args=(task_id,), daemon=True)
+    t.start()
+    return {"task_id": task_id, "status": "queued"}
+
+
+def _run_sql_lldp_query(start_hostname: str, max_depth: int) -> dict[str, Any]:
     try:
         conn = connect_db()
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"DB connect failed: {exc}") from exc
+        raise RuntimeError(f"DB connect failed: {exc}") from exc
 
     t0 = time.perf_counter()
     try:
@@ -2173,7 +2466,7 @@ def query_lldp_csv(payload: QueryRequest) -> dict[str, Any]:
             rows = _query_lldp_depth_rows(cur, start_hostname, max_depth=max_depth)
     except Exception as exc:
         elapsed = max(0.0, time.perf_counter() - t0)
-        raise HTTPException(status_code=500, detail=f"SQL execution failed after {elapsed:.1f}s: {exc}") from exc
+        raise RuntimeError(f"SQL execution failed after {elapsed:.1f}s: {exc}") from exc
     finally:
         conn.close()
 
@@ -2188,11 +2481,12 @@ def query_lldp_csv(payload: QueryRequest) -> dict[str, Any]:
         else:
             r["remoteip"] = rh if _looks_like_ip(rh) else ""
 
-    safe_name, out_path, csv_text = write_rows_to_csv(
+    rows = dedupe_lldp_rows(rows)
+    safe_name, out_path, _ = write_rows_to_csv(
         f"lldp_{start_hostname.replace('/', '_').replace(' ', '_')}",
         rows,
+        include_csv_text=False,
     )
-
     return {
         "ok": True,
         "mode": "sql",
@@ -2202,8 +2496,119 @@ def query_lldp_csv(payload: QueryRequest) -> dict[str, Any]:
         "elapsed_seconds": max(0.0, time.perf_counter() - t0),
         "temp_file": str(out_path),
         "download_url": f"/api/lldp-csv/file/{safe_name}",
-        "csv_text": csv_text,
     }
+
+
+def _sql_job_public(job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "task_id": job.get("task_id"),
+        "status": job.get("status"),
+        "created_at": job.get("created_at"),
+        "started_at": job.get("started_at"),
+        "updated_at": job.get("updated_at"),
+        "finished_at": job.get("finished_at"),
+        "error": job.get("error", ""),
+        "response": job.get("response"),
+    }
+
+
+def _run_sql_query_task(task_id: str) -> None:
+    with SQL_QUERY_JOB_LOCK:
+        job = SQL_QUERY_JOBS.get(task_id)
+        if not job:
+            return
+        job["status"] = "running"
+        job["started_at"] = time.time()
+        job["updated_at"] = time.time()
+        payload = dict(job.get("payload", {}))
+
+    try:
+        start_hostname = str(payload.get("start_hostname", "")).strip()
+        max_depth = int(payload.get("max_depth", 3) or 3)
+        response = _run_sql_lldp_query(start_hostname, max_depth)
+        with SQL_QUERY_JOB_LOCK:
+            cur = SQL_QUERY_JOBS.get(task_id)
+            if not cur:
+                return
+            cur["status"] = "completed"
+            cur["response"] = response
+            cur["error"] = ""
+            cur["finished_at"] = time.time()
+            cur["updated_at"] = time.time()
+    except Exception as exc:
+        with SQL_QUERY_JOB_LOCK:
+            cur = SQL_QUERY_JOBS.get(task_id)
+            if not cur:
+                return
+            cur["status"] = "failed"
+            cur["response"] = None
+            cur["error"] = str(exc)
+            cur["finished_at"] = time.time()
+            cur["updated_at"] = time.time()
+
+
+def _create_sql_query_task(payload: QueryRequest) -> dict[str, Any]:
+    _cleanup_expired_jobs(SQL_QUERY_JOBS, SQL_QUERY_JOB_LOCK, SQL_QUERY_JOB_TTL_SEC)
+    body = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    task_id = uuid.uuid4().hex
+    created = time.time()
+    job = {
+        "task_id": task_id,
+        "status": "queued",
+        "payload": body,
+        "created_at": created,
+        "started_at": 0.0,
+        "updated_at": created,
+        "finished_at": 0.0,
+        "error": "",
+        "response": None,
+    }
+    with SQL_QUERY_JOB_LOCK:
+        SQL_QUERY_JOBS[task_id] = job
+    t = threading.Thread(target=_run_sql_query_task, args=(task_id,), daemon=True)
+    t.start()
+    return {"task_id": task_id, "status": "queued"}
+
+
+@app.post("/api/sql/lldp-csv/tasks")
+def create_sql_lldp_task(payload: QueryRequest) -> dict[str, Any]:
+    start_hostname = payload.start_hostname.strip()
+    if not start_hostname:
+        raise HTTPException(status_code=400, detail="start_hostname is required")
+    try:
+        task = _create_sql_query_task(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"create SQL task failed: {exc}") from exc
+    return {"ok": True, "task_id": task["task_id"], "status": task["status"]}
+
+
+@app.get("/api/sql/lldp-csv/tasks/{task_id}")
+def get_sql_lldp_task(task_id: str) -> dict[str, Any]:
+    _cleanup_expired_jobs(SQL_QUERY_JOBS, SQL_QUERY_JOB_LOCK, SQL_QUERY_JOB_TTL_SEC)
+    with SQL_QUERY_JOB_LOCK:
+        job = SQL_QUERY_JOBS.get(task_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="task not found")
+        body = _sql_job_public(job)
+    body["ok"] = True
+    return body
+
+
+@app.post("/api/sql/lldp-csv")
+def query_lldp_csv(payload: QueryRequest) -> dict[str, Any]:
+    start_hostname = payload.start_hostname.strip()
+    max_depth = int(payload.max_depth)
+    if not start_hostname:
+        raise HTTPException(status_code=400, detail="start_hostname is required")
+    try:
+        return _run_sql_lldp_query(start_hostname, max_depth)
+    except Exception as exc:
+        msg = str(exc)
+        if msg.startswith("DB connect failed:"):
+            raise HTTPException(status_code=500, detail=msg) from exc
+        if msg.startswith("SQL execution failed"):
+            raise HTTPException(status_code=500, detail=msg) from exc
+        raise HTTPException(status_code=500, detail=f"SQL query failed: {msg}") from exc
 
 
 @app.post("/api/cli/lldp-csv")
@@ -2263,6 +2668,56 @@ def query_lldp_csv_via_cli(payload: CliQueryRequest) -> dict[str, Any]:
     }
 
 
+@app.post("/api/cli/link-utilization/tasks")
+def create_link_utilization_task(payload: LinkUtilRequest) -> dict[str, Any]:
+    if not payload.targets:
+        raise HTTPException(status_code=400, detail="targets is required")
+    metric = (payload.metric or "tx").strip().lower()
+    if metric not in {"tx", "rx", "max"}:
+        payload.metric = "tx"
+    try:
+        task = _create_link_utilization_task(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"create link utilization task failed: {exc}") from exc
+    return {
+        "ok": True,
+        "task_id": task["task_id"],
+        "status": task["status"],
+    }
+
+
+@app.get("/api/cli/link-utilization/tasks/{task_id}")
+def get_link_utilization_task(task_id: str) -> dict[str, Any]:
+    _cleanup_expired_jobs(LINK_UTIL_JOBS, LINK_UTIL_JOB_LOCK, LINK_UTIL_JOB_TTL_SEC)
+    with LINK_UTIL_JOB_LOCK:
+        job = LINK_UTIL_JOBS.get(task_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="task not found")
+        body = _link_util_job_public(job)
+    body["ok"] = True
+    return body
+
+
+@app.post("/api/cli/link-utilization/tasks/{task_id}/cancel")
+def cancel_link_utilization_task(task_id: str) -> dict[str, Any]:
+    with LINK_UTIL_JOB_LOCK:
+        job = LINK_UTIL_JOBS.get(task_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="task not found")
+        status = str(job.get("status", ""))
+        if status in {"completed", "failed", "cancelled"}:
+            return {"ok": True, "task_id": task_id, "status": status}
+        ev = job.get("cancel_event")
+        if isinstance(ev, threading.Event):
+            ev.set()
+        if status == "queued":
+            job["status"] = "cancelled"
+            job["finished_at"] = time.time()
+            job["updated_at"] = time.time()
+            job["error"] = "cancelled_by_user"
+    return {"ok": True, "task_id": task_id, "status": "cancelling"}
+
+
 @app.post("/api/cli/link-utilization")
 def query_link_utilization(payload: LinkUtilRequest) -> dict[str, Any]:
     if not payload.targets:
@@ -2318,6 +2773,9 @@ def query_link_utilization(payload: LinkUtilRequest) -> dict[str, Any]:
         "per_device_timeout": meta.get("per_device_timeout"),
         "total_elapsed_seconds": meta.get("total_elapsed_seconds"),
         "debug_entries": meta.get("debug_entries", []),
+        "device_timings": meta.get("device_timings", []),
+        "finished_devices": meta.get("finished_devices"),
+        "total_devices": meta.get("total_devices"),
         "cache_updates": cache_updates,
         "cache_total": cache_total,
         "debug_file": debug_file,
