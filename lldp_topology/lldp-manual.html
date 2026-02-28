@@ -123,6 +123,7 @@
       <h2>目录</h2>
       <div class="links">
         <a href="#overview">概览</a>
+        <a href="#updates">近期更新</a>
         <a href="#startup">启动方式</a>
         <a href="#oneclick">一键启动</a>
         <a href="#sql">SQL 导入</a>
@@ -132,6 +133,7 @@
         <a href="#interaction">显示与交互</a>
         <a href="#links">链路显示</a>
         <a href="#export">会话与导出</a>
+        <a href="#skills">技能拆解</a>
         <a href="#workflow">常用操作流</a>
       </div>
     </aside>
@@ -142,6 +144,16 @@
       <section id="overview">
         <h2>概览</h2>
         <p><strong>一句话：</strong>支持 CSV / SQL / CLI 三种导入，自动去重生成拓扑，支持分层布局、过滤定位、多选操作、链路利用率刷新、导出 PNG 与会话快照。</p>
+      </section>
+
+      <section id="updates">
+        <h2>近期更新（关键行为）</h2>
+        <ul>
+          <li><span class="pill">重排选中设备</span> 原「生成范围拓扑」已改为只重排选中的可见节点，不改写当前工作集、不删除其他节点。</li>
+          <li><span class="pill">删除非邻接</span> 原「仅保留邻接」更名为「删除非邻接」，行为不变：删除选中设备闭邻域外的节点，可恢复。</li>
+          <li><span class="pill">分区 + 分层</span> 分区采用先命中优先（命中后不再参与后续分区）；每个分区内独立执行分层布局。</li>
+          <li><span class="pill">分区隔离</span> 分区布局增加矩形区域与间距校验，减少跨分区叠加。</li>
+        </ul>
       </section>
 
       <section id="startup">
@@ -206,6 +218,8 @@
         <ul>
           <li><span class="pill">布局</span> 上下分层 / 强分散 / 圆形。</li>
           <li><span class="pill">分层关键字</span> 逗号分层，斜杠同层，<code>&amp;</code> 同层内全命中。示例：<code>EDGE&amp;CORE,CORE,AGGR/SPINE,LEAF/tor</code></li>
+          <li><span class="pill">分区关键字</span> 逗号分区，斜杠同区，<code>&amp;</code> 同区内全命中。分区先匹配先归属，后续分区不重复匹配。</li>
+          <li><span class="pill">选中重排</span> 点击「重排选中设备」只对选中节点做局部布局，不影响其他节点和数据。</li>
           <li><span class="pill">默认</span> 布局模式默认上下分层。</li>
         </ul>
       </section>
@@ -216,6 +230,7 @@
           <li><span class="pill">标签</span> 节点名全名/缩略，端口标签显示/隐藏。</li>
           <li><span class="pill">过滤</span> 「不显示」关键词回车生效。</li>
           <li><span class="pill">定位</span> 「定位设备」关键词回车多选。</li>
+          <li><span class="pill">全选可见</span> 一键选中当前可见节点，便于组合删除/重排。</li>
           <li><span class="pill">右键</span> 固定/删除/复制名称/复制地址。</li>
           <li><span class="pill">右键追加查询</span> 按当前导入方式执行一次追加查询；SQL 用设备名，CLI 优先用管理地址。</li>
           <li><span class="pill">单轮追加</span> 右键追加查询固定只跑 1 轮，避免长时间递归。</li>
@@ -237,6 +252,16 @@
         <ul>
           <li><span class="pill">图片</span> 导出 PNG。</li>
           <li><span class="pill">会话</span> 导出会话 / 导入会话（包含当前数据与坐标，可继续后续追加查询与操作）。</li>
+        </ul>
+      </section>
+
+      <section id="skills">
+        <h2>技能拆解（实现视角）</h2>
+        <ul>
+          <li><span class="pill">登录设备 Skill</span> SMC 跳板 + SSH 双阶段登录，自动处理 yes/no、old token、密码输入、分页关闭、超时与清理。</li>
+          <li><span class="pill">获取数据 Skill</span> SQL/CLI/CSV 三源统一成拓扑 CSV 结构，CLI 支持厂商识别与递归并发采集。</li>
+          <li><span class="pill">拓扑生成 Skill</span> 去重建图 + 分层/分区布局 + 交互过滤 + 增量查询 + 会话持久化。</li>
+          <li><span class="pill">详版文档</span> 见 <code>LLDP_SKILLS.md</code>。</li>
         </ul>
       </section>
 

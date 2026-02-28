@@ -31,6 +31,21 @@
     .util-grid .check-row input[type="checkbox"] { width:auto; margin:0; }
     .row { display: grid; grid-template-columns: 1fr; gap: 8px; margin: 10px 0; }
     .row.inline { grid-template-columns: 1fr 1fr; gap: 10px; }
+    .action-group {
+      border: 1px dashed #d7dfeb;
+      border-radius: 10px;
+      background: #ffffff;
+      padding: 8px;
+      margin: 10px 0;
+    }
+    .action-group-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #475569;
+      margin: 2px 0 6px;
+      letter-spacing: 0.2px;
+    }
+    .action-group .row { margin: 6px 0; }
     label { font-size: 12px; color: #111827; font-weight: 600; }
     input, select, textarea, button { width: 100%; box-sizing: border-box; }
     input[type="text"], input[type="number"], input[type="password"], select, textarea {
@@ -322,34 +337,72 @@
         <label>分层关键字（高->低，逗号分层，斜杠同层，&需全部命中，如 EDGE&CORE,CORE,AGGR/SPINE,LEAF/tor）</label>
         <input id="layerTerms" type="text" value="EDGE,CORE,AGGR,LEAF" />
       </div>
+      <div class="row">
+        <label>分区关键字（左->右分区，逗号分区，斜杠同区，&需全部命中，如 PAY/SHOP,MGMT&CORE,EDGE）</label>
+        <input id="bizIsolationTerms" type="text" placeholder="例如：PAY/SHOP,MGMT,EDGE" />
+      </div>
+      <div class="row inline">
+        <div>
+          <label>名称相似聚拢</label>
+          <select id="nameClusterMode">
+            <option value="on" selected>开启</option>
+            <option value="off">关闭</option>
+          </select>
+        </div>
+        <div>
+          <label>近似度强度 <span class="badge">0~1</span></label>
+          <input id="nameClusterStrength" type="range" min="0" max="1" step="0.1" value="0.6" />
+        </div>
+      </div>
 
       <div class="row">
         <label>分散强度（越大越分散） <span class="badge">建议 0.3~0.8</span></label>
         <input id="spacing" type="range" min="0.1" max="1" step="0.05" value="0.5" />
       </div>
 
-      <div class="row inline">
-        <button id="build" class="primary">生成拓扑</button>
-        <button id="relayout">重新布局</button>
+      <div class="action-group">
+        <div class="action-group-title">拓扑生成与布局</div>
+        <div class="row">
+          <button id="build" class="primary">生成拓扑</button>
+        </div>
+        <div class="row inline">
+          <button id="fit">适配画布（慎用）</button>
+          <button id="center">居中 + 放大</button>
+        </div>
+        <div class="row inline">
+          <button id="toggleMerge">合并多条链路：开启</button>
+          <button id="selectVisible">全选可见节点</button>
+        </div>
+        <div class="row inline">
+          <button id="buildScopedTopo">重排选中设备</button>
+        </div>
       </div>
-      <div class="row inline">
-        <button id="fit">适配画布（慎用）</button>
-        <button id="center">居中 + 放大</button>
-        <button id="toggleMerge">合并多条链路：开启</button>
+
+      <div class="action-group">
+        <div class="action-group-title">选中定位与视图过滤</div>
+        <div class="row inline">
+          <button id="fitSelection">定位选中</button>
+          <button id="isolateSelection">仅显示邻接</button>
+        </div>
+        <div class="row inline">
+          <button id="clearSelectionHide">恢复显示</button>
+          <button id="show172Only">只显示172设备</button>
+        </div>
       </div>
-      <div class="row inline">
-        <button id="fitSelection">定位选中</button>
-        <button id="isolateSelection">仅显示邻接</button>
-      </div>
-      <div class="row inline">
-        <button id="buildScopedTopo">生成范围拓扑</button>
-        <button id="keepAdjacentOnly">仅保留邻接</button>
-      </div>
-      <div class="row inline">
-        <button id="clearSelectionHide">恢复显示</button>
-        <button id="show172Only">只显示172设备</button>
-        <button id="deleteSelection">删除选中</button>
-        <button id="restoreDeleted">恢复删除设备</button>
+
+      <div class="action-group">
+        <div class="action-group-title">删除恢复与回退</div>
+        <div class="row inline">
+          <button id="deleteSelection">删除选中</button>
+          <button id="keepSelected">删除未选中</button>
+        </div>
+        <div class="row inline">
+          <button id="keepAdjacentOnly">删除非邻接</button>
+          <button id="restoreDeleted">恢复删除设备</button>
+        </div>
+        <div class="row">
+          <button id="rollbackStep">回到上一步</button>
+        </div>
       </div>
     </div>
 
@@ -538,6 +591,13 @@
   let utilByKey = new Map();
   let primaryCliSource = '';
   let dragPerfMode = false;
+  const rollbackState = {
+    before: null,
+    after: null,
+    atBefore: false,
+  };
+  let rollbackApplyInProgress = false;
+  let rollbackArmSeq = 0;
   // 注册 fCoSE 扩展（兼容不同全局名），避免引用未定义导致脚本中断
 (() => {
     const extFcose = window.cytoscapeFcose || window.cytoFcose || window.fcose || window.fCoSE;
@@ -579,6 +639,134 @@
     deletedStack.push(clean);
     clean.forEach((id) => deletedNodeIds.add(id));
     return clean.length;
+  }
+
+  function cloneRows(rows) {
+    return Array.isArray(rows) ? rows.map((r) => ({ ...(r || {}) })) : [];
+  }
+
+  function updateRollbackButtonState() {
+    const btn = $('rollbackStep');
+    if (!btn) return;
+    const enabled = !!(rollbackState.before && rollbackState.after);
+    btn.disabled = !enabled;
+    btn.textContent = rollbackState.atBefore ? '回到变更后' : '回到上一步';
+  }
+
+  function captureRollbackSnapshot() {
+    if (!headers.length && !cy) return null;
+    return {
+      headers: headers.slice(),
+      sourceRows: cloneRows(sourceRows),
+      rawRows: cloneRows(rawRows),
+      positions: capturePositions(),
+      deletedStack: deletedStack.map((x) => (Array.isArray(x) ? x.slice() : [])),
+      viewState: {
+        filterTerms: Array.isArray(viewState.filterTerms) ? viewState.filterTerms.slice() : [],
+        onlyMode: viewState.onlyMode || 'none',
+        onlyTerms: Array.isArray(viewState.onlyTerms) ? viewState.onlyTerms.slice() : [],
+      },
+      ui: {
+        filter: $('filter')?.value || '',
+        showOnly: $('showOnly')?.value || '',
+        layerTerms: $('layerTerms')?.value || '',
+        bizIsolationTerms: $('bizIsolationTerms')?.value || '',
+        layoutMode: $('layoutMode')?.value || 'layer',
+        nodeLabelMode: $('nodeLabelMode')?.value || 'full',
+        edgeLabelMode: $('edgeLabelMode')?.value || 'none',
+        spacing: $('spacing')?.value || '0.5',
+        stripDomain: $('stripDomain')?.value || 'yes',
+        nameClusterMode: $('nameClusterMode')?.value || 'on',
+        nameClusterStrength: $('nameClusterStrength')?.value || '0.6',
+        colLocalHost: $('colLocalHost')?.value || '',
+        colRemoteHost: $('colRemoteHost')?.value || '',
+        colLocalIf: $('colLocalIf')?.value || '',
+        colRemoteIf: $('colRemoteIf')?.value || '',
+      },
+      mergedMode: !!mergedMode,
+      selectedNodeIds: cy ? cy.nodes(':selected').map((n) => n.id()) : [],
+    };
+  }
+
+  function applyRollbackSnapshot(snapshot) {
+    if (!snapshot || !Array.isArray(snapshot.headers)) return false;
+    rollbackApplyInProgress = true;
+    try {
+      headers = snapshot.headers.slice();
+      sourceRows = cloneRows(snapshot.sourceRows || []);
+      rawRows = cloneRows(snapshot.rawRows || []);
+      deletedStack = (snapshot.deletedStack || []).map((x) => (Array.isArray(x) ? x.slice() : []));
+      rebuildDeletedNodeIdsFromStack();
+      viewState.filterTerms = (snapshot.viewState?.filterTerms || []).slice();
+      viewState.onlyMode = snapshot.viewState?.onlyMode || 'none';
+      viewState.onlyTerms = (snapshot.viewState?.onlyTerms || []).slice();
+      mergedMode = !!snapshot.mergedMode;
+      $('toggleMerge').textContent = `合并多条链路：${mergedMode ? '开启' : '关闭'}`;
+
+      if ($('filter')) $('filter').value = snapshot.ui?.filter || '';
+      if ($('showOnly')) $('showOnly').value = snapshot.ui?.showOnly || '';
+      if ($('layerTerms')) $('layerTerms').value = snapshot.ui?.layerTerms || '';
+      if ($('bizIsolationTerms')) $('bizIsolationTerms').value = snapshot.ui?.bizIsolationTerms || '';
+      if ($('layoutMode')) $('layoutMode').value = snapshot.ui?.layoutMode || 'layer';
+      if ($('nodeLabelMode')) $('nodeLabelMode').value = snapshot.ui?.nodeLabelMode || 'full';
+      if ($('edgeLabelMode')) $('edgeLabelMode').value = snapshot.ui?.edgeLabelMode || 'none';
+      if ($('spacing')) $('spacing').value = snapshot.ui?.spacing || '0.5';
+      if ($('stripDomain')) $('stripDomain').value = snapshot.ui?.stripDomain || 'yes';
+      if ($('nameClusterMode')) $('nameClusterMode').value = snapshot.ui?.nameClusterMode || 'on';
+      if ($('nameClusterStrength')) $('nameClusterStrength').value = snapshot.ui?.nameClusterStrength || '0.6';
+
+      $('nRows').textContent = rawRows.length;
+      $('nCols').textContent = headers.length;
+
+      if (headers.length) {
+        fillSelect('colLocalHost', autoPickColumn(['localhostname','local_host','src','from']));
+        fillSelect('colRemoteHost', autoPickColumn(['remotehostname','remote_host','dst','to']));
+        fillSelect('colLocalIf', autoPickColumn(['localinterface','local_if','src_if','from_if']));
+        fillSelect('colRemoteIf', autoPickColumn(['remoteinterface','remote_if','dst_if','to_if']));
+        if (snapshot.ui?.colLocalHost && headers.includes(snapshot.ui.colLocalHost)) $('colLocalHost').value = snapshot.ui.colLocalHost;
+        if (snapshot.ui?.colRemoteHost && headers.includes(snapshot.ui.colRemoteHost)) $('colRemoteHost').value = snapshot.ui.colRemoteHost;
+        if (snapshot.ui?.colLocalIf && headers.includes(snapshot.ui.colLocalIf)) $('colLocalIf').value = snapshot.ui.colLocalIf;
+        if (snapshot.ui?.colRemoteIf && headers.includes(snapshot.ui.colRemoteIf)) $('colRemoteIf').value = snapshot.ui.colRemoteIf;
+      }
+
+      const pos = snapshot.positions || {};
+      buildGraph(pos);
+      applyPositions(pos);
+
+      if (Array.isArray(snapshot.selectedNodeIds) && snapshot.selectedNodeIds.length && cy) {
+        cy.elements(':selected').unselect();
+        snapshot.selectedNodeIds.forEach((id) => {
+          const n = cy.getElementById(String(id || ''));
+          if (n && n.length) n.select();
+        });
+      }
+      return true;
+    } finally {
+      rollbackApplyInProgress = false;
+    }
+  }
+
+  function armRollbackState(beforeSnapshot, delayMs = 0) {
+    if (!beforeSnapshot || rollbackApplyInProgress) return;
+    const delay = Math.max(0, Number(delayMs) || 0);
+    const seq = ++rollbackArmSeq;
+    setTimeout(() => {
+      if (seq !== rollbackArmSeq) return;
+      if (rollbackApplyInProgress) return;
+      const afterSnapshot = captureRollbackSnapshot();
+      if (!afterSnapshot) return;
+      rollbackState.before = beforeSnapshot;
+      rollbackState.after = afterSnapshot;
+      rollbackState.atBefore = false;
+      updateRollbackButtonState();
+    }, delay);
+  }
+
+  function runWithRollback(work, opts = {}) {
+    const beforeSnapshot = captureRollbackSnapshot();
+    const result = work();
+    armRollbackState(beforeSnapshot, opts.delayMs || 0);
+    return result;
   }
 
   function stopCliTimer() {
@@ -936,8 +1124,9 @@
     };
   }
 
-  function buildGraph(keepPositions = null) {
-    if (!rawRows.length) { setErr('请先导入 CSV'); return; }
+  function buildGraph(keepPositions = null, opts = {}) {
+    const forceNodesInput = Array.isArray(opts.forceNodes) ? opts.forceNodes : [];
+    if (!rawRows.length && !forceNodesInput.length) { setErr('请先导入 CSV'); return; }
 
     const colLH = $('colLocalHost').value;
     const colRH = $('colRemoteHost').value;
@@ -957,6 +1146,32 @@
     let rawEdgeCnt = 0;
 
     const rows = dedupeRows(rawRows, { colLH, colLI, colRH, colRI });
+
+    // Preserve explicitly scoped nodes (even when no internal edges are found).
+    for (const fn of forceNodesInput) {
+      const id = String(fn?.id || '').trim();
+      if (!id) continue;
+      const label = String(fn?.label || fn?.short || id).trim() || id;
+      const ip = isIpv4(fn?.ip) ? String(fn.ip).trim() : '';
+      const roleRaw = String(fn?.role || '').trim().toUpperCase();
+      const role = roleRaw || roleOf(label);
+      const rankRaw = Number(fn?.rank);
+      const rank = Number.isFinite(rankRaw) ? rankRaw : roleRank(role);
+      const entityKey = String(fn?.entityKey || inferEntityKey(label, ip)).trim();
+      nodes.set(id, {
+        id,
+        label,
+        short: shortLabel(label),
+        role,
+        rank,
+        ip,
+        entityKey
+      });
+      if (ip) {
+        nodeIpMap.set(label, ip);
+        nodeIpMap.set(stripAfterDot(label), ip);
+      }
+    }
 
     // Build hostname -> management IP map from CSV extended columns.
     for (const r of rows) {
@@ -1201,7 +1416,14 @@
 
     reapplyViewStateAfterBuild();
     applyDeletedMaskAfterBuild();
-    runLayout();
+    const adjustViewport = opts.adjustViewport !== false;
+    const keepExactPositions = !!opts.keepExactPositions;
+    if (hasKeep && keepExactPositions) {
+      // Keep current dragged coordinates exactly as-is for scoped rebuild workflows.
+      cy.layout({ name: 'preset', fit: false, padding: 30 }).run();
+    } else {
+      runLayout(null, { adjustViewport });
+    }
     if (hasKeep) {
       setTimeout(() => {
         if (cy) cy.nodes().unlock();
@@ -1213,50 +1435,104 @@
     setOK(`生成完成：${nodes.size} 节点，${edgesForCy.length} 边（去重后${mergedMode ? '，已合并多链路' : ''}）。\n提示：不要频繁点“适配画布”，会把图缩成很小；用“居中 + 放大”更好。`);
   }
 
-  function runLayout() {
+  function buildSelectionLayoutBox(nodes, padding = 30) {
+    if (!cy || !nodes || !nodes.length) return null;
+    const bb = nodes.boundingBox({ includeLabels: false, includeOverlays: false });
+    const pad = Math.max(20, Number(padding) || 30);
+    const x1 = Number.isFinite(bb.x1) ? (bb.x1 - pad) : 0;
+    const y1 = Number.isFinite(bb.y1) ? (bb.y1 - pad) : 0;
+    const w = Math.max(280, (Number.isFinite(bb.w) ? bb.w : 0) + pad * 2);
+    const h = Math.max(220, (Number.isFinite(bb.h) ? bb.h : 0) + pad * 2);
+    return { x1, y1, w, h };
+  }
+
+  function runLayout(targetNodes = null, opts = {}) {
     if (!cy) return;
-    const visNodes = cy.nodes(':visible');
-    const visEles = cy.elements(':visible');
+    const selectedOnly = !!opts.selectedOnly;
+    const adjustViewport = opts.adjustViewport !== false;
+    const source = targetNodes && typeof targetNodes.intersection === 'function'
+      ? targetNodes
+      : null;
+    const visNodes = source && source.length
+      ? source.intersection(cy.nodes(':visible'))
+      : cy.nodes(':visible');
     if (!visNodes.length) {
-      setErr('无可见节点可重新布局，请检查过滤或“只显示”条件。');
+      if (selectedOnly) {
+        setOK('请先选择可见设备后再重新布局。');
+      } else {
+        setErr('无可见节点可重新布局，请检查过滤或“只显示”条件。');
+      }
       return;
     }
+    const layoutBox = selectedOnly ? buildSelectionLayoutBox(visNodes, 30) : null;
     const mode = $('layoutMode').value;
     const p = spacingParams();
-    // 按关键字分层，更新 rank
-    applyLayersToNodes(visNodes);
-
+    const layerTiers = parseLayers();
+    const partitionTiers = selectedOnly ? [] : parseBizIsolation();
+    const hasManualSegmentation = layerTiers.length > 0 || partitionTiers.length > 0;
+    const effectiveMode = (mode === 'layer' && !hasManualSegmentation) ? 'force' : mode;
+    const groupNodes = partitionTiers.length
+      ? groupNodesByBizIsolation(visNodes, partitionTiers)
+      : [visNodes];
+    // 分层在每个分区内独立执行，避免分区影响分层匹配结果。
+    groupNodes.forEach((gNodes) => applyLayersToNodes(gNodes, layerTiers));
+    const groupBoxes = (groupNodes.length > 1)
+      ? buildHorizontalRegionBoxes(groupNodes.length, layoutBox)
+      : [layoutBox];
+    const groupPlans = groupNodes.map((gNodes, idx) => {
+      const bbox = groupBoxes[idx] || layoutBox || null;
+      const innerEdges = gNodes.connectedEdges().filter((e) => (
+        e.visible()
+        && gNodes.contains(e.source())
+        && gNodes.contains(e.target())
+      ));
+      return {
+        nodes: gNodes,
+        eles: gNodes.union(innerEdges),
+        bbox,
+      };
+    });
     // 圆形模式：简单环形，凸显整体拓扑
-    if (mode === 'circle') {
-      visNodes.layout({
-        name: 'circle',
-        fit: false,
-        padding: p.padding,
-        avoidOverlap: true,
-        nodeDimensionsIncludeLabels: false,
-        spacingFactor: 1.2 + p.s * 0.2
-      }).run();
-      cy.fit(visNodes, { padding: p.padding });
-      cy.zoom(1.05);
+    if (effectiveMode === 'circle') {
+      groupPlans.forEach((g) => {
+        const circleOpt = {
+          name: 'circle',
+          fit: false,
+          padding: p.padding,
+          avoidOverlap: true,
+          nodeDimensionsIncludeLabels: false,
+          spacingFactor: 1.2 + p.s * 0.2
+        };
+        if (g.bbox) circleOpt.boundingBox = g.bbox;
+        g.nodes.layout(circleOpt).run();
+      });
+      if (adjustViewport) {
+        cy.fit(visNodes, { padding: p.padding });
+        cy.zoom(1.05);
+      }
       return;
     }
 
     // 上下分层：按分层关键字顺序使用预设坐标，层级高->低
-    if (mode === 'layer') {
-      const pos = buildLayerPositions(visNodes);
-      visNodes.layout({
-        name: 'preset',
-        positions: pos,
-        fit: false,
-        padding: p.padding
-      }).run();
-      cy.fit(visNodes, { padding: p.padding });
-      cy.zoom(1.05);
+    if (effectiveMode === 'layer') {
+      groupPlans.forEach((g) => {
+        const pos = buildLayerPositions(g.nodes, { area: g.bbox });
+        g.nodes.layout({
+          name: 'preset',
+          positions: pos,
+          fit: false,
+          padding: p.padding
+        }).run();
+      });
+      if (adjustViewport) {
+        cy.fit(visNodes, { padding: p.padding });
+        cy.zoom(1.05);
+      }
       return;
     }
 
-    const applyFcose = (eles, mult = 1) => {
-      eles.layout({
+    const applyFcose = (eles, mult = 1, bbox = null) => {
+      const fcOpt = {
         name: 'fcose',
         quality: 'proof',
         randomize: true,
@@ -1294,26 +1570,28 @@
         tile: true,
         packComponents: true,
         nodeSeparation: p.overlapPad
-      }).run();
+      };
+      if (bbox) fcOpt.boundingBox = bbox;
+      eles.layout(fcOpt).run();
     };
 
     // 默认/force：连续两轮 fCoSE，偏向聚拢
     setTimeout(() => {
       if (!cy) return;
-      applyFcose(visEles, 0.95);
+      groupPlans.forEach((g) => applyFcose(g.eles, 0.95, g.bbox));
       setTimeout(() => {
         if (!cy) return;
-        applyFcose(visEles, 1.05);
+        groupPlans.forEach((g) => applyFcose(g.eles, 1.05, g.bbox));
         setTimeout(() => {
           if (!cy) return;
-          cy.fit(visNodes, { padding: p.padding });
-          cy.zoom(1.1);
+          if (adjustViewport) {
+            cy.fit(visNodes, { padding: p.padding });
+            cy.zoom(1.1);
+          }
         }, 420);
       }, 520);
     }, 80);
   }
-
-  function relayout() { runLayout(); }
 
   // 拖拽时让邻居跟随（类似皮筋），仅在重力模式生效
   function initDragFollow() {
@@ -1329,8 +1607,8 @@
       return;
     }
     const nodeHits = cy.nodes().filter(n => {
-      const label = (n.data('label') || '').toLowerCase();
-      return terms.some(t => label.includes(t));
+      const label = (n.data('label') || '');
+      return terms.some(t => matchTermInName(label, t));
     });
     nodeHits.addClass('filtered');
     cy.edges().forEach(e => {
@@ -1348,8 +1626,8 @@
       return;
     }
     const hits = cy.nodes().filter(n => {
-      const label = (n.data('label') || '').toLowerCase();
-      return terms.some(t => label.includes(t));
+      const label = (n.data('label') || '');
+      return terms.some(t => matchTermInName(label, t));
     });
     const hideNodes = cy.nodes().not(hits);
     hideNodes.addClass('onlyHidden');
@@ -1448,23 +1726,22 @@
 
   function parseTerms(raw) {
     return String(raw || '')
-      .split(',')
+      .split(/[,\uff0c;\uff1b]+/g)
       .map(t => t.trim().toLowerCase())
       .filter(Boolean);
   }
 
-  function parseLayers() {
-    const raw = $('layerTerms').value || '';
-    return raw
-      .split(',')
+  function parseTierExpression(raw) {
+    return String(raw || '')
+      .split(/[,\uff0c]+/g)
       .map(seg => seg.trim())
       .filter(Boolean)
       .map(seg => {
-        // "/" = 同层的 OR；"&" = AND 都需命中
-        const clauses = seg.split('/')
+        // "/" = 同组 OR；"&" = AND 都需命中
+        const clauses = seg.split(/[\/\uff0f]/g)
           .map(part => part.trim())
           .filter(Boolean)
-          .map(part => part.split('&')
+          .map(part => part.split(/[&\uff06]/g)
             .map(t => t.trim().toLowerCase())
             .filter(Boolean)
           )
@@ -1474,19 +1751,162 @@
       .filter(arr => arr.length);
   }
 
-  function applyLayersToNodes(nodes) {
+  function compactMatchText(v) {
+    return String(v || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '');
+  }
+
+  function matchTermInName(nameText, termText) {
+    const name = String(nameText || '').toLowerCase();
+    const term = String(termText || '').toLowerCase().trim();
+    if (!term) return false;
+    if (name.includes(term)) return true;
+    const cName = compactMatchText(name);
+    const cTerm = compactMatchText(term);
+    if (!cTerm) return false;
+    return cName.includes(cTerm);
+  }
+
+  function matchTierIndex(nameText, tiers) {
+    for (let i = 0; i < tiers.length; i++) {
+      const tier = tiers[i];
+      const hit = tier.some(clause => clause.every(term => matchTermInName(nameText, term)));
+      if (hit) return i;
+    }
+    return -1;
+  }
+
+  function parseLayers() {
+    const raw = $('layerTerms').value || '';
+    return parseTierExpression(raw);
+  }
+
+  function parseBizIsolation() {
+    const raw = $('bizIsolationTerms')?.value || '';
+    return parseTierExpression(raw);
+  }
+
+  function groupNodesByBizIsolation(nodes, tiers) {
+    if (!cy) return [nodes];
+    nodes.forEach((n) => n.data('bizRegion', 0));
+    if (!tiers.length) return [nodes];
+
+    // First-match wins: once a node enters one partition,
+    // it will no longer be checked against later partitions.
+    const groups = [];
+    let remaining = nodes;
+    for (let i = 0; i < tiers.length; i++) {
+      const tier = tiers[i];
+      const hit = remaining.filter((n) => (
+        tier.some((clause) => clause.every((term) => matchTermInName(n.data('label') || '', term)))
+      ));
+      if (!hit.length) continue;
+      hit.forEach((n) => n.data('bizRegion', i));
+      groups.push(hit);
+      remaining = remaining.not(hit);
+      if (!remaining.length) break;
+    }
+
+    if (remaining.length) {
+      remaining.forEach((n) => n.data('bizRegion', tiers.length));
+      groups.push(remaining);
+    }
+    return groups.length ? groups : [nodes];
+  }
+
+  function ensureRegionSpacing(boxes, minGap = 18) {
+    if (!Array.isArray(boxes) || boxes.length < 2) return boxes;
+    const out = boxes.map((b) => ({ ...b }));
+    for (let pass = 0; pass < 6; pass++) {
+      let moved = false;
+      for (let i = 0; i < out.length; i++) {
+        for (let j = i + 1; j < out.length; j++) {
+          const a = out[i];
+          const b = out[j];
+          const aRight = a.x1 + a.w;
+          const bRight = b.x1 + b.w;
+          const aBottom = a.y1 + a.h;
+          const bBottom = b.y1 + b.h;
+          const gapX = Math.max(0, Math.max(a.x1, b.x1) - Math.min(aRight, bRight));
+          const gapY = Math.max(0, Math.max(a.y1, b.y1) - Math.min(aBottom, bBottom));
+          if (gapX >= minGap || gapY >= minGap) continue;
+          const needX = minGap - gapX;
+          const needY = minGap - gapY;
+          if (needX >= needY) {
+            if (a.x1 <= b.x1) b.x1 += needX;
+            else a.x1 += needX;
+          } else if (a.y1 <= b.y1) {
+            b.y1 += needY;
+          } else {
+            a.y1 += needY;
+          }
+          moved = true;
+        }
+      }
+      if (!moved) break;
+    }
+    return out;
+  }
+
+  function buildHorizontalRegionBoxes(count, area = null) {
+    if (count <= 0) return [];
+    const useArea = !!(area && Number.isFinite(area.x1) && Number.isFinite(area.y1) && Number.isFinite(area.w) && Number.isFinite(area.h));
+    const baseX = useArea ? area.x1 : 0;
+    const baseY = useArea ? area.y1 : 0;
+    const totalW = useArea ? Math.max(320, area.w) : ($('cy').clientWidth || 1000);
+    const totalH = useArea ? Math.max(260, area.h) : ($('cy').clientHeight || 800);
+    const padX = 32;
+    const padY = 28;
+    const gapX = useArea ? 44 : 56;
+    const gapY = useArea ? 38 : 52;
+
+    let best = null;
+    for (let cols = 1; cols <= count; cols++) {
+      const rows = Math.ceil(count / cols);
+      const slotW = (totalW - padX * 2 - gapX * Math.max(0, cols - 1)) / cols;
+      const slotH = (totalH - padY * 2 - gapY * Math.max(0, rows - 1)) / rows;
+      if (slotW < 120 || slotH < 120) continue;
+      const shapePenalty = Math.abs(cols - rows) * 12;
+      const score = Math.min(slotW, slotH) - shapePenalty;
+      if (!best || score > best.score) best = { cols, rows, slotW, slotH, score };
+    }
+    if (!best) {
+      best = {
+        cols: Math.min(count, 2),
+        rows: Math.ceil(count / Math.min(count, 2)),
+        slotW: Math.max(120, (totalW - padX * 2) / Math.max(1, Math.min(count, 2))),
+        slotH: Math.max(120, (totalH - padY * 2) / Math.max(1, Math.ceil(count / Math.min(count, 2)))),
+      };
+    }
+
+    const boxes = [];
+    for (let i = 0; i < count; i++) {
+      const row = Math.floor(i / best.cols);
+      const col = i % best.cols;
+      boxes.push({
+        x1: baseX + padX + col * (best.slotW + gapX),
+        y1: baseY + padY + row * (best.slotH + gapY),
+        w: Math.max(120, best.slotW),
+        h: Math.max(120, best.slotH),
+      });
+    }
+    return ensureRegionSpacing(boxes, Math.max(18, Math.floor(Math.min(gapX, gapY) * 0.45)));
+  }
+
+  function applyLayersToNodes(nodes, tiersInput = null) {
     // tiers: array<layer>, layer = array<clause>, clause = array<terms that all must match>
-    const tiers = parseLayers();
+    const tiers = Array.isArray(tiersInput) ? tiersInput : parseLayers();
     const layerCount = tiers.length;
     const hasLayers = layerCount > 0;
     nodes.forEach(n => {
-      const name = (n.data('label') || '').toLowerCase();
+      const name = (n.data('label') || '');
       let matchedIdx = null;
       let matchedRole = null;
       if (hasLayers) {
         for (let i = 0; i < tiers.length; i++) {
           const layer = tiers[i];
-          const hit = layer.some(clause => clause.every(term => name.includes(term)));
+          const hit = layer.some(clause => clause.every(term => matchTermInName(name, term)));
           if (hit) {
             matchedIdx = i;
             // role 取该层第一个子句的首词，便于显示
@@ -1506,26 +1926,187 @@
     });
   }
 
-  function buildLayerPositions(nodes) {
+  function clamp01(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(0, Math.min(1, n));
+  }
+
+  function normalizedNameForSimilarity(raw) {
+    const s = stripAfterDot(String(raw || '').trim()).toLowerCase();
+    return s.replace(/[^a-z0-9]+/g, ' ').trim();
+  }
+
+  function tokenizeNameForSimilarity(raw) {
+    const s = normalizedNameForSimilarity(raw);
+    if (!s) return [];
+    return s.split(/\s+/).filter(Boolean);
+  }
+
+  function commonPrefixLength(a, b) {
+    const aa = String(a || '');
+    const bb = String(b || '');
+    const max = Math.min(aa.length, bb.length);
+    let i = 0;
+    while (i < max && aa.charCodeAt(i) === bb.charCodeAt(i)) i++;
+    return i;
+  }
+
+  function hostnameSimilarityScore(aRaw, bRaw) {
+    const a = normalizedNameForSimilarity(aRaw);
+    const b = normalizedNameForSimilarity(bRaw);
+    if (!a || !b) return 0;
+    if (a === b) return 1;
+
+    const aTokens = tokenizeNameForSimilarity(a);
+    const bTokens = tokenizeNameForSimilarity(b);
+    const aSet = new Set(aTokens);
+    const bSet = new Set(bTokens);
+    let inter = 0;
+    aSet.forEach((t) => { if (bSet.has(t)) inter += 1; });
+    const union = new Set([...aSet, ...bSet]).size || 1;
+    const tokenScore = inter / union;
+
+    const prefix = commonPrefixLength(a, b);
+    const prefixScore = prefix / Math.max(a.length, b.length, 1);
+    const firstTokenBonus = (aTokens[0] && bTokens[0] && aTokens[0] === bTokens[0]) ? 0.12 : 0;
+    return clamp01(tokenScore * 0.6 + prefixScore * 0.4 + firstTokenBonus);
+  }
+
+  function labelByIdForOrdering(nameById, id) {
+    return String(nameById.get(id) || id).toLowerCase();
+  }
+
+  function orderLayerIdsByNameSimilarity(ids, nameById) {
+    const sorted = ids.slice().sort((a, b) => labelByIdForOrdering(nameById, a).localeCompare(labelByIdForOrdering(nameById, b)));
+    if (sorted.length <= 2) return sorted;
+
+    let seed = sorted[0];
+    let seedScore = -1;
+    for (const c of sorted) {
+      let total = 0;
+      for (const other of sorted) {
+        if (c === other) continue;
+        total += hostnameSimilarityScore(nameById.get(c), nameById.get(other));
+      }
+      if (total > seedScore || (total === seedScore && labelByIdForOrdering(nameById, c) < labelByIdForOrdering(nameById, seed))) {
+        seed = c;
+        seedScore = total;
+      }
+    }
+
+    const remaining = new Set(sorted);
+    remaining.delete(seed);
+    const ordered = [seed];
+    while (remaining.size) {
+      let bestId = '';
+      let bestSide = 'right';
+      let bestScore = -1;
+      let bestLabel = '';
+      for (const c of remaining) {
+        const leftScore = hostnameSimilarityScore(nameById.get(c), nameById.get(ordered[0]));
+        const rightScore = hostnameSimilarityScore(nameById.get(c), nameById.get(ordered[ordered.length - 1]));
+        const score = Math.max(leftScore, rightScore);
+        const side = leftScore > rightScore ? 'left' : 'right';
+        const candLabel = labelByIdForOrdering(nameById, c);
+        if (score > bestScore || (score === bestScore && candLabel < bestLabel)) {
+          bestId = c;
+          bestSide = side;
+          bestScore = score;
+          bestLabel = candLabel;
+        }
+      }
+      if (!bestId) break;
+      remaining.delete(bestId);
+      if (bestSide === 'left') ordered.unshift(bestId);
+      else ordered.push(bestId);
+    }
+    return ordered;
+  }
+
+  function buildSimilarityGaps(orderedIds, nameById, baseGap, minGap, strength) {
+    const out = [];
+    const flex = Math.max(0, baseGap - minGap);
+    for (let i = 0; i < orderedIds.length - 1; i++) {
+      const a = orderedIds[i];
+      const b = orderedIds[i + 1];
+      const sim = hostnameSimilarityScore(nameById.get(a), nameById.get(b));
+      // Similar names are pulled closer while preserving minimum spacing.
+      const gap = minGap + flex * (1 - strength * sim);
+      out.push(Math.max(minGap, gap));
+    }
+    return out;
+  }
+
+  function buildLayerPositions(nodes, opts = {}) {
     const ranks = new Map();
+    const nameById = new Map();
     nodes.forEach(n => {
       const r = n.data('rank') ?? 0;
       if (!ranks.has(r)) ranks.set(r, []);
       ranks.get(r).push(n.id());
+      nameById.set(n.id(), n.data('label') || n.id());
     });
     const sortedRanks = Array.from(ranks.keys()).sort((a, b) => a - b);
     const positions = {};
-    const width = $('cy').clientWidth || 1000;
-    const height = $('cy').clientHeight || 800;
-    const layerGap = Math.max(140, height / Math.max(1, sortedRanks.length + 1));
+    const area = (opts && opts.area) ? opts.area : null;
+    const useArea = !!(area && Number.isFinite(area.x1) && Number.isFinite(area.y1) && Number.isFinite(area.w) && Number.isFinite(area.h));
+    const width = useArea ? Math.max(280, area.w) : ($('cy').clientWidth || 1000);
+    const height = useArea ? Math.max(220, area.h) : ($('cy').clientHeight || 800);
+    const offsetX = useArea ? area.x1 : 0;
+    const offsetY = useArea ? area.y1 : 0;
+    const clusterMode = ($('nameClusterMode')?.value || 'on');
+    const clusterOn = clusterMode !== 'off';
+    const clusterStrength = clamp01($('nameClusterStrength')?.value || 0.6);
+    const sidePad = useArea ? 26 : 70;
+    const topPad = useArea ? 24 : 80;
+    const bottomPad = useArea ? 24 : 80;
+    const usableW = Math.max(80, width - sidePad * 2);
+    const usableH = Math.max(60, height - topPad - bottomPad);
+    const layerGap = sortedRanks.length <= 1
+      ? 0
+      : (useArea
+        ? (usableH / Math.max(1, sortedRanks.length - 1))
+        : Math.max(140, height / Math.max(1, sortedRanks.length + 1)));
     sortedRanks.forEach((r, layerIdx) => {
-      const ids = ranks.get(r);
+      const rawIds = ranks.get(r);
+      const ids = clusterOn ? orderLayerIdsByNameSimilarity(rawIds, nameById) : rawIds.slice();
       const count = ids.length;
-      const xGap = Math.max(120, width / Math.max(1, count));
-      const y = 80 + layerIdx * layerGap;
-      ids.forEach((id, idx) => {
-        positions[id] = { x: xGap * (idx + 1), y };
-      });
+      const y = sortedRanks.length <= 1
+        ? (offsetY + Math.max(topPad, height / 2))
+        : (offsetY + topPad + layerIdx * layerGap);
+      if (count <= 0) return;
+      if (count === 1) {
+        positions[ids[0]] = { x: offsetX + sidePad + usableW / 2, y };
+        return;
+      }
+      const minGap = useArea
+        ? Math.max(20, Math.min(56, usableW / Math.max(2, count * 2)))
+        : 120;
+      const baseGap = useArea
+        ? (usableW / Math.max(1, count - 1))
+        : Math.max(minGap, width / Math.max(1, count));
+      if (!clusterOn || clusterStrength <= 0) {
+        const xGap = usableW / Math.max(1, count - 1);
+        ids.forEach((id, idx) => {
+          positions[id] = { x: offsetX + sidePad + xGap * idx, y };
+        });
+        return;
+      }
+
+      const gaps = buildSimilarityGaps(ids, nameById, baseGap, minGap, clusterStrength);
+      let span = gaps.reduce((sum, g) => sum + g, 0);
+      if (span > usableW && span > 0) {
+        const scale = usableW / span;
+        for (let i = 0; i < gaps.length; i++) gaps[i] = Math.max(12, gaps[i] * scale);
+        span = gaps.reduce((sum, g) => sum + g, 0);
+      }
+      let x = offsetX + sidePad + Math.max(0, (usableW - span) / 2);
+      positions[ids[0]] = { x, y };
+      for (let i = 1; i < ids.length; i++) {
+        x += gaps[i - 1];
+        positions[ids[i]] = { x, y };
+      }
     });
     return positions;
   }
@@ -1550,7 +2131,7 @@
     cy.elements().removeClass('sel-hidden dim hit');
     const sel = cy.nodes(':selected');
     if (!sel.length) {
-      setOK('未选中节点，无法仅保留邻接。');
+      setOK('未选中节点，无法删除非邻接。');
       return;
     }
     const neigh = sel.closedNeighborhood();
@@ -1564,7 +2145,7 @@
     removeNodes.remove();
     updateCounts();
     sel.addClass('hit');
-    setOK(`已仅保留邻接：删除 ${removeNodes.length} 个非邻接节点（可恢复）。`);
+    setOK(`已删除非邻接节点：${removeNodes.length} 个（可恢复）。`);
   }
 
   function clearSelectionHide() {
@@ -1576,51 +2157,19 @@
   }
 
   function buildScopedTopologyFromVisible() {
-    if (!cy || !rawRows.length) {
-      setErr('请先生成拓扑，再执行范围拓扑。');
+    if (!cy) {
+      setErr('请先生成拓扑。');
       return;
     }
-    const visNodes = cy.nodes(':visible');
-    if (!visNodes.length) {
-      setErr('当前无可见设备，无法生成范围拓扑。');
-      return;
-    }
-
-    const colLH = $('colLocalHost').value;
-    const colRH = $('colRemoteHost').value;
-    const strip = $('stripDomain').value === 'yes';
-    const visibleHosts = new Set();
-    visNodes.forEach((n) => {
-      const label = String(n.data('label') || '').trim();
-      if (!label) return;
-      visibleHosts.add(label);
-      visibleHosts.add(stripAfterDot(label));
-    });
-
-    const before = rawRows.length;
-    const scopedRows = rawRows.filter((r) => {
-      let lh = String(r[colLH] || '').trim();
-      let rh = String(r[colRH] || '').trim();
-      if (!lh || !rh) return false;
-      if (strip) {
-        lh = stripAfterDot(lh);
-        rh = stripAfterDot(rh);
-      }
-      return visibleHosts.has(lh) && visibleHosts.has(rh);
-    });
-
-    if (!scopedRows.length) {
-      setErr('当前可见设备之间没有可用链路，未生成范围拓扑。');
+    const scopeNodes = cy.nodes(':selected').intersection(cy.nodes(':visible'));
+    if (!scopeNodes.length) {
+      setErr('请先选中要重排的设备。');
       return;
     }
 
-    rawRows = scopedRows;
-    clearDeleteState();
-    $('nRows').textContent = rawRows.length;
-    $('nCols').textContent = headers.length;
-    buildGraph();
-    setStatus('范围拓扑已生成');
-    setOK(`已基于当前显示设备重建工作集：保留 ${rawRows.length} 行（原 ${before} 行），源数据仍保留 ${sourceRows.length} 行。`);
+    runLayout(scopeNodes, { selectedOnly: true, adjustViewport: false });
+    setStatus('选中重排已完成');
+    setOK(`已重排选中设备：${scopeNodes.length} 个（仅调整选中节点，不影响其他节点和当前数据）。`);
   }
 
   function updateCounts() {
@@ -1887,6 +2436,9 @@
         nodeLabelMode: $('nodeLabelMode')?.value || 'full',
         edgeLabelMode: $('edgeLabelMode')?.value || 'none',
         spacing: $('spacing')?.value || '0.5',
+        bizIsolationTerms: $('bizIsolationTerms')?.value || '',
+        nameClusterMode: $('nameClusterMode')?.value || 'on',
+        nameClusterStrength: $('nameClusterStrength')?.value || '0.6',
         mergeMode: !!mergedMode,
         colLocalHost: $('colLocalHost')?.value || '',
         colRemoteHost: $('colRemoteHost')?.value || '',
@@ -1917,6 +2469,9 @@
     if ($('nodeLabelMode') && ui.nodeLabelMode) $('nodeLabelMode').value = String(ui.nodeLabelMode);
     if ($('edgeLabelMode') && ui.edgeLabelMode) $('edgeLabelMode').value = String(ui.edgeLabelMode);
     if ($('spacing') && ui.spacing != null) $('spacing').value = String(ui.spacing);
+    if ($('bizIsolationTerms') && ui.bizIsolationTerms != null) $('bizIsolationTerms').value = String(ui.bizIsolationTerms);
+    if ($('nameClusterMode') && ui.nameClusterMode) $('nameClusterMode').value = String(ui.nameClusterMode);
+    if ($('nameClusterStrength') && ui.nameClusterStrength != null) $('nameClusterStrength').value = String(ui.nameClusterStrength);
     if (typeof ui.mergeMode === 'boolean') mergedMode = ui.mergeMode;
     $('toggleMerge').textContent = `合并多条链路：${mergedMode ? '开启' : '关闭'}`;
 
@@ -2204,8 +2759,16 @@
       if (!raw) return;
       const p = JSON.parse(raw);
       if (typeof p.layer_terms === 'string') $('layerTerms').value = p.layer_terms;
+      if (typeof p.partition_terms === 'string' && $('bizIsolationTerms')) $('bizIsolationTerms').value = p.partition_terms;
       if (typeof p.filter_terms === 'string') $('filter').value = p.filter_terms;
       if (typeof p.show_only_terms === 'string') $('showOnly').value = p.show_only_terms;
+      if (typeof p.name_cluster_mode === 'string' && $('nameClusterMode')) {
+        $('nameClusterMode').value = p.name_cluster_mode === 'off' ? 'off' : 'on';
+      }
+      if (p.name_cluster_strength != null && $('nameClusterStrength')) {
+        const v = Number(p.name_cluster_strength);
+        if (Number.isFinite(v)) $('nameClusterStrength').value = String(Math.max(0, Math.min(1, v)));
+      }
       if (typeof p.only_mode === 'string' && ['none', 'showOnly', 'show172'].includes(p.only_mode)) {
         viewState.onlyMode = p.only_mode;
       }
@@ -2220,8 +2783,11 @@
     try {
       const safe = {
         layer_terms: ($('layerTerms')?.value || '').trim(),
+        partition_terms: ($('bizIsolationTerms')?.value || '').trim(),
         filter_terms: ($('filter')?.value || '').trim(),
         show_only_terms: ($('showOnly')?.value || '').trim(),
+        name_cluster_mode: ($('nameClusterMode')?.value || 'on'),
+        name_cluster_strength: ($('nameClusterStrength')?.value || '0.6'),
         only_mode: viewState.onlyMode || 'none'
       };
       localStorage.setItem(TOPOLOGY_UI_PREF_KEY, JSON.stringify(safe));
@@ -2653,16 +3219,19 @@
   loadTopologyUiPrefs();
   loadUtilCacheFromServer();
 
-  $('build').addEventListener('click', buildGraph);
-  $('relayout').addEventListener('click', relayout);
+  $('build').addEventListener('click', () => {
+    runWithRollback(() => buildGraph(), { delayMs: 1300 });
+  });
   $('fit').addEventListener('click', () => cy && cy.fit({ padding: 30 }));
   $('center').addEventListener('click', () => { if (!cy) return; cy.center(); cy.zoom(1.2); });
   $('toggleMerge').addEventListener('click', () => {
-    mergedMode = !mergedMode;
-    $('toggleMerge').textContent = `合并多条链路：${mergedMode ? '开启' : '关闭'}`;
-    if (!rawRows.length) return;
-    const pos = capturePositions();
-    buildGraph(pos);
+    runWithRollback(() => {
+      mergedMode = !mergedMode;
+      $('toggleMerge').textContent = `合并多条链路：${mergedMode ? '开启' : '关闭'}`;
+      if (!rawRows.length) return;
+      const pos = capturePositions();
+      buildGraph(pos);
+    }, { delayMs: 1300 });
   });
   $('exportPng').addEventListener('click', async () => {
     if (!cy) { setErr('请先生成拓扑，再导出 PNG'); return; }
@@ -2774,11 +3343,40 @@
     if (e.key !== 'Enter') return;
     saveTopologyUiPrefs();
     if (!cy) return;
-    applyLayersToNodes(cy.nodes());
-    runLayout();
-    setOK('已应用分层关键字并重新布局');
+    runWithRollback(() => {
+      applyLayersToNodes(cy.nodes());
+      runLayout();
+      setOK('已应用分层关键字并重新布局');
+    }, { delayMs: 1300 });
   });
   $('layerTerms').addEventListener('input', saveTopologyUiPrefs);
+  $('bizIsolationTerms').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    saveTopologyUiPrefs();
+    if (!cy) return;
+    runWithRollback(() => {
+      runLayout();
+      setOK('已应用分区关键字并重新布局');
+    }, { delayMs: 1300 });
+  });
+  $('bizIsolationTerms').addEventListener('input', saveTopologyUiPrefs);
+  $('nameClusterMode').addEventListener('change', () => {
+    saveTopologyUiPrefs();
+    if (!cy || $('layoutMode').value !== 'layer') return;
+    runWithRollback(() => {
+      runLayout();
+      setOK('已按设备名称近似度重新布局');
+    }, { delayMs: 1300 });
+  });
+  $('nameClusterStrength').addEventListener('input', saveTopologyUiPrefs);
+  $('nameClusterStrength').addEventListener('change', () => {
+    saveTopologyUiPrefs();
+    if (!cy || $('layoutMode').value !== 'layer') return;
+    runWithRollback(() => {
+      runLayout();
+      setOK('已按设备名称近似度重新布局');
+    }, { delayMs: 1300 });
+  });
 
   $('ctxLock').addEventListener('click', () => {
     const nodes = ctxNodes();
@@ -2791,14 +3389,16 @@
   });
 
   $('ctxDelete').addEventListener('click', () => {
-    const nodes = ctxNodes();
-    if (!nodes.length) return hideCtx();
-    const ids = nodes.map(n => n.id());
-    pushDeletedNodeIds(ids);
-    nodes.remove();
-    hideCtx();
-    updateCounts();
-    setOK(`已删除 ${nodes.length} 个节点及其相关边`);
+    runWithRollback(() => {
+      const nodes = ctxNodes();
+      if (!nodes.length) return hideCtx();
+      const ids = nodes.map(n => n.id());
+      pushDeletedNodeIds(ids);
+      nodes.remove();
+      hideCtx();
+      updateCounts();
+      setOK(`已删除 ${nodes.length} 个节点及其相关边`);
+    }, { delayMs: 0 });
   });
 
   $('ctxCopy').addEventListener('click', async () => {
@@ -2946,11 +3546,30 @@
     cy.animate({ fit: { eles: sel, padding: 120 }, duration: 400 });
     setOK(`已定位选中元素：${sel.length} 个。`);
   });
+  $('selectVisible').addEventListener('click', () => {
+    if (!cy) return;
+    const visibleNodes = cy.nodes(':visible').not('.dim');
+    cy.elements(':selected').unselect();
+    if (!visibleNodes.length) {
+      setOK('当前没有可见设备可选中。');
+      return;
+    }
+    visibleNodes.select();
+    setOK(`已选中全部可见设备：${visibleNodes.length} 个（隐藏/淡化设备未选中）。`);
+  });
 
-  $('isolateSelection').addEventListener('click', isolateSelection);
-  $('buildScopedTopo').addEventListener('click', buildScopedTopologyFromVisible);
-  $('keepAdjacentOnly').addEventListener('click', keepAdjacentOnly);
-  $('clearSelectionHide').addEventListener('click', clearSelectionHide);
+  $('isolateSelection').addEventListener('click', () => {
+    runWithRollback(() => isolateSelection(), { delayMs: 0 });
+  });
+  $('buildScopedTopo').addEventListener('click', () => {
+    runWithRollback(() => buildScopedTopologyFromVisible(), { delayMs: 1300 });
+  });
+  $('keepAdjacentOnly').addEventListener('click', () => {
+    runWithRollback(() => keepAdjacentOnly(), { delayMs: 0 });
+  });
+  $('clearSelectionHide').addEventListener('click', () => {
+    runWithRollback(() => clearSelectionHide(), { delayMs: 0 });
+  });
 
   $('search').addEventListener('keydown', (e) => {
     if (!cy) return;
@@ -2959,8 +3578,8 @@
     if (!terms.length) return;
 
     const hits = cy.nodes().filter(n => {
-      const label = (n.data('label') || '').toLowerCase();
-      return terms.some(t => label.includes(t));
+      const label = (n.data('label') || '');
+      return terms.some(t => matchTermInName(label, t));
     });
 
     cy.elements().removeClass('hit dim');
@@ -2980,10 +3599,12 @@
     if (e.key === 'Enter') applyShowOnly();
   });
   $('show172Only').addEventListener('click', () => {
-    viewState.onlyMode = 'show172';
-    viewState.onlyTerms = [];
-    saveTopologyUiPrefs();
-    applyShowOnly172();
+    runWithRollback(() => {
+      viewState.onlyMode = 'show172';
+      viewState.onlyTerms = [];
+      saveTopologyUiPrefs();
+      applyShowOnly172();
+    }, { delayMs: 0 });
   });
 $('filter').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
@@ -2994,26 +3615,65 @@ $('filter').addEventListener('keydown', (e) => {
   $('filter').addEventListener('input', saveTopologyUiPrefs);
 
   $('restoreDeleted').addEventListener('click', () => {
-    if (!cy) return;
-    if (!deletedStack.length) { setOK('没有可恢复的删除记录'); return; }
-    const popped = deletedStack.pop() || [];
-    const restored = Array.isArray(popped) ? popped.length : 0;
-    rebuildDeletedNodeIdsFromStack();
-    const pos = capturePositions();
-    buildGraph(pos);
-    setOK(`已恢复 ${restored} 个删除设备。`);
+    runWithRollback(() => {
+      if (!cy) return;
+      if (!deletedStack.length) { setOK('没有可恢复的删除记录'); return; }
+      const popped = deletedStack.pop() || [];
+      const restored = Array.isArray(popped) ? popped.length : 0;
+      rebuildDeletedNodeIdsFromStack();
+      const pos = capturePositions();
+      buildGraph(pos);
+      setOK(`已恢复 ${restored} 个删除设备。`);
+    }, { delayMs: 1300 });
   });
 
   $('deleteSelection').addEventListener('click', () => {
-    if (!cy) return;
-    const nodes = cy.nodes(':selected');
-    if (!nodes.length) { setOK('未选中节点'); return; }
-    const ids = nodes.map(n => n.id());
-    pushDeletedNodeIds(ids);
-    nodes.remove();
-    updateCounts();
-    setOK(`已删除选中 ${nodes.length} 个节点及其相关边`);
+    runWithRollback(() => {
+      if (!cy) return;
+      const nodes = cy.nodes(':selected');
+      if (!nodes.length) { setOK('未选中节点'); return; }
+      const ids = nodes.map(n => n.id());
+      pushDeletedNodeIds(ids);
+      nodes.remove();
+      updateCounts();
+      setOK(`已删除选中 ${nodes.length} 个节点及其相关边`);
+    }, { delayMs: 0 });
   });
+  $('keepSelected').addEventListener('click', () => {
+    runWithRollback(() => {
+      if (!cy) return;
+      const selected = cy.nodes(':selected');
+      if (!selected.length) { setOK('未选中节点，无法删除未选中设备。'); return; }
+      const removeNodes = cy.nodes().difference(selected);
+      if (!removeNodes.length) { setOK('当前没有未选中设备可删除。'); return; }
+      const ids = removeNodes.map(n => n.id());
+      pushDeletedNodeIds(ids);
+      removeNodes.remove();
+      updateCounts();
+      setOK(`已删除未选中 ${removeNodes.length} 个节点，保留选中 ${selected.length} 个节点（可恢复）。`);
+    }, { delayMs: 0 });
+  });
+  $('rollbackStep').addEventListener('click', () => {
+    if (!rollbackState.before || !rollbackState.after) {
+      setOK('暂无可回退操作。');
+      return;
+    }
+    rollbackArmSeq += 1;
+    const target = rollbackState.atBefore ? rollbackState.after : rollbackState.before;
+    const ok = applyRollbackSnapshot(target);
+    if (!ok) {
+      setErr('回退失败：快照不可用。');
+      return;
+    }
+    rollbackState.atBefore = !rollbackState.atBefore;
+    updateRollbackButtonState();
+    if (rollbackState.atBefore) {
+      setOK('已回到上一步，再点一次可回到变更后状态。');
+    } else {
+      setOK('已回到变更后状态。');
+    }
+  });
+  updateRollbackButtonState();
 </script>
 </body>
 </html>
