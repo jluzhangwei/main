@@ -359,8 +359,7 @@
     }
   }
 
-  async function launchService(serviceId, targetUrl) {
-    const popup = window.open('about:blank', '_blank');
+  async function launchService(serviceId) {
     setServiceButtonsDisabled(serviceId, true);
     setToggleVisual(serviceId, 'starting');
     setStatus(serviceId, 'starting', '启动中...');
@@ -373,12 +372,6 @@
         throw new Error(payload.detail || payload.message || '启动失败');
       }
 
-      if (popup && !popup.closed) {
-        popup.location.href = payload.url;
-      } else {
-        window.open(payload.url, '_blank');
-      }
-
       if (payload.ready) {
         setToggleVisual(serviceId, 'running');
         setStatus(serviceId, 'running', '运行中');
@@ -386,9 +379,8 @@
         setToggleVisual(serviceId, 'starting');
         setStatus(serviceId, 'starting', '启动中，请稍候');
       }
-      setLog(`[${payload.service_id}] ${payload.message || '服务已启动'}\n目标地址: ${payload.url}`);
+      setLog(`[${payload.service_id}] ${payload.message || '服务已启动'}\n目标地址: ${payload.url}\n状态变为绿色后，请点击卡片跳转。`);
     } catch (err) {
-      if (popup && !popup.closed) popup.close();
       setToggleVisual(serviceId, 'idle');
       setStatus(serviceId, 'idle', '已停止');
       setLog(`[${serviceId}] 启动失败: ${err}`);
@@ -430,7 +422,7 @@
       if (running) {
         stopService(serviceId);
       } else {
-        launchService(serviceId, url);
+        launchService(serviceId);
       }
     });
   });
