@@ -2645,72 +2645,16 @@ def build_job_html(
             <div>
               <label>系统提示词模板（严格约束）</label>
               <select id="system_prompt_select">{system_prompt_options}</select>
-              <div class="gpt-hint">系统提示词用于约束 AI 行为与输出规范，建议固定使用“网络工程师-严格模式”。</div>
+              <div class="gpt-hint">提示词管理已迁移到 AI 设置页面；此处仅选择要使用的模板。</div>
             </div>
-            <div>
-              <label>系统模板查看</label>
-              <div class="gpt-actions" style="margin-top:0;">
-                <button class="gpt-btn" id="review_system_template_btn" type="button" {modify_disabled}>Review 系统提示词</button>
-              </div>
-              <div class="gpt-hint">点击弹窗查看当前系统模板内容。</div>
-            </div>
-          </div>
-          <div class="gpt-grid gpt-row">
             <div>
               <label>任务提示词模板</label>
               <select id="task_prompt_select">{task_prompt_options}</select>
-              <div class="gpt-hint">任务提示词描述本次分析目标；可选择“不使用模板”。</div>
-            </div>
-            <div>
-              <label>模板查看</label>
-              <div class="gpt-actions" style="margin-top:0;">
-                <button class="gpt-btn" id="review_task_template_btn" type="button" {modify_disabled}>Review 任务提示词</button>
-              </div>
-              <div class="gpt-hint">点击弹窗查看当前任务模板内容。</div>
+              <div class="gpt-hint">可选择“不使用模板”。</div>
             </div>
           </div>
-          <details class="gpt-details gpt-row">
-            <summary>提示词管理（可选）</summary>
-            <div class="prompt-manage-stack" style="margin-top:8px;">
-              <div>
-                <label>导入提示词文件（.txt）</label>
-                <div class="file-picker">
-                  <label for="prompt_file" class="file-btn">{choose_file_text}</label>
-                  <span id="prompt_file_name" class="file-name">{no_file_text}</span>
-                </div>
-                <input id="prompt_file" class="file-real" type="file" accept=".txt">
-                <div class="gpt-hint">留空名称时自动使用文件名。</div>
-              </div>
-              <div class="prompt-manage-narrow">
-                <label>导入到</label>
-                <select id="prompt_kind_select">
-                  <option value="task" selected>任务提示词</option>
-                  <option value="system">系统提示词</option>
-                </select>
-              </div>
-              <div class="prompt-manage-narrow">
-                <label>导入时命名（可选）</label>
-                <input id="prompt_name" type="text" placeholder="例如：核心链路专项诊断（不填自动用文件名）">
-              </div>
-              <div class="gpt-actions">
-                <button class="gpt-btn" id="import_prompt_btn" type="button" {modify_disabled}>导入提示词</button>
-              </div>
-            </div>
-          </details>
-          <div class="gpt-grid gpt-row">
-            <div class="gpt-row">
-              <label>系统补充约束（可选）</label>
-              <textarea id="system_prompt_extra" placeholder="可追加系统级约束，例如：每条结论必须给证据链，无证据必须输出证据不足。"></textarea>
-            </div>
-            <div></div>
-          </div>
-          <div class="gpt-grid gpt-row">
-            <div class="gpt-row">
-              <label>任务补充要求（可选）</label>
-              <textarea id="custom_prompt" placeholder="会追加在任务模板后面；例如：请重点关注核心上联、邻居抖动和高风险接口"></textarea>
-            </div>
-            <div></div>
-          </div>
+          <textarea id="system_prompt_extra" style="display:none;"></textarea>
+          <textarea id="custom_prompt" style="display:none;"></textarea>
         </div>
 
         <div class="gpt-section">
@@ -4650,6 +4594,8 @@ def build_ai_settings_page(lang: str = "zh", auth_username: str = "", auth_role:
     lang = normalize_lang(lang)
     is_en = lang == "en"
     cfg = load_gpt_config()
+    task_prompts = merged_task_prompt_catalog()
+    system_prompts = merged_system_prompt_catalog()
     provider = str(cfg.get("provider", "chatgpt") or "chatgpt").strip().lower()
     if provider not in {"chatgpt", "deepseek", "gemini", "nvidia", "local"}:
         provider = "chatgpt"
@@ -4659,6 +4605,34 @@ def build_ai_settings_page(lang: str = "zh", auth_username: str = "", auth_role:
     saved_task_prompt_key = str(cfg.get("selected_task_prompt", cfg.get("selected_prompt", "")) or "")
     saved_system_prompt_extra = str(cfg.get("system_prompt_extra", "") or "")
     saved_task_prompt_extra = str(cfg.get("task_prompt_extra", "") or "")
+    if lang == "en":
+        system_equiv = {
+            "网络工程师-严格模式": "Network Engineer - Strict",
+            "网络工程师-变更评审模式": "Network Engineer - Change Review",
+        }
+        task_equiv = {
+            "基础巡检诊断": "Basic Inspection Diagnosis",
+            "接口与链路诊断": "Interface and Link Diagnosis",
+            "路由与协议诊断": "Routing and Protocol Diagnosis",
+            "性能与资源诊断": "Performance and Resource Diagnosis",
+        }
+        saved_system_prompt_key = system_equiv.get(saved_system_prompt_key, saved_system_prompt_key)
+        saved_task_prompt_key = task_equiv.get(saved_task_prompt_key, saved_task_prompt_key)
+    system_prompt_options = "".join(
+        [
+            f'<option value="{html.escape(name)}" {"selected" if saved_system_prompt_key == name else ""}>{html.escape(display_prompt_name(name, lang))}</option>'
+            for name in system_prompts.keys()
+        ]
+    )
+    task_prompt_options = "".join(
+        [
+            f'<option value="" {"selected" if not saved_task_prompt_key else ""}>{"No Template" if is_en else "不使用模板"}</option>'
+        ]
+        + [
+            f'<option value="{html.escape(name)}" {"selected" if saved_task_prompt_key == name else ""}>{html.escape(display_prompt_name(name, lang))}</option>'
+            for name in task_prompts.keys()
+        ]
+    )
 
     has_chatgpt_key = bool((cfg.get("chatgpt_api_key") or "").strip())
     has_deepseek_key = bool((cfg.get("deepseek_api_key") or "").strip())
@@ -4794,7 +4768,76 @@ def build_ai_settings_page(lang: str = "zh", auth_username: str = "", auth_role:
 
       <div class="ai-section">
         <div class="ai-section-title">{'提示词设置' if not is_en else 'Prompt Settings'}</div>
-        <div class="hint">{'提示词已迁移到任务页面中的 AI 分析设置。请到“任务页面”配置并执行分析。' if not is_en else 'Prompt settings were moved to Task page under AI Analysis Settings. Please configure prompts there.'}</div>
+        <div class="ai-grid">
+          <div>
+            <label>{'系统提示词模板（严格约束）' if not is_en else 'System Prompt Template (Strict)'}</label>
+            <select id="system_prompt_select">{system_prompt_options}</select>
+          </div>
+          <div>
+            <label>{'系统模板查看' if not is_en else 'System Template Review'}</label>
+            <div class="actions" style="margin-top:0;">
+              <button class="btn" id="review_system_template_btn" type="button" {modify_disabled}>{'Review 系统提示词' if not is_en else 'Review System Prompt'}</button>
+            </div>
+          </div>
+        </div>
+        <div class="ai-grid ai-row">
+          <div>
+            <label>{'任务提示词模板' if not is_en else 'Task Prompt Template'}</label>
+            <select id="task_prompt_select">{task_prompt_options}</select>
+          </div>
+          <div>
+            <label>{'模板查看' if not is_en else 'Template Review'}</label>
+            <div class="actions" style="margin-top:0;">
+              <button class="btn" id="review_task_template_btn" type="button" {modify_disabled}>{'Review 任务提示词' if not is_en else 'Review Task Prompt'}</button>
+            </div>
+          </div>
+        </div>
+        <details class="ai-details ai-row">
+          <summary>{'提示词管理（可选）' if not is_en else 'Prompt Management (Optional)'}</summary>
+          <div class="ai-grid ai-row">
+            <div>
+              <label>{'导入提示词文件（.txt）' if not is_en else 'Import Prompt File (.txt)'}</label>
+              <div class="file-picker">
+                <label for="prompt_file" class="file-btn">{'选择文件' if not is_en else 'Choose File'}</label>
+                <span id="prompt_file_name" class="file-name">{'未选择文件' if not is_en else 'No file chosen'}</span>
+              </div>
+              <input id="prompt_file" class="file-real" type="file" accept=".txt">
+            </div>
+            <div>
+              <label>{'导入到' if not is_en else 'Import To'}</label>
+              <select id="prompt_kind_select">
+                <option value="task" selected>{'任务提示词' if not is_en else 'Task Prompt'}</option>
+                <option value="system">{'系统提示词' if not is_en else 'System Prompt'}</option>
+              </select>
+            </div>
+          </div>
+          <div class="ai-grid ai-row">
+            <div>
+              <label>{'导入时命名（可选）' if not is_en else 'Name on Import (Optional)'}</label>
+              <input id="prompt_name" type="text" placeholder="{ '例如：核心链路专项诊断（不填自动用文件名）' if not is_en else 'e.g. Core Link Diagnosis (optional)' }">
+            </div>
+            <div style="display:flex;align-items:end;">
+              <button class="btn" id="import_prompt_btn" type="button" {modify_disabled}>{'导入提示词' if not is_en else 'Import Prompt'}</button>
+            </div>
+          </div>
+        </details>
+      </div>
+
+    </div>
+  </div>
+  <div id="prompt_editor_modal" class="modal-mask">
+    <div class="modal-box">
+      <div class="modal-head">
+        <div id="prompt_editor_title" class="modal-title">{'编辑提示词' if not is_en else 'Edit Prompt'}</div>
+        <button id="close_prompt_editor_btn" class="modal-close" type="button">{'关闭' if not is_en else 'Close'}</button>
+      </div>
+      <div class="modal-body">
+        <textarea id="prompt_editor_text"></textarea>
+      </div>
+      <div class="actions">
+        <button class="btn" id="save_prompt_edit_btn" type="button" {modify_disabled}>{'保存修改' if not is_en else 'Save Changes'}</button>
+        <button class="btn" id="delete_prompt_btn" type="button" {modify_disabled}>{'删除模板' if not is_en else 'Delete Template'}</button>
+        <button class="btn" id="cancel_prompt_edit_btn" type="button">{'取消修改' if not is_en else 'Cancel Edit'}</button>
       </div>
     </div>
   </div>
@@ -4814,6 +4857,12 @@ def build_ai_settings_page(lang: str = "zh", auth_username: str = "", auth_role:
     .ai-section-title { font-weight:800; color:#1e293b; font-size:29px; line-height:1.08; margin:0 0 8px; letter-spacing:-0.02em; }
     .ai-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
     .ai-row { margin-top:12px; }
+    .ai-details { border:1px dashed #cbd5e1; border-radius:8px; padding:8px 10px; background:#ffffff; }
+    .ai-details summary { cursor:pointer; font-weight:700; }
+    .file-picker { display:inline-flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .file-btn { display:inline-flex; align-items:center; justify-content:center; min-height:40px; padding:0 12px; border:1px solid #cbd5e1; border-radius:8px; background:#fff; color:#0f172a; cursor:pointer; font-weight:700; }
+    .file-name { color:#334155; font-size:13px; }
+    .file-real { position:absolute; left:-9999px; width:1px; height:1px; opacity:0; pointer-events:none; }
     .ai-card input[type=text], .ai-card input[type=password], .ai-card input[type=number], .ai-card select, .ai-card textarea {
       width:100%; max-width:none; border:1px solid #cbd5e1; border-radius:8px; padding:8px 10px; background:#fff; box-sizing:border-box;
     }
@@ -4823,6 +4872,12 @@ def build_ai_settings_page(lang: str = "zh", auth_username: str = "", auth_role:
     .btn { border:1px solid #cbd5e1; border-radius:10px; background:#fff; color:#0f172a; padding:9px 14px; min-height:42px; font-weight:700; cursor:pointer; }
     .btn:disabled { opacity:0.6; cursor:not-allowed; }
     .hint { font-size:12px; color:#475569; margin-top:6px; white-space:pre-wrap; line-height:1.45; }
+    .modal-mask { position:fixed; inset:0; background:rgba(15, 23, 42, 0.45); display:none; align-items:center; justify-content:center; z-index:9999; padding:16px; }
+    .modal-box { width:min(760px,100%); background:#fff; border:1px solid #cbd5e1; border-radius:12px; padding:12px; box-shadow:0 20px 35px rgba(15, 23, 42, 0.25); }
+    .modal-head { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; }
+    .modal-title { font-weight:700; }
+    .modal-close { border:1px solid #cbd5e1; border-radius:8px; background:#fff; padding:4px 8px; cursor:pointer; font-weight:700; }
+    .modal-body textarea { width:100%; min-height:260px; border:1px solid #cbd5e1; border-radius:8px; padding:10px; font-family:Menlo, Consolas, monospace; box-sizing:border-box; }
     @media (max-width: 920px) {
       .ai-grid { grid-template-columns:1fr; }
       .ai-head h2 { font-size:32px; }
@@ -4836,6 +4891,9 @@ def build_ai_settings_page(lang: str = "zh", auth_username: str = "", auth_role:
   function on(v, ev, fn) {{ const el = id(v); if (el) el.addEventListener(ev, fn); }}
   const UI_LANG = {json.dumps(lang)};
   const CAN_MODIFY = {str(can_modify).lower()};
+  const promptNameEn = {json.dumps(PROMPT_NAME_EN, ensure_ascii=False)};
+  let taskPromptMap = {json.dumps(task_prompts, ensure_ascii=False)};
+  let systemPromptMap = {json.dumps(system_prompts, ensure_ascii=False)};
   const SAVED_SYSTEM_PROMPT_KEY = {json.dumps(saved_system_prompt_key, ensure_ascii=False)};
   const SAVED_TASK_PROMPT_KEY = {json.dumps(saved_task_prompt_key, ensure_ascii=False)};
   const SAVED_SYSTEM_PROMPT_EXTRA = {json.dumps(saved_system_prompt_extra, ensure_ascii=False)};
@@ -4881,6 +4939,8 @@ def build_ai_settings_page(lang: str = "zh", auth_username: str = "", auth_role:
     else el.style.color = "#475569";
   }}
   function getConfigFromUI() {{
+    const systemPromptSelectEl = id("system_prompt_select");
+    const taskPromptSelectEl = id("task_prompt_select");
     return {{
       provider: (id("provider_select")?.value || "chatgpt"),
       chatgpt_model: selectedModel(id("chatgpt_model_select"), id("chatgpt_model_custom")) || {json.dumps(DEFAULT_GPT_MODEL)},
@@ -4889,8 +4949,8 @@ def build_ai_settings_page(lang: str = "zh", auth_username: str = "", auth_role:
       nvidia_model: selectedModel(id("nvidia_model_select"), id("nvidia_model_custom")) || {json.dumps(DEFAULT_NVIDIA_MODEL)},
       local_base_url: (id("local_base_url")?.value || {json.dumps(DEFAULT_LOCAL_BASE_URL)}).trim(),
       local_model: selectedModel(id("local_model_select"), id("local_model_custom")) || {json.dumps(DEFAULT_LOCAL_MODEL)},
-      selected_system_prompt: SAVED_SYSTEM_PROMPT_KEY,
-      selected_task_prompt: SAVED_TASK_PROMPT_KEY,
+      selected_system_prompt: (systemPromptSelectEl?.value || SAVED_SYSTEM_PROMPT_KEY || "").trim(),
+      selected_task_prompt: (taskPromptSelectEl?.value || SAVED_TASK_PROMPT_KEY || "").trim(),
       system_prompt_extra: SAVED_SYSTEM_PROMPT_EXTRA,
       task_prompt_extra: SAVED_TASK_PROMPT_EXTRA,
     }};
@@ -4945,6 +5005,91 @@ def build_ai_settings_page(lang: str = "zh", auth_username: str = "", auth_role:
     return await res.json();
   }}
 
+  function bindFileName(fileEl, nameEl, noFileLabel) {{
+    if (!fileEl || !nameEl) return;
+    const refresh = () => {{
+      const f = (fileEl.files && fileEl.files.length > 0) ? fileEl.files[0] : null;
+      nameEl.textContent = f ? f.name : noFileLabel;
+    }};
+    fileEl.addEventListener("change", refresh);
+    refresh();
+  }}
+
+  function displayPromptName(name) {{
+    const key = String(name || "");
+    if (UI_LANG === "en") return promptNameEn[key] || key;
+    return key;
+  }}
+
+  function refreshPromptSelect(kind, prompts, selectedName) {{
+    const systemPromptSelectEl = id("system_prompt_select");
+    const taskPromptSelectEl = id("task_prompt_select");
+    if (kind === "system") {{
+      if (!systemPromptSelectEl) return;
+      while (systemPromptSelectEl.firstChild) systemPromptSelectEl.removeChild(systemPromptSelectEl.firstChild);
+      Object.keys(prompts || {{}}).forEach((k) => {{
+        const opt = document.createElement("option");
+        opt.value = k;
+        opt.textContent = displayPromptName(k);
+        systemPromptSelectEl.appendChild(opt);
+      }});
+      if (selectedName) systemPromptSelectEl.value = selectedName;
+    }} else {{
+      if (!taskPromptSelectEl) return;
+      while (taskPromptSelectEl.firstChild) taskPromptSelectEl.removeChild(taskPromptSelectEl.firstChild);
+      const emptyOpt = document.createElement("option");
+      emptyOpt.value = "";
+      emptyOpt.textContent = UI_LANG === "en" ? "No Template" : "不使用模板";
+      taskPromptSelectEl.appendChild(emptyOpt);
+      Object.keys(prompts || {{}}).forEach((k) => {{
+        const opt = document.createElement("option");
+        opt.value = k;
+        opt.textContent = displayPromptName(k);
+        taskPromptSelectEl.appendChild(opt);
+      }});
+      taskPromptSelectEl.value = selectedName || "";
+    }}
+  }}
+
+  function openPromptEditor(kind) {{
+    if (!CAN_MODIFY) {{
+      window.alert(UI_LANG === "en" ? "Read-only role cannot modify templates." : "当前角色只读，无法修改模板。");
+      return;
+    }}
+    const systemPromptSelectEl = id("system_prompt_select");
+    const taskPromptSelectEl = id("task_prompt_select");
+    const modal = id("prompt_editor_modal");
+    const titleEl = id("prompt_editor_title");
+    const textEl = id("prompt_editor_text");
+    if (!modal || !titleEl || !textEl) return;
+    const key = kind === "system" ? ((systemPromptSelectEl?.value) || "").trim() : ((taskPromptSelectEl?.value) || "").trim();
+    if (!key) {{
+      window.alert(UI_LANG === "en" ? "No prompt selected." : "当前未选择模板。");
+      return;
+    }}
+    const map = kind === "system" ? systemPromptMap : taskPromptMap;
+    const content = (map && map[key]) ? String(map[key]) : "";
+    if (!content) {{
+      window.alert(UI_LANG === "en" ? "Template content is empty." : "当前模板无内容或不存在。");
+      return;
+    }}
+    modal.dataset.kind = kind;
+    modal.dataset.name = key;
+    titleEl.textContent = (kind === "system" ? (UI_LANG === "en" ? "Edit System Prompt: " : "编辑系统提示词: ") : (UI_LANG === "en" ? "Edit Task Prompt: " : "编辑任务提示词: ")) + displayPromptName(key);
+    textEl.value = content;
+    modal.style.display = "flex";
+  }}
+
+  function closePromptEditor() {{
+    const modal = id("prompt_editor_modal");
+    const textEl = id("prompt_editor_text");
+    if (!modal || !textEl) return;
+    modal.style.display = "none";
+    modal.dataset.kind = "";
+    modal.dataset.name = "";
+    textEl.value = "";
+  }}
+
   on("save_llm_btn", "click", async () => {{
     if (!CAN_MODIFY) {{ setLlmMsg(UI_LANG === "en" ? "Read-only role cannot save settings." : "当前角色只读，无法保存配置。", false); return; }}
     const cfg = getConfigFromUI();
@@ -4984,6 +5129,88 @@ def build_ai_settings_page(lang: str = "zh", auth_username: str = "", auth_role:
     setLlmMsg(data.overwritten ? (UI_LANG === "en" ? "API key overwritten." : "API Key 已覆盖保存。") : (UI_LANG === "en" ? "API key saved." : "API Key 保存成功。"), true);
   }});
 
+  on("review_system_template_btn", "click", () => openPromptEditor("system"));
+  on("review_task_template_btn", "click", () => openPromptEditor("task"));
+  on("close_prompt_editor_btn", "click", closePromptEditor);
+  on("cancel_prompt_edit_btn", "click", closePromptEditor);
+  const promptModal = id("prompt_editor_modal");
+  if (promptModal) {{
+    promptModal.addEventListener("click", (e) => {{
+      if (e.target === promptModal) closePromptEditor();
+    }});
+  }}
+
+  on("save_prompt_edit_btn", "click", async () => {{
+    if (!CAN_MODIFY) return;
+    const modal = id("prompt_editor_modal");
+    const textEl = id("prompt_editor_text");
+    const kind = (modal?.dataset.kind || "").trim();
+    const name = (modal?.dataset.name || "").trim();
+    const text = (textEl?.value || "").trim();
+    if (!kind || !name) {{ setLlmMsg(UI_LANG === "en" ? "No template selected." : "未选择模板。", false); return; }}
+    if (!text) {{ setLlmMsg(UI_LANG === "en" ? "Prompt text is empty." : "提示词内容不能为空。", false); return; }}
+    if (!window.confirm(UI_LANG === "en" ? "Save changes?" : "确认保存修改吗？")) return;
+    const data = await postForm("/update_prompt", {{ prompt_kind: kind, prompt_name: name, prompt_text: text }});
+    if (!data.ok) {{ setLlmMsg((UI_LANG === "en" ? "Save failed: " : "保存失败: ") + (data.error || "unknown"), false); return; }}
+    if (kind === "system") {{
+      systemPromptMap = data.prompts || {{}};
+      refreshPromptSelect("system", systemPromptMap, data.selected_prompt || name);
+    }} else {{
+      taskPromptMap = data.prompts || {{}};
+      refreshPromptSelect("task", taskPromptMap, data.selected_prompt || name);
+    }}
+    setLlmMsg(UI_LANG === "en" ? "Template updated." : "模板已更新。", true);
+    closePromptEditor();
+  }});
+
+  on("delete_prompt_btn", "click", async () => {{
+    if (!CAN_MODIFY) return;
+    const modal = id("prompt_editor_modal");
+    const kind = (modal?.dataset.kind || "").trim();
+    const name = (modal?.dataset.name || "").trim();
+    if (!kind || !name) {{ setLlmMsg(UI_LANG === "en" ? "No template selected." : "未选择模板。", false); return; }}
+    if (!window.confirm((UI_LANG === "en" ? "Delete template " : "确认删除模板 ") + "[" + name + "] ?")) return;
+    const data = await postForm("/delete_prompt", {{ prompt_kind: kind, prompt_name: name }});
+    if (!data.ok) {{ setLlmMsg((UI_LANG === "en" ? "Delete failed: " : "删除失败: ") + (data.error || "unknown"), false); return; }}
+    if (kind === "system") {{
+      systemPromptMap = data.prompts || {{}};
+      refreshPromptSelect("system", systemPromptMap, data.selected_prompt || "网络工程师-严格模式");
+    }} else {{
+      taskPromptMap = data.prompts || {{}};
+      refreshPromptSelect("task", taskPromptMap, data.selected_prompt || "");
+    }}
+    setLlmMsg(UI_LANG === "en" ? "Template deleted." : "模板已删除。", true);
+    closePromptEditor();
+  }});
+
+  on("import_prompt_btn", "click", async () => {{
+    if (!CAN_MODIFY) {{ setLlmMsg(UI_LANG === "en" ? "Read-only role cannot import prompts." : "当前角色只读，无法导入提示词。", false); return; }}
+    const fileEl = id("prompt_file");
+    const kindEl = id("prompt_kind_select");
+    const nameEl = id("prompt_name");
+    const f = fileEl?.files && fileEl.files.length > 0 ? fileEl.files[0] : null;
+    if (!f) {{ setLlmMsg(UI_LANG === "en" ? "Please choose a prompt file." : "请先选择提示词文件。", false); return; }}
+    const fd = new FormData();
+    fd.append("prompt_file", f);
+    fd.append("prompt_kind", (kindEl?.value || "task"));
+    fd.append("prompt_name", (nameEl?.value || "").trim());
+    const res = await fetch("/import_prompt", {{ method: "POST", body: fd }});
+    const data = await res.json();
+    if (!data.ok) {{ setLlmMsg((UI_LANG === "en" ? "Import failed: " : "导入失败: ") + (data.error || "unknown"), false); return; }}
+    if (data.prompt_kind === "system") {{
+      systemPromptMap = data.prompts || {{}};
+      refreshPromptSelect("system", systemPromptMap, data.selected_prompt || "");
+    }} else {{
+      taskPromptMap = data.prompts || {{}};
+      refreshPromptSelect("task", taskPromptMap, data.selected_prompt || "");
+    }}
+    setLlmMsg(UI_LANG === "en" ? "Prompt imported." : "提示词导入成功。", true);
+    if (fileEl) fileEl.value = "";
+    if (nameEl) nameEl.value = "";
+    const nameSpan = id("prompt_file_name");
+    if (nameSpan) nameSpan.textContent = UI_LANG === "en" ? "No file chosen" : "未选择文件";
+  }});
+
   on("provider_select", "change", updateProviderSection);
   on("chatgpt_model_select", "change", updateProviderSection);
   on("deepseek_model_select", "change", updateProviderSection);
@@ -4991,6 +5218,7 @@ def build_ai_settings_page(lang: str = "zh", auth_username: str = "", auth_role:
   on("nvidia_model_select", "change", updateProviderSection);
   on("local_model_select", "change", updateProviderSection);
   on("local_model_custom", "input", updateProviderSection);
+  bindFileName(id("prompt_file"), id("prompt_file_name"), UI_LANG === "en" ? "No file chosen" : "未选择文件");
   updateApiKeyState();
   updateProviderSection();
 </script>
