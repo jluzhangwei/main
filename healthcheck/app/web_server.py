@@ -30,14 +30,14 @@ from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 try:
-    from app import analysis_guard, analysis_pipeline, analysis_service, llm_adapter, llm_service, prompt_service, state_store, status_service
+    from app import analysis_guard, analysis_pipeline, analysis_service, llm_adapter, llm_service, prompt_service, state_store, status_service, task_store
 except ModuleNotFoundError:
     # Allow direct execution: python3 app/web_server.py
     _self_dir = Path(__file__).resolve().parent
     _parent_dir = _self_dir.parent
     if str(_parent_dir) not in sys.path:
         sys.path.insert(0, str(_parent_dir))
-    from app import analysis_guard, analysis_pipeline, analysis_service, llm_adapter, llm_service, prompt_service, state_store, status_service
+    from app import analysis_guard, analysis_pipeline, analysis_service, llm_adapter, llm_service, prompt_service, state_store, status_service, task_store
 
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_DIR.parent
@@ -104,6 +104,7 @@ ANALYSIS_JOBS_LOCK = threading.Lock()
 ANALYSIS_STATUS_STORE: Optional[status_service.AnalysisStatusStore] = None
 LLM_ADAPTER: Optional[llm_adapter.LLMAdapter] = None
 ANALYSIS_SERVICE: Optional[analysis_service.AnalysisService] = None
+TASK_STORE: Optional[task_store.TaskStore] = None
 DOC_VERSION = "V2.4"
 DOC_VERSION_RULE = "大改动升主版本（如 V2.0），小更新升次版本（如 V1.14 -> V1.15）"
 SUPPORTED_LANGS = {"zh", "en"}
@@ -207,8 +208,16 @@ def build_app_header_css() -> str:
 def build_app_header_html(lang: str, active_menu: str = "runner") -> str:
     lang = normalize_lang(lang)
     home_link = with_lang("/", lang)
+    tasks_link = with_lang("/tasks", lang)
+    ai_link = with_lang("/ai/settings", lang)
     guide_link = with_lang("/guide", lang)
     lang_toggle = "ZH" if lang == "en" else "EN"
+    labels = {
+        "runner": "Create Task" if lang == "en" else "创建任务",
+        "tasks": "Tasks" if lang == "en" else "任务页面",
+        "ai": "AI Settings" if lang == "en" else "AI 设置",
+    }
+    app_title = "AIOps - HealthCheck Runner"
     return f"""
   <div class="app-topbar">
     <div class="app-brand">
@@ -227,10 +236,11 @@ def build_app_header_html(lang: str, active_menu: str = "runner") -> str:
     </div>
   </div>
   <div class="app-mainnav">
-    <div class="app-title">AIOps - HealthCheck Runner</div>
+    <div class="app-title">{app_title}</div>
     <div class="app-menu">
-      <a href="{home_link}" class="{'active' if active_menu == 'runner' else ''}">Runner</a>
-      <a href="{guide_link}" class="{'active' if active_menu == 'docs' else ''}">Docs</a>
+      <a href="{home_link}" class="{'active' if active_menu == 'runner' else ''}">{labels['runner']}</a>
+      <a href="{tasks_link}" class="{'active' if active_menu == 'tasks' else ''}">{labels['tasks']}</a>
+      <a href="{ai_link}" class="{'active' if active_menu == 'ai' else ''}">{labels['ai']}</a>
     </div>
   </div>
   <script>
@@ -797,6 +807,12 @@ def ensure_analysis_services() -> None:
             status_store=ANALYSIS_STATUS_STORE,
             llm_adapter=LLM_ADAPTER,
         )
+
+
+def ensure_task_store() -> None:
+    global TASK_STORE
+    if TASK_STORE is None:
+        TASK_STORE = task_store.TaskStore()
 
 
 def extract_token_usage(payload: Dict) -> Dict[str, int]:
@@ -2295,6 +2311,7 @@ def build_job_html(
       background: #ffffff;
     }}
     .gpt-details summary {{ cursor: pointer; font-weight: 700; }}
+    .ai-settings-relocated {{ display: none; }}
     .gpt-actions {{ display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }}
     .gpt-btn {{
       border: 1px solid #cbd5e1;
@@ -2504,7 +2521,7 @@ def build_job_html(
   </style>
 </head>
 <body>
-  {build_app_header_html(lang, "runner")}
+  {build_app_header_html(lang, "tasks")}
   <div class="wrap">
     <div class="card">
       <div class="head">
@@ -2523,86 +2540,21 @@ def build_job_html(
           <span id="provider_brand_inline" class="ai-brand"></span>
           <h3 style="margin:0;">AI 分析设置</h3>
         </div>
-        <div class="gpt-section">
-          <div class="gpt-section-title">大模型配置</div>
-          <div class="gpt-grid gpt-row" style="margin-top:0;">
-            <div>
-              <label>大模型选择</label>
-              <select id="provider_select">
-                <option value="chatgpt" {"selected" if provider == "chatgpt" else ""}>ChatGPT</option>
-                <option value="deepseek" {"selected" if provider == "deepseek" else ""}>DeepSeek</option>
-                <option value="gemini" {"selected" if provider == "gemini" else ""}>Gemini</option>
-                <option value="nvidia" {"selected" if provider == "nvidia" else ""}>NVIDIA</option>
-                <option value="local" {"selected" if provider == "local" else ""}>本地大模型</option>
-              </select>
-              <div id="llm_test_result" class="gpt-hint">模型连接测试结果将在此显示。</div>
-            </div>
-            <div>
-              <label>API Key 管理</label>
-              <div class="gpt-actions" style="margin-top:0;">
-                <button class="gpt-btn" id="import_api_key_btn" type="button" {modify_disabled}>导入 API Key</button>
-                <button class="gpt-btn" id="test_llm_btn" type="button">模型连接测试</button>
-                <button class="gpt-btn" id="save_llm_btn" type="button" {modify_disabled}>保存模型配置</button>
-              </div>
-              <div class="gpt-hint">用途：保存当前大模型来源、模型名、本地地址、已选提示词模板。下次打开页面会自动带出。</div>
-              <div id="api_key_state" class="gpt-hint">ChatGPT Key: {"已保存" if has_chatgpt_key else "未保存"} | DeepSeek Key: {"已保存" if has_deepseek_key else "未保存"} | Gemini Key: {"已保存" if has_gemini_key else "未保存"} | NVIDIA Key: {"已保存" if has_nvidia_key else "未保存"}</div>
-            </div>
+        <div class="gpt-hint" style="margin-bottom:8px;">大模型配置已迁移到 <a href="{with_lang('/ai/settings', lang)}">AI 设置</a> 页面；提示词配置在当前页面维护。</div>
+        <details class="gpt-details gpt-row ai-settings-relocated">
+          <summary>兼容参数（隐藏，仅供本页分析调用）</summary>
+          <div style="display:none;">
+            <select id="provider_select">
+              <option value="{html.escape(provider)}" selected>{html.escape(provider)}</option>
+            </select>
+            <input id="local_base_url" type="text" value="{html.escape(local_base_url)}">
+            <select id="chatgpt_model_select"><option value="{html.escape(chatgpt_model)}" selected>{html.escape(chatgpt_model)}</option></select>
+            <select id="local_model_select"><option value="{html.escape(local_model)}" selected>{html.escape(local_model)}</option></select>
+            <select id="deepseek_model_select"><option value="{html.escape(deepseek_model)}" selected>{html.escape(deepseek_model)}</option></select>
+            <select id="gemini_model_select"><option value="{html.escape(gemini_model)}" selected>{html.escape(gemini_model)}</option></select>
+            <select id="nvidia_model_select"><option value="{html.escape(nvidia_model)}" selected>{html.escape(nvidia_model)}</option></select>
           </div>
-          <div id="chatgpt_settings" class="gpt-grid gpt-row">
-            <div>
-              <label>ChatGPT 模型</label>
-              <select id="chatgpt_model_select">{chatgpt_model_options}</select>
-            </div>
-            <div id="chatgpt_custom_wrap" style="display:{'none' if chatgpt_in_options else 'block'};">
-              <label>自定义 ChatGPT 模型</label>
-              <input id="chatgpt_model_custom" type="text" value="{html.escape('' if chatgpt_in_options else chatgpt_model)}" placeholder="例如 gpt-4.1-mini">
-            </div>
-          </div>
-          <div id="local_settings" class="gpt-grid gpt-row">
-            <div>
-              <label>本地大模型地址</label>
-              <input id="local_base_url" type="text" value="{html.escape(local_base_url)}" placeholder="http://127.0.0.1:1234">
-            </div>
-            <div>
-              <label>本地大模型模型</label>
-              <select id="local_model_select">{local_model_options}</select>
-            </div>
-            <div id="local_custom_wrap" style="display:{'none' if local_in_options else 'block'};">
-              <label>自定义本地模型</label>
-              <input id="local_model_custom" type="text" value="{html.escape('' if local_in_options else local_model)}" placeholder="例如 qwen/qwen3-coder-30b">
-            </div>
-          </div>
-          <div id="deepseek_settings" class="gpt-grid gpt-row">
-            <div>
-              <label>DeepSeek 模型</label>
-              <select id="deepseek_model_select">{deepseek_model_options}</select>
-            </div>
-            <div id="deepseek_custom_wrap" style="display:{'none' if deepseek_in_options else 'block'};">
-              <label>自定义 DeepSeek 模型</label>
-              <input id="deepseek_model_custom" type="text" value="{html.escape('' if deepseek_in_options else deepseek_model)}" placeholder="例如 deepseek-chat">
-            </div>
-          </div>
-          <div id="gemini_settings" class="gpt-grid gpt-row">
-            <div>
-              <label>Gemini 模型</label>
-              <select id="gemini_model_select">{gemini_model_options}</select>
-            </div>
-            <div id="gemini_custom_wrap" style="display:{'none' if gemini_in_options else 'block'};">
-              <label>自定义 Gemini 模型</label>
-              <input id="gemini_model_custom" type="text" value="{html.escape('' if gemini_in_options else gemini_model)}" placeholder="例如 gemini-2.0-flash">
-            </div>
-          </div>
-          <div id="nvidia_settings" class="gpt-grid gpt-row">
-            <div>
-              <label>NVIDIA 模型</label>
-              <select id="nvidia_model_select">{nvidia_model_options}</select>
-            </div>
-            <div id="nvidia_custom_wrap" style="display:{'none' if nvidia_in_options else 'block'};">
-              <label>自定义 NVIDIA 模型</label>
-              <input id="nvidia_model_custom" type="text" value="{html.escape('' if nvidia_in_options else nvidia_model)}" placeholder="例如 meta/llama-3.1-70b-instruct">
-            </div>
-          </div>
-        </div>
+        </details>
 
         <div class="gpt-section">
           <div class="gpt-section-title">提示词设置</div>
@@ -3354,17 +3306,29 @@ def build_job_html(
       return await resp.json();
     }}
 
-    document.getElementById("review_system_template_btn").addEventListener("click", () => openPromptEditor("system"));
-    document.getElementById("review_task_template_btn").addEventListener("click", () => openPromptEditor("task"));
-    document.getElementById("close_prompt_editor_btn").addEventListener("click", closePromptEditor);
-    document.getElementById("cancel_prompt_edit_btn").addEventListener("click", closePromptEditor);
+    const reviewSystemBtnEl = document.getElementById("review_system_template_btn");
+    const reviewTaskBtnEl = document.getElementById("review_task_template_btn");
+    const closePromptEditorBtnEl = document.getElementById("close_prompt_editor_btn");
+    const cancelPromptEditBtnEl = document.getElementById("cancel_prompt_edit_btn");
+    const savePromptEditBtnEl = document.getElementById("save_prompt_edit_btn");
+    const deletePromptBtnEl = document.getElementById("delete_prompt_btn");
+    const saveLlmBtnEl = document.getElementById("save_llm_btn");
+    const testLlmBtnEl = document.getElementById("test_llm_btn");
+    const importPromptBtnEl = document.getElementById("import_prompt_btn");
+    const importApiKeyBtnEl = document.getElementById("import_api_key_btn");
+    const analyzeBtnEl = document.getElementById("analyze_btn");
+
+    if (reviewSystemBtnEl) reviewSystemBtnEl.addEventListener("click", () => openPromptEditor("system"));
+    if (reviewTaskBtnEl) reviewTaskBtnEl.addEventListener("click", () => openPromptEditor("task"));
+    if (closePromptEditorBtnEl) closePromptEditorBtnEl.addEventListener("click", closePromptEditor);
+    if (cancelPromptEditBtnEl) cancelPromptEditBtnEl.addEventListener("click", closePromptEditor);
     if (promptEditorModalEl) {{
       promptEditorModalEl.addEventListener("click", (e) => {{
         if (e.target === promptEditorModalEl) closePromptEditor();
       }});
     }}
 
-    document.getElementById("save_prompt_edit_btn").addEventListener("click", async () => {{
+    if (savePromptEditBtnEl) savePromptEditBtnEl.addEventListener("click", async () => {{
       if (!canModify) return;
       const kind = (promptEditorModalEl.dataset.kind || "").trim();
       const name = (promptEditorModalEl.dataset.name || "").trim();
@@ -3403,7 +3367,7 @@ def build_job_html(
       }}
     }});
 
-    document.getElementById("delete_prompt_btn").addEventListener("click", async () => {{
+    if (deletePromptBtnEl) deletePromptBtnEl.addEventListener("click", async () => {{
       if (!canModify) return;
       const kind = (promptEditorModalEl.dataset.kind || "").trim();
       const name = (promptEditorModalEl.dataset.name || "").trim();
@@ -3436,7 +3400,7 @@ def build_job_html(
       }}
     }});
 
-    document.getElementById("save_llm_btn").addEventListener("click", async () => {{
+    if (saveLlmBtnEl) saveLlmBtnEl.addEventListener("click", async () => {{
       if (!canModify) {{
         setGptStatus("当前角色只读，无法保存配置。");
         return;
@@ -3507,7 +3471,7 @@ def build_job_html(
       }}
     }});
 
-    document.getElementById("test_llm_btn").addEventListener("click", async () => {{
+    if (testLlmBtnEl) testLlmBtnEl.addEventListener("click", async () => {{
       const provider = (providerEl.value || "chatgpt").trim();
       const localBaseUrl = (localBaseEl.value || "").trim();
       const deepseekModel = selectedModel(deepseekModelSelectEl, deepseekModelCustomEl);
@@ -3614,7 +3578,7 @@ def build_job_html(
       }}
     }});
 
-    document.getElementById("import_prompt_btn").addEventListener("click", async () => {{
+    if (importPromptBtnEl) importPromptBtnEl.addEventListener("click", async () => {{
       if (!canModify) {{
         setGptStatus("当前角色只读，无法导入提示词。");
         return;
@@ -3655,7 +3619,7 @@ def build_job_html(
       }}
     }});
 
-    document.getElementById("import_api_key_btn").addEventListener("click", async () => {{
+    if (importApiKeyBtnEl) importApiKeyBtnEl.addEventListener("click", async () => {{
       if (!canModify) {{
         setGptStatus("当前角色只读，无法保存 API Key。");
         return;
@@ -3702,7 +3666,7 @@ def build_job_html(
       }}
     }});
 
-    document.getElementById("analyze_btn").addEventListener("click", async () => {{
+    if (analyzeBtnEl) analyzeBtnEl.addEventListener("click", async () => {{
       analysisRunning = true;
       const file = historyReportFileEl.files && historyReportFileEl.files[0];
       const provider = (providerEl.value || "chatgpt").trim();
@@ -3837,8 +3801,8 @@ def build_job_html(
       }}
     }});
 
-    providerEl.addEventListener("change", refreshProviderUI);
-    providerEl.addEventListener("change", syncIdleModelStatus);
+    if (providerEl) providerEl.addEventListener("change", refreshProviderUI);
+    if (providerEl) providerEl.addEventListener("change", syncIdleModelStatus);
     if (chatgptModelSelectEl) chatgptModelSelectEl.addEventListener("change", refreshCustomModelVisibility);
     if (chatgptModelSelectEl) chatgptModelSelectEl.addEventListener("change", syncIdleModelStatus);
     if (localModelSelectEl) localModelSelectEl.addEventListener("change", refreshCustomModelVisibility);
@@ -4447,6 +4411,455 @@ def parse_ordered_items(raw: str) -> List[str]:
     return [p.strip() for p in re.split(r"[,;\n]+", raw or "") if p.strip() and not p.strip().startswith("#")]
 
 
+def _format_ts(ts: float) -> str:
+    try:
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(ts)))
+    except Exception:
+        return "-"
+
+
+def build_tasks_page(lang: str = "zh", auth_username: str = "", auth_role: str = "user") -> str:
+    lang = normalize_lang(lang)
+    ensure_task_store()
+    rows = TASK_STORE.list_tasks(300) if TASK_STORE else []
+    h = ("任务ID", "创建时间", "状态", "设备数", "报告", "操作")
+    if lang == "en":
+        h = ("Task ID", "Created At", "Status", "Devices", "Reports", "Actions")
+    body_rows = []
+    for row in rows:
+        tid = str(row.get("task_id", "") or "")
+        devices = row.get("devices", []) if isinstance(row.get("devices"), list) else []
+        report_json = str(row.get("report_json", "") or "")
+        report_csv = str(row.get("report_csv", "") or "")
+        links = []
+        if report_json:
+            links.append(f'<a href="{with_lang("/download?name=" + report_json, lang)}">JSON</a>')
+        if report_csv:
+            links.append(f'<a href="{with_lang("/download?name=" + report_csv, lang)}">CSV</a>')
+        if not links:
+            links.append("-")
+        action_text = "查看" if lang == "zh" else "View"
+        body_rows.append(
+            "<tr>"
+            f"<td><a href=\"{with_lang('/tasks/' + tid, lang)}\">{html.escape(tid)}</a></td>"
+            f"<td>{html.escape(_format_ts(float(row.get('created_at', 0.0) or 0.0)))}</td>"
+            f"<td>{html.escape(str(row.get('status', 'unknown') or 'unknown'))}</td>"
+            f"<td>{len(devices)}</td>"
+            f"<td>{' | '.join(links)}</td>"
+            f"<td><a href=\"{with_lang('/tasks/' + tid, lang)}\">{action_text}</a></td>"
+            "</tr>"
+        )
+    page_css = """
+    body { margin:0; background:#f6f8fb; color:#0f172a; font:14px/1.5 "Segoe UI","PingFang SC",sans-serif; }
+    .wrap { max-width:980px; margin:28px auto; padding:0 16px; }
+    .card { background:#fff; border:1px solid #d6dce3; border-radius:10px; padding:14px; }
+    h2 { margin:0 0 10px; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { border-bottom:1px solid #e2e8f0; text-align:left; padding:8px; }
+    th { background:#f8fafc; }
+    a { color:#0b6e4f; text-decoration:none; font-weight:600; }
+    """
+    title = "任务页面" if lang == "zh" else "Tasks"
+    body_html = f"""
+    {build_app_header_html(lang, "tasks")}
+    <div class="wrap">
+      <div class="card">
+        <h2>{title}</h2>
+        <table>
+          <thead><tr><th>{h[0]}</th><th>{h[1]}</th><th>{h[2]}</th><th>{h[3]}</th><th>{h[4]}</th><th>{h[5]}</th></tr></thead>
+          <tbody>{''.join(body_rows) if body_rows else '<tr><td colspan="6">-</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+    """
+    return f"""<!DOCTYPE html>
+<html lang="{ 'en' if lang == 'en' else 'zh-CN' }">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{html.escape(title)}</title>
+  <style>
+    {build_app_header_css()}
+    {page_css}
+  </style>
+</head>
+<body>
+{body_html}
+</body>
+</html>
+"""
+
+
+def build_ai_settings_page(lang: str = "zh", auth_username: str = "", auth_role: str = "user", can_modify: bool = True) -> str:
+    lang = normalize_lang(lang)
+    is_en = lang == "en"
+    cfg = load_gpt_config()
+    provider = str(cfg.get("provider", "chatgpt") or "chatgpt").strip().lower()
+    if provider not in {"chatgpt", "deepseek", "gemini", "nvidia", "local"}:
+        provider = "chatgpt"
+    modify_disabled = "disabled" if not can_modify else ""
+
+    saved_system_prompt_key = str(cfg.get("selected_system_prompt", "网络工程师-严格模式") or "")
+    saved_task_prompt_key = str(cfg.get("selected_task_prompt", cfg.get("selected_prompt", "")) or "")
+    saved_system_prompt_extra = str(cfg.get("system_prompt_extra", "") or "")
+    saved_task_prompt_extra = str(cfg.get("task_prompt_extra", "") or "")
+
+    has_chatgpt_key = bool((cfg.get("chatgpt_api_key") or "").strip())
+    has_deepseek_key = bool((cfg.get("deepseek_api_key") or "").strip())
+    has_gemini_key = bool((cfg.get("gemini_api_key") or "").strip())
+    has_nvidia_key = bool((cfg.get("nvidia_api_key") or "").strip())
+
+    chatgpt_model = str(cfg.get("chatgpt_model", DEFAULT_GPT_MODEL) or DEFAULT_GPT_MODEL)
+    local_base_url = str(cfg.get("local_base_url", DEFAULT_LOCAL_BASE_URL) or DEFAULT_LOCAL_BASE_URL)
+    local_model = str(cfg.get("local_model", DEFAULT_LOCAL_MODEL) or DEFAULT_LOCAL_MODEL)
+    deepseek_model = str(cfg.get("deepseek_model", DEFAULT_DEEPSEEK_MODEL) or DEFAULT_DEEPSEEK_MODEL)
+    gemini_model = str(cfg.get("gemini_model", DEFAULT_GEMINI_MODEL) or DEFAULT_GEMINI_MODEL)
+    nvidia_model = str(cfg.get("nvidia_model", DEFAULT_NVIDIA_MODEL) or DEFAULT_NVIDIA_MODEL)
+    chatgpt_in_options = chatgpt_model in CHATGPT_MODEL_OPTIONS
+    local_in_options = local_model in LOCAL_MODEL_OPTIONS
+    deepseek_in_options = deepseek_model in DEEPSEEK_MODEL_OPTIONS
+    gemini_in_options = gemini_model in GEMINI_MODEL_OPTIONS
+    nvidia_in_options = nvidia_model in NVIDIA_MODEL_OPTIONS
+    chatgpt_model_options = "".join(
+        [f'<option value="{html.escape(m)}" {"selected" if chatgpt_model == m else ""}>{html.escape(m)}</option>' for m in CHATGPT_MODEL_OPTIONS]
+        + [f'<option value="__custom__" {"selected" if not chatgpt_in_options else ""}>{"Custom..." if is_en else "自定义..."}</option>']
+    )
+    local_model_options = "".join(
+        [f'<option value="{html.escape(m)}" {"selected" if local_model == m else ""}>{html.escape(m)}</option>' for m in LOCAL_MODEL_OPTIONS]
+        + [f'<option value="__custom__" {"selected" if not local_in_options else ""}>{"Custom..." if is_en else "自定义..."}</option>']
+    )
+    deepseek_model_options = "".join(
+        [f'<option value="{html.escape(m)}" {"selected" if deepseek_model == m else ""}>{html.escape(m)}</option>' for m in DEEPSEEK_MODEL_OPTIONS]
+        + [f'<option value="__custom__" {"selected" if not deepseek_in_options else ""}>{"Custom..." if is_en else "自定义..."}</option>']
+    )
+    gemini_model_options = "".join(
+        [f'<option value="{html.escape(m)}" {"selected" if gemini_model == m else ""}>{html.escape(m)}</option>' for m in GEMINI_MODEL_OPTIONS]
+        + [f'<option value="__custom__" {"selected" if not gemini_in_options else ""}>{"Custom..." if is_en else "自定义..."}</option>']
+    )
+    nvidia_model_options = "".join(
+        [f'<option value="{html.escape(m)}" {"selected" if nvidia_model == m else ""}>{html.escape(m)}</option>' for m in NVIDIA_MODEL_OPTIONS]
+        + [f'<option value="__custom__" {"selected" if not nvidia_in_options else ""}>{"Custom..." if is_en else "自定义..."}</option>']
+    )
+
+    title = "AI 设置" if not is_en else "AI Settings"
+
+    body_html = f"""
+  {build_app_header_html(lang, "ai")}
+  <div class="wrap">
+    <div class="card ai-card">
+      <div class="ai-head">
+        <span id="provider_brand_inline" class="ai-brand"></span>
+        <h2>{'AI 分析设置' if not is_en else 'AI Analysis Settings'}</h2>
+      </div>
+      <div class="ai-section">
+        <div class="ai-section-title">{'大模型配置' if not is_en else 'LLM Configuration'}</div>
+        <div class="ai-grid">
+          <div>
+            <label>{'大模型选择' if not is_en else 'Provider'}</label>
+            <select id="provider_select">
+              <option value="chatgpt" {"selected" if provider == "chatgpt" else ""}>ChatGPT</option>
+              <option value="deepseek" {"selected" if provider == "deepseek" else ""}>DeepSeek</option>
+              <option value="gemini" {"selected" if provider == "gemini" else ""}>Gemini</option>
+              <option value="nvidia" {"selected" if provider == "nvidia" else ""}>NVIDIA</option>
+              <option value="local" {"selected" if provider == "local" else ""}>{'本地大模型' if not is_en else 'Local Model'}</option>
+            </select>
+            <div id="llm_test_result" class="hint">{'模型连接测试结果将在此显示。' if not is_en else 'Connection test result will be shown here.'}</div>
+          </div>
+          <div>
+            <label>{'API Key 管理' if not is_en else 'API Key Management'}</label>
+            <div class="actions" style="margin-top:0;">
+              <button class="btn" id="import_api_key_btn" type="button" {modify_disabled}>{'导入 API Key' if not is_en else 'Import API Key'}</button>
+              <button class="btn" id="test_llm_btn" type="button">{'模型连接测试' if not is_en else 'Test Connection'}</button>
+              <button class="btn" id="save_llm_btn" type="button" {modify_disabled}>{'保存模型配置' if not is_en else 'Save Config'}</button>
+            </div>
+            <div class="hint">{'用途：保存当前大模型来源、模型名、本地地址、已选提示词模板。下次打开页面自动带出。' if not is_en else 'Saves provider, model, local endpoint and selected prompts for next visit.'}</div>
+            <div id="api_key_state" class="hint"></div>
+          </div>
+        </div>
+
+        <div id="chatgpt_settings" class="ai-grid ai-row" {("style='display:none;'" if provider != "chatgpt" else "")}>
+          <div>
+            <label>ChatGPT {'模型' if not is_en else 'Model'}</label>
+            <select id="chatgpt_model_select">{chatgpt_model_options}</select>
+          </div>
+          <div id="chatgpt_custom_wrap" {("style='display:none;'" if chatgpt_in_options else "")}>
+            <label>{'自定义 ChatGPT 模型' if not is_en else 'Custom ChatGPT Model'}</label>
+            <input id="chatgpt_model_custom" value="{html.escape('' if chatgpt_in_options else chatgpt_model)}" placeholder="gpt-4.1-mini">
+          </div>
+        </div>
+
+        <div id="deepseek_settings" class="ai-grid ai-row" {("style='display:none;'" if provider != "deepseek" else "")}>
+          <div>
+            <label>DeepSeek {'模型' if not is_en else 'Model'}</label>
+            <select id="deepseek_model_select">{deepseek_model_options}</select>
+          </div>
+          <div id="deepseek_custom_wrap" {("style='display:none;'" if deepseek_in_options else "")}>
+            <label>{'自定义 DeepSeek 模型' if not is_en else 'Custom DeepSeek Model'}</label>
+            <input id="deepseek_model_custom" value="{html.escape('' if deepseek_in_options else deepseek_model)}" placeholder="deepseek-chat">
+          </div>
+        </div>
+
+        <div id="gemini_settings" class="ai-grid ai-row" {("style='display:none;'" if provider != "gemini" else "")}>
+          <div>
+            <label>Gemini {'模型' if not is_en else 'Model'}</label>
+            <select id="gemini_model_select">{gemini_model_options}</select>
+          </div>
+          <div id="gemini_custom_wrap" {("style='display:none;'" if gemini_in_options else "")}>
+            <label>{'自定义 Gemini 模型' if not is_en else 'Custom Gemini Model'}</label>
+            <input id="gemini_model_custom" value="{html.escape('' if gemini_in_options else gemini_model)}" placeholder="gemini-2.0-flash">
+          </div>
+        </div>
+
+        <div id="nvidia_settings" class="ai-grid ai-row" {("style='display:none;'" if provider != "nvidia" else "")}>
+          <div>
+            <label>NVIDIA {'模型' if not is_en else 'Model'}</label>
+            <select id="nvidia_model_select">{nvidia_model_options}</select>
+          </div>
+          <div id="nvidia_custom_wrap" {("style='display:none;'" if nvidia_in_options else "")}>
+            <label>{'自定义 NVIDIA 模型' if not is_en else 'Custom NVIDIA Model'}</label>
+            <input id="nvidia_model_custom" value="{html.escape('' if nvidia_in_options else nvidia_model)}" placeholder="meta/llama-3.1-405b-instruct">
+          </div>
+        </div>
+
+        <div id="local_settings" class="ai-grid ai-row" {("style='display:none;'" if provider != "local" else "")}>
+          <div>
+            <label>{'本地大模型地址' if not is_en else 'Local Model Endpoint'}</label>
+            <input id="local_base_url" value="{html.escape(local_base_url)}" placeholder="http://127.0.0.1:1234">
+          </div>
+          <div>
+            <label>{'本地大模型模型' if not is_en else 'Local Model Name'}</label>
+            <select id="local_model_select">{local_model_options}</select>
+          </div>
+          <div id="local_custom_wrap" {("style='display:none;'" if local_in_options else "")}>
+            <label>{'自定义本地模型' if not is_en else 'Custom Local Model'}</label>
+            <input id="local_model_custom" value="{html.escape('' if local_in_options else local_model)}" placeholder="qwen/qwen3-coder-30b">
+          </div>
+        </div>
+      </div>
+
+      <div class="ai-section">
+        <div class="ai-section-title">{'提示词设置' if not is_en else 'Prompt Settings'}</div>
+        <div class="hint">{'提示词已迁移到任务页面中的 AI 分析设置。请到“任务页面”配置并执行分析。' if not is_en else 'Prompt settings were moved to Task page under AI Analysis Settings. Please configure prompts there.'}</div>
+      </div>
+    </div>
+  </div>
+"""
+
+    page_css = """
+    body { margin:0; background:#f6f8fb; color:#0f172a; font:14px/1.5 "Segoe UI","PingFang SC",sans-serif; }
+    .wrap { max-width:980px; margin:28px auto; padding:0 16px; }
+    .card { border:1px solid #d6dce3; border-radius:12px; padding:14px; background:#fff; }
+    .ai-card { background:#f8fafc; }
+    .ai-head { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+    .ai-head h2 { margin:0; font-size:40px; line-height:1.06; font-weight:800; letter-spacing:-0.02em; color:#0f172a; }
+    .ai-brand { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; flex:0 0 28px; }
+    .ai-brand img { width:24px; height:24px; border-radius:4px; display:block; }
+    .ai-brand svg { width:24px; height:24px; display:block; }
+    .ai-section { border:1px solid #d7dee7; border-radius:10px; background:#fff; padding:12px; margin-top:12px; }
+    .ai-section-title { font-weight:800; color:#1e293b; font-size:29px; line-height:1.08; margin:0 0 8px; letter-spacing:-0.02em; }
+    .ai-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    .ai-row { margin-top:12px; }
+    .ai-card input[type=text], .ai-card input[type=password], .ai-card input[type=number], .ai-card select, .ai-card textarea {
+      width:100%; max-width:none; border:1px solid #cbd5e1; border-radius:8px; padding:8px 10px; background:#fff; box-sizing:border-box;
+    }
+    .ai-card input[type=text], .ai-card input[type=password], .ai-card input[type=number], .ai-card select { min-height:42px; }
+    .ai-card textarea { min-height:90px; }
+    .actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
+    .btn { border:1px solid #cbd5e1; border-radius:10px; background:#fff; color:#0f172a; padding:9px 14px; min-height:42px; font-weight:700; cursor:pointer; }
+    .btn:disabled { opacity:0.6; cursor:not-allowed; }
+    .hint { font-size:12px; color:#475569; margin-top:6px; white-space:pre-wrap; line-height:1.45; }
+    @media (max-width: 920px) {
+      .ai-grid { grid-template-columns:1fr; }
+      .ai-head h2 { font-size:32px; }
+      .ai-section-title { font-size:24px; }
+    }
+"""
+
+    page_script = f"""
+<script>
+  function id(v) {{ return document.getElementById(v); }}
+  function on(v, ev, fn) {{ const el = id(v); if (el) el.addEventListener(ev, fn); }}
+  const UI_LANG = {json.dumps(lang)};
+  const CAN_MODIFY = {str(can_modify).lower()};
+  const SAVED_SYSTEM_PROMPT_KEY = {json.dumps(saved_system_prompt_key, ensure_ascii=False)};
+  const SAVED_TASK_PROMPT_KEY = {json.dumps(saved_task_prompt_key, ensure_ascii=False)};
+  const SAVED_SYSTEM_PROMPT_EXTRA = {json.dumps(saved_system_prompt_extra, ensure_ascii=False)};
+  const SAVED_TASK_PROMPT_EXTRA = {json.dumps(saved_task_prompt_extra, ensure_ascii=False)};
+  let savedKeyState = {{
+    chatgpt: {str(has_chatgpt_key).lower()},
+    deepseek: {str(has_deepseek_key).lower()},
+    gemini: {str(has_gemini_key).lower()},
+    nvidia: {str(has_nvidia_key).lower()}
+  }};
+  function selectedModel(selectEl, customEl) {{
+    if (!selectEl) return "";
+    const val = (selectEl.value || "").trim();
+    if (val === "__custom__") return ((customEl && customEl.value) || "").trim();
+    return val;
+  }}
+  function syncCustomModelInput(selectId, wrapId, inputId) {{
+    const sel = id(selectId);
+    const wrap = id(wrapId);
+    if (!sel || !wrap) return;
+    wrap.style.display = sel.value === "__custom__" ? "" : "none";
+    if (sel.value !== "__custom__") {{
+      const input = id(inputId);
+      if (input) input.value = "";
+    }}
+  }}
+  function updateApiKeyState() {{
+    const savedTxt = UI_LANG === "en" ? "Saved" : "已保存";
+    const missTxt = UI_LANG === "en" ? "Not saved" : "未保存";
+    id("api_key_state").textContent = [
+      "ChatGPT Key: " + (savedKeyState.chatgpt ? savedTxt : missTxt),
+      "DeepSeek Key: " + (savedKeyState.deepseek ? savedTxt : missTxt),
+      "Gemini Key: " + (savedKeyState.gemini ? savedTxt : missTxt),
+      "NVIDIA Key: " + (savedKeyState.nvidia ? savedTxt : missTxt),
+    ].join(" | ");
+  }}
+  function setLlmMsg(msg, ok) {{
+    const el = id("llm_test_result");
+    if (!el) return;
+    el.textContent = msg || "";
+    if (ok === true) el.style.color = "#0b6e4f";
+    else if (ok === false) el.style.color = "#b91c1c";
+    else el.style.color = "#475569";
+  }}
+  function getConfigFromUI() {{
+    return {{
+      provider: (id("provider_select")?.value || "chatgpt"),
+      chatgpt_model: selectedModel(id("chatgpt_model_select"), id("chatgpt_model_custom")) || {json.dumps(DEFAULT_GPT_MODEL)},
+      deepseek_model: selectedModel(id("deepseek_model_select"), id("deepseek_model_custom")) || {json.dumps(DEFAULT_DEEPSEEK_MODEL)},
+      gemini_model: selectedModel(id("gemini_model_select"), id("gemini_model_custom")) || {json.dumps(DEFAULT_GEMINI_MODEL)},
+      nvidia_model: selectedModel(id("nvidia_model_select"), id("nvidia_model_custom")) || {json.dumps(DEFAULT_NVIDIA_MODEL)},
+      local_base_url: (id("local_base_url")?.value || {json.dumps(DEFAULT_LOCAL_BASE_URL)}).trim(),
+      local_model: selectedModel(id("local_model_select"), id("local_model_custom")) || {json.dumps(DEFAULT_LOCAL_MODEL)},
+      selected_system_prompt: SAVED_SYSTEM_PROMPT_KEY,
+      selected_task_prompt: SAVED_TASK_PROMPT_KEY,
+      system_prompt_extra: SAVED_SYSTEM_PROMPT_EXTRA,
+      task_prompt_extra: SAVED_TASK_PROMPT_EXTRA,
+    }};
+  }}
+  function updateProviderIcon() {{
+    const providerEl = id("provider_select");
+    const iconEl = id("provider_brand_inline");
+    if (!providerEl || !iconEl) return;
+    const p = (providerEl.value || "chatgpt").trim();
+    const svgDataUri = (bg, txt) => {{
+      const svg =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">' +
+        '<rect width="24" height="24" rx="6" fill="' + bg + '"/>' +
+        '<text x="12" y="15" text-anchor="middle" font-size="9" font-family="Arial, sans-serif" fill="white">' + txt + '</text>' +
+        '</svg>';
+      return "data:image/svg+xml;utf8," + encodeURIComponent(svg);
+    }};
+    const setBrand = (url, alt, title, fbBg, fbTxt) => {{
+      const fb = svgDataUri(fbBg, fbTxt);
+      iconEl.innerHTML = '<img src="' + url + '" alt="' + alt + '" title="' + title + '">';
+      const img = iconEl.querySelector("img");
+      if (img) {{
+        img.onerror = () => {{ img.onerror = null; img.src = fb; }};
+      }}
+    }};
+    if (p === "chatgpt") return setBrand("https://openai.com/favicon.ico", "OpenAI", "ChatGPT", "#10a37f", "OA");
+    if (p === "deepseek") return setBrand("https://www.deepseek.com/favicon.ico", "DeepSeek", "DeepSeek", "#2563eb", "DS");
+    if (p === "gemini") return setBrand("https://www.gstatic.com/lamda/images/gemini_sparkle_aurora_33f86dc0c0257da337c63.svg", "Gemini", "Gemini", "#3b82f6", "GM");
+    if (p === "nvidia") return setBrand("https://www.nvidia.com/favicon.ico", "NVIDIA", "NVIDIA", "#76b900", "NV");
+    setBrand("https://lmstudio.ai/favicon.ico", "Local", "Local LLM", "#334155", "LM");
+  }}
+  function updateProviderSection() {{
+    const p = id("provider_select")?.value || "chatgpt";
+    if (id("chatgpt_settings")) id("chatgpt_settings").style.display = p === "chatgpt" ? "" : "none";
+    if (id("deepseek_settings")) id("deepseek_settings").style.display = p === "deepseek" ? "" : "none";
+    if (id("gemini_settings")) id("gemini_settings").style.display = p === "gemini" ? "" : "none";
+    if (id("nvidia_settings")) id("nvidia_settings").style.display = p === "nvidia" ? "" : "none";
+    if (id("local_settings")) id("local_settings").style.display = p === "local" ? "" : "none";
+    syncCustomModelInput("chatgpt_model_select", "chatgpt_custom_wrap", "chatgpt_model_custom");
+    syncCustomModelInput("deepseek_model_select", "deepseek_custom_wrap", "deepseek_model_custom");
+    syncCustomModelInput("gemini_model_select", "gemini_custom_wrap", "gemini_model_custom");
+    syncCustomModelInput("nvidia_model_select", "nvidia_custom_wrap", "nvidia_model_custom");
+    syncCustomModelInput("local_model_select", "local_custom_wrap", "local_model_custom");
+    updateProviderIcon();
+  }}
+  async function postForm(url, formBody) {{
+    const res = await fetch(url, {{
+      method: "POST",
+      headers: {{ "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" }},
+      body: new URLSearchParams(formBody)
+    }});
+    return await res.json();
+  }}
+
+  on("save_llm_btn", "click", async () => {{
+    if (!CAN_MODIFY) {{ setLlmMsg(UI_LANG === "en" ? "Read-only role cannot save settings." : "当前角色只读，无法保存配置。", false); return; }}
+    const cfg = getConfigFromUI();
+    setLlmMsg(UI_LANG === "en" ? "Saving..." : "正在保存...", null);
+    const data = await postForm("/save_gpt_key", cfg);
+    if (!data.ok) {{ setLlmMsg((UI_LANG === "en" ? "Save failed: " : "保存失败: ") + (data.error || "unknown"), false); return; }}
+    setLlmMsg(UI_LANG === "en" ? "Configuration saved." : "模型配置已保存。", true);
+  }});
+
+  on("test_llm_btn", "click", async () => {{
+    const cfg = getConfigFromUI();
+    const fd = new FormData();
+    Object.entries(cfg).forEach(([k,v]) => fd.append(k, String(v == null ? "" : v)));
+    setLlmMsg(UI_LANG === "en" ? "Testing connection..." : "连接测试中...", null);
+    const res = await fetch("/test_llm", {{ method: "POST", body: fd }});
+    const data = await res.json();
+    if (!data.ok) {{ setLlmMsg((UI_LANG === "en" ? "Connection failed: " : "连接失败: ") + (data.error || "unknown"), false); return; }}
+    const bal = String(data.token_balance_status || "").toLowerCase();
+    if (bal === "insufficient") setLlmMsg(data.message || (UI_LANG === "en" ? "Connected but token insufficient." : "连接成功，但余额不足。"), false);
+    else setLlmMsg(data.message || (UI_LANG === "en" ? "Connection test succeeded." : "连接测试成功。"), true);
+  }});
+
+  on("import_api_key_btn", "click", async () => {{
+    if (!CAN_MODIFY) {{ setLlmMsg(UI_LANG === "en" ? "Read-only role cannot save API keys." : "当前角色只读，无法保存 API Key。", false); return; }}
+    const provider = (id("provider_select")?.value || "chatgpt").trim();
+    if (provider === "local") {{ setLlmMsg(UI_LANG === "en" ? "Local mode does not require API key." : "本地大模型不需要 API Key。", null); return; }}
+    const label = provider === "chatgpt" ? "ChatGPT" : (provider === "deepseek" ? "DeepSeek" : (provider === "gemini" ? "Gemini" : "NVIDIA"));
+    const key = window.prompt((UI_LANG === "en" ? "Enter " : "请输入 ") + label + " API Key:");
+    if (!key || !key.trim()) return;
+    const data = await postForm("/save_api_key", {{ provider: provider, api_key: key.trim() }});
+    if (!data.ok) {{ setLlmMsg((UI_LANG === "en" ? "Save failed: " : "保存失败: ") + (data.error || "unknown"), false); return; }}
+    savedKeyState.chatgpt = !!data.has_chatgpt_key;
+    savedKeyState.deepseek = !!data.has_deepseek_key;
+    savedKeyState.gemini = !!data.has_gemini_key;
+    savedKeyState.nvidia = !!data.has_nvidia_key;
+    updateApiKeyState();
+    setLlmMsg(data.overwritten ? (UI_LANG === "en" ? "API key overwritten." : "API Key 已覆盖保存。") : (UI_LANG === "en" ? "API key saved." : "API Key 保存成功。"), true);
+  }});
+
+  on("provider_select", "change", updateProviderSection);
+  on("chatgpt_model_select", "change", updateProviderSection);
+  on("deepseek_model_select", "change", updateProviderSection);
+  on("gemini_model_select", "change", updateProviderSection);
+  on("nvidia_model_select", "change", updateProviderSection);
+  on("local_model_select", "change", updateProviderSection);
+  on("local_model_custom", "input", updateProviderSection);
+  updateApiKeyState();
+  updateProviderSection();
+</script>
+"""
+
+    return f"""<!DOCTYPE html>
+<html lang="{ 'en' if is_en else 'zh-CN' }">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{html.escape(title)}</title>
+  <style>
+    {build_app_header_css()}
+    {page_css}
+  </style>
+</head>
+<body>
+{body_html}
+{page_script}
+</body>
+</html>
+"""
+
+
 def start_job(
     username: str,
     password: str,
@@ -4466,7 +4879,31 @@ def start_job(
     jump_password: str = "",
     smc_command: str = "smc server toc {jump_host}",
 ) -> str:
+    ensure_task_store()
     job_id = uuid4().hex[:12]
+    device_list = [x.strip() for x in str(devices or "").split(";") if x.strip()]
+    custom_items = parse_ordered_items(custom_commands)
+    checks_list = [x.strip() for x in list(selected or []) if str(x).strip()] + custom_items
+    if TASK_STORE:
+        try:
+            TASK_STORE.create_task(
+                job_id,
+                username=username,
+                devices=device_list,
+                checks=checks_list,
+                options={
+                    "execution_mode": execution_mode,
+                    "parallel_workers": parallel_workers,
+                    "connect_retry": connect_retry,
+                    "jump_enabled": bool(jump_enabled),
+                    "jump_mode": jump_mode,
+                    "jump_host": jump_host,
+                    "jump_port": str(jump_port or "22"),
+                    "debug_mode": bool(debug_mode),
+                },
+            )
+        except Exception:
+            pass
     with JOBS_LOCK:
         JOBS[job_id] = {"status": "running", "output": "", "exit_code": None, "report_json": "", "report_csv": ""}
 
@@ -4490,7 +4927,6 @@ def start_job(
                 map_tmp = tmp.name
 
             device_input = normalize_inline_input(devices)
-            custom_items = parse_ordered_items(custom_commands)
             checks_input = normalize_inline_input("\n".join(selected + custom_items))
             mode_value = jump_mode if jump_mode in {"direct", "ssh", "smc"} else "direct"
             stdin_lines = [
@@ -4565,12 +5001,34 @@ def start_job(
                 if job_id in JOBS:
                     JOBS[job_id]["exit_code"] = exit_code
                     JOBS[job_id]["status"] = "success" if exit_code == 0 else "error"
+                    if TASK_STORE:
+                        try:
+                            TASK_STORE.update_task(
+                                job_id,
+                                status=JOBS[job_id]["status"],
+                                exit_code=exit_code,
+                                report_json=str(JOBS[job_id].get("report_json", "") or ""),
+                                report_csv=str(JOBS[job_id].get("report_csv", "") or ""),
+                                output_text=str(JOBS[job_id].get("output", "") or "")[-200000:],
+                            )
+                        except Exception:
+                            pass
         except Exception as exc:
             _append(f"\n[web_runner_error] {exc}\n")
             with JOBS_LOCK:
                 if job_id in JOBS:
                     JOBS[job_id]["exit_code"] = -1
                     JOBS[job_id]["status"] = "error"
+                    if TASK_STORE:
+                        try:
+                            TASK_STORE.update_task(
+                                job_id,
+                                status="error",
+                                exit_code=-1,
+                                output_text=str(JOBS[job_id].get("output", "") or "")[-200000:],
+                            )
+                        except Exception:
+                            pass
         finally:
             if map_tmp and os.path.exists(map_tmp):
                 os.remove(map_tmp)
@@ -4635,6 +5093,41 @@ class Handler(BaseHTTPRequestHandler):
                     can_modify=user_can_modify(user),
                     auth_username=str(user.get("username", "")),
                     auth_role=str(user.get("role", "user")),
+                )
+            )
+            return
+        if parsed.path == "/tasks":
+            self._respond_html(
+                build_tasks_page(
+                    lang=lang,
+                    auth_username=str(user.get("username", "")),
+                    auth_role=str(user.get("role", "user")),
+                )
+            )
+            return
+        if parsed.path.startswith("/tasks/"):
+            task_id = (parsed.path.split("/tasks/", 1)[1] or "").strip()
+            if not task_id:
+                self.send_error(400, "Missing task id")
+                return
+            self._respond_html(
+                build_job_html(
+                    task_id,
+                    history_mode=False,
+                    lang=lang,
+                    can_modify=user_can_modify(user),
+                    auth_username=str(user.get("username", "")),
+                    auth_role=str(user.get("role", "user")),
+                )
+            )
+            return
+        if parsed.path == "/ai/settings":
+            self._respond_html(
+                build_ai_settings_page(
+                    lang=lang,
+                    auth_username=str(user.get("username", "")),
+                    auth_role=str(user.get("role", "user")),
+                    can_modify=user_can_modify(user),
                 )
             )
             return
@@ -4716,14 +5209,25 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(400, "Missing job id")
             return
 
+        ensure_task_store()
         with JOBS_LOCK:
             job = JOBS.get(job_id)
             if not job:
-                payload = {
-                    "status": "error",
-                    "exit_code": -1,
-                    "output": "Task not found or expired" if normalize_lang(lang) == "en" else "任务不存在或已过期",
-                }
+                row = TASK_STORE.get_task(job_id) if TASK_STORE else None
+                if row:
+                    payload = {
+                        "status": row.get("status", "unknown"),
+                        "exit_code": row.get("exit_code"),
+                        "output": row.get("output", "") or "",
+                        "report_json": row.get("report_json", "") or "",
+                        "report_csv": row.get("report_csv", "") or "",
+                    }
+                else:
+                    payload = {
+                        "status": "error",
+                        "exit_code": -1,
+                        "output": "Task not found or expired" if normalize_lang(lang) == "en" else "任务不存在或已过期",
+                    }
             else:
                 payload = {
                     "status": job.get("status", "error"),
