@@ -272,6 +272,10 @@ class HuaweiSwitchManager:
         prompt_pattern = re.compile(r"(?m)^([A-Za-z0-9_.-]+(?:\([^)]+\))?[>#]|<[^>\r\n]+>|\[[^\]\r\n]+\])\s*$")
         jump_prompt_pattern = re.compile(r"(?m)^.*[@].*[$#]\s*$")
         yes_pattern = re.compile(r"\(yes/no(?:/\[fingerprint\])?\)\??", re.IGNORECASE)
+        token_retry_pattern = re.compile(
+            r"try\s+login\s+with\s+the\s+old\s+token\s*\(y/n\)\s*\[default:\s*n\]",
+            re.IGNORECASE,
+        )
         pwd_pattern = re.compile(r"(enter\s+password|password)\s*:\s*$", re.IGNORECASE | re.MULTILINE)
         fail_pattern = re.compile(
             r"(permission denied|connection timed out|could not resolve|connection refused|no route to host|closed by remote host)",
@@ -295,6 +299,11 @@ class HuaweiSwitchManager:
             debug_print(f"[SMC][jump] {tail}")
             if fail_pattern.search(normalized):
                 raise RuntimeError("SMC jump command failed before device login")
+            if token_retry_pattern.search(normalized):
+                debug_print("[SMC] old-token prompt detected, sending 'y'")
+                self._smc_send("y\n")
+                jump_buffer = ""
+                continue
             if yes_pattern.search(normalized):
                 self._smc_send("yes\n")
                 continue
@@ -322,6 +331,11 @@ class HuaweiSwitchManager:
             debug_print(f"[SMC][device] {normalized[-800:]}")
             if fail_pattern.search(normalized):
                 raise RuntimeError("SMC jump login failed while ssh to target device")
+            if token_retry_pattern.search(normalized):
+                debug_print("[SMC] old-token prompt detected during device login, sending 'y'")
+                self._smc_send("y\n")
+                buffer = ""
+                continue
             if yes_pattern.search(normalized):
                 self._smc_send("yes\n")
                 continue

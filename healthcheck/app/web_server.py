@@ -4,7 +4,6 @@
 import cgi
 import base64
 import html
-import hashlib
 import json
 import mimetypes
 import os
@@ -27,7 +26,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib import error as urlerror
 from urllib import request as urlrequest
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 try:
@@ -50,9 +49,6 @@ COMMAND_MAP_PATH = PROJECT_ROOT / "config" / "command_map.yaml"
 CHECK_TEMPLATES_DIR = PROJECT_ROOT / "check_templates"
 CHECK_DEFAULT_TEMPLATES_DIR = CHECK_TEMPLATES_DIR / "default"
 CHECK_CUSTOM_TEMPLATES_DIR = CHECK_TEMPLATES_DIR / "custom"
-AUTH_DB_PATH = PROJECT_ROOT / "state" / "auth_db.json"
-SESSION_TTL_SECONDS = 12 * 60 * 60
-SESSION_COOKIE_NAME = "hc_session"
 SYSTEM_DEFAULT_PROMPTS_DIR = prompt_service.SYSTEM_DEFAULT_PROMPTS_DIR
 SYSTEM_CUSTOM_PROMPTS_DIR = prompt_service.SYSTEM_CUSTOM_PROMPTS_DIR
 TASK_DEFAULT_PROMPTS_DIR = prompt_service.TASK_DEFAULT_PROMPTS_DIR
@@ -108,9 +104,7 @@ ANALYSIS_JOBS_LOCK = threading.Lock()
 ANALYSIS_STATUS_STORE: Optional[status_service.AnalysisStatusStore] = None
 LLM_ADAPTER: Optional[llm_adapter.LLMAdapter] = None
 ANALYSIS_SERVICE: Optional[analysis_service.AnalysisService] = None
-SESSIONS: Dict[str, Dict[str, str]] = {}
-SESSIONS_LOCK = threading.Lock()
-DOC_VERSION = "V2.3"
+DOC_VERSION = "V2.4"
 DOC_VERSION_RULE = "大改动升主版本（如 V2.0），小更新升次版本（如 V1.14 -> V1.15）"
 SUPPORTED_LANGS = {"zh", "en"}
 PROMPT_NAME_EN = {
@@ -147,6 +141,112 @@ def normalize_lang(value: str) -> str:
 def with_lang(path: str, lang: str) -> str:
     separator = "&" if "?" in path else "?"
     return f"{path}{separator}lang={normalize_lang(lang)}"
+
+
+def build_app_header_css() -> str:
+    return """
+    .app-topbar {
+      background:#0a0c10; color:#fff; display:flex; justify-content:space-between; align-items:center;
+      padding:8px 18px; gap:14px;
+      position: relative;
+      min-height: 56px;
+    }
+    .app-brand { display:flex; align-items:center; gap:12px; min-width:0; }
+    .app-logo { display:inline-flex; align-items:center; gap:10px; background:#fff; border-radius:10px; padding:2px 8px 2px 2px; color:#1e2b8f; font-weight:700; }
+    .app-logo-mark {
+      width:42px; height:42px; border-radius:999px; display:inline-block;
+      background: linear-gradient(180deg, #f35a31 0 16%, #f28a2a 16% 32%, #10b981 32% 50%, #22d3ee 50% 68%, #2563eb 68% 84%, #1e3a8a 84% 100%);
+    }
+    .app-logo-text { display:flex; flex-direction:column; line-height:1.1; }
+    .app-logo-sea { font-size:20px; font-weight:800; }
+    .app-logo-sub { font-size:9px; opacity:0.9; }
+    .app-brand-name { font-size:21px; font-weight:700; color:#fff; white-space:nowrap; }
+    .app-top-links { display:flex; align-items:center; gap:8px; font-size:14px; color:#e5e7eb; white-space:nowrap; }
+    .app-top-links a, .app-top-links button { color:#e5e7eb; text-decoration:none; }
+    .app-circle-btn {
+      width: 28px;
+      height: 28px;
+      min-width: 28px;
+      border-radius: 999px;
+      border: 1px solid #8c96a8;
+      background: transparent !important;
+      color: #e5e7eb !important;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    .app-circle-btn:hover { background: #1f2937; }
+    .app-mainnav {
+      background:#fff; border-bottom:1px solid #d6dde8; display:flex; justify-content:space-between;
+      align-items:center; min-height:58px; padding:0 18px; gap:10px;
+    }
+    .app-title { font-size:22px; font-weight:700; color:#303643; white-space:nowrap; }
+    .app-menu { display:inline-flex; align-items:center; gap:16px; }
+    .app-menu a {
+      color:#374151; text-decoration:none; font-size:15px; font-weight:600;
+      padding:18px 0 14px; border-bottom:3px solid transparent;
+    }
+    .app-menu a.active { color:#111827; border-bottom-color:#d43a2f; }
+    @media (max-width: 740px) {
+      .app-topbar, .app-mainnav { padding-left: 12px; padding-right: 12px; }
+      .app-brand-name { font-size: 17px; }
+      .app-logo-sea { font-size: 16px; }
+      .app-menu a { font-size: 14px; padding: 10px 0 8px; }
+      .app-title { font-size: 18px; }
+      .app-top-links { display:none; }
+    }
+"""
+
+
+def build_app_header_html(lang: str, active_menu: str = "runner") -> str:
+    lang = normalize_lang(lang)
+    home_link = with_lang("/", lang)
+    guide_link = with_lang("/guide", lang)
+    lang_toggle = "ZH" if lang == "en" else "EN"
+    return f"""
+  <div class="app-topbar">
+    <div class="app-brand">
+      <div class="app-logo">
+        <span class="app-logo-mark"></span>
+        <span class="app-logo-text">
+          <span class="app-logo-sea">sea</span>
+          <span class="app-logo-sub">connecting the dots</span>
+        </span>
+      </div>
+      <div class="app-brand-name">SEA NOC</div>
+    </div>
+    <div class="app-top-links">
+      <a class="app-circle-btn" href="{guide_link}" title="View Docs">?</a>
+      <button id="app_lang_toggle_btn" class="app-circle-btn" type="button" title="Switch Language">{lang_toggle}</button>
+    </div>
+  </div>
+  <div class="app-mainnav">
+    <div class="app-title">AIOps - HealthCheck Runner</div>
+    <div class="app-menu">
+      <a href="{home_link}" class="{'active' if active_menu == 'runner' else ''}">Runner</a>
+      <a href="{guide_link}" class="{'active' if active_menu == 'docs' else ''}">Docs</a>
+    </div>
+  </div>
+  <script>
+    (function () {{
+      const btn = document.getElementById('app_lang_toggle_btn');
+      if (!btn) return;
+      btn.addEventListener('click', () => {{
+        const url = new URL(window.location.href);
+        const cur = (url.searchParams.get('lang') || 'zh').toLowerCase();
+        const target = cur.startsWith('en') ? 'zh' : 'en';
+        url.searchParams.set('lang', target);
+        window.location.href = url.toString();
+      }});
+    }})();
+  </script>
+"""
 
 
 def display_prompt_name(name: str, lang: str) -> str:
@@ -302,8 +402,8 @@ def localize_html_page(page_html: str, lang: str) -> str:
         ("导入历史报告文件（任意格式）", "Import History Report File (Any Format)"),
         ("导入History Report File (Any Format)", "Import History Report File (Any Format)"),
         ("连接测试", "Connection Test"),
-        ("模型连接测试", "Model Connection Test"),
-        ("模型连接测试结果将在此显示。", "Model connection test result will be shown here."),
+        ("模型连接测试", "Test Connection"),
+        ("模型连接测试结果将在此显示。", "Connection test result will be shown here."),
         ("AI 分析", "AI Analysis"),
         ("保存分析报告", "Save Analysis Report"),
         ("分析结果为空，无法保存。", "Analysis result is empty and cannot be saved."),
@@ -482,112 +582,8 @@ def _now_ts() -> int:
     return int(time.time())
 
 
-def _hash_password(raw: str) -> str:
-    return hashlib.sha256((raw or "").encode("utf-8")).hexdigest()
-
-
-def default_auth_db() -> Dict:
-    return {
-        "roles": {
-            "admin": {"can_modify": True, "manage_users": True, "manage_roles": True},
-            "user": {"can_modify": False, "manage_users": False, "manage_roles": False},
-        },
-        "users": {
-            "admin": {"password_hash": _hash_password("zhangwei"), "role": "admin"},
-        },
-    }
-
-
-def load_auth_db() -> Dict:
-    if not AUTH_DB_PATH.is_file():
-        db = default_auth_db()
-        save_auth_db(db)
-        return db
-    try:
-        db = json.loads(AUTH_DB_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        db = default_auth_db()
-        save_auth_db(db)
-        return db
-    if not isinstance(db, dict):
-        db = default_auth_db()
-    roles = db.get("roles", {})
-    users = db.get("users", {})
-    if not isinstance(roles, dict):
-        roles = {}
-    if not isinstance(users, dict):
-        users = {}
-    if "admin" not in roles:
-        roles["admin"] = {"can_modify": True, "manage_users": True, "manage_roles": True}
-    if "user" not in roles:
-        roles["user"] = {"can_modify": False, "manage_users": False, "manage_roles": False}
-    if "admin" not in users:
-        users["admin"] = {"password_hash": _hash_password("zhangwei"), "role": "admin"}
-    db["roles"] = roles
-    db["users"] = users
-    return db
-
-
-def save_auth_db(db: Dict) -> None:
-    AUTH_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    AUTH_DB_PATH.write_text(json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def ensure_auth_db() -> None:
-    db = load_auth_db()
-    save_auth_db(db)
-
-
 def user_can_modify(user: Dict) -> bool:
     return bool(user and user.get("can_modify"))
-
-
-def user_is_admin(user: Dict) -> bool:
-    return bool(user and user.get("role") == "admin")
-
-
-def create_session(username: str, role: str, can_modify: bool) -> str:
-    token = uuid4().hex
-    with SESSIONS_LOCK:
-        SESSIONS[token] = {
-            "username": username,
-            "role": role,
-            "can_modify": "1" if can_modify else "0",
-            "expires_at": str(_now_ts() + SESSION_TTL_SECONDS),
-        }
-    return token
-
-
-def get_session_user(token: str) -> Dict:
-    if not token:
-        return {}
-    with SESSIONS_LOCK:
-        item = SESSIONS.get(token)
-        if not item:
-            return {}
-        try:
-            exp = int(item.get("expires_at", "0") or "0")
-        except Exception:
-            exp = 0
-        if exp <= _now_ts():
-            SESSIONS.pop(token, None)
-            return {}
-        return {
-            "username": item.get("username", ""),
-            "role": item.get("role", "user"),
-            "can_modify": item.get("can_modify", "0") == "1",
-        }
-
-
-def delete_session(token: str) -> None:
-    if not token:
-        return
-    with SESSIONS_LOCK:
-        SESSIONS.pop(token, None)
-
-
-def admin_msg_path(message: str) -> str:
-    return f"/admin?msg={quote(str(message or ''), safe='')}"
 
 
 def parse_check_items(raw: str) -> List[str]:
@@ -1010,17 +1006,6 @@ def build_html(
         ]
     )
     modify_disabled = "" if can_modify else "disabled"
-    user_entry_html = (
-        f'<a class="help-link" href="{with_lang("/admin", lang)}" title="用户管理" '
-        f'style="text-decoration:none;width:auto;border-radius:8px;padding:0 10px;font-size:12px;">'
-        f'{html.escape(auth_username or "guest")}({html.escape(auth_role)})</a>'
-        if auth_role == "admin"
-        else (
-            f'<span class="help-link" title="当前用户" '
-            f'style="text-decoration:none;width:auto;border-radius:8px;padding:0 10px;font-size:12px;">'
-            f'{html.escape(auth_username or "guest")}({html.escape(auth_role)})</span>'
-        )
-    )
 
     status_block = ""
     if status:
@@ -1276,11 +1261,13 @@ def build_html(
       opacity: 0;
       pointer-events: none;
     }}
+    {build_app_header_css()}
     @media (max-width: 900px) {{ .grid-3 {{ grid-template-columns: 1fr; }} }}
     @media (max-width: 740px) {{ .grid {{ grid-template-columns: 1fr; }} }}
   </style>
 </head>
 <body>
+  {build_app_header_html(lang, "runner")}
   <div class="wrap">
     <div class="card">
       <div class="topbar">
@@ -1289,10 +1276,8 @@ def build_html(
           <p class="sub">输入设备地址、勾选检查项、上传 command_map 文件后，点击执行 `healthcheck.py`。</p>
         </div>
         <div class="top-actions">
-          {user_entry_html}
           <a class="help-link" href="{with_lang('/guide', lang)}" title="查看说明文档">?</a>
           <button id="lang_toggle_btn" class="help-link" type="button" title="切换语言">{'EN' if lang == 'zh' else '中'}</button>
-          <a class="help-link" href="{with_lang('/logout', lang)}" title="退出登录" style="text-decoration:none;width:auto;border-radius:8px;padding:0 10px;font-size:12px;">退出</a>
         </div>
       </div>
       {status_block}
@@ -2150,17 +2135,6 @@ def build_job_html(
     )
     output_init_text = "请在页面底部上传历史报告文件并点击 AI 分析。" if history_mode else "正在启动任务，请稍候..."
     modify_disabled = "" if can_modify else "disabled"
-    user_entry_html = (
-        f'<a class="help-link" href="{with_lang("/admin", lang)}" title="用户管理" '
-        f'style="text-decoration:none;width:auto;border-radius:8px;padding:0 10px;font-size:12px;">'
-        f'{html.escape(auth_username or "guest")}({html.escape(auth_role)})</a>'
-        if auth_role == "admin"
-        else (
-            f'<span class="help-link" title="当前用户" '
-            f'style="text-decoration:none;width:auto;border-radius:8px;padding:0 10px;font-size:12px;">'
-            f'{html.escape(auth_username or "guest")}({html.escape(auth_role)})</span>'
-        )
-    )
     _html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -2356,6 +2330,7 @@ def build_job_html(
       background: #0b6e4f;
       transition: width 0.25s ease;
     }}
+    {build_app_header_css()}
     .ai-head {{
       display: flex;
       align-items: center;
@@ -2529,15 +2504,14 @@ def build_job_html(
   </style>
 </head>
 <body>
+  {build_app_header_html(lang, "runner")}
   <div class="wrap">
     <div class="card">
       <div class="head">
         <h2>巡检任务状态</h2>
         <div class="head-right">
-          {user_entry_html}
           <a class="help-link" href="{with_lang('/guide', lang)}" title="查看说明文档">?</a>
           <button id="lang_toggle_btn" class="help-link" type="button" title="切换语言">{'EN' if lang == 'zh' else '中'}</button>
-          <a class="help-link" href="{with_lang('/logout', lang)}" title="退出登录" style="text-decoration:none;width:auto;border-radius:8px;padding:0 10px;font-size:12px;">退出</a>
           <span id="state" class="tag {state_class}">{state_text}</span>
         </div>
       </div>
@@ -4039,9 +4013,11 @@ def build_guide_html(lang: str = "zh") -> str:
       .layout { grid-template-columns: 1fr; }
       .toc { position: static; max-height: none; }
     }
+    {build_app_header_css()}
   </style>
 </head>
 <body>
+  {build_app_header_html(lang, "docs")}
   <div class="wrap">
     <div class="head">
       <div>
@@ -4182,6 +4158,8 @@ python -m pip install -r requirements.txt
 </body>
 </html>"""
     _html = _html.replace("{with_lang('/guide', lang)}", with_lang("/guide", lang))
+    _html = _html.replace("{build_app_header_css()}", build_app_header_css())
+    _html = _html.replace("{build_app_header_html(lang, \"docs\")}", build_app_header_html(lang, "docs"))
     _html = _html.replace("__DOC_VERSION__", version_line)
     _html = _html.replace("__DOC_RULE__", version_rule)
     return localize_html_page(_html, lang)
@@ -4224,9 +4202,11 @@ def build_guide_index_html(lang: str = "zh") -> str:
     .card p { margin: 0 0 10px; color: var(--muted); }
     .go { display: inline-block; text-decoration: none; color: #fff; background: var(--brand); border-radius: 8px; padding: 8px 12px; font-weight: 700; }
     @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+    {build_app_header_css()}
   </style>
 </head>
 <body>
+  {build_app_header_html(lang, "docs")}
   <div class="wrap">
     <div class="head">
       <div>
@@ -4257,6 +4237,8 @@ def build_guide_index_html(lang: str = "zh") -> str:
 </body>
 </html>"""
     _html = _html.replace("{with_lang('/', lang)}", with_lang("/", lang))
+    _html = _html.replace("{build_app_header_css()}", build_app_header_css())
+    _html = _html.replace("{build_app_header_html(lang, \"docs\")}", build_app_header_html(lang, "docs"))
     _html = _html.replace("__DOC_VERSION__", version_line)
     _html = _html.replace("__DOC_RULE__", version_rule)
     return localize_html_page(_html, lang)
@@ -4304,9 +4286,11 @@ def build_user_guide_html(lang: str = "zh") -> str:
     .content ul { margin: 6px 0 10px 18px; color: var(--muted); }
     .code { border: 1px solid var(--line); border-radius: 8px; background: #f8fafc; padding: 10px; font-family: Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; color: #0f172a; }
     @media (max-width: 920px) { .layout { grid-template-columns: 1fr; } .toc { position: static; max-height: none; } }
+    {build_app_header_css()}
   </style>
 </head>
 <body>
+  {build_app_header_html(lang, "docs")}
   <div class="wrap">
     <div class="head">
       <div>
@@ -4413,242 +4397,10 @@ python -m pip install -r requirements.txt
 </body>
 </html>"""
     _html = _html.replace("{with_lang('/guide', lang)}", with_lang("/guide", lang))
+    _html = _html.replace("{build_app_header_css()}", build_app_header_css())
+    _html = _html.replace("{build_app_header_html(lang, \"docs\")}", build_app_header_html(lang, "docs"))
     _html = _html.replace("__DOC_VERSION__", version_line)
     _html = _html.replace("__DOC_RULE__", version_rule)
-    return localize_html_page(_html, lang)
-
-
-def build_login_html(status: str = "", next_path: str = "/", lang: str = "zh") -> str:
-    lang = normalize_lang(lang)
-    status_html = f'<div class="status">{html.escape(status)}</div>' if status else ""
-    _html = f"""<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>登录</title>
-  <style>
-    body {{
-      margin: 0;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font: 14px/1.5 "Helvetica Neue","PingFang SC",sans-serif;
-      background: #0f6fb4;
-      color: #0f172a;
-    }}
-    .wrap {{ width: 100%; max-width: 560px; padding: 16px; }}
-    .card {{
-      background: #ffffff;
-      border: 1px solid #d6dce3;
-      border-radius: 6px;
-      padding: 28px 26px 20px;
-      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
-    }}
-    h1 {{
-      margin: 0 0 16px;
-      font-size: 40px;
-      line-height: 1.15;
-      color: #0f6fb4;
-      text-align: center;
-      font-weight: 700;
-    }}
-    .sub {{
-      margin: 0 0 16px;
-      text-align: center;
-      color: #475569;
-      font-size: 13px;
-    }}
-    label {{
-      display: block;
-      margin: 8px auto 6px;
-      font-weight: 700;
-      width: 100%;
-      max-width: 300px;
-    }}
-    input {{
-      width: 100%;
-      max-width: 300px;
-      border: 1px solid #cbd5e1;
-      border-radius: 2px;
-      padding: 10px;
-      display: block;
-      margin: 0 auto;
-    }}
-    button {{
-      margin: 16px auto 0;
-      border: 0;
-      border-radius: 2px;
-      padding: 10px 14px;
-      background: #2e79bf;
-      color: #fff;
-      font-weight: 700;
-      cursor: pointer;
-      display: block;
-      width: auto;
-      min-width: 140px;
-      font-size: 22px;
-    }}
-    .status {{
-      margin: 0 auto 12px;
-      padding: 8px 10px;
-      border: 1px solid #fecaca;
-      border-radius: 6px;
-      background: #fef2f2;
-      color: #991b1b;
-      width: 100%;
-      max-width: 300px;
-    }}
-    .tips {{
-      margin: 12px auto 0;
-      color: #475569;
-      font-size: 12px;
-      text-align: center;
-      width: 100%;
-      max-width: 300px;
-    }}
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <div class="card">
-      <h1>HealthCheck</h1>
-      <div class="sub">Sign In</div>
-      {status_html}
-      <form method="post" action="/login" autocomplete="off">
-        <input type="hidden" name="lang" value="{lang}">
-        <input type="hidden" name="next" value="{html.escape(next_path)}">
-        <label>用户名</label>
-        <input name="username" type="text" autocomplete="off" required>
-        <label>密码</label>
-        <input name="password" type="password" autocomplete="new-password" required>
-        <button type="submit">登录</button>
-      </form>
-      <div class="tips">如无账号，请联系管理员分配。</div>
-    </div>
-  </div>
-</body>
-</html>"""
-    return localize_html_page(_html, lang)
-
-
-def build_admin_html(current_user: Dict, status: str = "", lang: str = "zh") -> str:
-    lang = normalize_lang(lang)
-    db = load_auth_db()
-    roles = db.get("roles", {})
-    users = db.get("users", {})
-    role_rows = "".join(
-        [
-            "<tr>"
-            f"<td>{html.escape(rn)}</td>"
-            f"<td>{'Y' if bool((rv or {}).get('can_modify')) else 'N'}</td>"
-            f"<td>{'Y' if bool((rv or {}).get('manage_users')) else 'N'}</td>"
-            f"<td>{'Y' if bool((rv or {}).get('manage_roles')) else 'N'}</td>"
-            "</tr>"
-            for rn, rv in sorted(roles.items(), key=lambda x: x[0])
-        ]
-    )
-    user_rows = "".join(
-        [
-            "<tr>"
-            f"<td>{html.escape(un)}</td>"
-            f"<td>{html.escape(str((uv or {}).get('role', 'user')))}</td>"
-            "</tr>"
-            for un, uv in sorted(users.items(), key=lambda x: x[0])
-        ]
-    )
-    role_options = "".join([f'<option value="{html.escape(rn)}">{html.escape(rn)}</option>' for rn in sorted(roles.keys())])
-    status_html = f'<div class="status">{html.escape(status)}</div>' if status else ""
-    _html = f"""<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>管理后台</title>
-  <style>
-    body {{ margin:0; background:#f1f5f9; color:#0f172a; font:14px/1.5 "Helvetica Neue","PingFang SC",sans-serif; }}
-    .wrap {{ max-width:980px; margin:20px auto; padding:0 14px; }}
-    .card {{ background:#fff; border:1px solid #d6dce3; border-radius:12px; padding:14px; margin-bottom:12px; }}
-    .head {{ display:flex; justify-content:space-between; align-items:center; gap:8px; }}
-    .actions a {{ display:inline-block; margin-left:8px; text-decoration:none; background:#0b6e4f; color:#fff; border-radius:8px; padding:7px 10px; font-weight:700; }}
-    table {{ width:100%; border-collapse:collapse; }}
-    th,td {{ border-bottom:1px solid #e2e8f0; padding:6px 8px; text-align:left; }}
-    .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start; }}
-    @media (max-width: 920px) {{ .grid {{ grid-template-columns:1fr; }} }}
-    .form-block {{ max-width: 460px; }}
-    .form-row {{ margin-bottom: 8px; }}
-    .check-row {{ display:flex; align-items:center; gap:8px; margin:6px 0; }}
-    input[type="text"], input[type="password"], select {{
-      width: 100%;
-      max-width: 420px;
-      border: 1px solid #cbd5e1;
-      border-radius: 8px;
-      padding: 8px;
-    }}
-    input[type="checkbox"] {{ width:auto; max-width:none; }}
-    button {{ margin-top:8px; border:0; border-radius:8px; padding:8px 12px; background:#0b6e4f; color:#fff; font-weight:700; cursor:pointer; }}
-    .status {{ margin:8px 0; padding:8px 10px; border:1px solid #bbf7d0; border-radius:8px; background:#f0fdf4; color:#166534; }}
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <div class="card head">
-      <div>用户管理 | 当前用户：{html.escape(current_user.get("username", ""))}({html.escape(current_user.get("role", ""))})</div>
-      <div class="actions">
-        <a href="{with_lang('/', lang)}">首页</a>
-        <a href="{with_lang('/logout', lang)}">退出</a>
-      </div>
-    </div>
-    <div class="card">
-      {status_html}
-      <div class="grid">
-        <div>
-          <h3>新增角色</h3>
-          <form method="post" action="/admin/create_role" class="form-block">
-            <input type="hidden" name="lang" value="{lang}">
-            <div class="form-row">
-              <label>角色名</label>
-              <input name="role_name" type="text" required>
-            </div>
-            <label class="check-row"><input type="checkbox" name="can_modify" value="1"> 可修改配置/模板</label>
-            <label class="check-row"><input type="checkbox" name="manage_users" value="1"> 可管理用户</label>
-            <label class="check-row"><input type="checkbox" name="manage_roles" value="1"> 可管理角色</label>
-            <button type="submit">创建角色</button>
-          </form>
-        </div>
-        <div>
-          <h3>新增用户</h3>
-          <form method="post" action="/admin/create_user" class="form-block">
-            <input type="hidden" name="lang" value="{lang}">
-            <div class="form-row">
-              <label>用户名</label>
-              <input name="username" type="text" required>
-            </div>
-            <div class="form-row">
-              <label>密码</label>
-              <input name="password" type="password" required>
-            </div>
-            <div class="form-row">
-              <label>角色</label>
-              <select name="role">{role_options}</select>
-            </div>
-            <button type="submit">创建用户</button>
-          </form>
-        </div>
-      </div>
-    </div>
-    <div class="card">
-      <h3>角色列表</h3>
-      <table><thead><tr><th>角色</th><th>可修改</th><th>管理用户</th><th>管理角色</th></tr></thead><tbody>{role_rows}</tbody></table>
-    </div>
-    <div class="card">
-      <h3>用户列表</h3>
-      <table><thead><tr><th>用户名</th><th>角色</th></tr></thead><tbody>{user_rows}</tbody></table>
-    </div>
-  </div>
-</body>
-</html>"""
     return localize_html_page(_html, lang)
 
 
@@ -4840,30 +4592,19 @@ class Handler(BaseHTTPRequestHandler):
         return out
 
     def _current_user(self) -> Dict:
-        token = self._parse_cookie().get(SESSION_COOKIE_NAME, "")
-        return get_session_user(token)
+        return {"username": "", "role": "user", "can_modify": True}
 
-    def _redirect(self, path: str, set_cookie: str = "", clear_cookie: bool = False) -> None:
+    def _redirect(self, path: str, set_cookie: str = "") -> None:
         self.send_response(303)
-        if clear_cookie:
-            self.send_header("Set-Cookie", f"{SESSION_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
-        elif set_cookie:
+        if set_cookie:
             self.send_header("Set-Cookie", set_cookie)
         self.send_header("Location", path)
         self.end_headers()
 
     def _require_login(self, lang: str) -> Dict:
-        user = self._current_user()
-        if user and user.get("username"):
-            return user
-        next_path = quote(self.path if self.path.startswith("/") else "/", safe="/?=&")
-        self._redirect(with_lang(f"/login?next={next_path}", lang))
-        return {}
+        return self._current_user()
 
     def _require_admin(self, lang: str) -> Dict:
-        user = self._current_user()
-        if user and user.get("role") == "admin":
-            return user
         self._redirect(with_lang("/", lang))
         return {}
 
@@ -4871,27 +4612,14 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         lang = normalize_lang((query.get("lang", [""])[0] or "").strip())
-        if parsed.path == "/login":
-            next_path = unquote((query.get("next", ["/"])[0] or "/").strip() or "/")
-            status = (query.get("msg", [""])[0] or "").strip()
-            self._respond_html(build_login_html(status=status, next_path=next_path, lang=lang))
-            return
         if parsed.path == "/logout":
-            token = self._parse_cookie().get(SESSION_COOKIE_NAME, "")
-            delete_session(token)
-            self._redirect(with_lang("/login", lang), clear_cookie=True)
+            self._redirect(with_lang("/", lang))
             return
-        if parsed.path == "/admin":
-            user = self._require_admin(lang)
-            if not user:
-                return
-            status = (query.get("msg", [""])[0] or "").strip()
-            self._respond_html(build_admin_html(user, status=status, lang=lang))
+        if parsed.path in {"/login", "/admin"}:
+            self._redirect(with_lang("/", lang))
             return
 
-        user = self._require_login(lang)
-        if not user:
-            return
+        user = self._current_user()
         if parsed.path == "/":
             templates = merged_check_template_catalog()
             default_template = DEFAULT_CHECK_TEMPLATE_NAME if DEFAULT_CHECK_TEMPLATE_NAME in templates else next(iter(templates.keys()), "")
@@ -5080,80 +4808,6 @@ class Handler(BaseHTTPRequestHandler):
             large_report_mode=large_report_mode,
             large_report_chunk_items=large_report_chunk_items,
         )
-
-    def _handle_login(self, form: cgi.FieldStorage) -> None:
-        username = (form.getvalue("username") or "").strip()
-        password = (form.getvalue("password") or "").strip()
-        lang = normalize_lang((form.getvalue("lang") or "zh").strip())
-        next_path = (form.getvalue("next") or "/").strip() or "/"
-        if not next_path.startswith("/"):
-            next_path = "/"
-        db = load_auth_db()
-        users = db.get("users", {}) if isinstance(db.get("users", {}), dict) else {}
-        roles = db.get("roles", {}) if isinstance(db.get("roles", {}), dict) else {}
-        user_item = users.get(username) if isinstance(users, dict) else None
-        if not isinstance(user_item, dict):
-            self._respond_html(build_login_html(status="用户名或密码错误", next_path=next_path, lang=lang))
-            return
-        if str(user_item.get("password_hash", "")) != _hash_password(password):
-            self._respond_html(build_login_html(status="用户名或密码错误", next_path=next_path, lang=lang))
-            return
-        role = str(user_item.get("role", "user") or "user")
-        policy = roles.get(role, {}) if isinstance(roles, dict) else {}
-        can_modify = bool((policy or {}).get("can_modify", role == "admin"))
-        token = create_session(username, role, can_modify)
-        cookie = f"{SESSION_COOKIE_NAME}={token}; Path=/; Max-Age={SESSION_TTL_SECONDS}; HttpOnly"
-        self._redirect(with_lang(next_path, lang), set_cookie=cookie)
-
-    def _handle_admin_create_role(self, form: cgi.FieldStorage) -> None:
-        lang = normalize_lang((form.getvalue("lang") or "zh").strip())
-        user = self._current_user()
-        if not user_is_admin(user):
-            self._redirect(with_lang("/", lang))
-            return
-        role_name = sanitize_prompt_name((form.getvalue("role_name") or "").strip()).lower().replace(" ", "_")
-        if not role_name:
-            self._redirect(with_lang(admin_msg_path("角色名不能为空"), lang))
-            return
-        db = load_auth_db()
-        roles = db.get("roles", {}) if isinstance(db.get("roles", {}), dict) else {}
-        if role_name in roles:
-            self._redirect(with_lang(admin_msg_path("角色已存在"), lang))
-            return
-        roles[role_name] = {
-            "can_modify": (form.getvalue("can_modify") or "").strip() in {"1", "true", "on", "yes"},
-            "manage_users": (form.getvalue("manage_users") or "").strip() in {"1", "true", "on", "yes"},
-            "manage_roles": (form.getvalue("manage_roles") or "").strip() in {"1", "true", "on", "yes"},
-        }
-        db["roles"] = roles
-        save_auth_db(db)
-        self._redirect(with_lang(admin_msg_path("角色创建成功"), lang))
-
-    def _handle_admin_create_user(self, form: cgi.FieldStorage) -> None:
-        lang = normalize_lang((form.getvalue("lang") or "zh").strip())
-        user = self._current_user()
-        if not user_is_admin(user):
-            self._redirect(with_lang("/", lang))
-            return
-        username = sanitize_prompt_name((form.getvalue("username") or "").strip()).replace(" ", "_")
-        password = (form.getvalue("password") or "").strip()
-        role = (form.getvalue("role") or "user").strip()
-        if not username or not password:
-            self._redirect(with_lang(admin_msg_path("用户名和密码不能为空"), lang))
-            return
-        db = load_auth_db()
-        users = db.get("users", {}) if isinstance(db.get("users", {}), dict) else {}
-        roles = db.get("roles", {}) if isinstance(db.get("roles", {}), dict) else {}
-        if role not in roles:
-            self._redirect(with_lang(admin_msg_path("角色不存在"), lang))
-            return
-        if username in users:
-            self._redirect(with_lang(admin_msg_path("用户已存在"), lang))
-            return
-        users[username] = {"password_hash": _hash_password(password), "role": role}
-        db["users"] = users
-        save_auth_db(db)
-        self._redirect(with_lang(admin_msg_path("用户创建成功"), lang))
 
     def _handle_save_gpt_key(self, form: cgi.FieldStorage) -> None:
         provider = (form.getvalue("provider") or "chatgpt").strip().lower()
@@ -5921,36 +5575,12 @@ class Handler(BaseHTTPRequestHandler):
             "CONTENT_LENGTH": self.headers.get("Content-Length", "0"),
         }
         form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ=environ)
-        if self.path == "/login":
-            self._handle_login(form)
-            return
-        if self.path == "/admin/create_role":
-            self._handle_admin_create_role(form)
-            return
-        if self.path == "/admin/create_user":
-            self._handle_admin_create_user(form)
+        if self.path in {"/login", "/admin/create_role", "/admin/create_user"}:
+            self.send_error(404, "Not Found")
             return
 
         lang = normalize_lang((form.getvalue("lang") or "zh").strip())
         user = self._current_user()
-        if not user:
-            self._redirect(with_lang("/login", lang))
-            return
-
-        admin_only_paths = {
-            "/save_gpt_key",
-            "/import_prompt",
-            "/update_prompt",
-            "/delete_prompt",
-            "/import_check_template",
-            "/update_check_template",
-            "/delete_check_template",
-            "/save_check_template_from_selection",
-            "/save_api_key",
-        }
-        if self.path in admin_only_paths and not user_can_modify(user):
-            self._respond_json({"ok": False, "error": "permission denied: read-only role"}, status=403)
-            return
 
         if self.path == "/save_gpt_key":
             self._handle_save_gpt_key(form)
@@ -6229,7 +5859,6 @@ class Handler(BaseHTTPRequestHandler):
 def run_server(host: str = "0.0.0.0", port: int = 8080) -> None:
     initialize_default_prompt_files()
     initialize_default_check_templates()
-    ensure_auth_db()
     ensure_analysis_services()
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"HealthCheck Web Runner started at http://{host}:{port}")

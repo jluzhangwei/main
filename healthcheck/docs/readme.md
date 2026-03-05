@@ -1,4 +1,4 @@
-# HealthCheck 网络设备巡检工具（V2.3）
+# HealthCheck 网络设备巡检工具（V2.4）
 
 通过 SSH 批量登录网络设备执行巡检，支持 Web 执行、报告下载、AI 诊断（多模型）。
 
@@ -43,8 +43,10 @@ healthcheck/
 ├── output/reports/               # 巡检输出 JSON/CSV
 ├── runtime/tmp/                  # 临时文件
 ├── state/                        # 用户、会话、LLM配置、Token统计
+├── run.sh                        # 推荐统一启动入口（自动建虚拟环境、安装依赖、清理端口、支持热重载）
 ├── scripts/
-│   └── start_web.sh              # 推荐启动脚本（自动注入 OPENAI_CA_BUNDLE）
+│   ├── start_web.sh              # Web 启动脚本（自动注入 OPENAI_CA_BUNDLE）
+│   └── dev_reload.py             # 开发热重载
 └── docs/
     └── readme.md
 ```
@@ -53,14 +55,21 @@ healthcheck/
 
 ```bash
 cd healthcheck
-./scripts/start_web.sh
+./run.sh
 ```
 
 默认地址：`http://127.0.0.1:8080`
 
+说明：
+- `run.sh` 会自动选择 Python 版本并创建/复用虚拟环境
+- 自动安装 `requirements.txt`
+- 启动前自动释放占用端口（默认 `8080`）
+- 默认开启热重载（可用 `--no-reload` 关闭）
+
 兼容方式：
 
 ```bash
+./scripts/start_web.sh
 python3 web_runner.py
 # 或
 python3 app/web_server.py
@@ -137,7 +146,14 @@ python -m pip install -r requirements.txt
 
 说明：该设置同时影响 OpenAI/DeepSeek/Gemini/NVIDIA 的 HTTPS 校验。
 
-## 7. 最近关键变更（V2.3）
+## 7. 最近关键变更（V2.4）
+
+- 顶部导航与页面头部风格统一对齐 Netlog Extractor（Create Task / Tasks / AI Settings / Admin）
+- AI 设置区按钮命名简化为：`Import API Key`、`Test Connection`、`Save Config`
+- 文档页与主页面导航样式统一，语言切换逻辑联动
+- 新增统一启动入口 `run.sh`（自动端口清理 + 默认热重载）
+
+## 8. 最近关键变更（V2.3）
 
 - AI 分析区新增“保存分析报告”按钮，支持另存为 `.md`
 - AI 服务层拆分完成：
@@ -146,14 +162,14 @@ python -m pip install -r requirements.txt
   - `llm_adapter.py`（模型适配）
 - `web_server.py` 聚焦为请求编排层，减少超大文件耦合
 
-## 8. 最近关键变更（V2.2）
+## 9. 最近关键变更（V2.2）
 
 - 新增 `analysis_guard.py`，提供分析前规模预估与汇总覆盖校验
 - 新增前端“分析预估”按钮，展示预计调用次数/Token/耗时并给出风险提示
 - 新增 `POST /analysis_precheck` 接口，支持本次报告与历史 JSON 报告预估
 - 分批结果缺失时自动补占位，避免设备被静默遗漏
 
-## 9. 最近关键变更（V2.1）
+## 10. 最近关键变更（V2.1）
 
 - Web 主入口统一为 `app/web_server.py`，`web_runner.py` 保留兼容
 - 新增 `scripts/start_web.sh`，解决云模型 SSL 证书链问题
@@ -162,7 +178,7 @@ python -m pip install -r requirements.txt
 - 分批分析路径与历史报告路径统一，进度显示更清晰
 - 文档同步更新：目录结构、入口脚本、AI 模式与证书策略
 
-## 10. 常见问题
+## 11. 常见问题
 
 1. 连接测试失败（证书错误）
 - 使用 `./scripts/start_web.sh` 启动再测。
