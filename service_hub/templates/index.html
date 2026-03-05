@@ -98,6 +98,29 @@
       background: #fff;
       overflow: hidden;
       transition: transform 0.15s ease, box-shadow 0.15s ease;
+      position: relative;
+    }
+    .service-card::after {
+      content: "";
+      position: absolute;
+      right: -14px;
+      top: 14px;
+      width: 190px;
+      height: 190px;
+      background-repeat: no-repeat;
+      background-size: contain;
+      opacity: 0.1;
+      pointer-events: none;
+      z-index: 0;
+    }
+    .service-card[data-service-id="lldp"]::after {
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 220 220'%3E%3Cg fill='none' stroke='%230f8a4a' stroke-width='8' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='42' cy='46' r='14'/%3E%3Ccircle cx='170' cy='38' r='14'/%3E%3Ccircle cx='104' cy='112' r='16'/%3E%3Ccircle cx='52' cy='176' r='14'/%3E%3Ccircle cx='176' cy='170' r='14'/%3E%3Cpath d='M55 57l38 42M118 103l39-53M96 124l-34 39M119 122l43 39M56 46h95'/%3E%3C/g%3E%3C/svg%3E");
+    }
+    .service-card[data-service-id="netlog"]::after {
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 220 220'%3E%3Cg fill='none' stroke='%231d4ed8' stroke-width='8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='24' y='28' width='170' height='160' rx='14'/%3E%3Cpath d='M42 68h132M42 92h132M42 116h94M42 140h72'/%3E%3Cpath d='M36 170l32-22 28 18 30-32 30 16 28-26'/%3E%3C/g%3E%3C/svg%3E");
+    }
+    .service-card[data-service-id="healthcheck"]::after {
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 220 220'%3E%3Cg fill='none' stroke='%23d84f1d' stroke-width='8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M110 32l60 24v40c0 42-22 73-60 92-38-19-60-50-60-92V56z'/%3E%3Cpath d='M54 124h30l14-24 20 40 16-30h32'/%3E%3C/g%3E%3C/svg%3E");
     }
     .service-card:hover {
       transform: translateY(-2px);
@@ -116,6 +139,8 @@
       padding: 16px;
       color: inherit;
       min-height: 228px;
+      position: relative;
+      z-index: 1;
     }
     .icon {
       width: 56px;
