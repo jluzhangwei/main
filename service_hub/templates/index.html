@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SEA NOC - Service Hub</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --card: #ffffff;
+      --text: #1b2430;
+      --line: #d6dde8;
+      --accent: #006c9c;
+      --brand: #111111;
+      --navbg: #ffffff;
+      --active: #d43a2f;
+      --ok: #0f8a4a;
+      --warn: #a95a06;
+      --muted: #5f6b7f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .topbar {
+      background: #f7f8fa;
+      color: #2f3b4c;
+      border-bottom: 1px solid #d7dbe3;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 18px 0;
+      gap: 14px;
+    }
+    .brand {
+      display: flex;
+      align-items: flex-end;
+      gap: 18px;
+      min-width: 0;
+      flex: 1;
+    }
+    .infra-logo {
+      width: 240px;
+      min-width: 200px;
+      height: 64px;
+      display: block;
+    }
+    .top-menu {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      margin-bottom: 1px;
+      min-height: 40px;
+    }
+    .top-menu a {
+      color: #5d6573;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 12px 0 11px;
+      border-bottom: 2px solid transparent;
+      white-space: nowrap;
+    }
+    .top-menu a.active {
+      color: #1984d6;
+      border-bottom-color: #21a0eb;
+    }
+    .top-links { display:flex; align-items:center; gap:8px; padding-bottom: 8px; }
+    .top-links a {
+      color:#4f5b6e;
+      text-decoration:none;
+      border:1px solid #ccd3de;
+      border-radius:8px;
+      background: #fff;
+      padding:5px 9px;
+      font-size:12px;
+      font-weight:600;
+      line-height:1;
+    }
+    .top-links .user-pill {
+      border-color:#c5cedc;
+      background:#eef3fb;
+      color:#334155;
+    }
+
+    .mainnav {
+      background: #ffffff;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 18px;
+      min-height: 50px;
+      gap: 10px;
+    }
+    .mainnav-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+      flex: 1;
+    }
+    .site-title {
+      font-size: 22px;
+      font-weight: 700;
+      color: #303643;
+      white-space: nowrap;
+    }
+    .menu {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-left: auto;
+      justify-content: flex-end;
+    }
+    .menu a {
+      color: #374151;
+      text-decoration: none;
+      font-size: 15px;
+      font-weight: 600;
+      padding: 18px 0 14px;
+      border-bottom: 3px solid transparent;
+    }
+    .menu a.active {
+      color: #111827;
+      border-bottom-color: var(--active);
+    }
+
+    .wrap {
+      max-width: 1100px;
+      margin: 18px auto;
+      padding: 0 14px 26px;
+    }
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 18px;
+      margin-bottom: 14px;
+    }
+    .status-msg {
+      margin-bottom: 10px;
+      border: 1px solid #b9d6ff;
+      background: #eef6ff;
+      color: #0f3e83;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 13px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      color: #1f2937;
+    }
+    .sub {
+      margin: 7px 0 0;
+      color: #475467;
+      font-size: 14px;
+    }
+    .service-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(220px, 1fr));
+      gap: 14px;
+      margin-top: 14px;
+    }
+    .service-card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      overflow: hidden;
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    .service-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 18px rgba(14, 30, 62, 0.08);
+    }
+    .service-card.can-open {
+      cursor: pointer;
+      border-color: #9ec5f8;
+    }
+    .service-btn {
+      display: block;
+      width: 100%;
+      border: 0;
+      background: transparent;
+      text-align: left;
+      padding: 16px;
+      color: inherit;
+      min-height: 228px;
+    }
+    .icon {
+      width: 56px;
+      height: 56px;
+      border-radius: 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 10px;
+      color: #fff;
+      font-weight: 800;
+      letter-spacing: 0.4px;
+      font-size: 15px;
+      box-shadow: inset 0 -10px 22px rgba(0, 0, 0, 0.16);
+    }
+    .icon-lldp { background: linear-gradient(135deg, #0f8a4a, #0e6d69); }
+    .icon-netlog { background: linear-gradient(135deg, #1d4ed8, #1e40af); }
+    .icon-healthcheck { background: linear-gradient(135deg, #d84f1d, #b42318); }
+    .name {
+      margin: 0;
+      font-size: 19px;
+      font-weight: 700;
+      color: #1f2937;
+    }
+    .desc {
+      margin: 8px 0 14px;
+      font-size: 13px;
+      color: var(--muted);
+      min-height: 34px;
+    }
+    .switch-row {
+      margin-top: 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .power-toggle {
+      width: 58px;
+      height: 58px;
+      border: 0;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 27px;
+      font-weight: 800;
+      color: #fff;
+      cursor: pointer;
+      transition: transform .15s ease, filter .15s ease;
+    }
+    .power-toggle:hover { transform: translateY(-1px); }
+    .power-toggle:disabled { cursor: wait; opacity: .75; transform: none; }
+    .toggle-red { background: #dc2626; }
+    .toggle-yellow { background: #eab308; color:#1f2937; }
+    .toggle-green { background: #16a34a; }
+    .status {
+      margin-top: 11px;
+      font-size: 12px;
+      display: inline-flex;
+      border-radius: 999px;
+      padding: 4px 10px;
+      border: 1px solid #c7ceda;
+      color: #5f6b7f;
+      background: #f8fafc;
+    }
+    .status-running {
+      color: #0f8a4a;
+      border-color: #9edab5;
+      background: #effcf3;
+    }
+    .status-starting {
+      color: #a95a06;
+      border-color: #f2c38f;
+      background: #fff8ef;
+    }
+    .status-stopped {
+      color: #b91c1c;
+      border-color: #fecaca;
+      background: #fef2f2;
+    }
+    .log-box {
+      margin-top: 12px;
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px dashed #c7d2df;
+      font-size: 12px;
+      color: #51617b;
+      min-height: 40px;
+      white-space: pre-wrap;
+    }
+
+    @media (max-width: 900px) {
+      .service-grid { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
+    }
+    @media (max-width: 780px) {
+      .topbar, .mainnav { padding-left: 12px; padding-right: 12px; }
+      .topbar { padding-top: 6px; }
+      .brand { flex-wrap: wrap; align-items: center; gap: 10px; }
+      .infra-logo { width: 188px; height: 50px; min-width: 188px; }
+      .top-menu { gap: 12px; min-height: 32px; }
+      .top-menu a { font-size: 12px; padding: 8px 0; }
+      .site-title { font-size: 18px; }
+      .menu { gap: 12px; flex-wrap: wrap; }
+      .menu a { font-size: 14px; padding: 10px 0 8px; }
+      .mainnav { align-items: flex-end; padding-top: 4px; padding-bottom: 4px; }
+      .mainnav-left { flex-direction: column; align-items: flex-start; gap: 4px; }
+      .service-grid { grid-template-columns: 1fr; }
+      .service-btn { min-height: 180px; }
+      .power-toggle { width: 52px; height: 52px; font-size: 24px; }
+    }
+  </style>
+</head>
+<body>
+<div class="topbar">
+  <div class="brand">
+    <img class="infra-logo" src="/static/infra-logo.png" alt="infra logo" />
+    <nav class="top-menu" aria-label="primary">
+      <a href="/" class="{{ 'active' if active_tab == 'dashboards' else '' }}">Dashboards</a>
+      <a href="/?tab=help" class="{{ 'active' if active_tab == 'help' else '' }}">Help</a>
+    </nav>
+  </div>
+  <div class="top-links">
+    <a class="user-pill" href="#">{{ current_user.username }}({{ current_user.role }})</a>
+    {% if is_admin %}<a href="/admin">用户管理</a>{% endif %}
+    <a href="/logout">退出</a>
+  </div>
+</div>
+
+<div class="mainnav">
+  <div class="mainnav-left">
+    <div class="site-title">AIOps - Service Launcher</div>
+    <div class="menu">
+      <a href="/" class="active">Service Hub</a>
+      {% if is_admin %}<a href="/admin">Admin</a>{% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+  {% if active_tab == 'help' %}
+  <section class="panel">
+    <h1>Help - Service Hub 功能说明</h1>
+    <p class="sub">该页面用于统一管理 LLDP、Netlog、HealthCheck 三个服务。</p>
+    <div style="margin-top:14px; display:grid; gap:10px;">
+      <div><b>1. 开关控制</b>：每个服务只有一个开关按钮，点击后执行启停。</div>
+      <div><b>2. 颜色定义</b>：黄色=处理中，绿色=运行中，红色=已停止。</div>
+      <div><b>3. 启动行为</b>：从红色切换时会启动服务并自动打开目标页面。</div>
+      <div><b>4. 停止行为</b>：从绿色切换时会停止服务，状态切回红色。</div>
+      <div><b>5. 卡片跳转</b>：服务运行后，点击服务卡片可随时再次打开对应页面。</div>
+    </div>
+  </section>
+  {% else %}
+  <section class="panel">
+    {% if status_msg %}<div class="status-msg">{{ status_msg }}</div>{% endif %}
+    <h1>统一服务启动页面</h1>
+    <p class="sub">使用开关控制服务：黄=处理中，绿=运行中，红=已停止。</p>
+    <div class="service-grid">
+      {% for svc in services %}
+      <article class="service-card {{ 'can-open' if svc.running else '' }}"
+               data-service-id="{{ svc.service_id }}"
+               data-service-url="{{ svc.url }}"
+               data-running="{{ '1' if svc.running else '0' }}">
+        <div class="service-btn">
+          <div class="icon icon-{{ svc.service_id }}">
+            {% if svc.service_id == 'lldp' %}LLDP{% elif svc.service_id == 'netlog' %}LOG{% else %}HC{% endif %}
+          </div>
+          <h2 class="name">{{ svc.name }}</h2>
+          <p class="desc">{{ svc.subtitle }}</p>
+          <div class="switch-row">
+            <button class="power-toggle {{ 'toggle-green' if svc.running else 'toggle-red' }}"
+                    type="button"
+                    data-toggle-id="{{ svc.service_id }}"
+                    data-service-url="{{ svc.url }}"
+                    data-running="{{ '1' if svc.running else '0' }}"
+                    title="服务开关">⏻</button>
+            <div id="status-{{ svc.service_id }}" class="status {{ 'status-running' if svc.running else 'status-stopped' }}">
+              {{ '运行中' if svc.running else '已停止' }}
+            </div>
+          </div>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+    <div id="global_log" class="log-box">等待操作...</div>
+  </section>
+  {% endif %}
+</div>
+
+<script>
+  function setStatus(serviceId, state, text) {
+    const el = document.getElementById(`status-${serviceId}`);
+    if (!el) return;
+    el.classList.remove('status-running', 'status-starting', 'status-stopped');
+    if (state === 'running') {
+      el.classList.add('status-running');
+    } else if (state === 'starting') {
+      el.classList.add('status-starting');
+    } else {
+      el.classList.add('status-stopped');
+    }
+    el.textContent = text;
+  }
+
+  function setLog(text) {
+    const el = document.getElementById('global_log');
+    if (el) el.textContent = text;
+  }
+
+  function setToggleVisual(serviceId, state) {
+    const el = document.querySelector(`[data-toggle-id="${serviceId}"]`);
+    const card = document.querySelector(`.service-card[data-service-id="${serviceId}"]`);
+    if (!el) return;
+    el.classList.remove('toggle-red', 'toggle-yellow', 'toggle-green');
+    if (state === 'running') {
+      el.classList.add('toggle-green');
+      el.dataset.running = '1';
+      if (card) {
+        card.dataset.running = '1';
+        card.classList.add('can-open');
+      }
+    } else if (state === 'starting') {
+      el.classList.add('toggle-yellow');
+      if (card) {
+        card.dataset.running = '0';
+        card.classList.remove('can-open');
+      }
+    } else {
+      el.classList.add('toggle-red');
+      el.dataset.running = '0';
+      if (card) {
+        card.dataset.running = '0';
+        card.classList.remove('can-open');
+      }
+    }
+  }
+
+  function setServiceButtonsDisabled(serviceId, disabled) {
+    document.querySelectorAll(`[data-toggle-id="${serviceId}"]`).forEach((el) => { el.disabled = disabled; });
+  }
+
+  async function refreshStatus() {
+    try {
+      const resp = await fetch('/api/services');
+      if (resp.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (!data.services) return;
+      data.services.forEach((svc) => {
+        const state = svc.running ? 'running' : 'idle';
+        setToggleVisual(svc.service_id, state);
+        setStatus(svc.service_id, state, svc.running ? '运行中' : '已停止');
+      });
+    } catch (err) {
+      setLog(`状态刷新失败: ${err}`);
+    }
+  }
+
+  async function launchService(serviceId, targetUrl) {
+    const popup = window.open('about:blank', '_blank');
+    setServiceButtonsDisabled(serviceId, true);
+    setToggleVisual(serviceId, 'starting');
+    setStatus(serviceId, 'starting', '启动中...');
+    setLog(`[${serviceId}] 正在启动服务...`);
+
+    try {
+      const resp = await fetch(`/api/services/${serviceId}/launch`, { method: 'POST' });
+      const payload = await resp.json();
+      if (!resp.ok || !payload.ok) {
+        throw new Error(payload.detail || payload.message || '启动失败');
+      }
+
+      if (popup && !popup.closed) {
+        popup.location.href = payload.url;
+      } else {
+        window.open(payload.url, '_blank');
+      }
+
+      if (payload.ready) {
+        setToggleVisual(serviceId, 'running');
+        setStatus(serviceId, 'running', '运行中');
+      } else {
+        setToggleVisual(serviceId, 'starting');
+        setStatus(serviceId, 'starting', '启动中，请稍候');
+      }
+      setLog(`[${payload.service_id}] ${payload.message || '服务已启动'}\n目标地址: ${payload.url}`);
+    } catch (err) {
+      if (popup && !popup.closed) popup.close();
+      setToggleVisual(serviceId, 'idle');
+      setStatus(serviceId, 'idle', '已停止');
+      setLog(`[${serviceId}] 启动失败: ${err}`);
+    } finally {
+      setServiceButtonsDisabled(serviceId, false);
+    }
+  }
+
+  async function stopService(serviceId) {
+    setServiceButtonsDisabled(serviceId, true);
+    setToggleVisual(serviceId, 'starting');
+    setStatus(serviceId, 'starting', '停止中...');
+    setLog(`[${serviceId}] 正在停止服务...`);
+
+    try {
+      const resp = await fetch(`/api/services/${serviceId}/stop`, { method: 'POST' });
+      const payload = await resp.json();
+      if (!resp.ok || !payload.ok) {
+        throw new Error(payload.detail || payload.message || '停止失败');
+      }
+      setToggleVisual(serviceId, 'idle');
+      setStatus(serviceId, 'idle', '已停止');
+      setLog(`[${payload.service_id}] ${payload.message || '服务已停止'}`);
+    } catch (err) {
+      setToggleVisual(serviceId, 'running');
+      setStatus(serviceId, 'running', '运行中');
+      setLog(`[${serviceId}] 停止失败: ${err}`);
+    } finally {
+      setServiceButtonsDisabled(serviceId, false);
+    }
+  }
+
+  document.querySelectorAll('[data-toggle-id]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const serviceId = btn.dataset.toggleId;
+      const url = btn.dataset.serviceUrl;
+      if (!serviceId || !url) return;
+      const running = btn.dataset.running === '1';
+      if (running) {
+        stopService(serviceId);
+      } else {
+        launchService(serviceId, url);
+      }
+    });
+  });
+
+  document.querySelectorAll('.service-card').forEach((card) => {
+    card.addEventListener('click', (evt) => {
+      if (evt.target.closest('[data-toggle-id]')) return;
+      if (card.dataset.running !== '1') return;
+      const url = card.dataset.serviceUrl;
+      if (!url) return;
+      window.open(url, '_blank');
+    });
+  });
+
+  refreshStatus();
+  setInterval(refreshStatus, 12000);
+</script>
+</body>
+</html>
