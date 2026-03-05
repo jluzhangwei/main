@@ -44,6 +44,7 @@ PROJECT_ROOT = APP_DIR.parent
 SCRIPT_PATH = APP_DIR / "healthcheck.py"
 INTENTS_PATH = PROJECT_ROOT / "data" / "intents.txt"
 REPORT_DIR = PROJECT_ROOT / "output" / "reports"
+AI_REPORT_DIR = PROJECT_ROOT / "output" / "ai_reports"
 TMP_DIR = PROJECT_ROOT / "runtime" / "tmp"
 COMMAND_MAP_PATH = PROJECT_ROOT / "config" / "command_map.yaml"
 CHECK_TEMPLATES_DIR = PROJECT_ROOT / "check_templates"
@@ -146,13 +147,15 @@ def with_lang(path: str, lang: str) -> str:
 
 def build_app_header_css() -> str:
     return """
+    html { overflow-y: scroll; }
     .app-topbar {
-      background:#0a0c10; color:#fff; display:flex; justify-content:space-between; align-items:center;
-      padding:8px 18px; gap:14px;
-      position: relative;
+      background:#f7f8fa; color:#2f3b4c; display:flex; justify-content:space-between; align-items:center;
+      padding:8px 18px 0; gap:14px;
+      border-bottom: 1px solid #d7dbe3;
       min-height: 56px;
+      font-family: "Segoe UI", "PingFang SC", sans-serif;
     }
-    .app-brand { display:flex; align-items:center; gap:12px; min-width:0; }
+    .app-brand { display:flex; align-items:flex-end; gap:18px; min-width:0; flex: 1; }
     .app-logo { display:inline-flex; align-items:center; gap:10px; background:#fff; border-radius:10px; padding:2px 8px 2px 2px; color:#1e2b8f; font-weight:700; }
     .app-logo-mark {
       width:42px; height:42px; border-radius:999px; display:inline-block;
@@ -161,17 +164,16 @@ def build_app_header_css() -> str:
     .app-logo-text { display:flex; flex-direction:column; line-height:1.1; }
     .app-logo-sea { font-size:20px; font-weight:800; }
     .app-logo-sub { font-size:9px; opacity:0.9; }
-    .app-brand-name { font-size:21px; font-weight:700; color:#fff; white-space:nowrap; }
-    .app-top-links { display:flex; align-items:center; gap:8px; font-size:14px; color:#e5e7eb; white-space:nowrap; }
-    .app-top-links a, .app-top-links button { color:#e5e7eb; text-decoration:none; }
+    .app-top-links { display:flex; align-items:center; gap:8px; font-size:14px; color:#4f5b6e; white-space:nowrap; padding-bottom: 8px; }
+    .app-top-links a, .app-top-links button { color:#4f5b6e; text-decoration:none; }
     .app-circle-btn {
       width: 28px;
       height: 28px;
       min-width: 28px;
       border-radius: 999px;
-      border: 1px solid #8c96a8;
-      background: transparent !important;
-      color: #e5e7eb !important;
+      border: 1px solid #c5cedc;
+      background: #ffffff !important;
+      color: #334155 !important;
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -182,12 +184,22 @@ def build_app_header_css() -> str:
       padding: 0;
       box-sizing: border-box;
     }
-    .app-circle-btn:hover { background: #1f2937; }
+    .app-circle-btn:hover { background: #eef3fb !important; }
     .app-mainnav {
       background:#fff; border-bottom:1px solid #d6dde8; display:flex; justify-content:space-between;
-      align-items:center; min-height:58px; padding:0 18px; gap:10px;
+      align-items:center; min-height:50px; padding:0 18px; gap:10px;
+      font-family: "Segoe UI", "PingFang SC", sans-serif;
     }
-    .app-title { font-size:22px; font-weight:700; color:#303643; white-space:nowrap; }
+    .app-title {
+      font-family: "Avenir Next", "SF Pro Display", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-size:22px;
+      font-weight:800;
+      letter-spacing:0.2px;
+      color:#303643;
+      white-space:nowrap;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: geometricPrecision;
+    }
     .app-menu { display:inline-flex; align-items:center; gap:16px; }
     .app-menu a {
       color:#374151; text-decoration:none; font-size:15px; font-weight:600;
@@ -196,7 +208,7 @@ def build_app_header_css() -> str:
     .app-menu a.active { color:#111827; border-bottom-color:#d43a2f; }
     @media (max-width: 740px) {
       .app-topbar, .app-mainnav { padding-left: 12px; padding-right: 12px; }
-      .app-brand-name { font-size: 17px; }
+      .app-topbar { padding-top: 6px; }
       .app-logo-sea { font-size: 16px; }
       .app-menu a { font-size: 14px; padding: 10px 0 8px; }
       .app-title { font-size: 18px; }
@@ -228,7 +240,6 @@ def build_app_header_html(lang: str, active_menu: str = "runner") -> str:
           <span class="app-logo-sub">connecting the dots</span>
         </span>
       </div>
-      <div class="app-brand-name">SEA NOC</div>
     </div>
     <div class="app-top-links">
       <a class="app-circle-btn" href="{guide_link}" title="View Docs">?</a>
@@ -767,6 +778,69 @@ def is_safe_report_name(name: str) -> bool:
     return bool(re.match(r"^inspection_report_[A-Za-z0-9_]+\.(json|csv)$", name))
 
 
+def is_safe_ai_report_name(name: str) -> bool:
+    if not name:
+        return False
+    if name != os.path.basename(name):
+        return False
+    return bool(re.match(r"^ai_analysis_[A-Za-z0-9_]+\.md$", name))
+
+
+def list_ai_report_files(task_id: str, limit: int = 20) -> List[Path]:
+    tid = str(task_id or "").strip()
+    if not tid or not AI_REPORT_DIR.is_dir():
+        return []
+    prefix = f"ai_analysis_{tid}_"
+    files = [p for p in AI_REPORT_DIR.iterdir() if p.is_file() and p.name.startswith(prefix) and p.suffix.lower() == ".md"]
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return files[: max(1, int(limit or 20))]
+
+
+def save_ai_analysis_report(
+    task_id: str,
+    *,
+    analysis_text: str,
+    provider: str,
+    model: str,
+    prompt_source: str,
+    duration_seconds: float,
+    token_usage: Optional[Dict] = None,
+    token_total: int = 0,
+    source: str = "task",
+    status: str = "done",
+    error: str = "",
+) -> str:
+    tid = str(task_id or "").strip() or "unknown"
+    ts = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    suffix = uuid4().hex[:6]
+    name = f"ai_analysis_{tid}_{ts}_{suffix}.md"
+    AI_REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    usage = token_usage or {}
+    text = str(analysis_text or "").strip()
+    if not text and error:
+        text = f"[analysis_{status}] {error}"
+    lines = [
+        "# AI Analysis Report",
+        "",
+        f"- Task ID: {tid}",
+        f"- Status: {status}",
+        f"- Source: {source}",
+        f"- Provider: {provider or '-'}",
+        f"- Model: {model or '-'}",
+        f"- Prompt Source: {prompt_source or '-'}",
+        f"- Duration Seconds: {max(0.0, float(duration_seconds or 0.0)):.2f}",
+        f"- Token Total (global): {int(token_total or 0)}",
+        f"- Token Usage (this run): {json.dumps(usage, ensure_ascii=False)}",
+        "",
+        "## Content",
+        "",
+        text or "(empty)",
+        "",
+    ]
+    (AI_REPORT_DIR / name).write_text("\n".join(lines), encoding="utf-8")
+    return name
+
+
 def load_gpt_config() -> Dict:
     return state_store.load_gpt_config()
 
@@ -791,6 +865,27 @@ def add_token_usage(provider: str, used_tokens: int) -> Dict:
     return state_store.add_token_usage(provider, used_tokens)
 
 
+def persist_analysis_result(payload: Dict) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    task_id = str(payload.get("job_id", "") or "").strip()
+    if not task_id:
+        return ""
+    return save_ai_analysis_report(
+        task_id,
+        analysis_text=str(payload.get("analysis", "") or ""),
+        provider=str(payload.get("provider_used", "") or ""),
+        model=str(payload.get("model_used", "") or ""),
+        prompt_source=str(payload.get("prompt_source", "") or ""),
+        duration_seconds=float(payload.get("duration_seconds", 0.0) or 0.0),
+        token_usage=payload.get("token_usage", {}) if isinstance(payload.get("token_usage", {}), dict) else {},
+        token_total=int(payload.get("token_total", 0) or 0),
+        source="batched",
+        status=str(payload.get("status", "done") or "done"),
+        error=str(payload.get("error", "") or ""),
+    )
+
+
 def ensure_analysis_services() -> None:
     global ANALYSIS_STATUS_STORE, LLM_ADAPTER, ANALYSIS_SERVICE
     if ANALYSIS_STATUS_STORE is None:
@@ -806,6 +901,7 @@ def ensure_analysis_services() -> None:
             add_token_usage=add_token_usage,
             status_store=ANALYSIS_STATUS_STORE,
             llm_adapter=LLM_ADAPTER,
+            persist_callback=persist_analysis_result,
         )
 
 
@@ -971,6 +1067,7 @@ def build_html(
     auth_role: str = "user",
 ) -> str:
     lang = normalize_lang(lang)
+    is_en = lang == "en"
     choose_file_text = "选择文件" if lang == "zh" else "Choose File"
     no_file_text = "未选择文件" if lang == "zh" else "No file chosen"
     check_templates = merged_check_template_catalog()
@@ -1052,7 +1149,7 @@ def build_html(
     * {{ box-sizing: border-box; }}
     body {{
       margin: 0;
-      background: radial-gradient(circle at top right, #e1efe9 0%, var(--bg) 40%);
+      background: #f6f8fb;
       color: var(--text);
       font: 14px/1.5 "Helvetica Neue", "PingFang SC", sans-serif;
     }}
@@ -2068,6 +2165,7 @@ def build_job_html(
     auth_role: str = "user",
 ) -> str:
     lang = normalize_lang(lang)
+    is_en = lang == "en"
     choose_file_text = "选择文件" if lang == "zh" else "Choose File"
     no_file_text = "未选择文件" if lang == "zh" else "No file chosen"
     gpt_config = load_gpt_config()
@@ -2149,6 +2247,19 @@ def build_job_html(
         else f'历史报告分析模式 | <a href="{with_lang("/", lang)}">返回首页</a> | '
         f'<span id="ai_report_status" class="meta-tag">AI 报告：待生成</span>'
     )
+    ai_report_items = list_ai_report_files(job_id, limit=12) if (job_id and not history_mode) else []
+    if ai_report_items:
+        ai_report_links = " | ".join(
+            f'<a href="{with_lang("/download_ai?name=" + p.name, lang)}">{html.escape(p.name)}</a>'
+            for p in ai_report_items
+        )
+        ai_report_history_html = (
+            f'<div id="ai_reports" class="report-links">'
+            f'AI 历史报告: {ai_report_links}'
+            f"</div>"
+        )
+    else:
+        ai_report_history_html = ""
     output_init_text = "请在页面底部上传历史报告文件并点击 AI 分析。" if history_mode else "正在启动任务，请稍候..."
     modify_disabled = "" if can_modify else "disabled"
     _html = f"""<!DOCTYPE html>
@@ -2240,6 +2351,7 @@ def build_job_html(
       background: #f8fafc;
     }}
     .report-links a:hover {{ background: #eef2f7; }}
+    #ai_reports {{ margin-top: 6px; }}
     .meta-tag {{
       display: inline-block;
       border: 1px solid #d7dee7;
@@ -2534,6 +2646,7 @@ def build_job_html(
       </div>
       <div>{job_meta}</div>
       <div id="reports" class="report-links"></div>
+      {ai_report_history_html}
       <pre id="output">{output_init_text}</pre>
       <div id="ai-analysis" class="gpt-card">
         <div class="ai-head">
@@ -2677,6 +2790,7 @@ def build_job_html(
         </div>
         <div class="gpt-actions">
           <button class="gpt-btn gpt-primary" id="analyze_btn" type="button">AI 分析</button>
+          <button class="gpt-btn" id="stop_analysis_btn" type="button">{'Stop Analysis' if is_en else '停止分析'}</button>
           <button class="gpt-btn" id="save_analysis_btn" type="button">保存分析报告</button>
         </div>
         <div id="gpt_status" class="gpt-hint"></div>
@@ -2758,6 +2872,7 @@ def build_job_html(
     const llmTestResultEl = document.getElementById("llm_test_result");
     const gptResultEl = document.getElementById("gpt_result");
     const saveAnalysisBtnEl = document.getElementById("save_analysis_btn");
+    const stopAnalysisBtnEl = document.getElementById("stop_analysis_btn");
     const batchedAnalysisEl = document.getElementById("batched_analysis");
     const analysisParallelismEl = document.getElementById("analysis_parallelism");
     const analysisRetriesEl = document.getElementById("analysis_retries");
@@ -3070,6 +3185,14 @@ def build_job_html(
           analysisRunning = false;
           return;
         }}
+        if (data.status === "canceled") {{
+          gptResultEl.textContent = data.analysis || ({json.dumps("Analysis canceled." if is_en else "分析已取消。")});
+          setAiReportStatus({json.dumps("AI Report: Canceled" if is_en else "AI 报告：已取消")});
+          setGptStatus({json.dumps("Analysis canceled." if is_en else "分析已取消。")});
+          updateAnalysisProgress(true, 100, {json.dumps("Progress: 100% (Canceled)" if is_en else "进度: 100%（已取消）")});
+          analysisRunning = false;
+          return;
+        }}
         if (data.status === "error") {{
           gptResultEl.textContent = "分析失败: " + (data.error || "unknown");
           setAiReportStatus("AI 报告：待生成");
@@ -3079,6 +3202,24 @@ def build_job_html(
           return;
         }}
         await sleepMs(1200);
+      }}
+    }}
+
+    async function recoverActiveAnalysisIfAny() {{
+      if (historyMode || !jobId || analysisRunning) return;
+      try {{
+        const resp = await fetch("/job_active_analysis?id=" + encodeURIComponent(jobId), {{ cache: "no-store" }});
+        const data = await resp.json();
+        if (!data || data.ok === false || !data.active || !data.analysis_id) {{
+          return;
+        }}
+        const status = String(data.status || "");
+        if (status === "running") {{
+          setAiReportStatus({json.dumps("AI Report: Batched analysis running" if is_en else "AI 报告：分批分析中")});
+          gptResultEl.textContent = {json.dumps("Detected an ongoing analysis task. Restoring progress..." if is_en else "检测到进行中的分析任务，正在恢复进度...")};
+          await pollBatchedAnalysis(String(data.analysis_id));
+        }}
+      }} catch (_e) {{
       }}
     }}
 
@@ -3801,6 +3942,28 @@ def build_job_html(
       }}
     }});
 
+    if (stopAnalysisBtnEl) stopAnalysisBtnEl.addEventListener("click", async () => {{
+      const ok = window.confirm({json.dumps("Stop current AI analysis task?" if is_en else "确认停止当前 AI 分析任务吗？")});
+      if (!ok) return;
+      try {{
+        const data = await postForm("/analysis_stop", {{
+          analysis_id: activeAnalysisId || "",
+          job_id: jobId || "",
+        }});
+        if (!data || !data.ok) {{
+          setGptStatus({json.dumps("Stop failed: " if is_en else "停止失败: ")} + ((data && data.error) || "unknown"));
+          return;
+        }}
+        if (data.analysis_id) {{
+          activeAnalysisId = String(data.analysis_id);
+        }}
+        setGptStatus(data.message || {json.dumps("Stop requested. Waiting for current call to finish..." if is_en else "已请求停止分析，等待当前调用结束...")});
+        setAiReportStatus({json.dumps("AI Report: Stopping" if is_en else "AI 报告：停止中")});
+      }} catch (e) {{
+        setGptStatus({json.dumps("Stop failed: " if is_en else "停止失败: ")} + e);
+      }}
+    }});
+
     if (providerEl) providerEl.addEventListener("change", refreshProviderUI);
     if (providerEl) providerEl.addEventListener("change", syncIdleModelStatus);
     if (chatgptModelSelectEl) chatgptModelSelectEl.addEventListener("change", refreshCustomModelVisibility);
@@ -3857,6 +4020,7 @@ def build_job_html(
     }}
 
     poll();
+    recoverActiveAnalysisIfAny();
     if (window.location.hash === "#ai-analysis") {{
       const aiEl = document.getElementById("ai-analysis");
       if (aiEl) aiEl.scrollIntoView({{ behavior: "smooth", block: "start" }});
@@ -4421,10 +4585,11 @@ def _format_ts(ts: float) -> str:
 def build_tasks_page(lang: str = "zh", auth_username: str = "", auth_role: str = "user") -> str:
     lang = normalize_lang(lang)
     ensure_task_store()
+    ensure_analysis_services()
     rows = TASK_STORE.list_tasks(300) if TASK_STORE else []
-    h = ("任务ID", "创建时间", "状态", "设备数", "报告", "操作")
+    h = ("任务ID", "创建时间", "状态", "AI 分析", "设备数", "报告", "操作")
     if lang == "en":
-        h = ("Task ID", "Created At", "Status", "Devices", "Reports", "Actions")
+        h = ("Task ID", "Created At", "Status", "AI Analysis", "Devices", "Reports", "Actions")
     body_rows = []
     for row in rows:
         tid = str(row.get("task_id", "") or "")
@@ -4438,12 +4603,43 @@ def build_tasks_page(lang: str = "zh", auth_username: str = "", auth_role: str =
             links.append(f'<a href="{with_lang("/download?name=" + report_csv, lang)}">CSV</a>')
         if not links:
             links.append("-")
+        ai_cell = "-"
+        if ANALYSIS_STATUS_STORE:
+            analysis_id = ANALYSIS_STATUS_STORE.find_analysis_id_by_job(tid, running_only=False)
+            if analysis_id:
+                ai_payload = ANALYSIS_STATUS_STORE.get_response_payload(analysis_id)
+                ai_status = str(ai_payload.get("status", "unknown") or "unknown")
+                if lang == "zh":
+                    ai_label_map = {
+                        "running": "分析中",
+                        "done": "已完成",
+                        "canceled": "已取消",
+                        "error": "失败",
+                    }
+                    ai_label = ai_label_map.get(ai_status, ai_status)
+                    if ai_status == "running":
+                        ai_cell = f'{html.escape(ai_label)} | <a href="{with_lang("/tasks/" + tid + "#ai-analysis", lang)}">查看进度</a>'
+                    else:
+                        ai_cell = html.escape(ai_label)
+                else:
+                    ai_label_map = {
+                        "running": "Running",
+                        "done": "Done",
+                        "canceled": "Canceled",
+                        "error": "Failed",
+                    }
+                    ai_label = ai_label_map.get(ai_status, ai_status)
+                    if ai_status == "running":
+                        ai_cell = f'{html.escape(ai_label)} | <a href="{with_lang("/tasks/" + tid + "#ai-analysis", lang)}">View Progress</a>'
+                    else:
+                        ai_cell = html.escape(ai_label)
         action_text = "查看" if lang == "zh" else "View"
         body_rows.append(
             "<tr>"
             f"<td><a href=\"{with_lang('/tasks/' + tid, lang)}\">{html.escape(tid)}</a></td>"
             f"<td>{html.escape(_format_ts(float(row.get('created_at', 0.0) or 0.0)))}</td>"
             f"<td>{html.escape(str(row.get('status', 'unknown') or 'unknown'))}</td>"
+            f"<td>{ai_cell}</td>"
             f"<td>{len(devices)}</td>"
             f"<td>{' | '.join(links)}</td>"
             f"<td><a href=\"{with_lang('/tasks/' + tid, lang)}\">{action_text}</a></td>"
@@ -4466,8 +4662,8 @@ def build_tasks_page(lang: str = "zh", auth_username: str = "", auth_role: str =
       <div class="card">
         <h2>{title}</h2>
         <table>
-          <thead><tr><th>{h[0]}</th><th>{h[1]}</th><th>{h[2]}</th><th>{h[3]}</th><th>{h[4]}</th><th>{h[5]}</th></tr></thead>
-          <tbody>{''.join(body_rows) if body_rows else '<tr><td colspan="6">-</td></tr>'}</tbody>
+          <thead><tr><th>{h[0]}</th><th>{h[1]}</th><th>{h[2]}</th><th>{h[3]}</th><th>{h[4]}</th><th>{h[5]}</th><th>{h[6]}</th></tr></thead>
+          <tbody>{''.join(body_rows) if body_rows else '<tr><td colspan="7">-</td></tr>'}</tbody>
         </table>
       </div>
     </div>
@@ -5175,8 +5371,14 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/analysis_status":
             self._serve_analysis_status(parsed.query)
             return
+        if parsed.path == "/job_active_analysis":
+            self._serve_job_active_analysis(parsed.query)
+            return
         if parsed.path == "/download":
             self._serve_download(parsed.query)
+            return
+        if parsed.path == "/download_ai":
+            self._serve_ai_download(parsed.query)
             return
         self.send_error(404, "Not Found")
         return
@@ -5202,6 +5404,24 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _serve_ai_download(self, raw_query: str) -> None:
+        query = parse_qs(raw_query)
+        name = (query.get("name", [""])[0] or "").strip()
+        if not is_safe_ai_report_name(name):
+            self.send_error(400, "Invalid report name")
+            return
+        target = AI_REPORT_DIR / name
+        if not target.is_file():
+            self.send_error(404, "Not Found")
+            return
+        data = target.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/markdown; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", f'attachment; filename="{target.name}"')
+        self.end_headers()
+        self.wfile.write(data)
+
     def _serve_job_status(self, raw_query: str, lang: str = "zh") -> None:
         query = parse_qs(raw_query)
         job_id = (query.get("id", [""])[0] or "").strip()
@@ -5218,7 +5438,7 @@ class Handler(BaseHTTPRequestHandler):
                     payload = {
                         "status": row.get("status", "unknown"),
                         "exit_code": row.get("exit_code"),
-                        "output": row.get("output", "") or "",
+                        "output": row.get("output_text", "") or "",
                         "report_json": row.get("report_json", "") or "",
                         "report_csv": row.get("report_csv", "") or "",
                     }
@@ -5254,6 +5474,49 @@ class Handler(BaseHTTPRequestHandler):
         ensure_analysis_services()
         payload = ANALYSIS_STATUS_STORE.get_response_payload(analysis_id) if ANALYSIS_STATUS_STORE else {"ok": False, "error": "analysis status service unavailable"}
         self._respond_json(payload)
+
+    def _serve_job_active_analysis(self, raw_query: str) -> None:
+        query = parse_qs(raw_query)
+        job_id = (query.get("id", [""])[0] or "").strip()
+        if not job_id:
+            self._respond_json({"ok": False, "error": "Missing job id"}, status=400)
+            return
+        ensure_analysis_services()
+        if not ANALYSIS_STATUS_STORE:
+            self._respond_json({"ok": False, "error": "analysis status service unavailable"}, status=500)
+            return
+        analysis_id = ANALYSIS_STATUS_STORE.find_analysis_id_by_job(job_id, running_only=True)
+        if not analysis_id:
+            self._respond_json({"ok": True, "active": False})
+            return
+        payload = ANALYSIS_STATUS_STORE.get_response_payload(analysis_id)
+        payload["analysis_id"] = analysis_id
+        payload["active"] = bool(payload.get("ok")) and str(payload.get("status", "")) == "running"
+        self._respond_json(payload)
+
+    def _handle_analysis_stop(self, form: cgi.FieldStorage) -> None:
+        analysis_id = (form.getvalue("analysis_id") or "").strip()
+        job_id = (form.getvalue("job_id") or "").strip()
+        ensure_analysis_services()
+        if not ANALYSIS_STATUS_STORE:
+            self._respond_json({"ok": False, "error": "analysis status service unavailable"}, status=500)
+            return
+        if not analysis_id and job_id:
+            analysis_id = ANALYSIS_STATUS_STORE.find_analysis_id_by_job(job_id, running_only=True)
+        if not analysis_id:
+            self._respond_json({"ok": False, "error": "No running analysis task"}, status=404)
+            return
+        stopped = ANALYSIS_STATUS_STORE.request_cancel(analysis_id)
+        if not stopped:
+            self._respond_json({"ok": False, "error": "Analysis task is not running", "analysis_id": analysis_id}, status=409)
+            return
+        self._respond_json(
+            {
+                "ok": True,
+                "analysis_id": analysis_id,
+                "message": "已请求停止分析，等待当前调用结束...",
+            }
+        )
 
     def _respond_json(self, payload: Dict, status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -5830,11 +6093,30 @@ class Handler(BaseHTTPRequestHandler):
         }
 
     def _precheck_report_data_from_job(self, job_id: str) -> Dict:
-        with JOBS_LOCK:
-            job = JOBS.get(job_id)
+        job = self._resolve_job_for_analysis(job_id)
         if not job:
             raise RuntimeError("job not found")
         return self._load_job_report_json(job)
+
+    def _resolve_job_for_analysis(self, job_id: str) -> Optional[Dict]:
+        task_id = str(job_id or "").strip()
+        if not task_id:
+            return None
+        with JOBS_LOCK:
+            job = JOBS.get(task_id)
+        if isinstance(job, dict):
+            return dict(job)
+        ensure_task_store()
+        row = TASK_STORE.get_task(task_id) if TASK_STORE else None
+        if not row:
+            return None
+        return {
+            "status": str(row.get("status", "unknown") or "unknown"),
+            "exit_code": row.get("exit_code"),
+            "output": str(row.get("output_text", "") or ""),
+            "report_json": str(row.get("report_json", "") or ""),
+            "report_csv": str(row.get("report_csv", "") or ""),
+        }
 
     def _handle_analysis_precheck(self, form: cgi.FieldStorage) -> None:
         llm = self._resolve_llm_inputs_from_form(form)
@@ -5909,19 +6191,28 @@ class Handler(BaseHTTPRequestHandler):
         if not job_id:
             self._respond_json({"ok": False, "error": "job_id is required"}, status=400)
             return
-        with JOBS_LOCK:
-            job = JOBS.get(job_id)
+        job = self._resolve_job_for_analysis(job_id)
         if not job:
             self._respond_json({"ok": False, "error": "job not found"}, status=404)
             return
 
         if batched_analysis:
+            report_data_override = None
+            with JOBS_LOCK:
+                in_memory_job = JOBS.get(job_id)
+            if not in_memory_job:
+                try:
+                    report_data_override = self._load_job_report_json(job)
+                except Exception as exc:
+                    self._respond_json({"ok": False, "error": str(exc)}, status=400)
+                    return
             analysis_id = self._start_batched_analysis(
                 job_id,
                 llm,
                 batch_size=batch_size,
                 analysis_parallelism=analysis_parallelism,
                 analysis_retries=analysis_retries,
+                report_data_override=report_data_override,
                 large_report_mode=large_report_mode,
                 large_report_chunk_items=large_report_chunk_items,
             )
@@ -5952,6 +6243,19 @@ class Handler(BaseHTTPRequestHandler):
             self._respond_json({"ok": False, "error": str(exc)}, status=500)
             return
         token_stats = add_token_usage(llm["provider"], int(usage.get("total_tokens", 0)))
+        saved_name = save_ai_analysis_report(
+            job_id,
+            analysis_text=analysis,
+            provider=llm["provider"],
+            model=self._llm_model_used(llm),
+            prompt_source=llm.get("prompt_source", ""),
+            duration_seconds=max(0.0, time.time() - started_at),
+            token_usage=usage,
+            token_total=int(token_stats.get("total_tokens", 0)),
+            source="task",
+            status="done",
+            error="",
+        )
         self._respond_json(
             {
                 "ok": True,
@@ -5963,6 +6267,7 @@ class Handler(BaseHTTPRequestHandler):
                 "token_usage": usage,
                 "token_total": int(token_stats.get("total_tokens", 0)),
                 "duration_seconds": max(0.0, time.time() - started_at),
+                "analysis_report_name": saved_name,
             }
         )
 
@@ -6058,6 +6363,19 @@ class Handler(BaseHTTPRequestHandler):
             self._respond_json({"ok": False, "error": str(exc)}, status=500)
             return
         token_stats = add_token_usage(llm["provider"], int(usage.get("total_tokens", 0)))
+        saved_name = save_ai_analysis_report(
+            "history",
+            analysis_text=analysis,
+            provider=llm["provider"],
+            model=self._llm_model_used(llm),
+            prompt_source=llm.get("prompt_source", ""),
+            duration_seconds=max(0.0, time.time() - started_at),
+            token_usage=usage,
+            token_total=int(token_stats.get("total_tokens", 0)),
+            source="history",
+            status="done",
+            error="",
+        )
         self._respond_json(
             {
                 "ok": True,
@@ -6069,6 +6387,7 @@ class Handler(BaseHTTPRequestHandler):
                 "token_usage": usage,
                 "token_total": int(token_stats.get("total_tokens", 0)),
                 "duration_seconds": max(0.0, time.time() - started_at),
+                "analysis_report_name": saved_name,
             }
         )
 
@@ -6118,6 +6437,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/analysis_precheck":
             self._handle_analysis_precheck(form)
+            return
+        if self.path == "/analysis_stop":
+            self._handle_analysis_stop(form)
             return
         if self.path == "/analyze_job":
             self._handle_analyze_job(form)

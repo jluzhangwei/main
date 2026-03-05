@@ -25,6 +25,7 @@ class AnalysisService:
         add_token_usage: Callable[[str, int], Dict],
         status_store: AnalysisStatusStore,
         llm_adapter: LLMAdapter,
+        persist_callback: Optional[Callable[[Dict], None]] = None,
     ):
         self._jobs = jobs
         self._jobs_lock = jobs_lock
@@ -33,6 +34,7 @@ class AnalysisService:
         self._add_token_usage = add_token_usage
         self._status = status_store
         self._llm = llm_adapter
+        self._persist_callback = persist_callback
 
     def model_used(self, llm: Dict[str, str]) -> str:
         return self._llm.model_used(llm)
@@ -114,6 +116,7 @@ class AnalysisService:
                 "prompt_source": llm.get("prompt_source", ""),
                 "analysis_parallelism": max(1, int(analysis_parallelism or 1)),
                 "analysis_retries": max(0, int(analysis_retries or 0)),
+                "cancel_requested": False,
             },
         )
 
@@ -123,6 +126,31 @@ class AnalysisService:
         def _worker() -> None:
             try:
                 start_ts_local = time.time()
+                if self._status.is_cancel_requested(analysis_id):
+                    _update(
+                        status="canceled",
+                        stage="canceled",
+                        message="分析已取消",
+                        progress=100,
+                        duration_seconds=max(0.0, time.time() - start_ts_local),
+                    )
+                    if self._persist_callback:
+                        self._persist_callback(
+                            {
+                                "analysis_id": analysis_id,
+                                "job_id": job_id,
+                                "status": "canceled",
+                                "analysis": "分析已取消",
+                                "error": "",
+                                "provider_used": llm.get("provider", "chatgpt"),
+                                "model_used": self.model_used(llm),
+                                "prompt_source": llm.get("prompt_source", ""),
+                                "token_usage": {"total_tokens": 0},
+                                "token_total": 0,
+                                "duration_seconds": max(0.0, time.time() - start_ts_local),
+                            }
+                        )
+                    return
                 with self._jobs_lock:
                     job = self._jobs.get(job_id)
                 if report_data_override is not None:
@@ -171,6 +199,14 @@ class AnalysisService:
                     usage_local = {}
                     total_tokens_local = 0
                     for attempt_idx in range(retries + 1):
+                        if self._status.is_cancel_requested(analysis_id):
+                            return {
+                                "device": device_name,
+                                "analysis": f"[设备分析已取消] {device_name}",
+                                "token_usage": usage_local or {},
+                                "used_tokens": total_tokens_local,
+                                "error": "canceled",
+                            }
                         try:
                             if large_report_mode:
                                 chunk_inputs = analysis_pipeline.build_device_chunk_inputs(
@@ -181,6 +217,14 @@ class AnalysisService:
                                 )
                                 chunk_results: List[Dict] = []
                                 for chunk_idx, chunk_input in enumerate(chunk_inputs, start=1):
+                                    if self._status.is_cancel_requested(analysis_id):
+                                        return {
+                                            "device": device_name,
+                                            "analysis": f"[设备分析已取消] {device_name}",
+                                            "token_usage": usage_local or {},
+                                            "used_tokens": total_tokens_local,
+                                            "error": "canceled",
+                                        }
                                     _update(
                                         message=(
                                             f"分析设备 {device_name} ({done_snapshot + 1}/{total_devices_local}) "
@@ -240,6 +284,8 @@ class AnalysisService:
                             time.sleep(min(2.5, 0.8 * (attempt_idx + 1)))
 
                 for batch_idx in range(total_batches):
+                    if self._status.is_cancel_requested(analysis_id):
+                        break
                     start = batch_idx * size
                     end = min(total_devices, start + size)
                     batch_devices = devices[start:end]
@@ -289,6 +335,32 @@ class AnalysisService:
                                 progress=progress,
                             )
                     _update(done_batches=batch_idx + 1)
+
+                if self._status.is_cancel_requested(analysis_id):
+                    _update(
+                        status="canceled",
+                        stage="canceled",
+                        message=f"分析已取消（已完成 {done_devices}/{total_devices} 台设备）",
+                        progress=100,
+                        duration_seconds=max(0.0, time.time() - start_ts_local),
+                    )
+                    if self._persist_callback:
+                        self._persist_callback(
+                            {
+                                "analysis_id": analysis_id,
+                                "job_id": job_id,
+                                "status": "canceled",
+                                "analysis": "",
+                                "error": "",
+                                "provider_used": llm.get("provider", "chatgpt"),
+                                "model_used": self.model_used(llm),
+                                "prompt_source": llm.get("prompt_source", ""),
+                                "token_usage": {"total_tokens": total_tokens_used},
+                                "token_total": 0,
+                                "duration_seconds": max(0.0, time.time() - start_ts_local),
+                            }
+                        )
+                    return
 
                 expected_devices: List[str] = []
                 for dev_row in devices:
@@ -350,6 +422,22 @@ class AnalysisService:
                     token_usage={"total_tokens": total_tokens_used},
                     token_total=int(token_stats.get("total_tokens", 0)),
                 )
+                if self._persist_callback:
+                    self._persist_callback(
+                        {
+                            "analysis_id": analysis_id,
+                            "job_id": job_id,
+                            "status": "done",
+                            "analysis": final_text,
+                            "error": "",
+                            "provider_used": llm.get("provider", "chatgpt"),
+                            "model_used": self.model_used(llm),
+                            "prompt_source": llm.get("prompt_source", ""),
+                            "token_usage": {"total_tokens": total_tokens_used},
+                            "token_total": int(token_stats.get("total_tokens", 0)),
+                            "duration_seconds": max(0.0, time.time() - start_ts_local),
+                        }
+                    )
             except Exception as exc:
                 _update(
                     status="error",
@@ -358,6 +446,22 @@ class AnalysisService:
                     error=str(exc),
                     duration_seconds=max(0.0, time.time() - start_ts_local),
                 )
+                if self._persist_callback:
+                    self._persist_callback(
+                        {
+                            "analysis_id": analysis_id,
+                            "job_id": job_id,
+                            "status": "error",
+                            "analysis": "",
+                            "error": str(exc),
+                            "provider_used": llm.get("provider", "chatgpt"),
+                            "model_used": self.model_used(llm),
+                            "prompt_source": llm.get("prompt_source", ""),
+                            "token_usage": {"total_tokens": 0},
+                            "token_total": 0,
+                            "duration_seconds": max(0.0, time.time() - start_ts_local),
+                        }
+                    )
 
         threading.Thread(target=_worker, daemon=True).start()
         return analysis_id

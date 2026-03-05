@@ -67,6 +67,43 @@ class AnalysisStatusStore:
                 "token_total": int(task.get("token_total", 0) or 0),
             }
 
+    def request_cancel(self, analysis_id: str) -> bool:
+        with self._lock:
+            task = self._tasks.get(analysis_id)
+            if not task:
+                return False
+            if str(task.get("status", "")) in {"done", "error", "canceled"}:
+                return False
+            task["cancel_requested"] = True
+            task["message"] = "已请求停止分析，等待当前调用完成..."
+            return True
+
+    def is_cancel_requested(self, analysis_id: str) -> bool:
+        with self._lock:
+            task = self._tasks.get(analysis_id)
+            if not task:
+                return False
+            return bool(task.get("cancel_requested", False))
+
+    def find_analysis_id_by_job(self, job_id: str, running_only: bool = True) -> str:
+        target = str(job_id or "").strip()
+        if not target:
+            return ""
+        matched_id = ""
+        matched_ts = -1.0
+        with self._lock:
+            for aid, task in self._tasks.items():
+                if str(task.get("job_id", "") or "").strip() != target:
+                    continue
+                status = str(task.get("status", "") or "")
+                if running_only and status not in {"running"}:
+                    continue
+                start_ts = float(task.get("start_ts", 0.0) or 0.0)
+                if start_ts >= matched_ts:
+                    matched_ts = start_ts
+                    matched_id = str(aid)
+        return matched_id
+
     def exists(self, analysis_id: str) -> bool:
         with self._lock:
             return analysis_id in self._tasks
