@@ -311,6 +311,20 @@ def _strip_port(host_value: str) -> str:
     return host
 
 
+def resolve_lang(request: Request | None) -> str:
+    if request is None:
+        return "en"
+    qp = (request.query_params.get("lang") or "").strip().lower()
+    if qp.startswith("zh"):
+        return "zh"
+    if qp.startswith("en"):
+        return "en"
+    accept_lang = (request.headers.get("accept-language") or "").strip().lower()
+    if accept_lang.startswith("zh") or ",zh" in accept_lang:
+        return "zh"
+    return "en"
+
+
 def is_service_running(config: ServiceConfig) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.4)
@@ -335,7 +349,10 @@ def build_public_url(config: ServiceConfig, request: Request | None) -> str:
     if not host:
         host = "127.0.0.1"
 
-    return f"{scheme}://{host}:{config.port}{config.open_path}"
+    base = f"{scheme}://{host}:{config.port}{config.open_path}"
+    lang = resolve_lang(request)
+    sep = "&" if "?" in base else "?"
+    return f"{base}{sep}lang={lang}"
 
 
 def wait_until_running(config: ServiceConfig, timeout: float) -> bool:
@@ -773,6 +790,7 @@ async def home(request: Request):
     active_tab = (request.query_params.get("tab") or "dashboards").strip().lower()
     if active_tab not in {"dashboards", "help"}:
         active_tab = "dashboards"
+    lang = resolve_lang(request)
 
     cards = [serialize_status(svc, request) for svc in SERVICES.values()]
     return templates.TemplateResponse(
@@ -781,6 +799,8 @@ async def home(request: Request):
             "request": request,
             "services": cards,
             "active_tab": active_tab,
+            "lang": lang,
+            "is_en": lang == "en",
             "current_user": user_check,
             "is_admin": str(user_check.get("role", "user")) == "admin",
             "status_msg": (request.query_params.get("msg") or "").strip(),

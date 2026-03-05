@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="{{ 'en' if is_en else 'zh-CN' }}">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SEA NOC - Service Hub</title>
+  <title>{{ 'SEA NOC - Service Hub' if is_en else 'SEA NOC - 统一服务启动' }}</title>
   <style>
     @import url('/shared/header/shared-header.css');
     :root {
@@ -52,6 +52,15 @@
       justify-content: center;
       font-size: 14px;
       font-weight: 700;
+      padding: 0;
+    }
+    .top-links .lang-pill {
+      width: 40px;
+      height: 28px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       padding: 0;
     }
 
@@ -250,36 +259,37 @@
   </div>
   <div class="top-links">
     <a class="user-pill" href="#">{{ current_user.username }}({{ current_user.role }})</a>
-    {% if is_admin %}<a href="/admin">用户管理</a>{% endif %}
-    <a href="/logout">退出</a>
-    <a class="help-pill" href="/?tab=help" title="帮助">?</a>
+    {% if is_admin %}<a href="/admin?lang={{ lang }}">{{ 'Admin' if is_en else '用户管理' }}</a>{% endif %}
+    <a href="/logout">{{ 'Logout' if is_en else '退出' }}</a>
+    <a class="help-pill" href="/?tab=help&lang={{ lang }}" title="{{ 'Help' if is_en else '帮助' }}">?</a>
+    <a class="lang-pill" href="/?tab={{ active_tab }}&lang={{ 'zh' if is_en else 'en' }}" title="{{ 'Switch Language' if is_en else '切换语言' }}">{{ 'ZH' if is_en else 'EN' }}</a>
   </div>
 </div>
 
 <div class="mainnav">
   <div class="mainnav-left">
-    <div class="site-title">AIOps - Service Launcher</div>
+    <div class="site-title">{{ 'AIOps - Service Launcher' if is_en else 'AIOps - 统一服务启动页面' }}</div>
   </div>
 </div>
 
 <div class="wrap">
   {% if active_tab == 'help' %}
   <section class="panel">
-    <h1>Help - Service Hub 功能说明</h1>
-    <p class="sub">该页面用于统一管理 LLDP、Netlog、HealthCheck 三个服务。</p>
+    <h1>{{ 'Help - Service Hub Guide' if is_en else 'Help - Service Hub 功能说明' }}</h1>
+    <p class="sub">{{ 'This page centrally manages LLDP, Netlog and HealthCheck services.' if is_en else '该页面用于统一管理 LLDP、Netlog、HealthCheck 三个服务。' }}</p>
     <div style="margin-top:14px; display:grid; gap:10px;">
-      <div><b>1. 开关控制</b>：每个服务只有一个开关按钮，点击后执行启停。</div>
-      <div><b>2. 颜色定义</b>：黄色=处理中，绿色=运行中，红色=已停止。</div>
-      <div><b>3. 启动行为</b>：从红色切换时会启动服务并自动打开目标页面。</div>
-      <div><b>4. 停止行为</b>：从绿色切换时会停止服务，状态切回红色。</div>
-      <div><b>5. 卡片跳转</b>：服务运行后，点击服务卡片可随时再次打开对应页面。</div>
+      <div><b>{{ '1. Toggle Control' if is_en else '1. 开关控制' }}</b>{{ ': Use one toggle per service to start/stop.' if is_en else '：每个服务只有一个开关按钮，点击后执行启停。' }}</div>
+      <div><b>{{ '2. Color Legend' if is_en else '2. 颜色定义' }}</b>{{ ': Yellow=processing, Green=running, Red=stopped.' if is_en else '：黄色=处理中，绿色=运行中，红色=已停止。' }}</div>
+      <div><b>{{ '3. Start Behavior' if is_en else '3. 启动行为' }}</b>{{ ': Start does not auto-open. Open manually after green status.' if is_en else '：启动后不自动跳转，变绿后手动点击卡片跳转。' }}</div>
+      <div><b>{{ '4. Stop Behavior' if is_en else '4. 停止行为' }}</b>{{ ': Stopping returns status to red.' if is_en else '：从绿色切换时会停止服务，状态切回红色。' }}</div>
+      <div><b>{{ '5. Card Navigation' if is_en else '5. 卡片跳转' }}</b>{{ ': Click a running card any time to open the service page.' if is_en else '：服务运行后，点击服务卡片可随时再次打开对应页面。' }}</div>
     </div>
   </section>
   {% else %}
   <section class="panel">
     {% if status_msg %}<div class="status-msg">{{ status_msg }}</div>{% endif %}
-    <h1>统一服务启动页面</h1>
-    <p class="sub">使用开关控制服务：黄=处理中，绿=运行中，红=已停止。</p>
+    <h1>{{ 'Unified Service Launcher' if is_en else '统一服务启动页面' }}</h1>
+    <p class="sub">{{ 'Use toggle to control services: Yellow=processing, Green=running, Red=stopped.' if is_en else '使用开关控制服务：黄=处理中，绿=运行中，红=已停止。' }}</p>
     <div class="service-grid">
       {% for svc in services %}
       <article class="service-card {{ 'can-open' if svc.running else '' }}"
@@ -291,28 +301,53 @@
             {% if svc.service_id == 'lldp' %}LLDP{% elif svc.service_id == 'netlog' %}LOG{% else %}HC{% endif %}
           </div>
           <h2 class="name">{{ svc.name }}</h2>
-          <p class="desc">{{ svc.subtitle }}</p>
+          <p class="desc">
+            {% if is_en %}
+              {% if svc.service_id == 'lldp' %}LLDP topology collection and visualization
+              {% elif svc.service_id == 'netlog' %}Network log extraction and AI analysis
+              {% else %}Device inspection execution and reporting{% endif %}
+            {% else %}
+              {{ svc.subtitle }}
+            {% endif %}
+          </p>
           <div class="switch-row">
             <button class="power-toggle {{ 'toggle-green' if svc.running else 'toggle-red' }}"
                     type="button"
                     data-toggle-id="{{ svc.service_id }}"
                     data-service-url="{{ svc.url }}"
                     data-running="{{ '1' if svc.running else '0' }}"
-                    title="服务开关">⏻</button>
+                    title="{{ 'Service Toggle' if is_en else '服务开关' }}">⏻</button>
             <div id="status-{{ svc.service_id }}" class="status {{ 'status-running' if svc.running else 'status-stopped' }}">
-              {{ '运行中' if svc.running else '已停止' }}
+              {{ 'Running' if (is_en and svc.running) else ('Stopped' if is_en else ('运行中' if svc.running else '已停止')) }}
             </div>
           </div>
         </div>
       </article>
       {% endfor %}
     </div>
-    <div id="global_log" class="log-box">等待操作...</div>
+    <div id="global_log" class="log-box">{{ 'Waiting for action...' if is_en else '等待操作...' }}</div>
   </section>
   {% endif %}
 </div>
 
 <script>
+  const I18N = {
+    running: {{ ('Running' if is_en else '运行中') | tojson }},
+    stopped: {{ ('Stopped' if is_en else '已停止') | tojson }},
+    starting: {{ ('Starting...' if is_en else '启动中...') | tojson }},
+    stopping: {{ ('Stopping...' if is_en else '停止中...') | tojson }},
+    startingWait: {{ ('Starting, please wait...' if is_en else '启动中，请稍候') | tojson }},
+    statusRefreshFailed: {{ ('Status refresh failed: ' if is_en else '状态刷新失败: ') | tojson }},
+    launching: {{ ('Starting service...' if is_en else '正在启动服务...') | tojson }},
+    launchFailed: {{ ('Launch failed' if is_en else '启动失败') | tojson }},
+    startDoneHint: {{ ('When status turns green, click the card to open.' if is_en else '状态变为绿色后，请点击卡片跳转。') | tojson }},
+    stoppingAction: {{ ('Stopping service...' if is_en else '正在停止服务...') | tojson }},
+    stopFailed: {{ ('Stop failed' if is_en else '停止失败') | tojson }},
+    stoppedMsg: {{ ('Stopped' if is_en else '已停止') | tojson }},
+    loginUrl: {{ ('/login?lang=en' if is_en else '/login?lang=zh') | tojson }},
+  };
+  const IS_EN = {{ is_en | tojson }};
+
   function setStatus(serviceId, state, text) {
     const el = document.getElementById(`status-${serviceId}`);
     if (!el) return;
@@ -368,7 +403,7 @@
     try {
       const resp = await fetch('/api/services');
       if (resp.status === 401) {
-        window.location.href = '/login';
+        window.location.href = I18N.loginUrl;
         return;
       }
       if (!resp.ok) return;
@@ -377,38 +412,38 @@
       data.services.forEach((svc) => {
         const state = svc.running ? 'running' : 'idle';
         setToggleVisual(svc.service_id, state);
-        setStatus(svc.service_id, state, svc.running ? '运行中' : '已停止');
+        setStatus(svc.service_id, state, svc.running ? I18N.running : I18N.stopped);
       });
     } catch (err) {
-      setLog(`状态刷新失败: ${err}`);
+      setLog(`${I18N.statusRefreshFailed}${err}`);
     }
   }
 
   async function launchService(serviceId) {
     setServiceButtonsDisabled(serviceId, true);
     setToggleVisual(serviceId, 'starting');
-    setStatus(serviceId, 'starting', '启动中...');
-    setLog(`[${serviceId}] 正在启动服务...`);
+    setStatus(serviceId, 'starting', I18N.starting);
+    setLog(`[${serviceId}] ${I18N.launching}`);
 
     try {
       const resp = await fetch(`/api/services/${serviceId}/launch`, { method: 'POST' });
       const payload = await resp.json();
       if (!resp.ok || !payload.ok) {
-        throw new Error(payload.detail || payload.message || '启动失败');
+        throw new Error(payload.detail || payload.message || I18N.launchFailed);
       }
 
       if (payload.ready) {
         setToggleVisual(serviceId, 'running');
-        setStatus(serviceId, 'running', '运行中');
+        setStatus(serviceId, 'running', I18N.running);
       } else {
         setToggleVisual(serviceId, 'starting');
-        setStatus(serviceId, 'starting', '启动中，请稍候');
+        setStatus(serviceId, 'starting', I18N.startingWait);
       }
-      setLog(`[${payload.service_id}] ${payload.message || '服务已启动'}\n目标地址: ${payload.url}\n状态变为绿色后，请点击卡片跳转。`);
+      setLog(`[${payload.service_id}] ${payload.message || I18N.launching}\n${IS_EN ? 'Target URL' : '目标地址'}: ${payload.url}\n${I18N.startDoneHint}`);
     } catch (err) {
       setToggleVisual(serviceId, 'idle');
-      setStatus(serviceId, 'idle', '已停止');
-      setLog(`[${serviceId}] 启动失败: ${err}`);
+      setStatus(serviceId, 'idle', I18N.stopped);
+      setLog(`[${serviceId}] ${I18N.launchFailed}: ${err}`);
     } finally {
       setServiceButtonsDisabled(serviceId, false);
     }
@@ -417,22 +452,22 @@
   async function stopService(serviceId) {
     setServiceButtonsDisabled(serviceId, true);
     setToggleVisual(serviceId, 'starting');
-    setStatus(serviceId, 'starting', '停止中...');
-    setLog(`[${serviceId}] 正在停止服务...`);
+    setStatus(serviceId, 'starting', I18N.stopping);
+    setLog(`[${serviceId}] ${I18N.stoppingAction}`);
 
     try {
       const resp = await fetch(`/api/services/${serviceId}/stop`, { method: 'POST' });
       const payload = await resp.json();
       if (!resp.ok || !payload.ok) {
-        throw new Error(payload.detail || payload.message || '停止失败');
+        throw new Error(payload.detail || payload.message || I18N.stopFailed);
       }
       setToggleVisual(serviceId, 'idle');
-      setStatus(serviceId, 'idle', '已停止');
-      setLog(`[${payload.service_id}] ${payload.message || '服务已停止'}`);
+      setStatus(serviceId, 'idle', I18N.stopped);
+      setLog(`[${payload.service_id}] ${payload.message || I18N.stoppedMsg}`);
     } catch (err) {
       setToggleVisual(serviceId, 'running');
-      setStatus(serviceId, 'running', '运行中');
-      setLog(`[${serviceId}] 停止失败: ${err}`);
+      setStatus(serviceId, 'running', I18N.running);
+      setLog(`[${serviceId}] ${I18N.stopFailed}: ${err}`);
     } finally {
       setServiceButtonsDisabled(serviceId, false);
     }
@@ -464,6 +499,7 @@
 
   refreshStatus();
   setInterval(refreshStatus, 12000);
+
 </script>
 </body>
 </html>
