@@ -5,95 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{{ title or 'AIOps - Netlog Extractor' }}</title>
   <style>
+    @import url('/shared/header/shared-header.css');
     :root { --bg:#f6f8fb; --card:#fff; --text:#1b2430; --line:#d6dde8; --accent:#006c9c; --brand:#111; --navbg:#ffffff; --active:#d43a2f; }
     body { margin:0; font-family: "Segoe UI", "PingFang SC", sans-serif; background:var(--bg); color:var(--text); }
-    .topbar {
-      background: var(--brand);
-      color: #fff;
-      display:flex;
-      justify-content:space-between;
-      align-items:center;
-      padding: 8px 18px;
-      gap: 14px;
-    }
-    .brand {
-      display:flex;
-      align-items:center;
-      gap:10px;
-      min-width: 0;
-    }
-    .brand-name { font-size: 21px; font-weight: 700; color:#fff; white-space:nowrap; }
-    .sea-lockup {
-      display:flex;
-      align-items:center;
-      gap:10px;
-      background:#fff;
-      border-radius:10px;
-      padding:2px 8px 2px 2px;
-      line-height:1;
-    }
-    .sea-mark { width:42px; height:42px; display:block; }
-    .sea-text {
-      display:flex;
-      flex-direction:column;
-      justify-content:center;
-      gap:1px;
-    }
-    .sea-text-main {
-      font-size:20px;
-      font-weight:800;
-      color:#1e2b8f;
-      letter-spacing:.2px;
-    }
-    .sea-text-sub {
-      font-size:9px;
-      color:#1e2b8f;
-      opacity:.9;
-      letter-spacing:.1px;
-    }
-    .top-links { display:flex; align-items:center; gap:8px; font-size:14px; color:#e5e7eb; white-space:nowrap; }
-    .top-links a, .top-links button { color:#e5e7eb; text-decoration:none; }
-    .app-circle-btn {
-      width: 28px;
-      height: 28px;
-      min-width: 28px;
-      border-radius: 999px;
-      border: 1px solid #8c96a8;
-      background: transparent !important;
-      color: #e5e7eb !important;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      line-height: 1;
-      font-size: 14px;
-      font-weight: 700;
-      cursor: pointer;
-      padding: 0;
-      box-sizing: border-box;
-    }
-    .app-circle-btn:hover { background: #1f2937; }
-    .mainnav {
-      background: var(--navbg);
-      border-bottom: 1px solid var(--line);
-      display:flex;
-      justify-content:space-between;
-      align-items:center;
-      padding: 0 18px;
-      min-height: 58px;
-      gap: 10px;
-    }
-    .mainnav-left { display:flex; align-items:center; gap:12px; min-width:0; flex:1; }
-    .site-title { font-size: 22px; font-weight: 700; color:#303643; white-space:nowrap; }
-    .menu { display:flex; align-items:center; gap:16px; margin-left:auto; justify-content:flex-end; }
-    .menu a {
-      color:#374151;
-      text-decoration:none;
-      font-size:15px;
-      font-weight:600;
-      padding: 18px 0 14px;
-      border-bottom: 3px solid transparent;
-    }
-    .menu a.active { color:#111827; border-bottom-color: var(--active); }
     .wrap { max-width:980px; margin:16px auto; padding:0 14px; }
     .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:12px; }
     h2 { margin:4px 0 10px; font-size:21px; }
@@ -109,17 +23,6 @@
     .muted { color:#6a7480; font-size:12px; margin:4px 0 0; }
     .error { color:#c72020; font-weight:700; font-size:13px; margin-bottom:8px; }
     @media (max-width: 780px) {
-      .topbar, .mainnav { padding-left:12px; padding-right:12px; }
-      .brand-name { font-size: 17px; }
-      .sea-mark { width:34px; height:34px; }
-      .sea-text-main { font-size:16px; }
-      .sea-text-sub { font-size:7px; }
-      .site-title { font-size: 18px; }
-      .menu { gap:12px; flex-wrap:wrap; }
-      .menu a { font-size:14px; padding:10px 0 8px; }
-      .mainnav { align-items:flex-end; padding-top:4px; padding-bottom:4px; }
-      .mainnav-left { flex-direction:column; align-items:flex-start; gap:4px; }
-      .top-links { display:none; }
       .wrap { max-width:100%; }
       .row { grid-template-columns:1fr; }
       form input, form select, form textarea { max-width:100%; }
@@ -133,27 +36,7 @@
 {% set lang = 'en' if lang_raw.lower().startswith('en') else 'zh' %}
 <div class="topbar">
   <div class="brand">
-    <div class="sea-lockup" aria-label="Sea Limited logo">
-      <svg class="sea-mark" viewBox="0 0 100 100" role="img" aria-hidden="true">
-        <defs>
-          <clipPath id="seaClip"><circle cx="50" cy="50" r="48"/></clipPath>
-        </defs>
-        <circle cx="50" cy="50" r="48" fill="#d9eef7"/>
-        <g clip-path="url(#seaClip)">
-          <path d="M-5 18 C 20 6, 45 8, 105 20 L105 36 C60 26, 30 24, -5 34 Z" fill="#f35a31"/>
-          <path d="M-5 32 C 25 22, 55 24, 105 36 L105 52 C62 44, 30 42, -5 48 Z" fill="#f28a2a"/>
-          <path d="M-5 46 C 24 40, 55 42, 105 52 L105 66 C62 58, 31 56, -5 60 Z" fill="#10b981"/>
-          <path d="M-5 58 C 24 54, 56 56, 105 66 L105 80 C62 74, 30 72, -5 74 Z" fill="#22d3ee"/>
-          <path d="M-5 72 C 26 70, 58 72, 105 80 L105 95 C62 91, 30 90, -5 90 Z" fill="#2563eb"/>
-          <path d="M-5 86 C 30 87, 62 88, 105 95 L105 110 L-5 110 Z" fill="#1e3a8a"/>
-        </g>
-      </svg>
-      <div class="sea-text">
-        <span class="sea-text-main">sea</span>
-        <span class="sea-text-sub">connecting the dots</span>
-      </div>
-    </div>
-    <div class="brand-name">SEA NOC</div>
+    <img class="infra-logo" src="/shared/header/infra-logo.png" alt="infra logo" />
   </div>
   <div class="top-links">
     <a class="app-circle-btn" href="/help?lang={{ lang }}" title="{{ 'View Docs' if lang == 'en' else '查看说明文档' }}">?</a>

@@ -25,11 +25,13 @@ WORKSPACE_ROOT = APP_DIR.parent
 LOG_DIR = APP_DIR / "logs"
 STATE_DIR = APP_DIR / "state"
 STATIC_DIR = APP_DIR / "static"
+SHARED_DIR = APP_DIR / "shared"
 AUTH_DB_PATH = STATE_DIR / "auth_db.json"
 LEGACY_AUTH_DB_PATH = WORKSPACE_ROOT / "healthcheck" / "state" / "auth_db.json"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
+SHARED_DIR.mkdir(parents=True, exist_ok=True)
 
 SESSION_COOKIE_NAME = "sh_session"
 SESSION_TTL_SECONDS = 12 * 60 * 60
@@ -126,6 +128,7 @@ SERVICES: dict[str, ServiceConfig] = {
 templates = Jinja2Templates(directory=(APP_DIR / "templates").as_posix())
 app = FastAPI(title="SEA NOC Service Hub", version="1.1.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR.as_posix()), name="static")
+app.mount("/shared", StaticFiles(directory=SHARED_DIR.as_posix()), name="shared")
 
 
 def _now_ts() -> int:

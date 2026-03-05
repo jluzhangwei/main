@@ -1,0 +1,202 @@
+:root {
+  --shared-bg: #f7f8fa;
+  --shared-text: #2f3b4c;
+  --shared-line: #d7dbe3;
+  --shared-link: #4f5b6e;
+  --shared-btn-border: #c5cedc;
+  --shared-btn-text: #334155;
+  --shared-nav-line: #d6dde8;
+  --shared-title: #303643;
+  --shared-menu: #374151;
+  --shared-menu-active: #111827;
+  --shared-menu-active-line: #d43a2f;
+}
+
+.topbar,
+.app-topbar {
+  background: var(--shared-bg);
+  color: var(--shared-text);
+  border-bottom: 1px solid var(--shared-line);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 18px 0;
+  gap: 14px;
+  min-height: 56px;
+  font-family: "Segoe UI", "PingFang SC", sans-serif;
+}
+
+.brand,
+.app-brand {
+  display: flex;
+  align-items: flex-end;
+  gap: 18px;
+  min-width: 0;
+  flex: 1;
+}
+
+.infra-logo {
+  width: 240px;
+  min-width: 200px;
+  height: 64px;
+  display: block;
+  object-fit: contain;
+}
+
+.top-links,
+.app-top-links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--shared-link);
+  white-space: nowrap;
+  padding-bottom: 8px;
+}
+
+.top-links a,
+.top-links button,
+.app-top-links a,
+.app-top-links button {
+  color: var(--shared-link);
+  text-decoration: none;
+}
+
+.app-circle-btn {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  border-radius: 999px;
+  border: 1px solid var(--shared-btn-border);
+  background: #ffffff !important;
+  color: var(--shared-btn-text) !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.app-circle-btn:hover {
+  background: #eef3fb !important;
+}
+
+.mainnav,
+.app-mainnav {
+  background: #ffffff;
+  border-bottom: 1px solid var(--shared-nav-line);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 18px;
+  min-height: 50px;
+  gap: 10px;
+  font-family: "Segoe UI", "PingFang SC", sans-serif;
+}
+
+.mainnav-left,
+.app-mainnav-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+
+.site-title,
+.app-title {
+  font-family: "Avenir Next", "SF Pro Display", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  color: var(--shared-title);
+  white-space: nowrap;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+}
+
+.menu,
+.app-menu {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-left: auto;
+  justify-content: flex-end;
+}
+
+.menu a,
+.app-menu a {
+  color: var(--shared-menu);
+  text-decoration: none;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 18px 0 14px;
+  border-bottom: 3px solid transparent;
+}
+
+.menu a.active,
+.app-menu a.active {
+  color: var(--shared-menu-active);
+  border-bottom-color: var(--shared-menu-active-line);
+}
+
+@media (max-width: 780px) {
+  .topbar,
+  .app-topbar,
+  .mainnav,
+  .app-mainnav {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .topbar,
+  .app-topbar {
+    padding-top: 6px;
+  }
+
+  .infra-logo {
+    width: 188px;
+    height: 50px;
+    min-width: 188px;
+  }
+
+  .site-title,
+  .app-title {
+    font-size: 18px;
+  }
+
+  .menu,
+  .app-menu {
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .menu a,
+  .app-menu a {
+    font-size: 14px;
+    padding: 10px 0 8px;
+  }
+
+  .mainnav,
+  .app-mainnav {
+    align-items: flex-end;
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
+
+  .mainnav-left,
+  .app-mainnav-left {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .top-links,
+  .app-top-links {
+    display: none;
+  }
+}

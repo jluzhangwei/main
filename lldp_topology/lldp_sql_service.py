@@ -39,6 +39,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent
+SHARED_DIR = BASE_DIR.parent / "service_hub" / "shared"
 TMP_DIR = BASE_DIR / "tmp_csv"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 LINK_UTIL_CACHE_FILE = TMP_DIR / "link_util_cache.csv"
@@ -2820,6 +2821,21 @@ def download_debug_file(filename: str):
     return FileResponse(path, media_type="text/plain", filename=safe_name)
 
 
+@app.get("/lldp.html")
+def serve_lldp_html():
+    page = BASE_DIR / "lldp.html"
+    if not page.exists():
+        raise HTTPException(status_code=404, detail="lldp.html not found")
+    response = FileResponse(page, media_type="text/html")
+    response.headers["X-LLDP-Route"] = "serve_lldp_html"
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
+if SHARED_DIR.is_dir():
+    app.mount("/shared", StaticFiles(directory=str(SHARED_DIR), html=False), name="shared")
 app.mount("/", StaticFiles(directory=str(BASE_DIR), html=True), name="static")
 
 

@@ -17,6 +17,8 @@ from .task_manager import TaskManager
 def create_app() -> FastAPI:
     base_dir = Path(__file__).resolve().parent.parent
     output_dir = base_dir / "output"
+    shared_dir = base_dir.parent / "service_hub" / "shared"
+    static_dir = base_dir / "static"
     db_path = base_dir / "tasks.db"
 
     app = FastAPI(title="NetLog Extractor", version="1.0.0")
@@ -30,6 +32,9 @@ def create_app() -> FastAPI:
     app.include_router(page_router)
     app.include_router(api_router)
     app.include_router(ai_router)
+    if shared_dir.is_dir():
+        app.mount("/shared", StaticFiles(directory=shared_dir.as_posix()), name="shared")
+    app.mount("/static", StaticFiles(directory=static_dir.as_posix()), name="static")
     app.mount("/output", StaticFiles(directory=output_dir.as_posix()), name="output")
     return app
 

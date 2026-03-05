@@ -37,6 +37,9 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         lang = normalize_lang((query.get("lang", [""])[0] or "").strip())
+        if parsed.path.startswith("/shared/"):
+            self._serve_shared_asset(parsed.path[len("/shared/"):])
+            return
         if parsed.path == "/logout":
             self._redirect(with_lang("/", lang))
             return
@@ -153,6 +156,24 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_error(404, "Not Found")
         return
+
+    def _serve_shared_asset(self, relpath: str) -> None:
+        rel = (relpath or "").lstrip("/")
+        if not rel or ".." in rel.split("/"):
+            self.send_error(400, "Invalid static asset")
+            return
+        target = SHARED_DIR / rel
+        if not target.is_file():
+            self.send_error(404, "Not Found")
+            return
+        data = target.read_bytes()
+        ctype, _ = mimetypes.guess_type(target.name)
+        self.send_response(200)
+        self.send_header("Content-Type", ctype or "application/octet-stream")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.end_headers()
+        self.wfile.write(data)
 
     def _serve_download(self, raw_query: str) -> None:
         query = parse_qs(raw_query)
@@ -1451,5 +1472,3 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args) -> None:
         return
-
-

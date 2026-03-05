@@ -9,15 +9,16 @@
   <script src="https://unpkg.com/cytoscape-fcose@2.2.1/cytoscape-fcose.min.js"></script>
 
   <style>
+    @import url('/shared/header/shared-header.css');
     :root {
       --sea-blue: #0f6fff;
       --sea-dark: #0f172a;
       --sea-gray: #e5e7eb;
     }
     body { margin: 0; font-family: "Segoe UI", -apple-system, system-ui, Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f8fafc; }
-    .wrap { display: grid; grid-template-columns: 430px 1fr; height: 100vh; }
+    .wrap { display: grid; grid-template-columns: 430px 1fr; height: calc(100vh - 106px); }
     .panel { padding: 14px; border-right: 1px solid #e5e7eb; overflow: auto; background: #ffffff; box-shadow: 4px 0 24px rgba(0,0,0,0.04); }
-    #cy { height: 100vh; width: 100%; background: #ffffff; }
+    #cy { height: 100%; width: 100%; background: #ffffff; }
 
     h1 { font-size: 17px; margin: 0 0 10px; letter-spacing: 0.2px; }
     h2 { font-size: 13px; margin: 14px 0 6px; color: #374151; }
@@ -78,69 +79,8 @@
       box-shadow: 0 0 0 3px rgba(15, 111, 255, 0.35);
       border-color: var(--sea-blue) !important;
     }
-    .top-hero {
-      margin: -14px -14px 12px -14px;
-      overflow: hidden;
-    }
-    .app-topbar {
-      background:#0a0c10; color:#fff; display:flex; justify-content:space-between; align-items:center;
-      padding:8px 18px; gap:14px;
-      position: relative;
-      min-height: 56px;
-      font-family: "Helvetica Neue", "PingFang SC", sans-serif;
-    }
-    .app-brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
-    .app-logo { display:inline-flex; align-items:center; gap:10px; background:#fff; border-radius:10px; padding:2px 8px 2px 2px; color:#1e2b8f; font-weight:700; }
-    .app-logo-mark {
-      width:42px; height:42px; border-radius:999px; display:inline-block;
-      background: linear-gradient(180deg, #f35a31 0 16%, #f28a2a 16% 32%, #10b981 32% 50%, #22d3ee 50% 68%, #2563eb 68% 84%, #1e3a8a 84% 100%);
-    }
-    .app-logo-text { display:flex; flex-direction:column; line-height:1.1; }
-    .app-logo-sea { font-size:20px; font-weight:800; }
-    .app-logo-sub { font-size:9px; opacity:0.9; }
-    .app-brand-name { font-size:21px; font-weight:700; color:#fff; white-space:nowrap; }
-    .app-top-links {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      white-space: nowrap;
-      position: absolute;
-      right: 18px;
-      top: 50%;
-      transform: translateY(-50%);
-    }
-    .app-circle-btn {
-      width: 28px;
-      height: 28px;
-      min-width: 28px;
-      border-radius: 999px;
-      border: 1px solid #8c96a8;
-      background: transparent;
-      color: #e5e7eb;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      line-height: 1;
-      font-size: 14px;
-      font-weight: 700;
-      cursor: pointer;
-      padding: 0;
-      box-sizing: border-box;
-      text-decoration: none;
-    }
-    .app-circle-btn:hover { background: #1f2937; }
-    .app-mainnav {
-      background:#fff; border-bottom:1px solid #d6dde8; display:flex; justify-content:space-between;
-      align-items:center; min-height:58px; padding:0 18px; gap:10px;
-      font-family: "Helvetica Neue", "PingFang SC", sans-serif;
-    }
-    .app-title { font-size:22px; font-weight:700; color:#303643; white-space:nowrap; }
+    .top-hero { width: 100%; }
     @media (max-width: 740px) {
-      .app-topbar, .app-mainnav { padding-left: 12px; padding-right: 12px; }
-      .app-brand-name { font-size: 17px; }
-      .app-logo-sea { font-size: 16px; }
-      .app-title { font-size: 18px; }
-      .app-top-links { right: 12px; }
       .util-grid { grid-template-columns: 1fr; }
       .util-grid .span-2 { grid-column: auto; }
     }
@@ -216,28 +156,21 @@
   </style>
 </head>
 <body>
+<div class="top-hero">
+  <div class="app-topbar">
+    <div class="app-brand">
+      <img class="infra-logo" src="/shared/header/infra-logo.png" alt="infra logo" />
+    </div>
+    <div class="app-top-links">
+      <a class="app-circle-btn" href="lldp-manual.html" target="_blank" title="查看使用手册">?</a>
+    </div>
+  </div>
+  <div class="app-mainnav">
+    <div class="app-title">AIOps - LLDP Topology Runner</div>
+  </div>
+</div>
 <div class="wrap">
   <div class="panel">
-    <div class="top-hero">
-      <div class="app-topbar">
-        <div class="app-brand">
-          <div class="app-logo">
-            <span class="app-logo-mark"></span>
-            <span class="app-logo-text">
-              <span class="app-logo-sea">sea</span>
-              <span class="app-logo-sub">connecting the dots</span>
-            </span>
-          </div>
-          <div class="app-brand-name">SEA NOC</div>
-        </div>
-        <div class="app-top-links">
-          <a class="app-circle-btn" href="lldp-manual.html" target="_blank" title="查看使用手册">?</a>
-        </div>
-      </div>
-      <div class="app-mainnav">
-        <div class="app-title">AIOps - LLDP Topology Runner</div>
-      </div>
-    </div>
     <div class="box">
       <div><b>状态：</b><span id="status">等待导入</span></div>
       <div class="kvs" style="margin-top:8px;">

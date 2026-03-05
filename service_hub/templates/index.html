@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SEA NOC - Service Hub</title>
   <style>
+    @import url('/shared/header/shared-header.css');
     :root {
       --bg: #f6f8fb;
       --card: #ffffff;
@@ -25,49 +26,6 @@
       background: var(--bg);
       color: var(--text);
     }
-    .topbar {
-      background: #f7f8fa;
-      color: #2f3b4c;
-      border-bottom: 1px solid #d7dbe3;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 8px 18px 0;
-      gap: 14px;
-    }
-    .brand {
-      display: flex;
-      align-items: flex-end;
-      gap: 18px;
-      min-width: 0;
-      flex: 1;
-    }
-    .infra-logo {
-      width: 240px;
-      min-width: 200px;
-      height: 64px;
-      display: block;
-    }
-    .top-menu {
-      display: flex;
-      align-items: center;
-      gap: 18px;
-      margin-bottom: 1px;
-      min-height: 40px;
-    }
-    .top-menu a {
-      color: #5d6573;
-      text-decoration: none;
-      font-size: 13px;
-      font-weight: 600;
-      padding: 12px 0 11px;
-      border-bottom: 2px solid transparent;
-      white-space: nowrap;
-    }
-    .top-menu a.active {
-      color: #1984d6;
-      border-bottom-color: #21a0eb;
-    }
     .top-links { display:flex; align-items:center; gap:8px; padding-bottom: 8px; }
     .top-links a {
       color:#4f5b6e;
@@ -85,48 +43,16 @@
       background:#eef3fb;
       color:#334155;
     }
-
-    .mainnav {
-      background: #ffffff;
-      border-bottom: 1px solid var(--line);
-      display: flex;
-      justify-content: space-between;
+    .top-links .help-pill {
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      display: inline-flex;
       align-items: center;
-      padding: 0 18px;
-      min-height: 50px;
-      gap: 10px;
-    }
-    .mainnav-left {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      min-width: 0;
-      flex: 1;
-    }
-    .site-title {
-      font-size: 22px;
+      justify-content: center;
+      font-size: 14px;
       font-weight: 700;
-      color: #303643;
-      white-space: nowrap;
-    }
-    .menu {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-      margin-left: auto;
-      justify-content: flex-end;
-    }
-    .menu a {
-      color: #374151;
-      text-decoration: none;
-      font-size: 15px;
-      font-weight: 600;
-      padding: 18px 0 14px;
-      border-bottom: 3px solid transparent;
-    }
-    .menu a.active {
-      color: #111827;
-      border-bottom-color: var(--active);
+      padding: 0;
     }
 
     .wrap {
@@ -285,17 +211,7 @@
       .service-grid { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
     }
     @media (max-width: 780px) {
-      .topbar, .mainnav { padding-left: 12px; padding-right: 12px; }
-      .topbar { padding-top: 6px; }
       .brand { flex-wrap: wrap; align-items: center; gap: 10px; }
-      .infra-logo { width: 188px; height: 50px; min-width: 188px; }
-      .top-menu { gap: 12px; min-height: 32px; }
-      .top-menu a { font-size: 12px; padding: 8px 0; }
-      .site-title { font-size: 18px; }
-      .menu { gap: 12px; flex-wrap: wrap; }
-      .menu a { font-size: 14px; padding: 10px 0 8px; }
-      .mainnav { align-items: flex-end; padding-top: 4px; padding-bottom: 4px; }
-      .mainnav-left { flex-direction: column; align-items: flex-start; gap: 4px; }
       .service-grid { grid-template-columns: 1fr; }
       .service-btn { min-height: 180px; }
       .power-toggle { width: 52px; height: 52px; font-size: 24px; }
@@ -305,26 +221,19 @@
 <body>
 <div class="topbar">
   <div class="brand">
-    <img class="infra-logo" src="/static/infra-logo.png" alt="infra logo" />
-    <nav class="top-menu" aria-label="primary">
-      <a href="/" class="{{ 'active' if active_tab == 'dashboards' else '' }}">Dashboards</a>
-      <a href="/?tab=help" class="{{ 'active' if active_tab == 'help' else '' }}">Help</a>
-    </nav>
+    <img class="infra-logo" src="/shared/header/infra-logo.png" alt="infra logo" />
   </div>
   <div class="top-links">
     <a class="user-pill" href="#">{{ current_user.username }}({{ current_user.role }})</a>
     {% if is_admin %}<a href="/admin">用户管理</a>{% endif %}
     <a href="/logout">退出</a>
+    <a class="help-pill" href="/?tab=help" title="帮助">?</a>
   </div>
 </div>
 
 <div class="mainnav">
   <div class="mainnav-left">
     <div class="site-title">AIOps - Service Launcher</div>
-    <div class="menu">
-      <a href="/" class="active">Service Hub</a>
-      {% if is_admin %}<a href="/admin">Admin</a>{% endif %}
-    </div>
   </div>
 </div>
 

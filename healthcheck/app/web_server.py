@@ -41,6 +41,8 @@ except ModuleNotFoundError:
 
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_DIR.parent
+SHARED_DIR = PROJECT_ROOT.parent / "service_hub" / "shared"
+SHARED_HEADER_CSS_PATH = SHARED_DIR / "header" / "shared-header.css"
 TEMPLATE_DIR = APP_DIR / "templates"
 SCRIPT_PATH = APP_DIR / "healthcheck.py"
 INTENTS_PATH = PROJECT_ROOT / "data" / "intents.txt"
@@ -179,74 +181,15 @@ def render_base_page(
 
 
 def build_app_header_css() -> str:
-    return """
-    html { overflow-y: scroll; }
-    .app-topbar {
-      background:#f7f8fa; color:#2f3b4c; display:flex; justify-content:space-between; align-items:center;
-      padding:8px 18px 0; gap:14px;
-      border-bottom: 1px solid #d7dbe3;
-      min-height: 56px;
-      font-family: "Segoe UI", "PingFang SC", sans-serif;
-    }
-    .app-brand { display:flex; align-items:flex-end; gap:18px; min-width:0; flex: 1; }
-    .app-logo { display:inline-flex; align-items:center; gap:10px; background:#fff; border-radius:10px; padding:2px 8px 2px 2px; color:#1e2b8f; font-weight:700; }
-    .app-logo-mark {
-      width:42px; height:42px; border-radius:999px; display:inline-block;
-      background: linear-gradient(180deg, #f35a31 0 16%, #f28a2a 16% 32%, #10b981 32% 50%, #22d3ee 50% 68%, #2563eb 68% 84%, #1e3a8a 84% 100%);
-    }
-    .app-logo-text { display:flex; flex-direction:column; line-height:1.1; }
-    .app-logo-sea { font-size:20px; font-weight:800; }
-    .app-logo-sub { font-size:9px; opacity:0.9; }
-    .app-top-links { display:flex; align-items:center; gap:8px; font-size:14px; color:#4f5b6e; white-space:nowrap; padding-bottom: 8px; }
-    .app-top-links a, .app-top-links button { color:#4f5b6e; text-decoration:none; }
-    .app-circle-btn {
-      width: 28px;
-      height: 28px;
-      min-width: 28px;
-      border-radius: 999px;
-      border: 1px solid #c5cedc;
-      background: #ffffff !important;
-      color: #334155 !important;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      line-height: 1;
-      font-size: 14px;
-      font-weight: 700;
-      cursor: pointer;
-      padding: 0;
-      box-sizing: border-box;
-    }
-    .app-circle-btn:hover { background: #eef3fb !important; }
-    .app-mainnav {
-      background:#fff; border-bottom:1px solid #d6dde8; display:flex; justify-content:space-between;
-      align-items:center; min-height:50px; padding:0 18px; gap:10px;
-      font-family: "Segoe UI", "PingFang SC", sans-serif;
-    }
-    .app-title {
-      font-family: "Avenir Next", "SF Pro Display", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-      font-size:22px;
-      font-weight:800;
-      letter-spacing:0.2px;
-      color:#303643;
-      white-space:nowrap;
-      -webkit-font-smoothing: antialiased;
-      text-rendering: geometricPrecision;
-    }
-    .app-menu { display:inline-flex; align-items:center; gap:16px; }
-    .app-menu a {
-      color:#374151; text-decoration:none; font-size:15px; font-weight:600;
-      padding:18px 0 14px; border-bottom:3px solid transparent;
-    }
-    .app-menu a.active { color:#111827; border-bottom-color:#d43a2f; }
-    @media (max-width: 740px) {
-      .app-topbar, .app-mainnav { padding-left: 12px; padding-right: 12px; }
-      .app-topbar { padding-top: 6px; }
-      .app-logo-sea { font-size: 16px; }
-      .app-menu a { font-size: 14px; padding: 10px 0 8px; }
-      .app-title { font-size: 18px; }
-      .app-top-links { display:none; }
-    }
+    shared_css = ""
+    try:
+        if SHARED_HEADER_CSS_PATH.is_file():
+            shared_css = SHARED_HEADER_CSS_PATH.read_text(encoding="utf-8")
+    except Exception:
+        shared_css = ""
+    return f"""
+    html {{ overflow-y: scroll; }}
+    {shared_css}
 """
 
 
@@ -266,13 +209,7 @@ def build_app_header_html(lang: str, active_menu: str = "runner") -> str:
     return f"""
   <div class="app-topbar">
     <div class="app-brand">
-      <div class="app-logo">
-        <span class="app-logo-mark"></span>
-        <span class="app-logo-text">
-          <span class="app-logo-sea">sea</span>
-          <span class="app-logo-sub">connecting the dots</span>
-        </span>
-      </div>
+      <img class="infra-logo" src="/shared/header/infra-logo.png" alt="infra logo" />
     </div>
     <div class="app-top-links">
       <a class="app-circle-btn" href="{guide_link}" title="View Docs">?</a>
