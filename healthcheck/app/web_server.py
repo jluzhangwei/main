@@ -41,6 +41,7 @@ except ModuleNotFoundError:
 
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_DIR.parent
+TEMPLATE_DIR = APP_DIR / "templates"
 SCRIPT_PATH = APP_DIR / "healthcheck.py"
 INTENTS_PATH = PROJECT_ROOT / "data" / "intents.txt"
 REPORT_DIR = PROJECT_ROOT / "output" / "reports"
@@ -143,6 +144,38 @@ def normalize_lang(value: str) -> str:
 def with_lang(path: str, lang: str) -> str:
     separator = "&" if "?" in path else "?"
     return f"{path}{separator}lang={normalize_lang(lang)}"
+
+
+def render_html_template(template_name: str, context: Dict[str, str]) -> str:
+    path = TEMPLATE_DIR / template_name
+    text = path.read_text(encoding="utf-8")
+    out = text
+    for k, v in (context or {}).items():
+        out = out.replace("{{" + str(k) + "}}", str(v))
+    return out
+
+
+def render_base_page(
+    *,
+    lang: str,
+    title: str,
+    header_html: str,
+    page_body: str,
+    page_css: str = "",
+    page_script: str = "",
+) -> str:
+    return render_html_template(
+        "base.html",
+        {
+            "LANG": "en" if normalize_lang(lang) == "en" else "zh-CN",
+            "PAGE_TITLE": html.escape(str(title or "")),
+            "HEADER_CSS": build_app_header_css(),
+            "PAGE_CSS": page_css or "",
+            "HEADER_HTML": header_html or "",
+            "PAGE_BODY": page_body or "",
+            "PAGE_SCRIPT": page_script or "",
+        },
+    )
 
 
 def build_app_header_css() -> str:
@@ -4657,7 +4690,6 @@ def build_tasks_page(lang: str = "zh", auth_username: str = "", auth_role: str =
     """
     title = "任务页面" if lang == "zh" else "Tasks"
     body_html = f"""
-    {build_app_header_html(lang, "tasks")}
     <div class="wrap">
       <div class="card">
         <h2>{title}</h2>
@@ -4668,22 +4700,13 @@ def build_tasks_page(lang: str = "zh", auth_username: str = "", auth_role: str =
       </div>
     </div>
     """
-    return f"""<!DOCTYPE html>
-<html lang="{ 'en' if lang == 'en' else 'zh-CN' }">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{html.escape(title)}</title>
-  <style>
-    {build_app_header_css()}
-    {page_css}
-  </style>
-</head>
-<body>
-{body_html}
-</body>
-</html>
-"""
+    return render_base_page(
+        lang=lang,
+        title=title,
+        header_html=build_app_header_html(lang, "tasks"),
+        page_body=body_html,
+        page_css=page_css,
+    )
 
 
 def build_ai_settings_page(lang: str = "zh", auth_username: str = "", auth_role: str = "user", can_modify: bool = True) -> str:
@@ -4740,7 +4763,6 @@ def build_ai_settings_page(lang: str = "zh", auth_username: str = "", auth_role:
     title = "AI 设置" if not is_en else "AI Settings"
 
     body_html = f"""
-  {build_app_header_html(lang, "ai")}
   <div class="wrap">
     <div class="card ai-card">
       <div class="ai-head">
@@ -5037,23 +5059,14 @@ def build_ai_settings_page(lang: str = "zh", auth_username: str = "", auth_role:
 </script>
 """
 
-    return f"""<!DOCTYPE html>
-<html lang="{ 'en' if is_en else 'zh-CN' }">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{html.escape(title)}</title>
-  <style>
-    {build_app_header_css()}
-    {page_css}
-  </style>
-</head>
-<body>
-{body_html}
-{page_script}
-</body>
-</html>
-"""
+    return render_base_page(
+        lang=lang,
+        title=title,
+        header_html=build_app_header_html(lang, "ai"),
+        page_body=body_html,
+        page_css=page_css,
+        page_script=page_script,
+    )
 
 
 def start_job(
