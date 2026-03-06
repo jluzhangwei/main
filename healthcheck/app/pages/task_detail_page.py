@@ -95,19 +95,68 @@ def build_job_html(
         else f'历史报告分析模式 | <a href="{with_lang("/", lang)}">返回首页</a> | '
         f'<span id="ai_report_status" class="meta-tag">AI 报告：待生成</span>'
     )
-    ai_report_items = list_ai_report_files(job_id, limit=12) if (job_id and not history_mode) else []
+    def _parse_ai_report_meta(path: Path) -> Dict[str, str]:
+        out = {
+            "status": "-",
+            "provider": "-",
+            "model": "-",
+            "prompt_source": "-",
+            "content": "",
+        }
+        try:
+            raw = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return out
+        for line in raw.splitlines()[:40]:
+            if line.startswith("- Status:"):
+                out["status"] = line.split(":", 1)[1].strip() or "-"
+            elif line.startswith("- Provider:"):
+                out["provider"] = line.split(":", 1)[1].strip() or "-"
+            elif line.startswith("- Model:"):
+                out["model"] = line.split(":", 1)[1].strip() or "-"
+            elif line.startswith("- Prompt Source:"):
+                out["prompt_source"] = line.split(":", 1)[1].strip() or "-"
+        marker = "\n## Content\n"
+        idx = raw.find(marker)
+        if idx >= 0:
+            out["content"] = raw[idx + len(marker):].strip()
+        return out
+
+    ai_report_items = list_ai_report_files(job_id, limit=20) if (job_id and not history_mode) else []
+    gpt_result_init_text = "分析结果会显示在这里。" if lang == "zh" else "Analysis result will be shown here."
     if ai_report_items:
-        ai_report_links = " | ".join(
-            f'<a href="{with_lang("/download_ai?name=" + p.name, lang)}">{html.escape(p.name)}</a>'
-            for p in ai_report_items
-        )
+        latest_meta = _parse_ai_report_meta(ai_report_items[0])
+        latest_text = (latest_meta.get("content", "") or "").strip()
+        if latest_text:
+            gpt_result_init_text = latest_text
+        row_html = []
+        for p in ai_report_items:
+            meta = _parse_ai_report_meta(p)
+            mtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(p.stat().st_mtime))
+            row_html.append(
+                "<div class=\"ai-history-row\">"
+                f"<span class=\"ai-history-file\">{html.escape(p.stem)}</span>"
+                f"<span class=\"ai-history-sep\">|</span>{html.escape(mtime)}"
+                f"<span class=\"ai-history-sep\">|</span>{html.escape(meta.get('status', '-') or '-')}"
+                f"<span class=\"ai-history-sep\">|</span>{html.escape(meta.get('provider', '-') or '-')}"
+                f"<span class=\"ai-history-sep\">|</span>{html.escape(meta.get('model', '-') or '-')}"
+                f"<span class=\"ai-history-sep\">|</span>"
+                f"<a href=\"{with_lang('/download_ai?name=' + p.name, lang)}\">.md</a>"
+                "</div>"
+            )
         ai_report_history_html = (
-            f'<div id="ai_reports" class="report-links">'
-            f'AI 历史报告: {ai_report_links}'
-            f"</div>"
+            "<div id=\"ai_reports\" class=\"ai-history-block\">"
+            f"<div class=\"ai-history-title\">{'Analysis History' if lang == 'en' else '分析历史'}</div>"
+            + "".join(row_html)
+            + "</div>"
         )
     else:
-        ai_report_history_html = ""
+        ai_report_history_html = (
+            "<div id=\"ai_reports\" class=\"ai-history-block\">"
+            f"<div class=\"ai-history-title\">{'Analysis History' if lang == 'en' else '分析历史'}</div>"
+            f"<div class=\"ai-history-empty\">{'No history yet.' if lang == 'en' else '暂无历史记录。'}</div>"
+            "</div>"
+        )
     output_init_text = "请在页面底部上传历史报告文件并点击 AI 分析。" if history_mode else "正在启动任务，请稍候..."
     modify_disabled = "" if can_modify else "disabled"
     _scope = dict(globals())

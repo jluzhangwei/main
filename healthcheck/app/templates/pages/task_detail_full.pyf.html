@@ -87,7 +87,7 @@
       background: #f8fafc;
     }}
     .report-links a:hover {{ background: #eef2f7; }}
-    #ai_reports {{ margin-top: 6px; }}
+    #ai_reports {{ margin-top: 10px; }}
     .meta-tag {{
       display: inline-block;
       border: 1px solid #d7dee7;
@@ -362,6 +362,41 @@
       max-height: 380px;
       overflow: auto;
     }}
+    .ai-history-block {{
+      margin-top: 10px;
+      border: 1px solid #d6dce3;
+      border-radius: 8px;
+      background: #fff;
+      overflow: hidden;
+    }}
+    .ai-history-title {{
+      font-weight: 700;
+      color: #1e293b;
+      padding: 8px 10px;
+      border-bottom: 1px solid #e2e8f0;
+      background: #f8fafc;
+    }}
+    .ai-history-row {{
+      padding: 8px 10px;
+      border-top: 1px solid #eef2f7;
+      font-size: 13px;
+      color: #334155;
+      word-break: break-word;
+    }}
+    .ai-history-row:first-of-type {{ border-top: none; }}
+    .ai-history-file {{
+      color: #0f172a;
+      font-weight: 700;
+    }}
+    .ai-history-sep {{
+      margin: 0 6px;
+      color: #94a3b8;
+    }}
+    .ai-history-empty {{
+      padding: 10px;
+      color: #64748b;
+      font-size: 13px;
+    }}
     @media (max-width: 920px) {{
       .exec-options {{ grid-template-columns: 1fr; }}
       .prompt-manage-narrow {{ width: 100%; }}
@@ -477,7 +512,7 @@
           <div id="analysis_progress_text" class="gpt-hint">进度: 0%</div>
           <div class="analysis-progress-bar"><div id="analysis_progress_fill" class="analysis-progress-fill"></div></div>
         </div>
-        <div id="gpt_result">分析结果会显示在这里。</div>
+        <div id="gpt_result">{html.escape(gpt_result_init_text)}</div>
         {ai_report_history_html}
       </div>
     </div>
