@@ -4,6 +4,8 @@
 """HTTP handler layer extracted from web_server for easier page/UI maintenance."""
 
 from app.web_server import *  # noqa: F401,F403
+from app import web_server as web_server_module
+from app.routers import pages as pages_router
 
 class Handler(BaseHTTPRequestHandler):
     def _parse_cookie(self) -> Dict[str, str]:
@@ -49,78 +51,69 @@ class Handler(BaseHTTPRequestHandler):
 
         user = self._current_user()
         if parsed.path == "/":
-            templates = merged_check_template_catalog()
-            default_template = DEFAULT_CHECK_TEMPLATE_NAME if DEFAULT_CHECK_TEMPLATE_NAME in templates else next(iter(templates.keys()), "")
-            default_checks = (templates.get(default_template, {}).get("checks", DEFAULT_CHECKS) if isinstance(templates.get(default_template, {}), dict) else DEFAULT_CHECKS)[:3]
-            self._respond_html(
-                build_html(
-                    default_form_values(),
-                    default_checks,
-                    "",
-                    "",
-                    lang=lang,
-                    selected_template=default_template,
-                    can_modify=user_can_modify(user),
-                    auth_username=str(user.get("username", "")),
-                    auth_role=str(user.get("role", "user")),
-                )
-            )
+            self._respond_html(pages_router.render_home(lang=lang, user=user))
             return
         if parsed.path == "/tasks":
-            self._respond_html(
-                build_tasks_page(
-                    lang=lang,
-                    auth_username=str(user.get("username", "")),
-                    auth_role=str(user.get("role", "user")),
-                )
-            )
+            self._respond_html(pages_router.render_tasks(lang=lang, user=user))
             return
         if parsed.path.startswith("/tasks/"):
             task_id = (parsed.path.split("/tasks/", 1)[1] or "").strip()
             if not task_id:
                 self.send_error(400, "Missing task id")
                 return
-            self._respond_html(
-                build_job_html(
-                    task_id,
-                    history_mode=False,
-                    lang=lang,
-                    can_modify=user_can_modify(user),
-                    auth_username=str(user.get("username", "")),
-                    auth_role=str(user.get("role", "user")),
-                )
-            )
+            self._respond_html(pages_router.render_task_detail(task_id=task_id, lang=lang, user=user))
             return
         if parsed.path == "/ai/settings":
+            self._respond_html(pages_router.render_ai_settings(lang=lang, user=user))
+            return
+        if parsed.path == "/guide":
             self._respond_html(
-                build_ai_settings_page(
+                pages_router.render_user_guide(
                     lang=lang,
-                    auth_username=str(user.get("username", "")),
-                    auth_role=str(user.get("role", "user")),
-                    can_modify=user_can_modify(user),
+                    user=user,
+                    doc_version=DOC_VERSION,
+                    doc_version_rule=DOC_VERSION_RULE,
                 )
             )
             return
-        if parsed.path == "/guide":
-            self._respond_html(build_guide_index_html(lang=lang))
-            return
         if parsed.path == "/guide/design":
-            self._respond_html(build_guide_html(lang=lang))
+            self._redirect(with_lang("/guide/user", lang))
             return
         if parsed.path == "/guide/design-zh":
-            self._respond_html(build_guide_html(lang="zh"))
+            self._redirect(with_lang("/guide/user", "zh"))
             return
         if parsed.path == "/guide/design-en":
-            self._respond_html(build_guide_html(lang="en"))
+            self._redirect(with_lang("/guide/user", "en"))
             return
         if parsed.path == "/guide/user":
-            self._respond_html(build_user_guide_html(lang=lang))
+            self._respond_html(
+                pages_router.render_user_guide(
+                    lang=lang,
+                    user=user,
+                    doc_version=DOC_VERSION,
+                    doc_version_rule=DOC_VERSION_RULE,
+                )
+            )
             return
         if parsed.path == "/guide/user-zh":
-            self._respond_html(build_user_guide_html(lang="zh"))
+            self._respond_html(
+                pages_router.render_user_guide(
+                    lang="zh",
+                    user=user,
+                    doc_version=DOC_VERSION,
+                    doc_version_rule=DOC_VERSION_RULE,
+                )
+            )
             return
         if parsed.path == "/guide/user-en":
-            self._respond_html(build_user_guide_html(lang="en"))
+            self._respond_html(
+                pages_router.render_user_guide(
+                    lang="en",
+                    user=user,
+                    doc_version=DOC_VERSION,
+                    doc_version_rule=DOC_VERSION_RULE,
+                )
+            )
             return
         if parsed.path == "/job":
             history_mode = (query.get("history", [""])[0] or "").strip() in {"1", "true", "yes", "on"}
@@ -129,14 +122,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error(400, "Missing job id")
                 return
             self._respond_html(
-                build_job_html(
-                    job_id,
-                    history_mode=history_mode,
-                    lang=lang,
-                    can_modify=user_can_modify(user),
-                    auth_username=str(user.get("username", "")),
-                    auth_role=str(user.get("role", "user")),
-                )
+                pages_router.render_history_job(job_id=job_id, lang=lang, user=user)
             )
             return
         if parsed.path == "/job_status":
@@ -214,6 +200,142 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _parse_task_ids(self, form: cgi.FieldStorage) -> List[str]:
+        def _to_text(v) -> str:
+            if v is None:
+                return ""
+            if hasattr(v, "value"):
+                try:
+                    vv = getattr(v, "value")
+                    if vv is not None:
+                        return str(vv)
+                except Exception:
+                    pass
+            if isinstance(v, bytes):
+                try:
+                    return v.decode("utf-8", errors="ignore")
+                except Exception:
+                    return ""
+            return str(v)
+
+        ids: List[str] = []
+        raw_values: List[str] = []
+        try:
+            vals = form.getlist("task_ids")
+            if isinstance(vals, list):
+                for v in vals:
+                    if v is None:
+                        continue
+                    if isinstance(v, (list, tuple)):
+                        for x in v:
+                            txt = _to_text(x).strip()
+                            if txt:
+                                raw_values.append(txt)
+                    else:
+                        txt = _to_text(v).strip()
+                        if txt:
+                            raw_values.append(txt)
+        except Exception:
+            pass
+        if not raw_values:
+            raw_one = form.getvalue("task_ids")
+            if isinstance(raw_one, (list, tuple)):
+                for x in raw_one:
+                    txt = _to_text(x).strip()
+                    if txt:
+                        raw_values.append(txt)
+            elif raw_one is not None:
+                txt = _to_text(raw_one).strip()
+                if txt:
+                    raw_values.append(txt)
+        for raw in raw_values:
+            for part in raw.replace(";", ",").split(","):
+                tid = part.strip()
+                if tid.startswith("MiniFieldStorage(") and "'" in tid:
+                    m = re.search(r"MiniFieldStorage\(\s*'[^']+'\s*,\s*'([^']+)'\s*\)", tid)
+                    if m:
+                        tid = m.group(1).strip()
+                if tid:
+                    ids.append(tid)
+        dedup: List[str] = []
+        seen = set()
+        for tid in ids:
+            if tid in seen:
+                continue
+            seen.add(tid)
+            dedup.append(tid)
+        return dedup
+
+    def _cleanup_task_files(self, task_row: Dict) -> int:
+        removed = 0
+        report_json = str((task_row or {}).get("report_json", "") or "").strip()
+        report_csv = str((task_row or {}).get("report_csv", "") or "").strip()
+        for name in [report_json, report_csv]:
+            if not name:
+                continue
+            safe_name = os.path.basename(name)
+            if safe_name != name:
+                continue
+            path = REPORT_DIR / safe_name
+            try:
+                if path.is_file():
+                    path.unlink()
+                    removed += 1
+            except Exception:
+                pass
+        task_id = str((task_row or {}).get("task_id", "") or "").strip()
+        if task_id:
+            for p in list_ai_report_files(task_id, limit=200):
+                try:
+                    if p.is_file():
+                        p.unlink()
+                        removed += 1
+                except Exception:
+                    pass
+        return removed
+
+    def _handle_delete_tasks(self, form: cgi.FieldStorage) -> None:
+        ids = self._parse_task_ids(form)
+        if not ids:
+            self._respond_json({"ok": False, "error": "Missing task_ids"}, status=400)
+            return
+        ensure_task_store()
+        task_store_obj = getattr(web_server_module, "TASK_STORE", None)
+        deleted_tasks = 0
+        removed_files = 0
+        for tid in ids:
+            row = task_store_obj.get_task(tid) if task_store_obj else None
+            if row:
+                removed_files += self._cleanup_task_files(row)
+            deleted_ok = False
+            if task_store_obj:
+                try:
+                    if hasattr(task_store_obj, "delete_task"):
+                        task_store_obj.delete_task(tid)
+                    else:
+                        with task_store_obj._lock:  # type: ignore[attr-defined]
+                            task_store_obj._conn.execute("DELETE FROM tasks WHERE task_id = ?", (tid,))  # type: ignore[attr-defined]
+                            task_store_obj._conn.commit()  # type: ignore[attr-defined]
+                    deleted_ok = task_store_obj.get_task(tid) is None
+                except Exception:
+                    deleted_ok = False
+            if deleted_ok:
+                deleted_tasks += 1
+            with JOBS_LOCK:
+                JOBS.pop(tid, None)
+            with ANALYSIS_JOBS_LOCK:
+                stale_ids = [aid for aid, payload in ANALYSIS_JOBS.items() if str(payload.get("job_id", "") or "").strip() == tid]
+                for aid in stale_ids:
+                    ANALYSIS_JOBS.pop(aid, None)
+        self._respond_json(
+            {
+                "ok": True,
+                "deleted_tasks": deleted_tasks,
+                "requested_tasks": len(ids),
+                "removed_files": removed_files,
+            }
+        )
+
     def _serve_job_status(self, raw_query: str, lang: str = "zh") -> None:
         query = parse_qs(raw_query)
         job_id = (query.get("id", [""])[0] or "").strip()
@@ -222,10 +344,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         ensure_task_store()
+        task_store_obj = getattr(web_server_module, "TASK_STORE", None)
         with JOBS_LOCK:
             job = JOBS.get(job_id)
             if not job:
-                row = TASK_STORE.get_task(job_id) if TASK_STORE else None
+                row = task_store_obj.get_task(job_id) if task_store_obj else None
                 if row:
                     payload = {
                         "status": row.get("status", "unknown"),
@@ -264,7 +387,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(400, "Missing analysis id")
             return
         ensure_analysis_services()
-        payload = ANALYSIS_STATUS_STORE.get_response_payload(analysis_id) if ANALYSIS_STATUS_STORE else {"ok": False, "error": "analysis status service unavailable"}
+        analysis_status_store = getattr(web_server_module, "ANALYSIS_STATUS_STORE", None)
+        payload = analysis_status_store.get_response_payload(analysis_id) if analysis_status_store else {"ok": False, "error": "analysis status service unavailable"}
         self._respond_json(payload)
 
     def _serve_job_active_analysis(self, raw_query: str) -> None:
@@ -274,14 +398,15 @@ class Handler(BaseHTTPRequestHandler):
             self._respond_json({"ok": False, "error": "Missing job id"}, status=400)
             return
         ensure_analysis_services()
-        if not ANALYSIS_STATUS_STORE:
+        analysis_status_store = getattr(web_server_module, "ANALYSIS_STATUS_STORE", None)
+        if not analysis_status_store:
             self._respond_json({"ok": False, "error": "analysis status service unavailable"}, status=500)
             return
-        analysis_id = ANALYSIS_STATUS_STORE.find_analysis_id_by_job(job_id, running_only=True)
+        analysis_id = analysis_status_store.find_analysis_id_by_job(job_id, running_only=True)
         if not analysis_id:
             self._respond_json({"ok": True, "active": False})
             return
-        payload = ANALYSIS_STATUS_STORE.get_response_payload(analysis_id)
+        payload = analysis_status_store.get_response_payload(analysis_id)
         payload["analysis_id"] = analysis_id
         payload["active"] = bool(payload.get("ok")) and str(payload.get("status", "")) == "running"
         self._respond_json(payload)
@@ -290,15 +415,16 @@ class Handler(BaseHTTPRequestHandler):
         analysis_id = (form.getvalue("analysis_id") or "").strip()
         job_id = (form.getvalue("job_id") or "").strip()
         ensure_analysis_services()
-        if not ANALYSIS_STATUS_STORE:
+        analysis_status_store = getattr(web_server_module, "ANALYSIS_STATUS_STORE", None)
+        if not analysis_status_store:
             self._respond_json({"ok": False, "error": "analysis status service unavailable"}, status=500)
             return
         if not analysis_id and job_id:
-            analysis_id = ANALYSIS_STATUS_STORE.find_analysis_id_by_job(job_id, running_only=True)
+            analysis_id = analysis_status_store.find_analysis_id_by_job(job_id, running_only=True)
         if not analysis_id:
             self._respond_json({"ok": False, "error": "No running analysis task"}, status=404)
             return
-        stopped = ANALYSIS_STATUS_STORE.request_cancel(analysis_id)
+        stopped = analysis_status_store.request_cancel(analysis_id)
         if not stopped:
             self._respond_json({"ok": False, "error": "Analysis task is not running", "analysis_id": analysis_id}, status=409)
             return
@@ -321,27 +447,31 @@ class Handler(BaseHTTPRequestHandler):
 
     def _build_analysis_input(self, job: Dict) -> str:
         ensure_analysis_services()
-        if not ANALYSIS_SERVICE:
+        analysis_srv = getattr(web_server_module, "ANALYSIS_SERVICE", None)
+        if not analysis_srv:
             raise RuntimeError("analysis service unavailable")
-        return ANALYSIS_SERVICE.build_analysis_input(job)
+        return analysis_srv.build_analysis_input(job)
 
     def _llm_model_used(self, llm: Dict[str, str]) -> str:
         ensure_analysis_services()
-        if not ANALYSIS_SERVICE:
+        analysis_srv = getattr(web_server_module, "ANALYSIS_SERVICE", None)
+        if not analysis_srv:
             return ""
-        return ANALYSIS_SERVICE.model_used(llm)
+        return analysis_srv.model_used(llm)
 
     def _run_llm_analysis(self, llm: Dict[str, str], report_text: str) -> Tuple[str, Dict]:
         ensure_analysis_services()
-        if not ANALYSIS_SERVICE:
+        analysis_srv = getattr(web_server_module, "ANALYSIS_SERVICE", None)
+        if not analysis_srv:
             raise RuntimeError("analysis service unavailable")
-        return ANALYSIS_SERVICE.run_llm_analysis(llm, report_text)
+        return analysis_srv.run_llm_analysis(llm, report_text)
 
     def _load_job_report_json(self, job: Dict) -> Dict:
         ensure_analysis_services()
-        if not ANALYSIS_SERVICE:
+        analysis_srv = getattr(web_server_module, "ANALYSIS_SERVICE", None)
+        if not analysis_srv:
             raise RuntimeError("analysis service unavailable")
-        return ANALYSIS_SERVICE.load_job_report_json(job)
+        return analysis_srv.load_job_report_json(job)
 
     def _start_batched_analysis(
         self,
@@ -355,9 +485,10 @@ class Handler(BaseHTTPRequestHandler):
         large_report_chunk_items: int = 4,
     ) -> str:
         ensure_analysis_services()
-        if not ANALYSIS_SERVICE:
+        analysis_srv = getattr(web_server_module, "ANALYSIS_SERVICE", None)
+        if not analysis_srv:
             raise RuntimeError("analysis service unavailable")
-        return ANALYSIS_SERVICE.start_batched_analysis(
+        return analysis_srv.start_batched_analysis(
             job_id=job_id,
             llm=llm,
             batch_size=batch_size,
@@ -759,9 +890,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _probe_cloud_token_balance(self, provider: str, api_key: str, model: str) -> Tuple[str, str]:
         ensure_analysis_services()
-        if not ANALYSIS_SERVICE:
+        analysis_srv = getattr(web_server_module, "ANALYSIS_SERVICE", None)
+        if not analysis_srv:
             return "unknown", "未知（analysis service unavailable）"
-        return ANALYSIS_SERVICE.probe_cloud_token_balance(provider, api_key, model)
+        return analysis_srv.probe_cloud_token_balance(provider, api_key, model)
 
     def _resolve_llm_inputs_from_form(self, form: cgi.FieldStorage) -> Dict[str, str]:
         cfg = load_gpt_config()
@@ -899,7 +1031,8 @@ class Handler(BaseHTTPRequestHandler):
         if isinstance(job, dict):
             return dict(job)
         ensure_task_store()
-        row = TASK_STORE.get_task(task_id) if TASK_STORE else None
+        task_store_obj = getattr(web_server_module, "TASK_STORE", None)
+        row = task_store_obj.get_task(task_id) if task_store_obj else None
         if not row:
             return None
         return {
@@ -967,18 +1100,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_analyze_job(self, form: cgi.FieldStorage) -> None:
         job_id = (form.getvalue("job_id") or "").strip()
-        llm = self._resolve_llm_inputs_from_form(form)
-        opts = self._parse_analysis_options(form)
-        batched_analysis = bool(opts["batched_analysis"])
-        large_report_mode = bool(opts["large_report_mode"])
-        analysis_parallelism = int(opts["analysis_parallelism"])
-        analysis_retries = int(opts["analysis_retries"])
-        large_report_chunk_items = int(opts["large_report_chunk_items"])
-        batch_size = int(opts["batch_size"])
-        cfg = load_gpt_config()
-        cfg["selected_system_prompt"] = llm.get("system_prompt_key", "")
-        cfg["selected_task_prompt"] = llm.get("task_prompt_key", "")
-        save_gpt_config(cfg)
+        try:
+            llm = self._resolve_llm_inputs_from_form(form)
+            opts = self._parse_analysis_options(form)
+            batched_analysis = bool(opts["batched_analysis"])
+            large_report_mode = bool(opts["large_report_mode"])
+            analysis_parallelism = int(opts["analysis_parallelism"])
+            analysis_retries = int(opts["analysis_retries"])
+            large_report_chunk_items = int(opts["large_report_chunk_items"])
+            batch_size = int(opts["batch_size"])
+            cfg = load_gpt_config()
+            cfg["selected_system_prompt"] = llm.get("system_prompt_key", "")
+            cfg["selected_task_prompt"] = llm.get("task_prompt_key", "")
+            save_gpt_config(cfg)
+        except Exception as exc:
+            self._respond_json({"ok": False, "error": f"analysis init failed: {exc}"}, status=400)
+            return
 
         if not job_id:
             self._respond_json({"ok": False, "error": "job_id is required"}, status=400)
@@ -1068,13 +1205,17 @@ class Handler(BaseHTTPRequestHandler):
         if upload is None or not getattr(upload, "filename", ""):
             self._respond_json({"ok": False, "error": "report_file is required"}, status=400)
             return
-        opts = self._parse_analysis_options(form)
-        batched_analysis = bool(opts["batched_analysis"])
-        large_report_mode = bool(opts["large_report_mode"])
-        analysis_parallelism = int(opts["analysis_parallelism"])
-        analysis_retries = int(opts["analysis_retries"])
-        large_report_chunk_items = int(opts["large_report_chunk_items"])
-        batch_size = int(opts["batch_size"])
+        try:
+            opts = self._parse_analysis_options(form)
+            batched_analysis = bool(opts["batched_analysis"])
+            large_report_mode = bool(opts["large_report_mode"])
+            analysis_parallelism = int(opts["analysis_parallelism"])
+            analysis_retries = int(opts["analysis_retries"])
+            large_report_chunk_items = int(opts["large_report_chunk_items"])
+            batch_size = int(opts["batch_size"])
+        except Exception as exc:
+            self._respond_json({"ok": False, "error": f"analysis options invalid: {exc}"}, status=400)
+            return
 
         filename = ""
         raw = b""
@@ -1092,11 +1233,15 @@ class Handler(BaseHTTPRequestHandler):
         else:
             report_text = f"文件名: {filename}\n文件文本内容（可能已截断）：\n{text[:200000]}"
 
-        llm = self._resolve_llm_inputs_from_form(form)
-        cfg = load_gpt_config()
-        cfg["selected_system_prompt"] = llm.get("system_prompt_key", "")
-        cfg["selected_task_prompt"] = llm.get("task_prompt_key", "")
-        save_gpt_config(cfg)
+        try:
+            llm = self._resolve_llm_inputs_from_form(form)
+            cfg = load_gpt_config()
+            cfg["selected_system_prompt"] = llm.get("system_prompt_key", "")
+            cfg["selected_task_prompt"] = llm.get("task_prompt_key", "")
+            save_gpt_config(cfg)
+        except Exception as exc:
+            self._respond_json({"ok": False, "error": f"analysis init failed: {exc}"}, status=400)
+            return
 
         if batched_analysis:
             try:
@@ -1184,6 +1329,20 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self) -> None:
+        try:
+            self._do_post_impl()
+        except BrokenPipeError:
+            return
+        except Exception as exc:
+            try:
+                self._respond_json({"ok": False, "error": f"server error: {exc}"}, status=500)
+            except Exception:
+                try:
+                    self.send_error(500, "Internal Server Error")
+                except Exception:
+                    pass
+
+    def _do_post_impl(self) -> None:
         environ = {
             "REQUEST_METHOD": "POST",
             "CONTENT_TYPE": self.headers.get("Content-Type", ""),
@@ -1232,6 +1391,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/analysis_stop":
             self._handle_analysis_stop(form)
+            return
+        if self.path == "/delete_tasks":
+            self._handle_delete_tasks(form)
             return
         if self.path == "/analyze_job":
             self._handle_analyze_job(form)
@@ -1312,76 +1474,61 @@ class Handler(BaseHTTPRequestHandler):
 
         if not username or not password:
             self._respond_html(
-                build_html(
-                    values,
-                    selected,
-                    "",
-                    "ERROR: 用户名和密码不能为空",
+                pages_router.render_home_with_state(
                     lang=lang,
+                    user=user,
+                    values=values,
+                    selected_checks=selected,
+                    status="ERROR: 用户名和密码不能为空",
                     selected_template=check_template_key,
-                    can_modify=user_can_modify(user),
-                    auth_username=str(user.get("username", "")),
-                    auth_role=str(user.get("role", "user")),
                 )
             )
             return
         if not devices:
             self._respond_html(
-                build_html(
-                    values,
-                    selected,
-                    "",
-                    "ERROR: 请输入设备地址或导入设备文件",
+                pages_router.render_home_with_state(
                     lang=lang,
+                    user=user,
+                    values=values,
+                    selected_checks=selected,
+                    status="ERROR: 请输入设备地址或导入设备文件",
                     selected_template=check_template_key,
-                    can_modify=user_can_modify(user),
-                    auth_username=str(user.get("username", "")),
-                    auth_role=str(user.get("role", "user")),
                 )
             )
             return
         if not selected and not parse_ordered_items(custom_commands):
             self._respond_html(
-                build_html(
-                    values,
-                    selected,
-                    "",
-                    "ERROR: 请至少选择一个检查项或输入一条自定义命令",
+                pages_router.render_home_with_state(
                     lang=lang,
+                    user=user,
+                    values=values,
+                    selected_checks=selected,
+                    status="ERROR: 请至少选择一个检查项或输入一条自定义命令",
                     selected_template=check_template_key,
-                    can_modify=user_can_modify(user),
-                    auth_username=str(user.get("username", "")),
-                    auth_role=str(user.get("role", "user")),
                 )
             )
             return
         if jump_mode == "ssh" and (not jump_host or not jump_username or not jump_password):
             self._respond_html(
-                build_html(
-                    values,
-                    selected,
-                    "",
-                    "ERROR: SSH 跳板模式时，跳板机地址/用户名/密码不能为空",
+                pages_router.render_home_with_state(
                     lang=lang,
+                    user=user,
+                    values=values,
+                    selected_checks=selected,
+                    status="ERROR: SSH 跳板模式时，跳板机地址/用户名/密码不能为空",
                     selected_template=check_template_key,
-                    can_modify=user_can_modify(user),
-                    auth_username=str(user.get("username", "")),
-                    auth_role=str(user.get("role", "user")),
                 )
             )
             return
         if jump_mode == "smc" and (not jump_host or not smc_command):
             self._respond_html(
-                build_html(
-                    values,
-                    selected,
-                    "",
-                    "ERROR: SMC 模式时，跳板机地址和 SMC 命令模板不能为空",
+                pages_router.render_home_with_state(
                     lang=lang,
+                    user=user,
+                    values=values,
+                    selected_checks=selected,
+                    status="ERROR: SMC 模式时，跳板机地址和 SMC 命令模板不能为空",
                     selected_template=check_template_key,
-                    can_modify=user_can_modify(user),
-                    auth_username=str(user.get("username", "")),
-                    auth_role=str(user.get("role", "user")),
                 )
             )
             return
@@ -1393,16 +1540,13 @@ class Handler(BaseHTTPRequestHandler):
                 data = upload.file.read()
                 if not data:
                     self._respond_html(
-                        build_html(
-                            values,
-                            selected,
-                            "",
-                            "ERROR: 上传的 command_map 文件为空",
+                        pages_router.render_home_with_state(
                             lang=lang,
+                            user=user,
+                            values=values,
+                            selected_checks=selected,
+                            status="ERROR: 上传的 command_map 文件为空",
                             selected_template=check_template_key,
-                            can_modify=user_can_modify(user),
-                            auth_username=str(user.get("username", "")),
-                            auth_role=str(user.get("role", "user")),
                         )
                     )
                     return
@@ -1410,16 +1554,13 @@ class Handler(BaseHTTPRequestHandler):
                 default_map = COMMAND_MAP_PATH
                 if not default_map.is_file():
                     self._respond_html(
-                        build_html(
-                            values,
-                            selected,
-                            "",
-                            "ERROR: 默认 config/command_map.yaml 不存在，请上传文件",
+                        pages_router.render_home_with_state(
                             lang=lang,
+                            user=user,
+                            values=values,
+                            selected_checks=selected,
+                            status="ERROR: 默认 config/command_map.yaml 不存在，请上传文件",
                             selected_template=check_template_key,
-                            can_modify=user_can_modify(user),
-                            auth_username=str(user.get("username", "")),
-                            auth_role=str(user.get("role", "user")),
                         )
                     )
                     return
@@ -1449,16 +1590,13 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
         except Exception as exc:
             self._respond_html(
-                build_html(
-                    values,
-                    selected,
-                    "",
-                    f"ERROR: {exc}",
+                pages_router.render_home_with_state(
                     lang=lang,
+                    user=user,
+                    values=values,
+                    selected_checks=selected,
+                    status=f"ERROR: {exc}",
                     selected_template=check_template_key,
-                    can_modify=user_can_modify(user),
-                    auth_username=str(user.get("username", "")),
-                    auth_role=str(user.get("role", "user")),
                 )
             )
 

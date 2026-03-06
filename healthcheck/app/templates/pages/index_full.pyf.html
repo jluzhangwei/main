@@ -1,0 +1,1023 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HealthCheck 执行页面</title>
+  <style>
+    :root {{
+      --bg: #f3f5f7;
+      --card: #ffffff;
+      --text: #0f172a;
+      --line: #d6dce3;
+      --brand: #0b6e4f;
+      --brand-weak: #e5f5ef;
+      --err: #9b1c1c;
+      --ok: #0f766e;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      background: #f6f8fb;
+      color: var(--text);
+      font: 14px/1.5 "Helvetica Neue", "PingFang SC", sans-serif;
+    }}
+    .wrap {{ max-width: 980px; margin: 28px auto; padding: 0 16px; }}
+    .card {{
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 18px;
+      box-shadow: 0 8px 18px rgba(14, 30, 37, 0.05);
+    }}
+    h1 {{ margin: 0 0 8px; font-size: 24px; }}
+    .sub {{ margin: 0 0 18px; color: #334155; }}
+    h2 {{ margin: 14px 0 10px; font-size: 18px; }}
+    .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
+    .grid-3 {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }}
+    label {{ display: block; font-weight: 600; margin: 0 0 6px; }}
+    input[type=text], input[type=password], input[type=number], select, textarea {{
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fcfdff;
+      outline: none;
+    }}
+    textarea {{ min-height: 110px; resize: vertical; }}
+    .checks {{
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 6px 10px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfe;
+      max-height: 220px;
+      overflow: auto;
+    }}
+    .check-groups {{ display: grid; gap: 10px; }}
+    .check-group {{
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      background: #f8fbfd;
+    }}
+    .check-group-head {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }}
+    .select-all {{ font-size: 13px; font-weight: 600; }}
+    .empty-cat {{ color: #64748b; font-size: 13px; padding: 8px 2px; }}
+    .check-item {{ display: flex; gap: 6px; align-items: center; font-weight: 500; }}
+    .row {{ margin-bottom: 12px; }}
+    .tips {{ color: #475569; font-size: 12px; margin-top: 4px; }}
+    .import-result {{ color: #0b6e4f; font-size: 12px; margin-top: 6px; }}
+    .warn-inline {{
+      display: none;
+      margin-top: 6px;
+      border: 1px solid #f59e0b;
+      background: #fffbeb;
+      color: #92400e;
+      border-radius: 8px;
+      padding: 6px 8px;
+      font-size: 12px;
+      font-weight: 600;
+    }}
+    .preview-box {{
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f8fafc;
+      padding: 10px;
+      margin-top: 6px;
+      height: 180px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: Menlo, Consolas, monospace;
+      font-size: 12px;
+      color: #0f172a;
+    }}
+    button {{
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 16px;
+      background: var(--brand);
+      color: #fff;
+      cursor: pointer;
+      font-weight: 700;
+    }}
+    button:hover {{ filter: brightness(0.95); }}
+    .btn-secondary {{
+      background: #64748b;
+    }}
+    .status {{
+      margin: 12px 0;
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px solid;
+      font-weight: 700;
+    }}
+    .topbar {{
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 10px;
+    }}
+    .top-actions {{
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      flex: 0 0 auto;
+    }}
+    .help-link {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: #334155;
+      text-decoration: none;
+      font-weight: 800;
+      font-size: 18px;
+      line-height: 1;
+      margin-top: 2px;
+    }}
+    .help-link:hover {{ background: #f8fafc; }}
+    .ok {{ color: var(--ok); border-color: #99f6e4; background: var(--brand-weak); }}
+    .err {{ color: var(--err); border-color: #fecaca; background: #fef2f2; }}
+    pre {{
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #0f172a;
+      color: #e2e8f0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 460px;
+      overflow: auto;
+    }}
+    .modal-mask {{
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.35);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 20;
+    }}
+    .modal {{
+      width: min(760px, 100%);
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px;
+      box-shadow: 0 8px 18px rgba(14, 30, 37, 0.2);
+    }}
+    .modal-head {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      font-weight: 700;
+    }}
+    .modal textarea {{
+      min-height: 260px;
+      font-family: Menlo, Consolas, monospace;
+      font-size: 12px;
+    }}
+    .modal-actions {{
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }}
+    .sub-card {{
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #f8fafc;
+      padding: 10px;
+      margin-top: 8px;
+    }}
+    .sub-card-title {{
+      margin: 0 0 8px;
+      font-size: 14px;
+      font-weight: 700;
+      color: #0f172a;
+    }}
+    .file-picker {{
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }}
+    .file-btn {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: #0f172a;
+      cursor: pointer;
+      font-weight: 600;
+      min-width: 92px;
+    }}
+    .file-name {{
+      color: #334155;
+      font-size: 13px;
+    }}
+    .file-real {{
+      position: absolute;
+      left: -9999px;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }}
+    {build_app_header_css()}
+    @media (max-width: 900px) {{ .grid-3 {{ grid-template-columns: 1fr; }} }}
+    @media (max-width: 740px) {{ .grid {{ grid-template-columns: 1fr; }} }}
+  </style>
+</head>
+<body>
+  {build_app_header_html(lang, "runner")}
+  <div class="wrap">
+    <div class="card">
+      <div class="topbar">
+        <div>
+          <h1>HealthCheck Web Runner</h1>
+          <p class="sub">输入设备地址、勾选检查项、上传 command_map 文件后，点击执行 `healthcheck.py`。</p>
+        </div>
+        <div class="top-actions">
+          <a class="help-link" href="{with_lang('/guide', lang)}" title="查看说明文档">?</a>
+          <button id="lang_toggle_btn" class="help-link" type="button" title="切换语言">{'EN' if lang == 'zh' else '中'}</button>
+        </div>
+      </div>
+      {status_block}
+      <form id="run_form" method="post" action="/run" enctype="multipart/form-data">
+        <input type="hidden" name="lang" value="{lang}">
+        <div class="grid row">
+          <div>
+            <label>设备 SSH 用户名</label>
+            <input type="text" name="username" value="{html.escape(values.get("username", ""))}" required>
+          </div>
+          <div>
+            <label>设备 SSH 密码</label>
+            <input type="password" name="password" value="{html.escape(values.get("password", ""))}" required>
+          </div>
+        </div>
+        <div class="row">
+          <label>跳板机接入模式</label>
+          <select name="jump_mode">
+            <option value="direct" {"selected" if values.get("jump_mode", "direct") == "direct" else ""}>direct（直连）</option>
+            <option value="ssh" {"selected" if values.get("jump_mode") == "ssh" else ""}>ssh（跳板机账号密码）</option>
+            <option value="smc" {"selected" if values.get("jump_mode") == "smc" else ""}>smc（命令行接入）</option>
+          </select>
+        </div>
+        <div id="jump_host_row" class="grid row" style="display:{'' if values.get('jump_mode', 'direct') != 'direct' else 'none'};">
+          <div>
+            <label>跳板机地址</label>
+            <input type="text" name="jump_host" value="{html.escape(values.get('jump_host', ''))}" placeholder="例如 103.115.79.114">
+          </div>
+          <div>
+            <label>跳板机端口</label>
+            <input type="number" name="jump_port" min="1" step="1" value="{html.escape(values.get('jump_port', '22'))}">
+          </div>
+        </div>
+        <div id="jump_auth_row" class="grid row" hidden style="display:{'' if values.get('jump_mode') == 'ssh' else 'none'};">
+          <div>
+            <label>跳板机 SSH 用户名（仅 SSH 模式）</label>
+            <input type="text" name="jump_username" value="{html.escape(values.get('jump_username', ''))}">
+          </div>
+          <div>
+            <label>跳板机 SSH 密码（仅 SSH 模式）</label>
+            <input type="password" name="jump_password" value="{html.escape(values.get('jump_password', ''))}">
+          </div>
+        </div>
+        <div id="jump_smc_row" class="row" style="display:{'' if values.get('jump_mode') == 'smc' else 'none'};">
+          <label>SMC 命令模板</label>
+          <input type="text" name="smc_command" value="{html.escape(values.get('smc_command', 'smc server toc {{jump_host}}'))}" placeholder="例如 smc server toc {{jump_host}}">
+          <div class="tips">SMC 模式会执行该命令；支持变量：`{{jump_host}}`、`{{jump_port}}`。</div>
+        </div>
+        <div class="row">
+          <label>设备地址（每行一个）</label>
+          <textarea name="devices">{html.escape(values.get("devices", ""))}</textarea>
+          <div class="tips">支持手动输入；导入设备文件后会直接刷新到此文本框，你可继续编辑。</div>
+        </div>
+        <div class="row">
+          <label>导入设备文件（可选）</label>
+          <div class="file-picker">
+            <label for="devices_file" class="file-btn">{choose_file_text}</label>
+            <span id="devices_file_name" class="file-name">{no_file_text}</span>
+          </div>
+          <input type="file" class="file-real" id="devices_file" name="devices_file" accept=".txt,.csv,.list">
+          <div class="tips">文件支持按换行/逗号/分号分隔，`#` 开头行会忽略。</div>
+          <div id="import_result" class="import-result"></div>
+        </div>
+        <div class="row">
+          <label>检查项（可多选）</label>
+          <div id="check_groups" class="check-groups">{''.join(checks_blocks)}</div>
+          <div id="check_count_warning" class="warn-inline"></div>
+        </div>
+        <div class="row">
+          <div class="sub-card">
+            <div class="sub-card-title">检查项模板</div>
+            <div class="grid">
+              <div>
+                <select id="check_template_select" name="check_template_key">{check_template_options}</select>
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+                <button id="review_check_template_btn" class="btn-secondary" type="button" {modify_disabled}>Review 检查项模板</button>
+                <button id="save_current_check_template_btn" class="btn-secondary" type="button" {modify_disabled}>保存当前选择为模板</button>
+              </div>
+            </div>
+            <div class="tips">模板包含“已勾选检查项 + 自定义命令”。默认全量模板不可修改/删除。{"当前角色只读，无法修改模板。" if not can_modify else ""}</div>
+          </div>
+        </div>
+        <div class="row">
+          <label>自定义命令（可选，按行执行）</label>
+          <textarea name="custom_commands" placeholder="例如：&#10;display ip interface brief&#10;display current-configuration | no-more">{html.escape(values.get("custom_commands", ""))}</textarea>
+          <div class="tips">会在勾选检查项之后执行，顺序按从上到下。支持换行/逗号/分号分隔，`#` 开头会忽略。</div>
+        </div>
+        <div class="grid-3 row">
+          <div>
+            <label>执行模式</label>
+            <select name="execution_mode">
+              <option value="auto" {"selected" if values.get("execution_mode", "auto") == "auto" else ""}>auto（推荐）</option>
+              <option value="serial" {"selected" if values.get("execution_mode") == "serial" else ""}>serial</option>
+              <option value="parallel" {"selected" if values.get("execution_mode") == "parallel" else ""}>parallel</option>
+            </select>
+          </div>
+          <div>
+            <label>并发 workers（可选）</label>
+            <input type="number" name="parallel_workers" min="1" step="1" value="{html.escape(values.get("parallel_workers", ""))}" placeholder="留空自动推荐">
+          </div>
+          <div>
+            <label>连接重试次数</label>
+            <input type="number" name="connect_retry" min="0" step="1" value="{html.escape(values.get("connect_retry", "0"))}">
+          </div>
+        </div>
+        <div class="row">
+          <label>导入 command_map 文件（可选，默认使用 config/command_map.yaml）</label>
+          <div class="file-picker">
+            <label for="command_map_file" class="file-btn">{choose_file_text}</label>
+            <span id="command_map_file_name" class="file-name">{no_file_text}</span>
+          </div>
+          <input id="command_map_file" class="file-real" type="file" name="command_map" accept=".yaml,.yml">
+          <div class="tips">不上传时默认使用 `config/command_map.yaml`；上传时会临时覆盖本次任务。</div>
+        </div>
+        <div class="row">
+          <label class="check-item"><input type="checkbox" name="debug_mode" value="1" {"checked" if values.get("debug_mode") else ""}>开启 Debug 模式（显示完整执行日志）</label>
+          <div class="tips">默认关闭。关闭时会隐藏交互提示等噪音输出，任务状态页更干净。</div>
+        </div>
+        <div class="row">
+          <label>执行队列预览（提交前）</label>
+          <div id="command_preview" class="preview-box">暂无待执行项</div>
+          <div class="tips">顺序：先检查项，再自定义命令（从上到下）。</div>
+        </div>
+        <div class="row">
+          <button type="submit">执行 Python 巡检脚本</button>
+          <button id="open_history_analysis_btn" class="btn-secondary" type="button" style="margin-left:8px;">历史报告分析</button>
+          <button id="clear_saved_btn" class="btn-secondary" type="button" style="margin-left:8px;">清空已保存配置</button>
+          <div class="tips">清空后会删除本地记忆的首页配置（用户名/设备/检查项/执行参数等）。</div>
+        </div>
+      </form>
+      {output_block}
+    </div>
+  </div>
+  <div id="check_template_modal" class="modal-mask">
+    <div class="modal">
+      <div class="modal-head">
+        <div id="check_template_modal_title">编辑检查项模板</div>
+        <button id="close_check_template_btn" class="btn-secondary" type="button">关闭</button>
+      </div>
+      <textarea id="check_template_modal_text"></textarea>
+      <div class="modal-actions">
+        <button id="save_check_template_btn" type="button" {modify_disabled}>保存修改</button>
+        <button id="delete_check_template_btn" class="btn-secondary" type="button" {modify_disabled}>删除模板</button>
+        <button id="cancel_check_template_btn" class="btn-secondary" type="button">取消修改</button>
+      </div>
+      <div class="tips">默认全量模板不可修改/删除；仅支持编辑自定义模板。</div>
+    </div>
+  </div>
+  <div id="check_template_save_modal" class="modal-mask">
+    <div class="modal">
+      <div class="modal-head">
+        <div>保存检查项模板</div>
+        <button id="close_check_template_save_btn" class="btn-secondary" type="button">关闭</button>
+      </div>
+      <div class="row" style="margin-bottom:8px;">
+        <label>模板名称</label>
+        <input id="check_template_save_name" type="text" placeholder="例如：核心链路巡检模板">
+      </div>
+      <div id="check_template_save_msg" class="tips"></div>
+      <div class="modal-actions">
+        <button id="confirm_save_check_template_btn" type="button" {modify_disabled}>保存</button>
+        <button id="cancel_check_template_save_btn" class="btn-secondary" type="button">取消</button>
+      </div>
+    </div>
+  </div>
+<script>
+  const HOME_FORM_STORAGE_KEY = "hc_home_form_v1";
+  const currentLang = {json.dumps(lang)};
+  const canModify = {str(can_modify).lower()};
+  const defaultCheckTemplateName = {json.dumps(DEFAULT_CHECK_TEMPLATE_NAME, ensure_ascii=False)};
+  const checkTemplateNameEn = {json.dumps(CHECK_TEMPLATE_NAME_EN, ensure_ascii=False)};
+  const categoryDefs = {json.dumps(category_defs_js, ensure_ascii=False)};
+  const categoryNameEn = {json.dumps(CATEGORY_NAME_EN, ensure_ascii=False)};
+  let checkTemplateMap = {json.dumps(check_templates, ensure_ascii=False)};
+
+  function saveHomeFormState() {{
+    try {{
+      const state = {{
+        username: (document.querySelector('input[name="username"]') || {{}}).value || "",
+        devices: (document.querySelector('textarea[name="devices"]') || {{}}).value || "",
+        custom_commands: (document.querySelector('textarea[name="custom_commands"]') || {{}}).value || "",
+        execution_mode: (document.querySelector('select[name="execution_mode"]') || {{}}).value || "auto",
+        parallel_workers: (document.querySelector('input[name="parallel_workers"]') || {{}}).value || "",
+        connect_retry: (document.querySelector('input[name="connect_retry"]') || {{}}).value || "0",
+        jump_mode: (document.querySelector('select[name="jump_mode"]') || {{}}).value || "direct",
+        jump_host: (document.querySelector('input[name="jump_host"]') || {{}}).value || "",
+        jump_port: (document.querySelector('input[name="jump_port"]') || {{}}).value || "22",
+        jump_username: (document.querySelector('input[name="jump_username"]') || {{}}).value || "",
+        jump_password: (document.querySelector('input[name="jump_password"]') || {{}}).value || "",
+        smc_command: (document.querySelector('input[name="smc_command"]') || {{}}).value || "smc server toc {{jump_host}}",
+        debug_mode: !!(document.querySelector('input[name="debug_mode"]') || {{}}).checked,
+        check_template_key: (document.getElementById('check_template_select') || {{}}).value || defaultCheckTemplateName,
+        checks: Array.from(document.querySelectorAll('input[name="checks"]:checked')).map(i => i.value),
+      }};
+      localStorage.setItem(HOME_FORM_STORAGE_KEY, JSON.stringify(state));
+    }} catch (e) {{}}
+  }}
+
+  function restoreHomeFormState() {{
+    try {{
+      const raw = localStorage.getItem(HOME_FORM_STORAGE_KEY);
+      if (!raw) return;
+      const state = JSON.parse(raw);
+      if (!state || typeof state !== "object") return;
+
+      const usernameEl = document.querySelector('input[name="username"]');
+      const devicesEl = document.querySelector('textarea[name="devices"]');
+      const customCommandsEl2 = document.querySelector('textarea[name="custom_commands"]');
+      const modeEl = document.querySelector('select[name="execution_mode"]');
+      const workersEl = document.querySelector('input[name="parallel_workers"]');
+      const retryEl = document.querySelector('input[name="connect_retry"]');
+      const jumpModeEl = document.querySelector('select[name="jump_mode"]');
+      const jumpHostEl = document.querySelector('input[name="jump_host"]');
+      const jumpPortEl = document.querySelector('input[name="jump_port"]');
+      const jumpUsernameEl = document.querySelector('input[name="jump_username"]');
+      const jumpPasswordEl = document.querySelector('input[name="jump_password"]');
+      const smcCommandEl = document.querySelector('input[name="smc_command"]');
+      const debugEl = document.querySelector('input[name="debug_mode"]');
+      const templateEl = document.getElementById('check_template_select');
+
+      if (usernameEl && typeof state.username === "string") usernameEl.value = state.username;
+      if (devicesEl && typeof state.devices === "string") devicesEl.value = state.devices;
+      if (customCommandsEl2 && typeof state.custom_commands === "string") customCommandsEl2.value = state.custom_commands;
+      if (modeEl && typeof state.execution_mode === "string") modeEl.value = state.execution_mode || "auto";
+      if (workersEl && typeof state.parallel_workers === "string") workersEl.value = state.parallel_workers;
+      if (retryEl && typeof state.connect_retry === "string") retryEl.value = state.connect_retry || "0";
+      if (jumpModeEl && typeof state.jump_mode === "string") jumpModeEl.value = state.jump_mode || "direct";
+      if (jumpHostEl && typeof state.jump_host === "string") jumpHostEl.value = state.jump_host;
+      if (jumpPortEl && typeof state.jump_port === "string") jumpPortEl.value = state.jump_port || "22";
+      if (jumpUsernameEl && typeof state.jump_username === "string") jumpUsernameEl.value = state.jump_username;
+      if (jumpPasswordEl && typeof state.jump_password === "string") jumpPasswordEl.value = state.jump_password;
+      if (smcCommandEl && typeof state.smc_command === "string") smcCommandEl.value = state.smc_command || "smc server toc {{jump_host}}";
+      if (debugEl) debugEl.checked = !!state.debug_mode;
+      if (templateEl && typeof state.check_template_key === "string" && checkTemplateMap[state.check_template_key]) {{
+        templateEl.value = state.check_template_key;
+      }}
+
+      renderChecksFromTemplate(templateEl ? templateEl.value : defaultCheckTemplateName, state.checks || []);
+
+      if (Array.isArray(state.checks)) {{
+        const checkedSet = new Set(state.checks.map(v => String(v)));
+        document.querySelectorAll('input[name="checks"]').forEach((el) => {{
+          el.checked = checkedSet.has(el.value);
+        }});
+      }}
+    }} catch (e) {{}}
+  }}
+
+  function updateCategoryToggle(category) {{
+    const items = document.querySelectorAll('input[name="checks"][data-category="' + category + '"]');
+    const toggle = document.querySelector('.category-toggle[data-category="' + category + '"]');
+    if (!items.length || !toggle) return;
+    const checked = Array.from(items).filter(i => i.checked).length;
+    toggle.checked = checked === items.length;
+    toggle.indeterminate = checked > 0 && checked < items.length;
+  }}
+
+  function escapeHtml(value) {{
+    return String(value || '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }}
+
+  function normalizeItems(raw) {{
+    const out = [];
+    const seen = new Set();
+    String(raw || '')
+      .split(/[\\n,;]+/)
+      .forEach((part) => {{
+        const v = part.trim();
+        if (!v || v.startsWith('#')) return;
+        if (!seen.has(v)) {{
+          seen.add(v);
+          out.push(v);
+        }}
+      }});
+    return out;
+  }}
+
+  function attachCheckEvents() {{
+    document.querySelectorAll('.category-toggle').forEach(toggle => {{
+      const category = toggle.getAttribute('data-category');
+      toggle.addEventListener('change', () => {{
+        document.querySelectorAll('input[name="checks"][data-category="' + category + '"]').forEach(i => {{
+          i.checked = toggle.checked;
+        }});
+        updateCategoryToggle(category);
+        buildPreview();
+      }});
+      updateCategoryToggle(category);
+    }});
+    document.querySelectorAll('input[name="checks"][data-category]').forEach(item => {{
+      item.addEventListener('change', () => {{
+        updateCategoryToggle(item.getAttribute('data-category'));
+        buildPreview();
+      }});
+    }});
+  }}
+
+  const devicesFileEl = document.getElementById('devices_file');
+  const jumpModeEl = document.querySelector('select[name="jump_mode"]');
+  const jumpHostRowEl = document.getElementById('jump_host_row');
+  const jumpAuthRowEl = document.getElementById('jump_auth_row');
+  const jumpSmcRowEl = document.getElementById('jump_smc_row');
+  const runFormEl = document.getElementById('run_form');
+  const openHistoryAnalysisBtnEl = document.getElementById('open_history_analysis_btn');
+  const clearSavedBtnEl = document.getElementById('clear_saved_btn');
+  const checkTemplateSelectEl = document.getElementById('check_template_select');
+  const checkGroupsEl = document.getElementById('check_groups');
+  const reviewCheckTemplateBtnEl = document.getElementById('review_check_template_btn');
+  const saveCurrentCheckTemplateBtnEl = document.getElementById('save_current_check_template_btn');
+  const checkTemplateModalEl = document.getElementById('check_template_modal');
+  const checkTemplateModalTitleEl = document.getElementById('check_template_modal_title');
+  const checkTemplateModalTextEl = document.getElementById('check_template_modal_text');
+  const saveCheckTemplateBtnEl = document.getElementById('save_check_template_btn');
+  const deleteCheckTemplateBtnEl = document.getElementById('delete_check_template_btn');
+  const closeCheckTemplateBtnEl = document.getElementById('close_check_template_btn');
+  const cancelCheckTemplateBtnEl = document.getElementById('cancel_check_template_btn');
+  const checkTemplateSaveModalEl = document.getElementById('check_template_save_modal');
+  const checkTemplateSaveNameEl = document.getElementById('check_template_save_name');
+  const checkTemplateSaveMsgEl = document.getElementById('check_template_save_msg');
+  const closeCheckTemplateSaveBtnEl = document.getElementById('close_check_template_save_btn');
+  const cancelCheckTemplateSaveBtnEl = document.getElementById('cancel_check_template_save_btn');
+  const confirmSaveCheckTemplateBtnEl = document.getElementById('confirm_save_check_template_btn');
+  const devicesTextEl = document.querySelector('textarea[name="devices"]');
+  const devicesFileNameEl = document.getElementById('devices_file_name');
+  const commandMapFileEl = document.getElementById('command_map_file');
+  const commandMapFileNameEl = document.getElementById('command_map_file_name');
+  const importResultEl = document.getElementById('import_result');
+  const customCommandsEl = document.querySelector('textarea[name="custom_commands"]');
+  const previewEl = document.getElementById('command_preview');
+  const checkCountWarningEl = document.getElementById('check_count_warning');
+  const noFileChosenText = {json.dumps(no_file_text)};
+
+  function refreshJumpModeUI() {{
+    const mode = (jumpModeEl && jumpModeEl.value) ? String(jumpModeEl.value) : 'direct';
+    if (jumpHostRowEl) {{
+      const hostVisible = mode !== 'direct';
+      jumpHostRowEl.hidden = !hostVisible;
+      jumpHostRowEl.style.display = hostVisible ? '' : 'none';
+    }}
+    if (jumpAuthRowEl) {{
+      const authVisible = mode === 'ssh';
+      jumpAuthRowEl.hidden = !authVisible;
+      jumpAuthRowEl.style.display = authVisible ? '' : 'none';
+    }}
+    if (jumpSmcRowEl) {{
+      const smcVisible = mode === 'smc';
+      jumpSmcRowEl.hidden = !smcVisible;
+      jumpSmcRowEl.style.display = smcVisible ? '' : 'none';
+    }}
+  }}
+
+  function refreshCheckTemplateSelect(selectedName) {{
+    if (!checkTemplateSelectEl) return;
+    const names = Object.keys(checkTemplateMap || {{}});
+    const showName = (n) => currentLang === 'en' ? (checkTemplateNameEn[n] || n) : n;
+    checkTemplateSelectEl.innerHTML = names
+      .map((name) => {{
+        const selected = selectedName === name ? ' selected' : '';
+        return '<option value="' + escapeHtml(name) + '"' + selected + '>' + escapeHtml(showName(name)) + '</option>';
+      }})
+      .join('');
+  }}
+
+  function categoryLabel(name) {{
+    return currentLang === 'en' ? (categoryNameEn[name] || name) : name;
+  }}
+
+  function renderChecksFromTemplate(templateName, checkedValues) {{
+    if (!checkGroupsEl) return;
+    const tpl = checkTemplateMap[templateName] || {{}};
+    const selectedValues = Array.isArray(checkedValues)
+      ? new Set(checkedValues.map(v => String(v)))
+      : new Set((tpl.checks || []).map(v => String(v)));
+    const checks = Array.isArray(tpl.checks) ? tpl.checks : [];
+    const categoryBuckets = {{}};
+    categoryDefs.forEach((pair) => {{ categoryBuckets[pair[0]] = []; }});
+    checks.forEach((item) => {{
+      let placed = false;
+      categoryDefs.forEach((pair) => {{
+        const cat = pair[0];
+        const members = Array.isArray(pair[1]) ? pair[1] : [];
+        if (!placed && members.includes(item)) {{
+          categoryBuckets[cat].push(item);
+          placed = true;
+        }}
+      }});
+      if (!placed) categoryBuckets["更多分类"].push(item);
+    }});
+    checkGroupsEl.innerHTML = categoryDefs.map((pair, idx) => {{
+      const cat = pair[0];
+      const groupId = 'cat_' + idx;
+      const items = categoryBuckets[cat] || [];
+      const checksHtml = items.length
+        ? ('<div class="checks">' + items.map((item) => {{
+            const checked = selectedValues.has(item) ? ' checked' : '';
+            return '<label class="check-item"><input type="checkbox" name="checks" value="' + escapeHtml(item) + '" data-category="' + groupId + '"' + checked + '>' + escapeHtml(item) + '</label>';
+          }}).join('') + '</div>')
+        : '<div class="empty-cat">暂无检查项</div>';
+      return (
+        '<div class="check-group">' +
+        '<div class="check-group-head"><strong>' + escapeHtml(categoryLabel(cat)) + '</strong>' +
+        '<label class="select-all"><input type="checkbox" class="category-toggle" data-category="' + groupId + '">全选</label></div>' +
+        checksHtml +
+        '</div>'
+      );
+    }}).join('');
+    attachCheckEvents();
+    document.querySelectorAll('.category-toggle').forEach(toggle => {{
+      updateCategoryToggle(toggle.getAttribute('data-category'));
+    }});
+    if (!Array.isArray(checkedValues) && customCommandsEl) {{
+      customCommandsEl.value = Array.isArray(tpl.commands) ? tpl.commands.join('\\n') : '';
+    }}
+  }}
+
+  function parseDevicesText(raw) {{
+    const dedup = [];
+    const seen = new Set();
+    raw.split(/[\\n,;]+/).forEach((part) => {{
+      const v = part.trim();
+      if (!v || v.startsWith('#')) return;
+      if (!seen.has(v)) {{
+        seen.add(v);
+        dedup.push(v);
+      }}
+    }});
+    return dedup;
+  }}
+
+  function parseItems(raw) {{
+    return String(raw || '')
+      .split(/[\\n,;]+/)
+      .map(s => s.trim())
+      .filter(s => s && !s.startsWith('#'));
+  }}
+
+  async function postForm(url, payload) {{
+    const body = new URLSearchParams();
+    Object.entries(payload || {{}}).forEach(([k, v]) => body.append(k, String(v == null ? '' : v)));
+    const resp = await fetch(url, {{
+      method: "POST",
+      headers: {{ "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" }},
+      body: body.toString(),
+    }});
+    const data = await resp.json();
+    if (!resp.ok || data.ok === false) {{
+      throw new Error(data.error || ("HTTP " + resp.status));
+    }}
+    return data;
+  }}
+
+  function openCheckTemplateEditor() {{
+    if (!canModify) {{
+      window.alert('当前角色只读，无法修改模板。');
+      return;
+    }}
+    const name = (checkTemplateSelectEl && checkTemplateSelectEl.value) || '';
+    if (!name) return;
+    const tpl = checkTemplateMap[name] || {{}};
+    const checks = Array.isArray(tpl.checks) ? tpl.checks : [];
+    const commands = Array.isArray(tpl.commands) ? tpl.commands : [];
+    checkTemplateModalEl.dataset.name = name;
+    checkTemplateModalTitleEl.textContent = '编辑检查项模板: ' + name;
+    checkTemplateModalTextEl.value = ['[checks]'].concat(checks).concat(['', '[commands]']).concat(commands).join('\\n');
+    checkTemplateModalEl.style.display = 'flex';
+  }}
+
+  function closeCheckTemplateEditor() {{
+    checkTemplateModalEl.style.display = 'none';
+    checkTemplateModalEl.dataset.name = '';
+    checkTemplateModalTextEl.value = '';
+  }}
+
+  function openSaveTemplateModal() {{
+    if (!canModify) {{
+      window.alert('当前角色只读，无法修改模板。');
+      return;
+    }}
+    if (!checkTemplateSaveModalEl || !checkTemplateSaveNameEl) return;
+    const currentName = (checkTemplateSelectEl && checkTemplateSelectEl.value) || '';
+    checkTemplateSaveNameEl.value = currentName === defaultCheckTemplateName ? '' : currentName;
+    checkTemplateSaveMsgEl.textContent = '';
+    checkTemplateSaveModalEl.style.display = 'flex';
+    setTimeout(() => checkTemplateSaveNameEl.focus(), 0);
+  }}
+
+  function closeSaveTemplateModal() {{
+    if (!checkTemplateSaveModalEl) return;
+    checkTemplateSaveModalEl.style.display = 'none';
+    if (checkTemplateSaveNameEl) checkTemplateSaveNameEl.value = '';
+    if (checkTemplateSaveMsgEl) checkTemplateSaveMsgEl.textContent = '';
+  }}
+
+  async function doSaveCurrentSelectionTemplate(name, overwrite) {{
+    const checks = Array.from(document.querySelectorAll('input[name="checks"]:checked')).map(i => i.value);
+    const commands = parseItems(customCommandsEl ? customCommandsEl.value : '');
+    if (!checks.length && !commands.length) {{
+      window.alert('请先勾选检查项或输入自定义命令。');
+      return;
+    }}
+    const body = new URLSearchParams();
+    body.append('template_name', name);
+    body.append('checks_text', checks.join('\\n'));
+    body.append('commands_text', commands.join('\\n'));
+    body.append('allow_overwrite', overwrite ? '1' : '0');
+    const resp = await fetch('/save_check_template_from_selection', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }},
+      body: body.toString(),
+    }});
+    const data = await resp.json();
+    if (!resp.ok || data.ok === false) {{
+      const err = String((data && data.error) || ('HTTP ' + resp.status));
+      if (err === 'template_exists') {{
+        const ok = window.confirm('模板已存在，是否覆盖保存？');
+        if (ok) {{
+          return await doSaveCurrentSelectionTemplate(name, true);
+        }}
+        if (checkTemplateSaveMsgEl) checkTemplateSaveMsgEl.textContent = '已取消覆盖，请修改模板名称后再保存。';
+        return;
+      }}
+      throw new Error(err);
+    }}
+    checkTemplateMap = data.templates || {{}};
+    const selectedName = data.selected_template || name;
+    refreshCheckTemplateSelect(selectedName);
+    renderChecksFromTemplate(selectedName);
+    saveHomeFormState();
+    buildPreview();
+    closeSaveTemplateModal();
+  }}
+
+  function updateCheckSelectionWarning() {{
+    if (!checkCountWarningEl) return;
+    const selectedChecks = Array.from(document.querySelectorAll('input[name="checks"]:checked')).map(i => i.value);
+    const count = selectedChecks.length;
+    if (count > 10) {{
+      const msgZh = '当前已选择 ' + count + ' 个检查项。检查项过多可能超出大模型上下文窗口，并显著增加巡检/分析耗时，建议减少检查项或启用分批模式。';
+      const msgEn = 'You selected ' + count + ' check items. Too many items may exceed LLM context window and slow report generation. Consider fewer items or batched analysis.';
+      checkCountWarningEl.textContent = currentLang === 'en' ? msgEn : msgZh;
+      checkCountWarningEl.style.display = '';
+      return;
+    }}
+    checkCountWarningEl.textContent = '';
+    checkCountWarningEl.style.display = 'none';
+  }}
+
+  function buildPreview() {{
+    updateCheckSelectionWarning();
+    if (!previewEl) return;
+    const selectedChecks = Array.from(document.querySelectorAll('input[name="checks"]:checked')).map(i => i.value);
+    const customCommands = parseItems(customCommandsEl ? customCommandsEl.value : '');
+    const finalItems = selectedChecks.concat(customCommands);
+    if (!finalItems.length) {{
+      previewEl.textContent = '暂无待执行项';
+      return;
+    }}
+    previewEl.textContent = finalItems.map((item, idx) => (String(idx + 1) + '. ' + item)).join('\\n');
+  }}
+
+  if (devicesFileEl && devicesTextEl) {{
+    devicesFileEl.addEventListener('change', () => {{
+      const file = devicesFileEl.files && devicesFileEl.files[0];
+      if (devicesFileNameEl) devicesFileNameEl.textContent = file ? file.name : noFileChosenText;
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {{
+        const text = String(reader.result || '');
+        const devices = parseDevicesText(text);
+        devicesTextEl.value = devices.join('\\n');
+        if (importResultEl) {{
+          importResultEl.textContent = devices.length > 0 ? ('成功导入 ' + devices.length + ' 台设备，已刷新到设备地址文本框。') : '未解析到有效设备地址。';
+        }}
+        saveHomeFormState();
+      }};
+      reader.onerror = () => {{
+        if (importResultEl) {{
+          importResultEl.textContent = '设备文件读取失败，请重试。';
+        }}
+      }};
+      reader.readAsText(file);
+    }});
+  }}
+  if (commandMapFileEl && commandMapFileNameEl) {{
+    commandMapFileEl.addEventListener('change', () => {{
+      const file = commandMapFileEl.files && commandMapFileEl.files[0];
+      commandMapFileNameEl.textContent = file ? file.name : noFileChosenText;
+    }});
+  }}
+  if (checkTemplateSelectEl) {{
+    checkTemplateSelectEl.addEventListener('change', () => {{
+      renderChecksFromTemplate(checkTemplateSelectEl.value);
+      saveHomeFormState();
+      buildPreview();
+    }});
+  }}
+  if (reviewCheckTemplateBtnEl) {{
+    reviewCheckTemplateBtnEl.addEventListener('click', openCheckTemplateEditor);
+  }}
+  if (closeCheckTemplateBtnEl) closeCheckTemplateBtnEl.addEventListener('click', closeCheckTemplateEditor);
+  if (cancelCheckTemplateBtnEl) cancelCheckTemplateBtnEl.addEventListener('click', closeCheckTemplateEditor);
+  if (checkTemplateModalEl) {{
+    checkTemplateModalEl.addEventListener('click', (e) => {{
+      if (e.target === checkTemplateModalEl) closeCheckTemplateEditor();
+    }});
+  }}
+  if (saveCheckTemplateBtnEl) {{
+    saveCheckTemplateBtnEl.addEventListener('click', async () => {{
+      if (!canModify) return;
+      const name = (checkTemplateModalEl.dataset.name || '').trim();
+      if (!name) return;
+      if (name === defaultCheckTemplateName) {{
+        window.alert('默认全量模板不可修改。');
+        return;
+      }}
+      const text = (checkTemplateModalTextEl.value || '').trim();
+      if (!text) {{
+        window.alert('检查项内容不能为空。');
+        return;
+      }}
+      const ok = window.confirm('确认保存修改吗？');
+      if (!ok) return;
+      try {{
+        const data = await postForm('/update_check_template', {{
+          template_name: name,
+          template_text: text,
+        }});
+        checkTemplateMap = data.templates || {{}};
+        refreshCheckTemplateSelect(data.selected_template || name);
+        renderChecksFromTemplate((data.selected_template || name));
+        closeCheckTemplateEditor();
+        saveHomeFormState();
+        buildPreview();
+      }} catch (e) {{
+        window.alert('保存失败: ' + (e && e.message ? e.message : e));
+      }}
+    }});
+  }}
+  if (deleteCheckTemplateBtnEl) {{
+    deleteCheckTemplateBtnEl.addEventListener('click', async () => {{
+      if (!canModify) return;
+      const name = (checkTemplateModalEl.dataset.name || '').trim();
+      if (!name) return;
+      if (name === defaultCheckTemplateName) {{
+        window.alert('默认全量模板不可删除。');
+        return;
+      }}
+      const ok = window.confirm('确认删除模板【' + name + '】吗？');
+      if (!ok) return;
+      try {{
+        const data = await postForm('/delete_check_template', {{ template_name: name }});
+        checkTemplateMap = data.templates || {{}};
+        const selectedName = data.selected_template || defaultCheckTemplateName;
+        refreshCheckTemplateSelect(selectedName);
+        renderChecksFromTemplate(selectedName);
+        closeCheckTemplateEditor();
+        saveHomeFormState();
+        buildPreview();
+      }} catch (e) {{
+        window.alert('删除失败: ' + (e && e.message ? e.message : e));
+      }}
+    }});
+  }}
+  if (saveCurrentCheckTemplateBtnEl) {{
+    saveCurrentCheckTemplateBtnEl.addEventListener('click', openSaveTemplateModal);
+  }}
+  if (confirmSaveCheckTemplateBtnEl) {{
+    confirmSaveCheckTemplateBtnEl.addEventListener('click', async () => {{
+      if (!canModify) return;
+      const name = ((checkTemplateSaveNameEl && checkTemplateSaveNameEl.value) || '').trim();
+      if (!name) {{
+        if (checkTemplateSaveMsgEl) checkTemplateSaveMsgEl.textContent = '请输入模板名称。';
+        return;
+      }}
+      if (name === defaultCheckTemplateName) {{
+        if (checkTemplateSaveMsgEl) checkTemplateSaveMsgEl.textContent = '默认全量模板不可覆盖，请使用其他名称。';
+        return;
+      }}
+      try {{
+        await doSaveCurrentSelectionTemplate(name, false);
+      }} catch (e) {{
+        window.alert('保存失败: ' + (e && e.message ? e.message : e));
+      }}
+    }});
+  }}
+  if (closeCheckTemplateSaveBtnEl) {{
+    closeCheckTemplateSaveBtnEl.addEventListener('click', closeSaveTemplateModal);
+  }}
+  if (cancelCheckTemplateSaveBtnEl) {{
+    cancelCheckTemplateSaveBtnEl.addEventListener('click', closeSaveTemplateModal);
+  }}
+  if (checkTemplateSaveModalEl) {{
+    checkTemplateSaveModalEl.addEventListener('click', (e) => {{
+      if (e.target === checkTemplateSaveModalEl) closeSaveTemplateModal();
+    }});
+  }}
+  if (customCommandsEl) {{
+    customCommandsEl.addEventListener('input', buildPreview);
+    customCommandsEl.addEventListener('change', buildPreview);
+  }}
+  if (runFormEl) {{
+    runFormEl.addEventListener('submit', saveHomeFormState);
+  }}
+  if (jumpModeEl) {{
+    jumpModeEl.addEventListener('change', () => {{
+      refreshJumpModeUI();
+      saveHomeFormState();
+    }});
+  }}
+  if (clearSavedBtnEl) {{
+    clearSavedBtnEl.addEventListener('click', () => {{
+      const ok = window.confirm('确认清空本地保存的首页配置吗？');
+      if (!ok) return;
+      try {{
+        localStorage.removeItem(HOME_FORM_STORAGE_KEY);
+      }} catch (e) {{}}
+      const passwordEl = document.querySelector('input[name="password"]');
+      if (runFormEl) runFormEl.reset();
+      if (passwordEl) passwordEl.value = "";
+      if (checkTemplateSelectEl) checkTemplateSelectEl.value = defaultCheckTemplateName;
+      const defaults = ((checkTemplateMap[defaultCheckTemplateName] || {{}}).checks || []).slice(0, 3);
+      renderChecksFromTemplate(defaultCheckTemplateName, defaults);
+      if (importResultEl) importResultEl.textContent = "已清空本地保存配置。";
+      buildPreview();
+    }});
+  }}
+  if (openHistoryAnalysisBtnEl) {{
+    openHistoryAnalysisBtnEl.addEventListener('click', () => {{
+      window.location.href = '/job?history=1&lang=' + encodeURIComponent(currentLang) + '#ai-analysis';
+    }});
+  }}
+  const langToggleBtnEl = document.getElementById('lang_toggle_btn');
+  if (langToggleBtnEl) {{
+    langToggleBtnEl.addEventListener('click', () => {{
+      const target = currentLang === 'zh' ? 'en' : 'zh';
+      try {{ localStorage.setItem('hc_ui_lang', target); }} catch (e) {{}}
+      window.location.href = '/?lang=' + encodeURIComponent(target);
+    }});
+  }}
+
+  if (checkTemplateSelectEl) {{
+    renderChecksFromTemplate(checkTemplateSelectEl.value || defaultCheckTemplateName, {json.dumps(selected_checks, ensure_ascii=False)});
+  }} else {{
+    attachCheckEvents();
+  }}
+  restoreHomeFormState();
+  refreshJumpModeUI();
+  setTimeout(refreshJumpModeUI, 0);
+  if (checkTemplateSelectEl) {{
+    refreshCheckTemplateSelect(checkTemplateSelectEl.value || defaultCheckTemplateName);
+  }}
+  buildPreview();
+</script>
+</body>
+</html>

@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HealthCheck 用户使用说明</title>
+  <style>
+    :root {
+      --bg: #f1f5f9;
+      --card: #ffffff;
+      --line: #d5dde7;
+      --text: #0f172a;
+      --muted: #475569;
+      --brand: #0b6e4f;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.6 "Helvetica Neue", "PingFang SC", sans-serif; }
+    .wrap { max-width: 1240px; margin: 18px auto; padding: 0 14px; }
+    .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .head h1 { margin: 0; font-size: 22px; }
+    .version {
+      margin: 6px 0 0;
+      color: #334155;
+      font-weight: 700;
+      font-size: 13px;
+    }
+    .back { text-decoration: none; color: #fff; background: var(--brand); border-radius: 8px; padding: 8px 12px; font-weight: 700; }
+    .layout { display: grid; grid-template-columns: 270px 1fr; gap: 12px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+    .toc { position: sticky; top: 12px; max-height: calc(100vh - 26px); overflow: auto; }
+    .toc h2 { margin: 0 0 8px; font-size: 16px; }
+    .toc a { display: block; padding: 6px 8px; border-radius: 6px; color: #0f172a; text-decoration: none; font-weight: 600; margin-bottom: 4px; }
+    .toc a:hover { background: #f1f5f9; }
+    .content h2 { margin: 16px 0 8px; border-left: 4px solid var(--brand); padding-left: 8px; font-size: 18px; }
+    .content p { margin: 6px 0; color: var(--muted); }
+    .content ul { margin: 6px 0 10px 18px; color: var(--muted); }
+    .code { border: 1px solid var(--line); border-radius: 8px; background: #f8fafc; padding: 10px; font-family: Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; color: #0f172a; }
+    @media (max-width: 920px) { .layout { grid-template-columns: 1fr; } .toc { position: static; max-height: none; } }
+  
+    .app-topbar {
+      background:#0a0c10; color:#fff; display:flex; justify-content:space-between; align-items:center;
+      padding:8px 18px; gap:14px;
+      position: relative;
+      min-height: 56px;
+    }
+    .app-brand { display:flex; align-items:center; gap:12px; min-width:0; }
+    .app-logo { display:inline-flex; align-items:center; gap:10px; background:#fff; border-radius:10px; padding:2px 8px 2px 2px; color:#1e2b8f; font-weight:700; }
+    .app-logo-mark {
+      width:42px; height:42px; border-radius:999px; display:inline-block;
+      background: linear-gradient(180deg, #f35a31 0 16%, #f28a2a 16% 32%, #10b981 32% 50%, #22d3ee 50% 68%, #2563eb 68% 84%, #1e3a8a 84% 100%);
+    }
+    .app-logo-text { display:flex; flex-direction:column; line-height:1.1; }
+    .app-logo-sea { font-size:20px; font-weight:800; }
+    .app-logo-sub { font-size:9px; opacity:0.9; }
+    .app-brand-name { font-size:21px; font-weight:700; color:#fff; white-space:nowrap; }
+    .app-top-links { display:inline-flex; align-items:center; gap:10px; white-space:nowrap; position:absolute; right:18px; top:50%; transform:translateY(-50%); }
+    .app-top-link { color:#e5e7eb; text-decoration:none; font-weight:600; background:transparent; border:0; cursor:pointer; padding:0; font-size:14px; }
+    .app-mainnav {
+      background:#fff; border-bottom:1px solid #d6dde8; display:flex; justify-content:space-between;
+      align-items:center; min-height:58px; padding:0 18px; gap:10px;
+    }
+    .app-title { font-size:22px; font-weight:700; color:#303643; white-space:nowrap; }
+    .app-menu { display:inline-flex; align-items:center; gap:16px; }
+    .app-menu a {
+      color:#374151; text-decoration:none; font-size:15px; font-weight:600;
+      padding:18px 0 14px; border-bottom:3px solid transparent;
+    }
+    .app-menu a.active { color:#111827; border-bottom-color:#d43a2f; }
+
+    @media (max-width: 740px) { .app-topbar, .app-mainnav { padding-left: 12px; padding-right: 12px; } .app-brand-name { font-size: 17px; } .app-logo-sea { font-size: 16px; } .app-menu a { font-size: 14px; padding: 10px 0 8px; } }
+  </style>
+</head>
+<body>
+
+  <div class="app-topbar">
+    <div class="app-brand">
+      <div class="app-logo">
+        <span class="app-logo-mark"></span>
+        <span class="app-logo-text">
+          <span class="app-logo-sea">sea</span>
+          <span class="app-logo-sub">connecting the dots</span>
+        </span>
+      </div>
+      <div class="app-brand-name">SEA NOC</div>
+    </div>
+    <div class="app-top-links">
+      __TOP_LINKS__
+    </div>
+  </div>
+  <div class="app-mainnav">
+    <div class="app-title">AIOps - HealthCheck Runner</div>
+    <div class="app-menu">
+      __MAIN_MENU__
+    </div>
+  </div>
+  <div class="wrap">
+    <div class="head">
+      <div>
+        <h1>HealthCheck 用户使用说明</h1>
+        <div class="version">__DOC_VERSION__ | __DOC_RULE__</div>
+      </div>
+      <a class="back" href="__GUIDE_BACK__">返回文档首页</a>
+    </div>
+    <div class="layout">
+      <aside class="card toc">
+        <h2>目录大纲</h2>
+        <a href="#u1">1. 启动与访问</a>
+        <a href="#u2">2. 首页巡检配置</a>
+        <a href="#u3">3. 任务状态页</a>
+        <a href="#u4">4. AI 分析流程</a>
+        <a href="#u5">5. 分析执行选项说明</a>
+        <a href="#u6">6. 提示词与模板管理</a>
+        <a href="#u7">7. 新环境部署依赖</a>
+        <a href="#u8">8. 常见问题</a>
+      </aside>
+      <main class="card content">
+        <section id="u1">
+          <h2>1. 启动与访问</h2>
+          <p>推荐使用 `./run.sh` 启动（自动准备虚拟环境、安装依赖、清理占用端口并开启热重载），默认访问 `http://127.0.0.1:8080`。</p>
+          <div class="code">cd healthcheck
+./run.sh
+
+# 兼容入口（保留）
+./scripts/start_web.sh
+python3 web_runner.py
+python3 app/web_server.py</div>
+        </section>
+        <section id="u2">
+          <h2>2. 首页巡检配置</h2>
+          <ul>
+            <li>输入设备 SSH 用户名/密码。</li>
+            <li>按需选择跳板模式：直连 / Jump SSH / SMC 命令接入。</li>
+            <li>填写设备地址（每行一个），或导入设备文件。</li>
+            <li>勾选检查项，可同时填写自定义命令（按行执行）。</li>
+            <li>可把“当前勾选检查项 + 自定义命令”保存为检查项模板，供下次一键复用。</li>
+            <li>设置执行模式、并发 workers、重试次数、debug。</li>
+            <li>点击“执行 Python 巡检脚本”。</li>
+          </ul>
+          <p>提示：首页支持本地记忆；可通过“清空已保存配置”重置。</p>
+        </section>
+        <section id="u3">
+          <h2>3. 任务状态页</h2>
+          <ul>
+            <li>显示实时日志与任务状态（执行中/完成/失败）。</li>
+            <li>任务成功后显示本次 JSON/CSV 报告下载。</li>
+            <li>支持返回首页继续下一次巡检。</li>
+          </ul>
+        </section>
+        <section id="u4">
+          <h2>4. AI 分析流程</h2>
+          <ul>
+            <li>点击“AI 分析”后：若导入了历史报告，优先分析历史报告。</li>
+            <li>未导入历史报告时，分析本次任务结果。</li>
+            <li>若无历史报告且本次任务无可用报告，会提示先运行巡检或导入报告。</li>
+            <li>可先点击“分析预估”，查看预计调用次数、预计 Token、预计耗时，再决定是否执行。</li>
+            <li>AI 设置页关键按钮：`导入 API Key`、`模型连接测试（Test Connection）`、`保存配置（Save Config）`。</li>
+            <li>普通模式：为避免模型上下文超限，会保留关键证据并做受控截断。</li>
+            <li>分批模式：按设备逐台分析并汇总，适合多设备报告。</li>
+            <li>分片模式：单设备按检查项分片分析后再汇总，适合超大报告。</li>
+            <li>云模型调用统一采用“模型发现 + 候选匹配 + 端点回退”策略，减少模型/端点差异导致的失败。</li>
+            <li>分析完成后会显示本次 token 与累计 token。</li>
+            <li>可点击“保存分析报告”另存为 `.md`；支持选择路径/文件名（浏览器不支持时自动回退下载）。</li>
+          </ul>
+        </section>
+        <section id="u5">
+          <h2>5. 分析执行选项说明</h2>
+          <ul>
+            <li>分批模式：开启后每台设备独立分析；关闭后走单次整体分析。</li>
+            <li>分片模式：仅对结构化 JSON 有效，按检查项切片再汇总。</li>
+            <li>AI 并发数（设备级）：控制同时分析的设备数量。</li>
+            <li>每设备分片数：仅分片模式生效，用于降低单次上下文长度。</li>
+            <li>每设备失败重试：仅重试 AI 调用失败，不重跑巡检采集。</li>
+          </ul>
+        </section>
+        <section id="u6">
+          <h2>6. 提示词与模板管理</h2>
+          <ul>
+            <li>系统提示词：用于严格约束 AI 输出规范。</li>
+            <li>任务提示词：用于定义本次分析重点。</li>
+            <li>支持导入到“系统提示词/任务提示词”。</li>
+            <li>支持 Review 后编辑、保存、删除（删除/保存均有确认）。</li>
+            <li>检查项模板支持保存“勾选检查项 + 自定义命令”，便于复用。</li>
+          </ul>
+        </section>
+        <section id="u7">
+          <h2>7. 新环境部署依赖</h2>
+          <ul>
+            <li>Python 3.9+。</li>
+            <li>安装依赖：`pip install paramiko PyYAML certifi`。</li>
+            <li>确保 `config/command_map.yaml` 存在（或页面上传）。</li>
+            <li>确保可写目录：`output/reports`、`runtime/tmp`、`state`、`prompts/*`。</li>
+            <li>确保网络连通：设备 SSH（22 端口）与所选 AI 服务 API 域名。</li>
+            <li>本地大模型模式需保证 LM Studio 地址可访问且模型可用。</li>
+            <li>若 DeepSeek/NVIDIA/Gemini/OpenAI 连接报证书错误，优先使用 `scripts/start_web.sh` 启动。</li>
+          </ul>
+          <div class="code">cd healthcheck
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install paramiko PyYAML certifi
+# 或
+python -m pip install -r requirements.txt
+./scripts/start_web.sh</div>
+        </section>
+        <section id="u8">
+          <h2>8. 常见问题</h2>
+          <ul>
+            <li>页面转圈不更新：可开启 debug 模式查看完整日志。</li>
+            <li>连接测试失败：检查模型服务地址、API Key、网络连通性。</li>
+            <li>若提示 `Address already in use`：优先用 `./run.sh` 启动，脚本会自动释放旧进程占用端口。</li>
+            <li>保存模型配置无反馈：新版会弹确认框，并在保存成功后弹窗提示“模型配置已保存”。</li>
+            <li>“保存分析报告”未弹系统保存窗口：浏览器可能不支持原生文件保存 API，系统会自动回退为下载。</li>
+            <li>图标不显示：系统会自动回退到内置图标，不影响分析功能。</li>
+            <li>若报告过大导致分析失败，建议开启分批模式，必要时同时开启分片模式。</li>
+          </ul>
+        </section>
+      </main>
+    </div>
+  </div>
+</body>
+</html>

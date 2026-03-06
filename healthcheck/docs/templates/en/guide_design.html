@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HealthCheck Design Logic</title>
+  <style>
+    :root {
+      --bg: #f1f5f9;
+      --card: #ffffff;
+      --line: #d5dde7;
+      --text: #0f172a;
+      --muted: #475569;
+      --brand: #0b6e4f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.6 "Helvetica Neue", "PingFang SC", sans-serif;
+    }
+    .wrap { max-width: 1240px; margin: 18px auto; padding: 0 14px; }
+    .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .head h1 { margin: 0; font-size: 22px; }
+    .version { margin: 6px 0 0; color: #334155; font-weight: 700; font-size: 13px; }
+    .back { text-decoration: none; color: #fff; background: var(--brand); border-radius: 8px; padding: 8px 12px; font-weight: 700; }
+    .layout { display: grid; grid-template-columns: 270px 1fr; gap: 12px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+    .toc { position: sticky; top: 12px; max-height: calc(100vh - 26px); overflow: auto; }
+    .toc h2 { margin: 0 0 8px; font-size: 16px; }
+    .toc a { display: block; padding: 6px 8px; border-radius: 6px; color: #0f172a; text-decoration: none; font-weight: 600; margin-bottom: 4px; }
+    .toc a:hover { background: #f1f5f9; }
+    .content h2 { margin: 16px 0 8px; border-left: 4px solid var(--brand); padding-left: 8px; font-size: 18px; }
+    .content p { margin: 6px 0; color: var(--muted); }
+    .content ul { margin: 6px 0 10px 18px; color: var(--muted); }
+    .code { border: 1px solid var(--line); border-radius: 8px; background: #f8fafc; padding: 10px; font-family: Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; color: #0f172a; }
+    .note { border: 1px solid #bbf7d0; background: #f0fdf4; color: #166534; border-radius: 8px; padding: 8px 10px; margin-top: 8px; }
+    @media (max-width: 920px) { .layout { grid-template-columns: 1fr; } .toc { position: static; max-height: none; } }
+  
+    .app-topbar {
+      background:#0a0c10; color:#fff; display:flex; justify-content:space-between; align-items:center;
+      padding:8px 18px; gap:14px;
+      position: relative;
+      min-height: 56px;
+    }
+    .app-brand { display:flex; align-items:center; gap:12px; min-width:0; }
+    .app-logo { display:inline-flex; align-items:center; gap:10px; background:#fff; border-radius:10px; padding:2px 8px 2px 2px; color:#1e2b8f; font-weight:700; }
+    .app-logo-mark {
+      width:42px; height:42px; border-radius:999px; display:inline-block;
+      background: linear-gradient(180deg, #f35a31 0 16%, #f28a2a 16% 32%, #10b981 32% 50%, #22d3ee 50% 68%, #2563eb 68% 84%, #1e3a8a 84% 100%);
+    }
+    .app-logo-text { display:flex; flex-direction:column; line-height:1.1; }
+    .app-logo-sea { font-size:20px; font-weight:800; }
+    .app-logo-sub { font-size:9px; opacity:0.9; }
+    .app-brand-name { font-size:21px; font-weight:700; color:#fff; white-space:nowrap; }
+    .app-top-links { display:inline-flex; align-items:center; gap:10px; white-space:nowrap; position:absolute; right:18px; top:50%; transform:translateY(-50%); }
+    .app-top-link { color:#e5e7eb; text-decoration:none; font-weight:600; background:transparent; border:0; cursor:pointer; padding:0; font-size:14px; }
+    .app-mainnav {
+      background:#fff; border-bottom:1px solid #d6dde8; display:flex; justify-content:space-between;
+      align-items:center; min-height:58px; padding:0 18px; gap:10px;
+    }
+    .app-title { font-size:22px; font-weight:700; color:#303643; white-space:nowrap; }
+    .app-menu { display:inline-flex; align-items:center; gap:16px; }
+    .app-menu a {
+      color:#374151; text-decoration:none; font-size:15px; font-weight:600;
+      padding:18px 0 14px; border-bottom:3px solid transparent;
+    }
+    .app-menu a.active { color:#111827; border-bottom-color:#d43a2f; }
+
+    @media (max-width: 740px) { .app-topbar, .app-mainnav { padding-left: 12px; padding-right: 12px; } .app-brand-name { font-size: 17px; } .app-logo-sea { font-size: 16px; } .app-menu a { font-size: 14px; padding: 10px 0 8px; } }
+  </style>
+</head>
+<body>
+
+  <div class="app-topbar">
+    <div class="app-brand">
+      <div class="app-logo">
+        <span class="app-logo-mark"></span>
+        <span class="app-logo-text">
+          <span class="app-logo-sea">sea</span>
+          <span class="app-logo-sub">connecting the dots</span>
+        </span>
+      </div>
+      <div class="app-brand-name">SEA NOC</div>
+    </div>
+    <div class="app-top-links">
+      __TOP_LINKS__
+    </div>
+  </div>
+  <div class="app-mainnav">
+    <div class="app-title">AIOps - HealthCheck Runner</div>
+    <div class="app-menu">
+      __MAIN_MENU__
+    </div>
+  </div>
+  <div class="wrap">
+    <div class="head">
+      <div>
+        <h1>HealthCheck Design Logic</h1>
+        <div class="version">__DOC_VERSION__ | __DOC_RULE__</div>
+      </div>
+      <a class="back" href="__GUIDE_BACK__">Back to Docs</a>
+    </div>
+    <div class="layout">
+      <aside class="card toc">
+        <h2>Outline</h2>
+        <a href="#sec1">1. Business Goals</a>
+        <a href="#sec2">2. Overall Architecture</a>
+        <a href="#sec3">3. Page Workflow</a>
+        <a href="#sec4">4. Execution Logic</a>
+        <a href="#sec5">5. AI Analysis Design</a>
+        <a href="#sec6">6. File Hierarchy</a>
+        <a href="#sec7">7. Deployment Dependencies</a>
+        <a href="#sec8">8. Key Changes (V2.4)</a>
+        <a href="#sec9">9. Key Design Points</a>
+        <a href="#sec10">10. Security and Ops Notes</a>
+      </aside>
+      <main class="card content">
+        <section id="sec1">
+          <h2>1. Business Goals</h2>
+          <p>This system is for network engineers, integrating multi-device inspection, structured reporting, and AI diagnosis into one workflow.</p>
+          <ul>
+            <li>Batch inspection: execute mapped checks and custom commands across many devices.</li>
+            <li>Report retention: output JSON/CSV for audit and comparison.</li>
+            <li>Intelligent diagnosis: supports ChatGPT, DeepSeek, Gemini, NVIDIA, and local LLMs.</li>
+          </ul>
+        </section>
+        <section id="sec2">
+          <h2>2. Overall Architecture</h2>
+          <p>The architecture has four layers: Web UI, request orchestration, AI services, and inspection execution.</p>
+          <ul>
+            <li>UI layer: form inputs, job status polling, and AI trigger.</li>
+            <li>Web orchestration: `web_server.py` handles routing, auth, parsing, and page render.</li>
+            <li>AI services: `analysis_service.py`, `status_service.py`, `llm_adapter.py`.</li>
+            <li>Execution layer: SSH login, command execution, retry/statistics, report write.</li>
+            <li>Docs service: `docs_service.py` + `docs/templates/zh|en/*`, decoupling docs from server code.</li>
+          </ul>
+        </section>
+        <section id="sec3">
+          <h2>3. Page Workflow</h2>
+          <p>Submit from home page -> jump to job status page -> download reports and run AI analysis.</p>
+          <ul>
+            <li>Home: devices, checks, command_map, execution options.</li>
+            <li>Check templates: save current selected checks + custom commands, then review/edit/delete.</li>
+            <li>Status page: live logs, status badge, report download.</li>
+            <li>AI analysis: use historical report first; otherwise use current report.</li>
+          </ul>
+        </section>
+        <section id="sec4">
+          <h2>4. Execution Logic</h2>
+          <p>The core executor is `app/healthcheck.py`; Web launches it as subprocess with stdin parameters.</p>
+          <ul>
+            <li>Device sanitization: deduplication, format checks, invalid filtering.</li>
+            <li>Command sources: mapped intents + custom commands in input order.</li>
+            <li>Concurrency strategy: auto/serial/parallel with workers.</li>
+            <li>Report outputs: `output/reports/inspection_report_*.json|csv`.</li>
+          </ul>
+        </section>
+        <section id="sec5">
+          <h2>5. AI Analysis Design</h2>
+          <p>A two-layer prompt strategy is used for strict output: System Prompt controls behavior, Task Prompt defines focus.</p>
+          <ul>
+            <li>System prompt: evidence chain required, no guessing, fixed output structure.</li>
+            <li>Task prompt: focuses on interface/protocol/resource scenarios.</li>
+            <li>Extra inputs: extra system constraints + extra task requirements.</li>
+            <li>Precheck: estimates device count, calls, token usage, and time before execution.</li>
+            <li>Normal mode: key evidence + controlled truncation to avoid context overflow.</li>
+            <li>Batch mode: per-device analysis with global summary, supports device-level concurrency and retries.</li>
+            <li>Chunk mode: per-device chunked analysis by check items, then device/global summarization.</li>
+            <li>Unified model invocation: model discovery + candidate match + endpoint fallback.</li>
+            <li>Token metrics: current token and cumulative token.</li>
+            <li>Result export: save analysis report as Markdown (.md).</li>
+          </ul>
+        </section>
+        <section id="sec6">
+          <h2>6. File Hierarchy</h2>
+          <div class="code">healthcheck/
+app/                 # core programs
+  web_server.py      # Web orchestration (main entry)
+  analysis_service.py# AI orchestration service
+  status_service.py  # analysis status service
+  llm_adapter.py     # LLM adapter
+  llm_service.py     # provider API calls
+  healthcheck.py     # inspection executor
+  web_runner.py      # compatibility entry
+config/              # command_map.yaml
+data/                # devices.txt / intents.txt
+docs/                # readme.md
+docs/templates/      # help-doc templates (zh/en)
+output/reports/      # inspection JSON/CSV
+runtime/tmp/         # runtime temp files
+state/               # gpt_config.json / token_stats.json
+run.sh               # recommended unified startup entry (venv/deps/port cleanup/hot reload)
+scripts/             # startup scripts (start_web.sh / dev_reload.py)
+prompts/
+  system_default/
+  system_custom/
+  task_default/
+  task_custom/</div>
+        </section>
+        <section id="sec7">
+          <h2>7. Deployment Dependencies</h2>
+          <ul>
+            <li>Python 3.9+ (recommended 3.10/3.11).</li>
+            <li>Python packages: `paramiko`, `PyYAML`, optional `certifi`.</li>
+            <li>System capability: SSH access to devices and network access to model APIs.</li>
+            <li>Port: default `8080`, configurable by `HC_WEB_PORT`.</li>
+            <li>Writable directories: `output/reports`, `runtime/tmp`, `state`, `prompts/*`.</li>
+            <li>Required config: `config/command_map.yaml` (or upload from UI).</li>
+            <li>Local LLM: ensure `base_url` reachable and model loaded.</li>
+            <li>For CERTIFICATE_VERIFY_FAILED, set CA bundle via startup script.</li>
+          </ul>
+          <div class="code">python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install paramiko PyYAML certifi
+
+python -m pip install -r requirements.txt
+./scripts/start_web.sh</div>
+        </section>
+        <section id="sec8">
+          <h2>8. Key Changes (V2.4)</h2>
+          <ul>
+            <li>Top navigation/header style is fully aligned with Netlog Extractor across pages.</li>
+            <li>AI settings button names are shortened to: `Import API Key`, `Test Connection`, `Save Config`.</li>
+            <li>Added unified launcher `run.sh` (auto venv/dependency setup, port cleanup, hot reload).</li>
+            <li>Help pages now share the same navigation style and language-switch behavior as main pages.</li>
+          </ul>
+          <p>V2.3 changes are retained below:</p>
+          <ul>
+            <li>"Save Analysis Report" supports markdown export (.md).</li>
+            <li>AI service split completed: `analysis_service.py`, `status_service.py`, `llm_adapter.py`.</li>
+            <li>Analysis precheck added for early risk detection (calls/token/time).</li>
+            <li>Help docs fully extracted from `web_server.py` to template-based structure.</li>
+          </ul>
+        </section>
+        <section id="sec9">
+          <h2>9. Key Design Points</h2>
+          <ul>
+            <li>Relative-path first to improve portability.</li>
+            <li>Template maintainability: import/edit/delete with confirmation.</li>
+            <li>Check templates store selected checks + custom commands for quick reuse.</li>
+            <li>Observability: status polling with optional debug output.</li>
+            <li>Traceability: report and AI output retain source/model metadata.</li>
+            <li>Language linkage: help docs follow UI language.</li>
+          </ul>
+        </section>
+        <section id="sec10">
+          <h2>10. Security and Ops Notes</h2>
+          <ul>
+            <li>API keys are stored locally in `state/gpt_config.json`; protect directory permissions.</li>
+            <li>Exclude `state/`, `output/reports/`, `runtime/tmp/` from git.</li>
+            <li>In production, pin strict system prompts to reduce output drift.</li>
+          </ul>
+          <div class="note">For enterprise use, consider adding change audit and incident knowledge base sections.</div>
+        </section>
+      </main>
+    </div>
+  </div>
+</body>
+</html>

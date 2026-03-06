@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HealthCheck Docs</title>
+  <style>
+    :root {
+      --bg: #f1f5f9;
+      --card: #ffffff;
+      --line: #d5dde7;
+      --text: #0f172a;
+      --muted: #475569;
+      --brand: #0b6e4f;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.6 "Helvetica Neue", "PingFang SC", sans-serif; }
+    .wrap { max-width: 980px; margin: 24px auto; padding: 0 16px; }
+    .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .head h1 { margin: 0; font-size: 24px; }
+    .version {
+      margin: 6px 0 0;
+      color: #334155;
+      font-weight: 700;
+      font-size: 13px;
+    }
+    .back { text-decoration: none; color: #fff; background: var(--brand); border-radius: 8px; padding: 8px 12px; font-weight: 700; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+    .card h2 { margin: 0 0 8px; font-size: 18px; }
+    .card p { margin: 0 0 10px; color: var(--muted); }
+    .go { display: inline-block; text-decoration: none; color: #fff; background: var(--brand); border-radius: 8px; padding: 8px 12px; font-weight: 700; }
+    @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  
+    .app-topbar {
+      background:#0a0c10; color:#fff; display:flex; justify-content:space-between; align-items:center;
+      padding:8px 18px; gap:14px;
+      position: relative;
+      min-height: 56px;
+    }
+    .app-brand { display:flex; align-items:center; gap:12px; min-width:0; }
+    .app-logo { display:inline-flex; align-items:center; gap:10px; background:#fff; border-radius:10px; padding:2px 8px 2px 2px; color:#1e2b8f; font-weight:700; }
+    .app-logo-mark {
+      width:42px; height:42px; border-radius:999px; display:inline-block;
+      background: linear-gradient(180deg, #f35a31 0 16%, #f28a2a 16% 32%, #10b981 32% 50%, #22d3ee 50% 68%, #2563eb 68% 84%, #1e3a8a 84% 100%);
+    }
+    .app-logo-text { display:flex; flex-direction:column; line-height:1.1; }
+    .app-logo-sea { font-size:20px; font-weight:800; }
+    .app-logo-sub { font-size:9px; opacity:0.9; }
+    .app-brand-name { font-size:21px; font-weight:700; color:#fff; white-space:nowrap; }
+    .app-top-links { display:inline-flex; align-items:center; gap:10px; white-space:nowrap; position:absolute; right:18px; top:50%; transform:translateY(-50%); }
+    .app-top-link { color:#e5e7eb; text-decoration:none; font-weight:600; background:transparent; border:0; cursor:pointer; padding:0; font-size:14px; }
+    .app-mainnav {
+      background:#fff; border-bottom:1px solid #d6dde8; display:flex; justify-content:space-between;
+      align-items:center; min-height:58px; padding:0 18px; gap:10px;
+    }
+    .app-title { font-size:22px; font-weight:700; color:#303643; white-space:nowrap; }
+    .app-menu { display:inline-flex; align-items:center; gap:16px; }
+    .app-menu a {
+      color:#374151; text-decoration:none; font-size:15px; font-weight:600;
+      padding:18px 0 14px; border-bottom:3px solid transparent;
+    }
+    .app-menu a.active { color:#111827; border-bottom-color:#d43a2f; }
+
+  </style>
+</head>
+<body>
+
+  <div class="app-topbar">
+    <div class="app-brand">
+      <div class="app-logo">
+        <span class="app-logo-mark"></span>
+        <span class="app-logo-text">
+          <span class="app-logo-sea">sea</span>
+          <span class="app-logo-sub">connecting the dots</span>
+        </span>
+      </div>
+      <div class="app-brand-name">SEA NOC</div>
+    </div>
+    <div class="app-top-links">
+      __TOP_LINKS__
+    </div>
+  </div>
+  <div class="app-mainnav">
+    <div class="app-title">AIOps - HealthCheck Runner</div>
+    <div class="app-menu">
+      __MAIN_MENU__
+    </div>
+  </div>
+  <div class="wrap">
+    <div class="head">
+      <div>
+        <h1>HealthCheck Docs</h1>
+        <div class="version">__DOC_VERSION__ | __DOC_RULE__</div>
+      </div>
+      <a class="back" href="__HOME_BACK__">Back to Home</a>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <h2>Design Documentation</h2>
+        <p>For developers and maintainers: business design, program logic, folder hierarchy, and key design points.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <a class="go" href="/guide/design?lang=en">Open Doc</a>
+        </div>
+      </div>
+      <div class="card">
+        <h2>User Guide</h2>
+        <p>For operators: complete workflow from homepage setup and job execution to report download and AI analysis.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <a class="go" href="/guide/user?lang=en">Open Doc</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

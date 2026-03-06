@@ -139,6 +139,12 @@ class TaskStore:
             ).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
+    def delete_task(self, task_id: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM tasks WHERE task_id = ?", (str(task_id or "").strip(),))
+            self._conn.commit()
+            return int(cur.rowcount or 0) > 0
+
     def _row_to_dict(self, row: sqlite3.Row) -> Dict:
         def _loads(value: str, fallback):
             try:
@@ -160,4 +166,3 @@ class TaskStore:
             "report_csv": str(row["report_csv"] or ""),
             "output_text": str(row["output_text"] or ""),
         }
-

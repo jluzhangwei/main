@@ -1,0 +1,85 @@
+<div class="wrap task-page">
+  <div class="card">
+    <h2>{{TITLE}}</h2>
+    <div class="actions">
+      <button type="button" class="btn" id="select_all_btn">{{SELECT_ALL_TEXT}}</button>
+      <button type="button" class="btn" id="clear_sel_btn">{{CLEAR_SEL_TEXT}}</button>
+      <button type="button" class="btn btn-danger" id="delete_sel_btn">{{BATCH_DEL_TEXT}}</button>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>{{HEAD_0}}</th><th>{{HEAD_1}}</th><th>{{HEAD_2}}</th><th>{{HEAD_3}}</th>
+          <th>{{HEAD_4}}</th><th>{{HEAD_5}}</th><th>{{HEAD_6}}</th><th>{{HEAD_7}}</th>
+        </tr>
+      </thead>
+      <tbody>{{TABLE_ROWS}}</tbody>
+    </table>
+  </div>
+</div>
+<script>
+(function () {
+  const checks = Array.from(document.querySelectorAll('.task-select'));
+  const selectAllBtn = document.getElementById('select_all_btn');
+  const clearBtn = document.getElementById('clear_sel_btn');
+  const deleteSelBtn = document.getElementById('delete_sel_btn');
+  const deleteBtns = Array.from(document.querySelectorAll('.task-delete'));
+
+  function selectedIds() {
+    return checks.filter((c) => c.checked).map((c) => c.value);
+  }
+
+  async function postDelete(ids) {
+    const fd = new URLSearchParams();
+    ids.forEach((id) => fd.append('task_ids', id));
+    fd.append('lang', {{LANG_JSON}});
+    const resp = await fetch('/delete_tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: fd.toString(),
+    });
+    const data = await resp.json();
+    if (!resp.ok || !data.ok) {
+      throw new Error((data && (data.error || data.detail)) || 'unknown');
+    }
+  }
+
+  if (selectAllBtn) selectAllBtn.addEventListener('click', () => checks.forEach((c) => c.checked = true));
+  if (clearBtn) clearBtn.addEventListener('click', () => checks.forEach((c) => c.checked = false));
+
+  if (deleteSelBtn) deleteSelBtn.addEventListener('click', async () => {
+    const ids = selectedIds();
+    if (!ids.length) { alert({{NO_SEL_TEXT_JSON}}); return; }
+    if (!window.confirm({{CONFIRM_BATCH_JSON}})) return;
+    deleteSelBtn.disabled = true;
+    const oldText = deleteSelBtn.textContent;
+    deleteSelBtn.textContent = {{DELETING_TEXT_JSON}};
+    try {
+      await postDelete(ids);
+      window.location.reload();
+    } catch (e) {
+      alert({{DELETE_FAIL_JSON}} + e);
+    } finally {
+      deleteSelBtn.disabled = false;
+      deleteSelBtn.textContent = oldText;
+    }
+  });
+
+  deleteBtns.forEach((btn) => btn.addEventListener('click', async () => {
+    const tid = btn.getAttribute('data-task-id') || '';
+    if (!tid) return;
+    if (!window.confirm({{CONFIRM_SINGLE_JSON}})) return;
+    btn.disabled = true;
+    const oldText = btn.textContent;
+    btn.textContent = {{DELETING_TEXT_JSON}};
+    try {
+      await postDelete([tid]);
+      window.location.reload();
+    } catch (e) {
+      alert({{DELETE_FAIL_JSON}} + e);
+      btn.disabled = false;
+      btn.textContent = oldText;
+    }
+  }));
+})();
+</script>

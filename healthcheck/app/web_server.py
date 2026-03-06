@@ -43,6 +43,7 @@ APP_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_DIR.parent
 SHARED_DIR = PROJECT_ROOT.parent / "service_hub" / "shared"
 SHARED_HEADER_CSS_PATH = SHARED_DIR / "header" / "shared-header.css"
+SHARED_TASK_LIST_CSS_PATH = SHARED_DIR / "tasks" / "unified-task-list.css"
 TEMPLATE_DIR = APP_DIR / "templates"
 SCRIPT_PATH = APP_DIR / "healthcheck.py"
 INTENTS_PATH = PROJECT_ROOT / "data" / "intents.txt"
@@ -191,6 +192,15 @@ def build_app_header_css() -> str:
     html {{ overflow-y: scroll; }}
     {shared_css}
 """
+
+
+def build_unified_task_list_css() -> str:
+    try:
+        if SHARED_TASK_LIST_CSS_PATH.is_file():
+            return SHARED_TASK_LIST_CSS_PATH.read_text(encoding="utf-8")
+    except Exception:
+        pass
+    return ""
 
 
 def build_app_header_html(lang: str, active_menu: str = "runner") -> str:
@@ -361,6 +371,8 @@ def localize_html_page(page_html: str, lang: str) -> str:
         ("系统模板查看", "System Template Review"),
         ("任务提示词模板", "Task Prompt Template"),
         ("任务提示词描述本次分析目标；可选择“不使用模板”。", "Task prompt defines analysis goals; you can select \"No Template\"."),
+        ("可选择“No Template”。", "You can select \"No Template\"."),
+        ("可选择\"No Template\"。", "You can select \"No Template\"."),
         ("模板查看", "Template Review"),
         ("提示词管理（可选）", "Prompt Management (Optional)"),
         ("导入提示词文件（txt）", "Import Prompt File (txt)"),
@@ -384,10 +396,13 @@ def localize_html_page(page_html: str, lang: str) -> str:
         ("每设备分片数（仅分片模式）", "Chunks per Device (Chunk Mode Only)"),
         ("AI 并发数（设备级，最大同时分析设备数）", "AI Parallelism (device-level, max concurrent devices)"),
         ("仅分批分析生效。每轮会按 AI 并发数并行分析设备；例如并发=2、设备=6 时共 3 轮。建议 1-4，过高可能触发 API 限流。", "Only effective for batched analysis. Each round analyzes up to AI parallelism devices; e.g., parallelism=2 with 6 devices runs 3 rounds. Recommended 1-4 to avoid API rate limits."),
+        ("仅分批分析生效。每轮会按 AI 并发数并行分析设备；e.g.并发=2、设备=6 时共 3 轮。建议并发 1-4，过高可能触发 API 限流。", "Only effective for batched analysis. Each round analyzes up to AI parallelism devices; e.g., parallelism=2 with 6 devices runs 3 rounds. Recommended parallelism 1-4 to avoid API rate limits."),
+        ("仅分批分析生效。每轮会按 AI 并发数并行分析设备；例如并发=2、设备=6 时共 3 轮。建议并发 1-4，过高可能触发 API 限流。", "Only effective for batched analysis. Each round analyzes up to AI parallelism devices; e.g., parallelism=2 with 6 devices runs 3 rounds. Recommended parallelism 1-4 to avoid API rate limits."),
         ("每设备失败重试", "Retry per Device"),
         ("重试仅针对 AI 分析请求失败，不影响巡检采集。", "Retries apply only to AI analysis request failures, not data collection."),
         ("分析预估", "Estimate"),
         ("分析预估：未计算", "Estimate: not calculated"),
+        ("Estimate：未计算", "Estimate: not calculated"),
         ("历史报告分析", "Historical Report Analysis"),
         ("历史报告文件（任意格式）", "History Report File (Any Format)"),
         ("导入历史报告文件（任意格式）", "Import History Report File (Any Format)"),
@@ -2123,7 +2138,8 @@ def build_html(
 </body>
 </html>
 """
-    return localize_html_page(_html, lang)
+    page_html = localize_html_page(_html, lang)
+    return render_html_template("index.html", {"CONTENT": page_html})
 
 
 def build_job_html(
@@ -3942,7 +3958,8 @@ def build_job_html(
   </script>
 </body>
 </html>"""
-    return localize_html_page(_html, lang)
+    page_html = localize_html_page(_html, lang)
+    return render_html_template("task_detail.html", {"CONTENT": page_html})
 
 
 def build_guide_html(lang: str = "zh") -> str:
@@ -4066,7 +4083,7 @@ def build_guide_html(lang: str = "zh") -> str:
         <h1>HealthCheck 设计逻辑说明</h1>
         <div class="version">__DOC_VERSION__ | __DOC_RULE__</div>
       </div>
-      <a class="back" href="{with_lang('/guide', lang)}">返回文档首页</a>
+      <a class="back" href="{with_lang('/', lang)}">返回首页</a>
     </div>
     <div class="layout">
       <aside class="card toc">
@@ -4199,12 +4216,13 @@ python -m pip install -r requirements.txt
   </div>
 </body>
 </html>"""
-    _html = _html.replace("{with_lang('/guide', lang)}", with_lang("/guide", lang))
+    _html = _html.replace("{with_lang('/', lang)}", with_lang("/", lang))
     _html = _html.replace("{build_app_header_css()}", build_app_header_css())
     _html = _html.replace("{build_app_header_html(lang, \"docs\")}", build_app_header_html(lang, "docs"))
     _html = _html.replace("__DOC_VERSION__", version_line)
     _html = _html.replace("__DOC_RULE__", version_rule)
-    return localize_html_page(_html, lang)
+    page_html = localize_html_page(_html, lang)
+    return render_html_template("help.html", {"CONTENT": page_html})
 
 
 def build_guide_index_html(lang: str = "zh") -> str:
@@ -4283,7 +4301,8 @@ def build_guide_index_html(lang: str = "zh") -> str:
     _html = _html.replace("{build_app_header_html(lang, \"docs\")}", build_app_header_html(lang, "docs"))
     _html = _html.replace("__DOC_VERSION__", version_line)
     _html = _html.replace("__DOC_RULE__", version_rule)
-    return localize_html_page(_html, lang)
+    page_html = localize_html_page(_html, lang)
+    return render_html_template("help.html", {"CONTENT": page_html})
 
 
 def build_user_guide_html(lang: str = "zh") -> str:
@@ -4339,7 +4358,7 @@ def build_user_guide_html(lang: str = "zh") -> str:
         <h1>HealthCheck 用户使用说明</h1>
         <div class="version">__DOC_VERSION__ | __DOC_RULE__</div>
       </div>
-      <a class="back" href="{with_lang('/guide', lang)}">返回文档首页</a>
+      <a class="back" href="{with_lang('/', lang)}">返回首页</a>
     </div>
     <div class="layout">
       <aside class="card toc">
@@ -4438,12 +4457,13 @@ python -m pip install -r requirements.txt
   </div>
 </body>
 </html>"""
-    _html = _html.replace("{with_lang('/guide', lang)}", with_lang("/guide", lang))
+    _html = _html.replace("{with_lang('/', lang)}", with_lang("/", lang))
     _html = _html.replace("{build_app_header_css()}", build_app_header_css())
     _html = _html.replace("{build_app_header_html(lang, \"docs\")}", build_app_header_html(lang, "docs"))
     _html = _html.replace("__DOC_VERSION__", version_line)
     _html = _html.replace("__DOC_RULE__", version_rule)
-    return localize_html_page(_html, lang)
+    page_html = localize_html_page(_html, lang)
+    return render_html_template("help.html", {"CONTENT": page_html})
 
 
 def extract_report_name(line: str, suffix: str) -> str:
@@ -4501,9 +4521,9 @@ def build_tasks_page(lang: str = "zh", auth_username: str = "", auth_role: str =
     ensure_task_store()
     ensure_analysis_services()
     rows = TASK_STORE.list_tasks(300) if TASK_STORE else []
-    h = ("任务ID", "创建时间", "状态", "AI 分析", "设备数", "报告", "操作")
+    h = ("选择", "任务ID", "创建时间", "状态", "AI 分析", "设备数", "报告", "操作")
     if lang == "en":
-        h = ("Task ID", "Created At", "Status", "AI Analysis", "Devices", "Reports", "Actions")
+        h = ("Select", "Task ID", "Created At", "Status", "AI Analysis", "Devices", "Reports", "Actions")
     body_rows = []
     for row in rows:
         tid = str(row.get("task_id", "") or "")
@@ -4548,46 +4568,120 @@ def build_tasks_page(lang: str = "zh", auth_username: str = "", auth_role: str =
                     else:
                         ai_cell = html.escape(ai_label)
         action_text = "查看" if lang == "zh" else "View"
+        delete_text = "删除" if lang == "zh" else "Delete"
         body_rows.append(
             "<tr>"
+            f"<td><input type=\"checkbox\" class=\"task-select\" value=\"{html.escape(tid)}\"></td>"
             f"<td><a href=\"{with_lang('/tasks/' + tid, lang)}\">{html.escape(tid)}</a></td>"
             f"<td>{html.escape(_format_ts(float(row.get('created_at', 0.0) or 0.0)))}</td>"
             f"<td>{html.escape(str(row.get('status', 'unknown') or 'unknown'))}</td>"
             f"<td>{ai_cell}</td>"
             f"<td>{len(devices)}</td>"
             f"<td>{' | '.join(links)}</td>"
-            f"<td><a href=\"{with_lang('/tasks/' + tid, lang)}\">{action_text}</a></td>"
+            f"<td><a href=\"{with_lang('/tasks/' + tid, lang)}\">{action_text}</a> | <button type=\"button\" class=\"task-delete\" data-task-id=\"{html.escape(tid)}\">{delete_text}</button></td>"
             "</tr>"
         )
-    page_css = """
+    page_css = (
+        build_unified_task_list_css()
+        + """
     body { margin:0; background:#f6f8fb; color:#0f172a; font:14px/1.5 "Segoe UI","PingFang SC",sans-serif; }
     .wrap { max-width:980px; margin:28px auto; padding:0 16px; }
-    .card { background:#fff; border:1px solid #d6dce3; border-radius:10px; padding:14px; }
-    h2 { margin:0 0 10px; }
-    table { width:100%; border-collapse:collapse; }
-    th, td { border-bottom:1px solid #e2e8f0; text-align:left; padding:8px; }
-    th { background:#f8fafc; }
-    a { color:#0b6e4f; text-decoration:none; font-weight:600; }
     """
+    )
     title = "任务页面" if lang == "zh" else "Tasks"
+    select_all_text = "全选" if lang == "zh" else "Select All"
+    clear_sel_text = "清空选择" if lang == "zh" else "Clear Selection"
+    batch_del_text = "删除选中任务" if lang == "zh" else "Delete Selected"
+    no_sel_text = "请先选择至少一个任务" if lang == "zh" else "Select at least one task"
+    confirm_batch = "确认删除选中的任务及其相关文件吗？" if lang == "zh" else "Delete selected tasks and related files?"
+    confirm_single = "确认删除该任务及其相关文件吗？" if lang == "zh" else "Delete this task and related files?"
+    deleting_text = "正在删除..." if lang == "zh" else "Deleting..."
+    delete_fail = "删除失败: " if lang == "zh" else "Delete failed: "
     body_html = f"""
-    <div class="wrap">
+    <div class="wrap task-page">
       <div class="card">
         <h2>{title}</h2>
+        <div class="actions">
+          <button type="button" class="btn" id="select_all_btn">{select_all_text}</button>
+          <button type="button" class="btn" id="clear_sel_btn">{clear_sel_text}</button>
+          <button type="button" class="btn btn-danger" id="delete_sel_btn">{batch_del_text}</button>
+        </div>
         <table>
-          <thead><tr><th>{h[0]}</th><th>{h[1]}</th><th>{h[2]}</th><th>{h[3]}</th><th>{h[4]}</th><th>{h[5]}</th><th>{h[6]}</th></tr></thead>
-          <tbody>{''.join(body_rows) if body_rows else '<tr><td colspan="7">-</td></tr>'}</tbody>
+          <thead><tr><th>{h[0]}</th><th>{h[1]}</th><th>{h[2]}</th><th>{h[3]}</th><th>{h[4]}</th><th>{h[5]}</th><th>{h[6]}</th><th>{h[7]}</th></tr></thead>
+          <tbody>{''.join(body_rows) if body_rows else '<tr><td colspan="8">-</td></tr>'}</tbody>
         </table>
       </div>
     </div>
+    <script>
+      (function () {{
+        const checks = Array.from(document.querySelectorAll('.task-select'));
+        const selectAllBtn = document.getElementById('select_all_btn');
+        const clearBtn = document.getElementById('clear_sel_btn');
+        const deleteSelBtn = document.getElementById('delete_sel_btn');
+        const deleteBtns = Array.from(document.querySelectorAll('.task-delete'));
+        function selectedIds() {{
+          return checks.filter((c) => c.checked).map((c) => c.value);
+        }}
+        async function postDelete(ids) {{
+          const fd = new URLSearchParams();
+          ids.forEach((id) => fd.append('task_ids', id));
+          fd.append('lang', {json.dumps(lang)});
+          const resp = await fetch('/delete_tasks', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }},
+            body: fd.toString(),
+          }});
+          const data = await resp.json();
+          if (!resp.ok || !data.ok) {{
+            throw new Error((data && (data.error || data.detail)) || 'unknown');
+          }}
+        }}
+        if (selectAllBtn) selectAllBtn.addEventListener('click', () => checks.forEach((c) => c.checked = true));
+        if (clearBtn) clearBtn.addEventListener('click', () => checks.forEach((c) => c.checked = false));
+        if (deleteSelBtn) deleteSelBtn.addEventListener('click', async () => {{
+          const ids = selectedIds();
+          if (!ids.length) {{ alert({json.dumps(no_sel_text)}); return; }}
+          if (!window.confirm({json.dumps(confirm_batch)})) return;
+          deleteSelBtn.disabled = true;
+          const oldText = deleteSelBtn.textContent;
+          deleteSelBtn.textContent = {json.dumps(deleting_text)};
+          try {{
+            await postDelete(ids);
+            window.location.reload();
+          }} catch (e) {{
+            alert({json.dumps(delete_fail)} + e);
+          }} finally {{
+            deleteSelBtn.disabled = false;
+            deleteSelBtn.textContent = oldText;
+          }}
+        }});
+        deleteBtns.forEach((btn) => btn.addEventListener('click', async () => {{
+          const tid = btn.getAttribute('data-task-id') || '';
+          if (!tid) return;
+          if (!window.confirm({json.dumps(confirm_single)})) return;
+          btn.disabled = true;
+          const oldText = btn.textContent;
+          btn.textContent = {json.dumps(deleting_text)};
+          try {{
+            await postDelete([tid]);
+            window.location.reload();
+          }} catch (e) {{
+            alert({json.dumps(delete_fail)} + e);
+            btn.disabled = false;
+            btn.textContent = oldText;
+          }}
+        }}));
+      }})();
+    </script>
     """
-    return render_base_page(
+    page_html = render_base_page(
         lang=lang,
         title=title,
         header_html=build_app_header_html(lang, "tasks"),
         page_body=body_html,
         page_css=page_css,
     )
+    return render_html_template("tasks.html", {"CONTENT": page_html})
 
 
 def build_ai_settings_page(lang: str = "zh", auth_username: str = "", auth_role: str = "user", can_modify: bool = True) -> str:
@@ -5224,7 +5318,7 @@ def build_ai_settings_page(lang: str = "zh", auth_username: str = "", auth_role:
 </script>
 """
 
-    return render_base_page(
+    page_html = render_base_page(
         lang=lang,
         title=title,
         header_html=build_app_header_html(lang, "ai"),
@@ -5232,6 +5326,7 @@ def build_ai_settings_page(lang: str = "zh", auth_username: str = "", auth_role:
         page_css=page_css,
         page_script=page_script,
     )
+    return render_html_template("ai_settings.html", {"CONTENT": page_html})
 
 
 def start_job(
