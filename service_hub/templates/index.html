@@ -347,6 +347,8 @@
     loginUrl: {{ ('/login?lang=en' if is_en else '/login?lang=zh') | tojson }},
   };
   const IS_EN = {{ is_en | tojson }};
+  const PENDING_TIMEOUT_MS = 30000;
+  const pendingOps = {};
 
   function setStatus(serviceId, state, text) {
     const el = document.getElementById(`status-${serviceId}`);
@@ -399,6 +401,16 @@
     document.querySelectorAll(`[data-toggle-id="${serviceId}"]`).forEach((el) => { el.disabled = disabled; });
   }
 
+  function markPending(serviceId, target) {
+    pendingOps[serviceId] = { target, ts: Date.now() };
+    setServiceButtonsDisabled(serviceId, true);
+  }
+
+  function clearPending(serviceId) {
+    delete pendingOps[serviceId];
+    setServiceButtonsDisabled(serviceId, false);
+  }
+
   async function refreshStatus() {
     try {
       const resp = await fetch('/api/services');
@@ -410,6 +422,19 @@
       const data = await resp.json();
       if (!data.services) return;
       data.services.forEach((svc) => {
+        const pending = pendingOps[svc.service_id];
+        if (pending) {
+          const reachedTarget = (pending.target === 'running' && svc.running) || (pending.target === 'stopped' && !svc.running);
+          if (reachedTarget) {
+            clearPending(svc.service_id);
+          } else if (Date.now() - pending.ts < PENDING_TIMEOUT_MS) {
+            setToggleVisual(svc.service_id, 'starting');
+            setStatus(svc.service_id, 'starting', pending.target === 'running' ? I18N.startingWait : I18N.stopping);
+            return;
+          } else {
+            clearPending(svc.service_id);
+          }
+        }
         const state = svc.running ? 'running' : 'idle';
         setToggleVisual(svc.service_id, state);
         setStatus(svc.service_id, state, svc.running ? I18N.running : I18N.stopped);
@@ -420,7 +445,7 @@
   }
 
   async function launchService(serviceId) {
-    setServiceButtonsDisabled(serviceId, true);
+    markPending(serviceId, 'running');
     setToggleVisual(serviceId, 'starting');
     setStatus(serviceId, 'starting', I18N.starting);
     setLog(`[${serviceId}] ${I18N.launching}`);
@@ -433,6 +458,7 @@
       }
 
       if (payload.ready) {
+        clearPending(serviceId);
         setToggleVisual(serviceId, 'running');
         setStatus(serviceId, 'running', I18N.running);
       } else {
@@ -441,16 +467,15 @@
       }
       setLog(`[${payload.service_id}] ${payload.message || I18N.launching}\n${IS_EN ? 'Target URL' : '目标地址'}: ${payload.url}\n${I18N.startDoneHint}`);
     } catch (err) {
+      clearPending(serviceId);
       setToggleVisual(serviceId, 'idle');
       setStatus(serviceId, 'idle', I18N.stopped);
       setLog(`[${serviceId}] ${I18N.launchFailed}: ${err}`);
-    } finally {
-      setServiceButtonsDisabled(serviceId, false);
     }
   }
 
   async function stopService(serviceId) {
-    setServiceButtonsDisabled(serviceId, true);
+    markPending(serviceId, 'stopped');
     setToggleVisual(serviceId, 'starting');
     setStatus(serviceId, 'starting', I18N.stopping);
     setLog(`[${serviceId}] ${I18N.stoppingAction}`);
@@ -461,15 +486,15 @@
       if (!resp.ok || !payload.ok) {
         throw new Error(payload.detail || payload.message || I18N.stopFailed);
       }
+      clearPending(serviceId);
       setToggleVisual(serviceId, 'idle');
       setStatus(serviceId, 'idle', I18N.stopped);
       setLog(`[${payload.service_id}] ${payload.message || I18N.stoppedMsg}`);
     } catch (err) {
+      clearPending(serviceId);
       setToggleVisual(serviceId, 'running');
       setStatus(serviceId, 'running', I18N.running);
       setLog(`[${serviceId}] ${I18N.stopFailed}: ${err}`);
-    } finally {
-      setServiceButtonsDisabled(serviceId, false);
     }
   }
 
