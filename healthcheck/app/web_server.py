@@ -3,6 +3,7 @@
 
 import cgi
 import base64
+import hashlib
 import html
 import json
 import mimetypes
@@ -771,14 +772,53 @@ def is_safe_ai_report_name(name: str) -> bool:
     return bool(re.match(r"^ai_analysis_[A-Za-z0-9_]+\.md$", name))
 
 
-def list_ai_report_files(task_id: str, limit: int = 20) -> List[Path]:
+def _ai_task_key(task_id: str) -> str:
+    tid = str(task_id or "").strip()
+    if not tid:
+        return "unknown"
+    key = re.sub(r"[^A-Za-z0-9_]+", "_", tid).strip("_")
+    return key or "unknown"
+
+
+def _ai_model_key(model: str, provider: str = "") -> str:
+    p = str(provider or "").strip()
+    m = str(model or "").strip()
+    raw = f"{p}__{m}" if (p or m) else "model"
+    key = re.sub(r"[^A-Za-z0-9_]+", "_", raw).strip("_")
+    digest = hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:8]
+    return f"{(key or 'model')[:32]}_{digest}"
+
+
+def _ai_prompt_key(prompt_source: str) -> str:
+    raw = str(prompt_source or "").strip() or "prompt"
+    key = re.sub(r"[^A-Za-z0-9_]+", "_", raw).strip("_")
+    digest = hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:8]
+    return f"{(key or 'prompt')[:24]}_{digest}"
+
+
+def _ai_report_name(task_id: str, model: str = "", provider: str = "", prompt_source: str = "") -> str:
+    return f"ai_analysis_{_ai_task_key(task_id)}_{_ai_model_key(model, provider)}_{_ai_prompt_key(prompt_source)}.md"
+
+
+def list_ai_report_files(task_id: str, limit: int = 20, include_legacy: bool = False) -> List[Path]:
     tid = str(task_id or "").strip()
     if not tid or not AI_REPORT_DIR.is_dir():
         return []
-    prefix = f"ai_analysis_{tid}_"
-    files = [p for p in AI_REPORT_DIR.iterdir() if p.is_file() and p.name.startswith(prefix) and p.suffix.lower() == ".md"]
-    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return files[: max(1, int(limit or 20))]
+    key = _ai_task_key(tid)
+    prefix = f"ai_analysis_{key}_"
+    fixed_legacy = AI_REPORT_DIR / f"ai_analysis_{key}.md"
+    all_files = [
+        p
+        for p in AI_REPORT_DIR.iterdir()
+        if p.is_file()
+        and p.suffix.lower() == ".md"
+        and (
+            p.name.startswith(prefix)
+            or (include_legacy and p.name == fixed_legacy.name)
+        )
+    ]
+    all_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return all_files[: max(1, int(limit or 20))]
 
 
 def save_ai_analysis_report(
@@ -795,10 +835,9 @@ def save_ai_analysis_report(
     status: str = "done",
     error: str = "",
 ) -> str:
-    tid = str(task_id or "").strip() or "unknown"
-    ts = time.strftime("%Y%m%d_%H%M%S", time.localtime())
-    suffix = uuid4().hex[:6]
-    name = f"ai_analysis_{tid}_{ts}_{suffix}.md"
+    raw_tid = str(task_id or "").strip() or "unknown"
+    tid = _ai_task_key(raw_tid)
+    name = _ai_report_name(tid, model=model, provider=provider, prompt_source=prompt_source)
     AI_REPORT_DIR.mkdir(parents=True, exist_ok=True)
     usage = token_usage or {}
     text = str(analysis_text or "").strip()
@@ -807,7 +846,7 @@ def save_ai_analysis_report(
     lines = [
         "# AI Analysis Report",
         "",
-        f"- Task ID: {tid}",
+        f"- Task ID: {raw_tid}",
         f"- Status: {status}",
         f"- Source: {source}",
         f"- Provider: {provider or '-'}",
@@ -822,7 +861,8 @@ def save_ai_analysis_report(
         text or "(empty)",
         "",
     ]
-    (AI_REPORT_DIR / name).write_text("\n".join(lines), encoding="utf-8")
+    target = AI_REPORT_DIR / name
+    target.write_text("\n".join(lines), encoding="utf-8")
     return name
 
 
@@ -2632,7 +2672,6 @@ def build_job_html(
       </div>
       <div>{job_meta}</div>
       <div id="reports" class="report-links"></div>
-      {ai_report_history_html}
       <pre id="output">{output_init_text}</pre>
       <div id="ai-analysis" class="gpt-card">
         <div class="ai-head">
@@ -2729,6 +2768,7 @@ def build_job_html(
           <div class="analysis-progress-bar"><div id="analysis_progress_fill" class="analysis-progress-fill"></div></div>
         </div>
         <div id="gpt_result">分析结果会显示在这里。</div>
+        {ai_report_history_html}
       </div>
     </div>
   </div>
