@@ -162,17 +162,18 @@
       <img class="infra-logo" src="/shared/header/infra-logo.png" alt="infra logo" />
     </div>
     <div class="app-top-links">
-      <a class="app-circle-btn" href="lldp-manual.html" target="_blank" title="查看使用手册">?</a>
+      <a id="manualLink" class="app-circle-btn" href="lldp-manual.html" target="_blank" title="查看使用手册">?</a>
+      <button id="lang_toggle_btn" class="app-circle-btn" type="button" title="切换语言">EN</button>
     </div>
   </div>
   <div class="app-mainnav">
-    <div class="app-title">AIOps - LLDP Topology Runner</div>
+    <div id="appTitle" class="app-title">AIOps - LLDP Topology Runner</div>
   </div>
 </div>
 <div class="wrap">
   <div class="panel">
     <div class="box">
-      <div><b>状态：</b><span id="status">等待导入</span></div>
+      <div><b id="statusLabel">状态：</b><span id="status">等待导入</span></div>
       <div class="kvs" style="margin-top:8px;">
         <div>输入行数：<b id="nRows">-</b></div>
         <div>列数：<b id="nCols">-</b></div>
@@ -184,10 +185,10 @@
     </div>
 
     <div class="section-box">
-      <h2>导入数据</h2>
+      <h2 id="secImportTitle">导入数据</h2>
       <div class="row inline">
         <div>
-          <label>导入方式</label>
+          <label id="lblImportMode">导入方式</label>
           <select id="importMode">
             <option value="sql">SQL 导入</option>
             <option value="cli">CLI 导入</option>
@@ -202,7 +203,7 @@
           </div>
         </div>
       </div>
-      <div class="hint">导入输入会覆盖当前结果；追加输入会把新查询结果合并到当前图中，补充链路。</div>
+      <div class="hint" id="importHint">导入输入会覆盖当前结果；追加输入会把新查询结果合并到当前图中，补充链路。</div>
       <div style="display:none">
         <input id="file" type="file" accept=".csv,text/csv" multiple />
         <input id="appendFile" type="file" accept=".csv,text/csv" multiple />
@@ -217,7 +218,7 @@
     </div>
 
     <div class="section-box">
-      <h2>布局 & 分散</h2>
+      <h2 id="secLayoutTitle">布局 & 分散</h2>
       <div class="row inline">
         <div>
           <label>布局模式</label>
@@ -294,7 +295,7 @@
       </div>
 
       <div class="action-group">
-        <div class="action-group-title">拓扑生成与布局</div>
+        <div id="grpTopologyTitle" class="action-group-title">拓扑生成与布局</div>
         <div class="row">
           <button id="build" class="primary">生成拓扑</button>
         </div>
@@ -312,7 +313,7 @@
       </div>
 
       <div class="action-group">
-        <div class="action-group-title">选中定位与视图过滤</div>
+        <div id="grpViewTitle" class="action-group-title">选中定位与视图过滤</div>
         <div class="row inline">
           <button id="fitSelection">定位选中</button>
           <button id="isolateSelection">仅显示邻接</button>
@@ -324,7 +325,7 @@
       </div>
 
       <div class="action-group">
-        <div class="action-group-title">删除恢复与回退</div>
+        <div id="grpDeleteTitle" class="action-group-title">删除恢复与回退</div>
         <div class="row inline">
           <button id="deleteSelection">删除选中</button>
           <button id="keepSelected">删除未选中</button>
@@ -340,7 +341,7 @@
     </div>
 
     <div class="section-box">
-      <h2>导出</h2>
+      <h2 id="secExportTitle">导出</h2>
       <div class="row inline">
         <button id="exportPng">导出 PNG</button>
       </div>
@@ -352,7 +353,7 @@
     </div>
 
     <div class="section-box">
-      <h2>链路利用率</h2>
+      <h2 id="secUtilTitle">链路利用率</h2>
       <div class="util-grid">
         <div>
           <button id="refreshUtilization" class="primary">CLI 链路利用率</button>
@@ -524,6 +525,10 @@
   let utilByKey = new Map();
   let primaryCliSource = '';
   let dragPerfMode = false;
+  const NODE_BASE_SIZE = 30;
+  const NODE_BASE_FONT_SIZE = 10;
+  let lastZoomNodeScale = null;
+  let zoomNodeRaf = 0;
   const rollbackState = {
     before: null,
     after: null,
@@ -543,6 +548,280 @@
   const setStatus = (t) => $('status').textContent = t;
   const setOK = (t) => $('ok').textContent = t || '';
   const setErr = (t) => $('err').textContent = t || '';
+  const UI_LANG_KEY = 'lldp_ui_lang';
+  const UI_TEXT = {
+    zh: {
+      doc_title: 'LLDP Topology Builder (Final)',
+      app_title: 'AIOps - LLDP Topology Runner',
+      manual_title: '查看使用手册',
+      switch_lang_title: '切换语言',
+      status_label: '状态：',
+      waiting_import: '等待导入',
+      sec_import: '导入数据',
+      import_mode: '导入方式',
+      import_input: '导入输入',
+      append_input: '追加输入',
+      import_hint: '导入输入会覆盖当前结果；追加输入会把新查询结果合并到当前图中，补充链路。',
+      layout_mode_label: '布局模式',
+      strip_domain_label: '去掉 hostname 域名后缀',
+      node_label_label: '节点标签',
+      edge_label_label: '端口标签',
+      search_label: '定位设备（关键字逗号分隔，回车多选）',
+      filter_label: '不显示：逗号分隔，命中的设备会被隐藏',
+      show_only_label: '只显示：逗号分隔，回车生效（仅显示命中的设备，其余隐藏）',
+      layer_terms_label: '分层关键字（高->低，逗号分层，斜杠同层，&需全部命中，如 EDGE&CORE,CORE,AGGR/SPINE,LEAF/tor）',
+      partition_terms_label: '分区关键字（左->右分区，逗号分区，斜杠同区，&需全部命中，如 PAY/SHOP,MGMT&CORE,EDGE）',
+      name_cluster_label: '名称相似聚拢',
+      cluster_strength_label: '近似度强度 0~1',
+      spacing_label: '分散强度（越大越分散） 建议 0.3~0.8',
+      sec_layout: '布局 & 分散',
+      grp_topology: '拓扑生成与布局',
+      grp_view: '选中定位与视图过滤',
+      grp_delete: '删除恢复与回退',
+      sec_export: '导出',
+      sec_util: '链路利用率',
+      btn_build: '生成拓扑',
+      btn_fit: '适配画布（慎用）',
+      btn_center: '居中 + 放大',
+      btn_select_visible: '全选可见节点',
+      btn_relayout_selected: '重排选中设备',
+      btn_fit_selection: '定位选中',
+      btn_isolate: '仅显示邻接',
+      btn_clear_visibility: '恢复显示',
+      btn_show172: '只显示172设备',
+      btn_delete_selected: '删除选中',
+      btn_delete_unselected: '删除未选中',
+      btn_delete_non_adjacent: '删除非邻接',
+      btn_restore_deleted: '恢复删除设备',
+      btn_export_png: '导出 PNG',
+      btn_export_session: '导出会话',
+      btn_import_session: '导入会话',
+      btn_cli_util: 'CLI 链路利用率',
+      btn_zbx_util: 'Zabbix链路利用率',
+      btn_dl_cache: '下载链路缓存CSV',
+      btn_dl_util_debug: '下载利用率调试日志',
+      btn_run_sql: '执行 SQL 查询',
+      btn_dl_sql_tmp: '下载临时 CSV',
+      btn_run_cli: '执行 CLI 查询',
+      btn_dl_cli_tmp: '导出临时 CSV',
+      btn_dl_cli_debug: '下载 CLI 调试日志',
+      btn_pick_csv: '选择 CSV 文件',
+      btn_append_csv: '追加 CSV',
+      btn_load_paste: '从粘贴内容载入',
+      merge_prefix: '合并多条链路：',
+      on: '开启',
+      off: '关闭',
+      rollback_prev: '回到上一步',
+      rollback_next: '回到变更后',
+      import_mode_sql: 'SQL 导入',
+      import_mode_cli: 'CLI 导入',
+      import_mode_csv: 'CSV 导入',
+    },
+    en: {
+      doc_title: 'LLDP Topology Builder (Final)',
+      app_title: 'AIOps - LLDP Topology Runner',
+      manual_title: 'View Manual',
+      switch_lang_title: 'Switch Language',
+      status_label: 'Status:',
+      waiting_import: 'Waiting for import',
+      sec_import: 'Import Data',
+      import_mode: 'Import Mode',
+      import_input: 'Import Input',
+      append_input: 'Append Input',
+      import_hint: 'Import Input replaces current data; Append Input merges newly queried rows into current topology.',
+      layout_mode_label: 'Layout Mode',
+      strip_domain_label: 'Strip hostname domain suffix',
+      node_label_label: 'Node Labels',
+      edge_label_label: 'Port Labels',
+      search_label: 'Locate Devices (comma-separated keywords, press Enter for multi-select)',
+      filter_label: 'Hide: comma-separated keywords',
+      show_only_label: 'Show Only: comma-separated keywords, press Enter to apply',
+      layer_terms_label: 'Layer Keywords (high->low, comma=layer, slash=same layer, &=all terms)',
+      partition_terms_label: 'Partition Keywords (left->right, comma=partition, slash=same partition, &=all terms)',
+      name_cluster_label: 'Name Similarity Clustering',
+      cluster_strength_label: 'Similarity Strength 0~1',
+      spacing_label: 'Dispersion Strength (higher = more spread)',
+      sec_layout: 'Layout & Dispersion',
+      grp_topology: 'Topology Build & Layout',
+      grp_view: 'Selection & View Filters',
+      grp_delete: 'Delete/Restore & Rollback',
+      sec_export: 'Export',
+      sec_util: 'Link Utilization',
+      btn_build: 'Build Topology',
+      btn_fit: 'Fit Canvas (Careful)',
+      btn_center: 'Center + Zoom',
+      btn_select_visible: 'Select Visible Nodes',
+      btn_relayout_selected: 'Relayout Selected',
+      btn_fit_selection: 'Focus Selection',
+      btn_isolate: 'Show Adjacent Only',
+      btn_clear_visibility: 'Reset Visibility',
+      btn_show172: 'Show 172.* Only',
+      btn_delete_selected: 'Delete Selected',
+      btn_delete_unselected: 'Delete Unselected',
+      btn_delete_non_adjacent: 'Delete Non-Adjacent',
+      btn_restore_deleted: 'Restore Deleted Nodes',
+      btn_export_png: 'Export PNG',
+      btn_export_session: 'Export Session',
+      btn_import_session: 'Import Session',
+      btn_cli_util: 'CLI Link Utilization',
+      btn_zbx_util: 'Zabbix Link Utilization',
+      btn_dl_cache: 'Download Link Cache CSV',
+      btn_dl_util_debug: 'Download Util Debug Log',
+      btn_run_sql: 'Run SQL Query',
+      btn_dl_sql_tmp: 'Download Temp CSV',
+      btn_run_cli: 'Run CLI Query',
+      btn_dl_cli_tmp: 'Export Temp CSV',
+      btn_dl_cli_debug: 'Download CLI Debug Log',
+      btn_pick_csv: 'Select CSV File',
+      btn_append_csv: 'Append CSV',
+      btn_load_paste: 'Load Pasted CSV',
+      merge_prefix: 'Merge Multi-links: ',
+      on: 'ON',
+      off: 'OFF',
+      rollback_prev: 'Undo Last Step',
+      rollback_next: 'Redo Last Step',
+      import_mode_sql: 'SQL Import',
+      import_mode_cli: 'CLI Import',
+      import_mode_csv: 'CSV Import',
+    }
+  };
+
+  function resolveUiLang() {
+    const qp = (new URL(window.location.href)).searchParams.get('lang');
+    if (qp && String(qp).toLowerCase().startsWith('en')) return 'en';
+    if (qp && String(qp).toLowerCase().startsWith('zh')) return 'zh';
+    try {
+      const cached = localStorage.getItem(UI_LANG_KEY) || '';
+      if (cached.toLowerCase().startsWith('en')) return 'en';
+      if (cached.toLowerCase().startsWith('zh')) return 'zh';
+    } catch (e) {}
+    return 'zh';
+  }
+
+  let uiLang = resolveUiLang();
+  const tr = (k) => (UI_TEXT[uiLang] && UI_TEXT[uiLang][k]) || UI_TEXT.zh[k] || k;
+
+  function setText(id, key) {
+    const el = $(id);
+    if (!el) return;
+    el.textContent = tr(key);
+  }
+
+  function setOptionText(selectId, value, key) {
+    const sel = $(selectId);
+    if (!sel) return;
+    const opt = Array.from(sel.options || []).find((o) => o.value === value);
+    if (!opt) return;
+    opt.textContent = tr(key);
+  }
+
+  function setParentLabel(controlId, key) {
+    const el = $(controlId);
+    if (!el || !el.parentElement) return;
+    const label = Array.from(el.parentElement.children).find((c) => c.tagName === 'LABEL');
+    if (label) label.textContent = tr(key);
+  }
+
+  function setMergeButtonText() {
+    const btn = $('toggleMerge');
+    if (!btn) return;
+    btn.textContent = `${tr('merge_prefix')}${mergedMode ? tr('on') : tr('off')}`;
+  }
+
+  function applyStaticI18n() {
+    document.documentElement.lang = uiLang === 'en' ? 'en' : 'zh-CN';
+    document.title = tr('doc_title');
+    setText('appTitle', 'app_title');
+    setText('statusLabel', 'status_label');
+    setText('secImportTitle', 'sec_import');
+    setText('lblImportMode', 'import_mode');
+    setText('importHint', 'import_hint');
+    setText('secLayoutTitle', 'sec_layout');
+    setParentLabel('layoutMode', 'layout_mode_label');
+    setParentLabel('stripDomain', 'strip_domain_label');
+    setParentLabel('nodeLabelMode', 'node_label_label');
+    setParentLabel('edgeLabelMode', 'edge_label_label');
+    setParentLabel('search', 'search_label');
+    setParentLabel('filter', 'filter_label');
+    setParentLabel('showOnly', 'show_only_label');
+    setParentLabel('layerTerms', 'layer_terms_label');
+    setParentLabel('bizIsolationTerms', 'partition_terms_label');
+    setParentLabel('nameClusterMode', 'name_cluster_label');
+    setParentLabel('nameClusterStrength', 'cluster_strength_label');
+    setParentLabel('spacing', 'spacing_label');
+    setText('grpTopologyTitle', 'grp_topology');
+    setText('grpViewTitle', 'grp_view');
+    setText('grpDeleteTitle', 'grp_delete');
+    setText('secExportTitle', 'sec_export');
+    setText('secUtilTitle', 'sec_util');
+    setText('build', 'btn_build');
+    setText('fit', 'btn_fit');
+    setText('center', 'btn_center');
+    setText('selectVisible', 'btn_select_visible');
+    setText('buildScopedTopo', 'btn_relayout_selected');
+    setText('fitSelection', 'btn_fit_selection');
+    setText('isolateSelection', 'btn_isolate');
+    setText('clearSelectionHide', 'btn_clear_visibility');
+    setText('show172Only', 'btn_show172');
+    setText('deleteSelection', 'btn_delete_selected');
+    setText('keepSelected', 'btn_delete_unselected');
+    setText('keepAdjacentOnly', 'btn_delete_non_adjacent');
+    setText('restoreDeleted', 'btn_restore_deleted');
+    setText('exportPng', 'btn_export_png');
+    setText('exportSession', 'btn_export_session');
+    setText('importSessionBtn', 'btn_import_session');
+    setText('refreshUtilization', 'btn_cli_util');
+    setText('refreshUtilizationZbx', 'btn_zbx_util');
+    setText('downloadUtilCache', 'btn_dl_cache');
+    setText('downloadUtilDebug', 'btn_dl_util_debug');
+    setText('runSqlGenerateModal', 'btn_run_sql');
+    setText('downloadSqlCsvModal', 'btn_dl_sql_tmp');
+    setText('runCliGenerateModal', 'btn_run_cli');
+    setText('downloadCliCsvModal', 'btn_dl_cli_tmp');
+    setText('downloadCliDebugModal', 'btn_dl_cli_debug');
+    setText('pickCsvModal', 'btn_pick_csv');
+    setText('appendCsvModal', 'btn_append_csv');
+    setText('loadPasteModal', 'btn_load_paste');
+
+    setOptionText('importMode', 'sql', 'import_mode_sql');
+    setOptionText('importMode', 'cli', 'import_mode_cli');
+    setOptionText('importMode', 'csv', 'import_mode_csv');
+
+    setText('openImportModalImport', 'import_input');
+    setText('openImportModalAppend', 'append_input');
+    const importTitle = $('importModalTitle');
+    if (importTitle) {
+      importTitle.textContent = importInputAction === 'append' ? tr('append_input') : tr('import_input');
+    }
+    setMergeButtonText();
+    updateRollbackButtonState();
+
+    const manual = $('manualLink');
+    if (manual) {
+      manual.title = tr('manual_title');
+      manual.href = `lldp-manual.html?lang=${uiLang}`;
+    }
+    const toggle = $('lang_toggle_btn');
+    if (toggle) {
+      toggle.title = tr('switch_lang_title');
+      toggle.textContent = uiLang === 'en' ? 'ZH' : 'EN';
+    }
+    if ($('status') && String($('status').textContent || '').trim() === '等待导入') {
+      $('status').textContent = tr('waiting_import');
+    }
+  }
+
+  function initLangToggle() {
+    const btn = $('lang_toggle_btn');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      const target = uiLang === 'en' ? 'zh' : 'en';
+      try { localStorage.setItem(UI_LANG_KEY, target); } catch (e) {}
+      const url = new URL(window.location.href);
+      url.searchParams.set('lang', target);
+      window.location.href = url.toString();
+    });
+  }
 
   function resetViewState() {
     viewState.filterTerms = [];
@@ -583,7 +862,7 @@
     if (!btn) return;
     const enabled = !!(rollbackState.before && rollbackState.after);
     btn.disabled = !enabled;
-    btn.textContent = rollbackState.atBefore ? '回到变更后' : '回到上一步';
+    btn.textContent = rollbackState.atBefore ? tr('rollback_next') : tr('rollback_prev');
   }
 
   function captureRollbackSnapshot() {
@@ -634,7 +913,7 @@
       viewState.onlyMode = snapshot.viewState?.onlyMode || 'none';
       viewState.onlyTerms = (snapshot.viewState?.onlyTerms || []).slice();
       mergedMode = !!snapshot.mergedMode;
-      $('toggleMerge').textContent = `合并多条链路：${mergedMode ? '开启' : '关闭'}`;
+      setMergeButtonText();
 
       if ($('filter')) $('filter').value = snapshot.ui?.filter || '';
       if ($('showOnly')) $('showOnly').value = snapshot.ui?.showOnly || '';
@@ -1165,7 +1444,10 @@
       nodes.set(bId, { id: bId, label: bLabel, short: shortLabel(bLabel), role: bRole, rank: roleRank(bRole), ip: bIp, entityKey: bEntityKey });
 
       const edgeLabel = `${li} ↔ ${ri}`.trim();
-      const utilKey = buildUtilKey(lhRaw || lh, li, aIp);
+      const liNorm = String(li || '').trim().toLowerCase();
+      const utilKey = (!liNorm || liNorm === 'n/a' || liNorm === 'na')
+        ? ''
+        : buildUtilKey(lhRaw || lh, li, aIp);
       const k1 = `${aId}||${bId}||${edgeLabel}`;
       const k2 = `${bId}||${aId}||${edgeLabel}`;
       rawEdgeCnt++;
@@ -1323,6 +1605,7 @@
     updateEdgeLabels(edgeMode);
     applyUtilizationToEdges();
     applyAdaptiveRenderMode();
+    applyZoomAwareNodeSizing(true);
 
     // click highlight：仅高亮选中节点本身，不再自动高亮邻居
     cy.on('tap', 'node', () => {
@@ -1345,7 +1628,11 @@
       showCtx(evt);
     });
     cy.on('tap', () => hideCtx());
-    cy.on('zoom pan', () => hideCtx());
+    cy.on('pan', () => hideCtx());
+    cy.on('zoom', () => {
+      hideCtx();
+      scheduleZoomAwareNodeSizing();
+    });
 
     reapplyViewStateAfterBuild();
     applyDeletedMaskAfterBuild();
@@ -2145,12 +2432,16 @@
     const riKey = cols.colRI || 'remoteinterface';
     const seen = new Set();
     const out = [];
+    const normIf = (v) => {
+      const s = String(v || '').trim();
+      return s || 'N/A';
+    };
     for (const r of rows) {
       const lh = String(r[lhKey] || r.localhostname || '').trim();
-      const li = String(r[liKey] || r.localinterface || '').trim();
+      const li = normIf(r[liKey] || r.localinterface || '');
       const rh = String(r[rhKey] || r.remotehostname || '').trim();
-      const ri = String(r[riKey] || r.remoteinterface || '').trim();
-      if (!lh || !li || !rh || !ri) continue;
+      const ri = normIf(r[riKey] || r.remoteinterface || '');
+      if (!lh || !rh) continue;
       const key = [lh, li, rh, ri].map(s => s.toLowerCase()).join('||');
       if (seen.has(key)) continue;
       seen.add(key);
@@ -2246,6 +2537,46 @@
   function shouldUseDragLiteMode() {
     if (!cy) return false;
     return cy.edges().length >= 220;
+  }
+
+  function nodeScaleByZoom(zoom) {
+    const z = Number(zoom);
+    if (!Number.isFinite(z) || z <= 1) return 1;
+    // Zoom-in keeps nodes readable but less intrusive in dense graphs.
+    return Math.max(0.18, Math.min(1, 1 / Math.pow(z, 1.2)));
+  }
+
+  function applyZoomAwareNodeSizing(force = false) {
+    if (!cy) return;
+    const scale = nodeScaleByZoom(cy.zoom());
+    if (!force && lastZoomNodeScale !== null && Math.abs(scale - lastZoomNodeScale) < 0.02) return;
+    lastZoomNodeScale = scale;
+    const nodeSize = Math.max(6, NODE_BASE_SIZE * scale);
+    const fontSize = Math.max(6, NODE_BASE_FONT_SIZE * scale);
+    cy.batch(() => {
+      cy.nodes().style({
+        'width': nodeSize,
+        'height': nodeSize,
+        'font-size': fontSize
+      });
+    });
+  }
+
+  function scheduleZoomAwareNodeSizing(force = false) {
+    if (!cy) return;
+    if (force) {
+      if (zoomNodeRaf) {
+        cancelAnimationFrame(zoomNodeRaf);
+        zoomNodeRaf = 0;
+      }
+      applyZoomAwareNodeSizing(true);
+      return;
+    }
+    if (zoomNodeRaf) return;
+    zoomNodeRaf = requestAnimationFrame(() => {
+      zoomNodeRaf = 0;
+      applyZoomAwareNodeSizing(false);
+    });
   }
 
   function applyAdaptiveRenderMode() {
@@ -2406,7 +2737,7 @@
     if ($('nameClusterMode') && ui.nameClusterMode) $('nameClusterMode').value = String(ui.nameClusterMode);
     if ($('nameClusterStrength') && ui.nameClusterStrength != null) $('nameClusterStrength').value = String(ui.nameClusterStrength);
     if (typeof ui.mergeMode === 'boolean') mergedMode = ui.mergeMode;
-    $('toggleMerge').textContent = `合并多条链路：${mergedMode ? '开启' : '关闭'}`;
+    setMergeButtonText();
 
     $('nRows').textContent = rawRows.length;
     $('nCols').textContent = headers.length;
@@ -2564,7 +2895,8 @@
       const merged = applyQueryCsvText(csvText, { append: action === 'append', sourceName: 'sql' });
       if (action === 'append') {
         setStatus('SQL 数据已追加并生成拓扑');
-        setOK(`已按 ${startHostname} 追加查询，新增 ${merged.addedRows} 行，当前总计 ${merged.mergedRows} 行。`);
+        const hint = (shownRows > 0 && merged.addedRows === 0) ? '（结果已存在于当前图）' : '';
+        setOK(`已按 ${startHostname} 追加查询，SQL 返回 ${shownRows} 行，新增 ${merged.addedRows} 行${hint}，当前总计 ${merged.mergedRows} 行。`);
       } else {
         setStatus('SQL 数据已载入并生成拓扑');
         setOK(`已按 ${startHostname} 生成拓扑，结果 ${data.row_count} 行。`);
@@ -2966,7 +3298,7 @@
     const mode = $('importMode')?.value || 'sql';
     showImportPanel(mode);
     const title = $('importModalTitle');
-    if (title) title.textContent = importInputAction === 'append' ? '追加输入' : '导入输入';
+    if (title) title.textContent = importInputAction === 'append' ? tr('append_input') : tr('import_input');
     const m = $('importModal');
     if (m) m.style.display = 'flex';
   }
@@ -3160,7 +3492,7 @@
   $('toggleMerge').addEventListener('click', () => {
     runWithRollback(() => {
       mergedMode = !mergedMode;
-      $('toggleMerge').textContent = `合并多条链路：${mergedMode ? '开启' : '关闭'}`;
+      setMergeButtonText();
       if (!rawRows.length) return;
       const pos = capturePositions();
       buildGraph(pos);
@@ -3447,7 +3779,8 @@
     hideCtx();
 
       if (mode === 'sql') {
-      const target = label || ip;
+      // Prefer management IP for SQL append to avoid hostname alias drift.
+      const target = ip || label;
       if (!target) {
         setErr('当前节点没有可用于 SQL 查询的设备名称。');
         return;
@@ -3606,6 +3939,8 @@ $('filter').addEventListener('keydown', (e) => {
       setOK('已回到变更后状态。');
     }
   });
+  initLangToggle();
+  applyStaticI18n();
   updateRollbackButtonState();
 </script>
 </body>

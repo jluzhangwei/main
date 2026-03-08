@@ -1536,9 +1536,63 @@ WHERE t.localhostname IN ({marks})
     return out
 
 
-def _query_lldp_depth_rows(cur: Any, start_hostname: str, max_depth: int = 3) -> list[dict[str, Any]]:
+def _fetch_latest_hostnames_by_ips(cur: Any, ips: list[str]) -> list[str]:
+    out: list[str] = []
+    if not ips:
+        return out
+    uniq_ips = sorted({str(ip or "").strip() for ip in ips if _looks_like_ip(str(ip or "").strip())})
+    if not uniq_ips:
+        return out
+    for part in _chunked(uniq_ips, 180):
+        marks = ",".join(["%s"] * len(part))
+        sql = f"""
+SELECT
+    t.localhostname
+FROM lldpinformation t
+INNER JOIN (
+    SELECT localhostname, MAX(create_time) AS m
+    FROM lldpinformation
+    GROUP BY localhostname
+) tm
+  ON t.localhostname = tm.localhostname
+ AND t.create_time = tm.m
+WHERE t.ipaddr IN ({marks})
+"""
+        cur.execute(sql, tuple(part))
+        for r in cur.fetchall() or []:
+            h = str(r.get("localhostname", "") or "").strip()
+            if h:
+                out.append(h)
+    return sorted({h for h in out if h})
+
+
+def _resolve_sql_seed_hosts(cur: Any, start_hostname: str) -> list[str]:
+    seed = str(start_hostname or "").strip()
+    if not seed:
+        return []
+    hosts: list[str] = [seed]
+    ips: list[str] = []
+    if _looks_like_ip(seed):
+        ips = [seed]
+    else:
+        ip_map = _fetch_latest_ip_map_for_hosts(cur, [seed])
+        ip = str(ip_map.get(seed, "") or "").strip()
+        if _looks_like_ip(ip):
+            ips = [ip]
+    if ips:
+        aliases = _fetch_latest_hostnames_by_ips(cur, ips)
+        for h in aliases:
+            if h not in hosts:
+                hosts.append(h)
+    return hosts
+
+
+def _query_lldp_depth_rows(cur: Any, start_hostname: Any, max_depth: int = 3) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    frontier = [start_hostname]
+    if isinstance(start_hostname, (list, tuple, set)):
+        frontier = [str(x or "").strip() for x in start_hostname if str(x or "").strip()]
+    else:
+        frontier = [str(start_hostname or "").strip()]
     expanded: set[str] = set()
 
     for depth in range(1, max_depth + 1):
@@ -1587,15 +1641,17 @@ def dedupe_lldp_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for r in rows or []:
         depth = str(r.get("depth", "") or "").strip()
         lh = str(r.get("localhostname", "") or "").strip()
-        li = str(r.get("localinterface", "") or "").strip()
+        li = str(r.get("localinterface", "") or "").strip() or "N/A"
         rh = str(r.get("remotehostname", "") or "").strip()
-        ri = str(r.get("remoteinterface", "") or "").strip()
-        if not (lh and li and rh and ri):
+        ri = str(r.get("remoteinterface", "") or "").strip() or "N/A"
+        if not (lh and rh):
             continue
         key = "||".join([depth.lower(), lh.lower(), li.lower(), rh.lower(), ri.lower()])
         if key in seen:
             continue
         seen.add(key)
+        r["localinterface"] = li
+        r["remoteinterface"] = ri
         out.append(r)
     return out
 
@@ -2464,7 +2520,8 @@ def _run_sql_lldp_query(start_hostname: str, max_depth: int) -> dict[str, Any]:
     try:
         rows: list[dict[str, Any]] = []
         with conn.cursor() as cur:
-            rows = _query_lldp_depth_rows(cur, start_hostname, max_depth=max_depth)
+            seed_hosts = _resolve_sql_seed_hosts(cur, start_hostname)
+            rows = _query_lldp_depth_rows(cur, seed_hosts, max_depth=max_depth)
     except Exception as exc:
         elapsed = max(0.0, time.perf_counter() - t0)
         raise RuntimeError(f"SQL execution failed after {elapsed:.1f}s: {exc}") from exc
