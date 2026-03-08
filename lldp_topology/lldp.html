@@ -389,6 +389,7 @@
   <button id="ctxDelete">删除设备</button>
   <button id="ctxCopy">复制名称</button>
   <button id="ctxCopyIp">复制地址</button>
+  <button id="ctxUtil">链路利用率</button>
   <button id="ctxAppendQuery">追加查询</button>
 </div>
 <div id="importModal" class="modal-backdrop">
@@ -608,6 +609,7 @@
       btn_pick_csv: '选择 CSV 文件',
       btn_append_csv: '追加 CSV',
       btn_load_paste: '从粘贴内容载入',
+      ctx_util: '链路利用率',
       merge_prefix: '合并多条链路：',
       on: '开启',
       off: '关闭',
@@ -675,6 +677,7 @@
       btn_pick_csv: 'Select CSV File',
       btn_append_csv: 'Append CSV',
       btn_load_paste: 'Load Pasted CSV',
+      ctx_util: 'Link Utilization',
       merge_prefix: 'Merge Multi-links: ',
       on: 'ON',
       off: 'OFF',
@@ -782,6 +785,7 @@
     setText('pickCsvModal', 'btn_pick_csv');
     setText('appendCsvModal', 'btn_append_csv');
     setText('loadPasteModal', 'btn_load_paste');
+    setText('ctxUtil', 'ctx_util');
 
     setOptionText('importMode', 'sql', 'import_mode_sql');
     setOptionText('importMode', 'cli', 'import_mode_cli');
@@ -3085,7 +3089,11 @@
     };
   }
 
-  function buildUtilTargetsFromRows() {
+  function buildUtilTargetsFromRows(opts = {}) {
+    const matchSource = (opts && typeof opts.matchSource === 'function') ? opts.matchSource : null;
+    const scopeNodes = (opts && opts.scopeNodes && typeof opts.scopeNodes.connectedEdges === 'function')
+      ? opts.scopeNodes
+      : null;
     const colLH = $('colLocalHost').value;
     const colLI = $('colLocalIf').value;
     const allByUtilKey = new Map();
@@ -3094,6 +3102,7 @@
       const srcIf = String(r[colLI] || '').trim();
       if (!srcRaw || !srcIf) continue;
       const sourceIpHint = rowValue(r, ['源设备IP', '源设备ip', 'ipaddr', 'sourceip']);
+      if (matchSource && !matchSource({ row: r, srcRaw, srcIf, sourceIpHint })) continue;
       const utilKey = buildUtilKey(srcRaw, srcIf, sourceIpHint);
       if (!utilKey) continue;
       const dedupeKey = utilKey;
@@ -3118,7 +3127,10 @@
     // Query all currently visible source ports; cache skip happens later.
     const neededUtilKeys = new Set();
     if (cy) {
-      cy.edges(':visible').forEach((e) => {
+      const edgeScope = (scopeNodes && scopeNodes.length)
+        ? scopeNodes.connectedEdges().intersection(cy.edges(':visible'))
+        : cy.edges(':visible');
+      edgeScope.forEach((e) => {
         const keys = e.data('utilKeys');
         if (Array.isArray(keys)) {
           keys.forEach((k) => { if (k) neededUtilKeys.add(String(k).toLowerCase()); });
@@ -3146,6 +3158,46 @@
     return out;
   }
 
+  function buildUtilTargetsForNodes(nodes) {
+    if (!nodes || !nodes.length) return [];
+    const ipSet = new Set();
+    const nameSet = new Set();
+    const compactNameSet = new Set();
+    nodes.forEach((n) => {
+      const label = String(n.data('label') || '').trim();
+      const short = stripAfterDot(label);
+      const ip = String(n.data('ip') || '').trim();
+      if (isIpv4(ip)) ipSet.add(ip);
+      [label, short].forEach((raw) => {
+        const nm = String(raw || '').trim().toLowerCase();
+        if (!nm) return;
+        nameSet.add(nm);
+        const c = compactMatchText(nm);
+        if (c) compactNameSet.add(c);
+      });
+    });
+
+    const matchSource = ({ srcRaw, sourceIpHint }) => {
+      const src = String(srcRaw || '').trim();
+      const srcShort = stripAfterDot(src);
+      if (isIpv4(sourceIpHint) && ipSet.has(sourceIpHint)) return true;
+      const mappedIp = deviceNameToIpMap.get(src)
+        || deviceNameToIpMap.get(srcShort)
+        || nodeIpMap.get(src)
+        || nodeIpMap.get(srcShort)
+        || '';
+      if (isIpv4(mappedIp) && ipSet.has(mappedIp)) return true;
+      const srcLower = src.toLowerCase();
+      const srcShortLower = String(srcShort || '').toLowerCase();
+      if (nameSet.has(srcLower) || nameSet.has(srcShortLower)) return true;
+      const srcCompact = compactMatchText(srcLower);
+      if (srcCompact && compactNameSet.has(srcCompact)) return true;
+      return false;
+    };
+
+    return buildUtilTargetsFromRows({ matchSource, scopeNodes: nodes });
+  }
+
   function hasSuccessfulUtilCache(utilKey) {
     const k = String(utilKey || '').toLowerCase();
     if (!k) return false;
@@ -3153,14 +3205,19 @@
     return !!(hit && hit.status === 'ok' && typeof hit.used_pct === 'number');
   }
 
-  async function refreshLinkUtilization() {
+  async function refreshLinkUtilization(opts = {}) {
+    const customTargets = Array.isArray(opts.targets) ? opts.targets : null;
+    const buttonId = String(opts.buttonId || 'refreshUtilization').trim();
+    const okPrefix = String(opts.okPrefix || '').trim();
+    const failPrefix = String(opts.failPrefix || '刷新链路利用率失败').trim();
+    const emptyMsg = String(opts.emptyMsg || '未找到可查询的 source 设备端口').trim();
     if (!cy || !rawRows.length) {
       setErr('请先生成拓扑，再刷新链路利用率');
       return;
     }
-    const allTargets = buildUtilTargetsFromRows();
+    const allTargets = customTargets || buildUtilTargetsFromRows(opts);
     if (!allTargets.length) {
-      setErr('未找到可查询的 source 设备端口');
+      setErr(emptyMsg);
       return;
     }
     const targets = allTargets.filter(t => !hasSuccessfulUtilCache(t.util_key));
@@ -3171,13 +3228,15 @@
       setOK('链路利用率已是最新缓存结果（仅新增链路会触发查询）');
       return;
     }
-    const btn = $('refreshUtilization');
-    const old = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = '查询中...';
+    const btn = buttonId ? $(buttonId) : null;
+    const old = btn ? btn.textContent : '';
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = '查询中...';
+    }
     setErr('');
     const startedAt = Date.now();
-    const hintBase = `正在增量查询 ${targets.length} 个 source 端口（跳过已缓存 ${skippedCached} 个）`;
+    const hintBase = String(opts.hintBase || `正在增量查询 ${targets.length} 个 source 端口（跳过已缓存 ${skippedCached} 个）`);
     $('utilResultHint').textContent = `${hintBase}...`;
     const workersRaw = parseInt(($('cliMaxWorkersModal')?.value || '4').trim(), 10);
     const maxWorkers = Number.isFinite(workersRaw) ? Math.min(16, Math.max(1, workersRaw)) : 4;
@@ -3185,8 +3244,10 @@
     const runtimeCfg = await ensureCliCredentials('未检测到设备 SSH 用户名/密码，请先输入后再执行链路利用率查询。');
     if (!runtimeCfg) {
       setErr('已取消链路利用率查询：未提供设备用户名/密码');
-      btn.disabled = false;
-      btn.textContent = old;
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = old;
+      }
       return;
     }
     // Utilization query should fail fast; avoid inheriting overly large CLI import timeouts.
@@ -3267,16 +3328,19 @@
         const sample = targets.slice(0, 5).map(t => t.source_device).join(', ');
         setErr(`链路利用率未获取到有效结果。${firstErr ? `首个错误：${firstErr}。` : ''}样例查询设备：${sample}`);
       } else {
-        setOK(`链路利用率刷新成功（新增成功 ${Math.max(0, totalOkCount - beforeOkCount)}）`);
+        const deltaOk = Math.max(0, totalOkCount - beforeOkCount);
+        setOK(okPrefix ? `${okPrefix}（新增成功 ${deltaOk}）` : `链路利用率刷新成功（新增成功 ${deltaOk}）`);
       }
       applyAdaptiveRenderMode();
     } catch (e) {
       const msg = String(e && e.message ? e.message : e);
-      setErr(`刷新链路利用率失败：${msg}`);
+      setErr(`${failPrefix}：${msg}`);
       $('utilResultHint').textContent = `链路利用率查询失败：${msg}`;
     } finally {
-      btn.disabled = false;
-      btn.textContent = old;
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = old;
+      }
     }
   }
 
@@ -3702,6 +3766,30 @@
       setErr('复制失败，可能浏览器不支持或权限受限');
     }
     hideCtx();
+  });
+
+  $('ctxUtil').addEventListener('click', async () => {
+    const nodes = ctxNodes();
+    hideCtx();
+    if (!nodes.length) return;
+    if (!cy || !rawRows.length) {
+      setErr('请先生成拓扑，再查询链路利用率');
+      return;
+    }
+    const allTargets = buildUtilTargetsForNodes(nodes);
+    if (!allTargets.length) {
+      setErr('选中节点未找到可查询的 source 设备端口');
+      return;
+    }
+    const names = nodes.map((n) => String(n.data('label') || n.id())).filter(Boolean);
+    const nameText = names.length > 1 ? `${names[0]} 等${names.length}台` : (names[0] || '选中节点');
+    await refreshLinkUtilization({
+      targets: allTargets,
+      hintBase: `正在按右键节点查询链路利用率：${allTargets.length} 个 source 端口`,
+      okPrefix: `右键链路利用率已更新（${nameText}）`,
+      failPrefix: '右键链路利用率查询失败',
+      emptyMsg: '选中节点未找到可查询的 source 设备端口'
+    });
   });
 
   function collectNodeIpsFromRows(node) {
