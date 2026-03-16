@@ -567,6 +567,7 @@
       </div>
       <div class="modal-actions">
         <button id="runCliGenerateModal" class="primary">执行 CLI 查询</button>
+        <button id="cancelCliGenerateModal" style="display:none;">取消查询</button>
         <button id="downloadCliCsvModal">导出临时 CSV</button>
         <button id="downloadCliDebugModal">下载 CLI 调试日志</button>
         <button class="closeImportModalBtn">关闭</button>
@@ -709,6 +710,8 @@
   let nodeIpMap = new Map();
   let deviceNameToIpMap = new Map();
   let lastCliPassword = '';
+  let currentCliLldpTaskId = '';
+  let cliLldpTaskCancelling = false;
   let ctxAppendSingleHop = false;
   let utilByKey = new Map();
   let primaryCliSource = '';
@@ -812,6 +815,7 @@
       btn_run_sql: '执行 SQL 查询',
       btn_dl_sql_tmp: '下载临时 CSV',
       btn_run_cli: '执行 CLI 查询',
+      btn_cancel_query: '取消查询',
       btn_dl_cli_tmp: '导出临时 CSV',
       btn_dl_cli_debug: '下载 CLI 调试日志',
       btn_pick_csv: '选择 CSV 文件',
@@ -899,6 +903,7 @@
       btn_run_sql: 'Run SQL Query',
       btn_dl_sql_tmp: 'Download Temp CSV',
       btn_run_cli: 'Run CLI Query',
+      btn_cancel_query: 'Cancel Query',
       btn_dl_cli_tmp: 'Export Temp CSV',
       btn_dl_cli_debug: 'Download CLI Debug Log',
       btn_pick_csv: 'Select CSV File',
@@ -1021,6 +1026,7 @@
     setText('runSqlGenerateModal', 'btn_run_sql');
     setText('downloadSqlCsvModal', 'btn_dl_sql_tmp');
     setText('runCliGenerateModal', 'btn_run_cli');
+    setText('cancelCliGenerateModal', 'btn_cancel_query');
     setText('downloadCliCsvModal', 'btn_dl_cli_tmp');
     setText('downloadCliDebugModal', 'btn_dl_cli_debug');
     setText('pickCsvModal', 'btn_pick_csv');
@@ -4590,6 +4596,17 @@
     return null;
   }
 
+  function setCliTaskUiRunning(running) {
+    const runBtn = $('runCliGenerateModal');
+    const cancelBtn = $('cancelCliGenerateModal');
+    if (runBtn) runBtn.disabled = !!running;
+    if (cancelBtn) {
+      cancelBtn.style.display = running ? '' : 'none';
+      cancelBtn.disabled = !running || cliLldpTaskCancelling || !currentCliLldpTaskId;
+      cancelBtn.textContent = cliLldpTaskCancelling ? '取消中...' : tr('btn_cancel_query');
+    }
+  }
+
   // ---- Events ----
   $('file').addEventListener('change', async (e) => {
     const files = e.target.files;
@@ -4647,6 +4664,9 @@
     setOK('');
     const cliStartedAt = startCliTimer('CLI 查询中...');
     $('cliResultHintModal').textContent = '';
+    currentCliLldpTaskId = '';
+    cliLldpTaskCancelling = false;
+    setCliTaskUiRunning(true);
     const reqPayload = {
       device_address: addr,
       max_depth: maxDepth,
@@ -4656,60 +4676,127 @@
     };
     saveCliPrefs(reqPayload);
     const base = apiBaseUrl();
-    fetch(`${base}/api/cli/lldp-csv`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(reqPayload)
-    })
-      .then(async (resp) => {
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data?.detail || `HTTP ${resp.status}`);
-        if (!data.csv_text) throw new Error('CLI 返回为空');
-        stopCliTimer();
-        lastSqlDownloadUrl = data.download_url ? `${base}${data.download_url}` : '';
-        lastCliDebugUrl = data.debug_download_url ? `${base}${data.debug_download_url}` : '';
-        const workersShown = data.cli_max_workers || maxWorkers;
-        const elapsedSec = Math.max(0, Math.floor((Date.now() - cliStartedAt) / 1000));
-        const only172Text = (data.recursive_only_172 ? '，仅172递归' : '');
-        const detectedNames = data.detected_device_names || {};
-        Object.entries(detectedNames).forEach(([ip, name]) => {
-          const n = String(name || '').trim();
-          const p = String(ip || '').trim();
-          if (!n || !p) return;
-          deviceNameToIpMap.set(n, p);
-          deviceNameToIpMap.set(stripAfterDot(n), p);
-        });
-        $('cliResultHintModal').textContent = `CLI 返回 ${data.row_count} 行，已查询设备 ${data.queried_count} 台，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s`;
-        const merged = applyQueryCsvText(data.csv_text, { append: importInputAction === 'append', sourceName: 'cli' });
-        if (importInputAction !== 'append' && addr) {
-          primaryCliSource = addr;
-        }
-        if ((data.row_count || 0) > 0) {
-          if (importInputAction === 'append') {
-            setStatus(`CLI 数据已追加并生成拓扑（总用时 ${elapsedSec}s）`);
-          } else {
-            setStatus(`CLI 数据已载入并生成拓扑（总用时 ${elapsedSec}s）`);
-          }
-        } else {
-          setStatus(`CLI 查询完成（无可用邻接，总用时 ${elapsedSec}s）`);
-          setErr('CLI 查询成功，但未解析到可用 LLDP 邻接记录。请下载 CLI 调试日志检查原始回显。');
-        }
-        const vendors = data.detected_vendors ? Object.values(data.detected_vendors).join(', ') : 'unknown';
-        if (importInputAction === 'append') {
-          setOK(`已完成 CLI 追加采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s，新增 ${merged.addedRows} 行，当前总计 ${merged.mergedRows} 行。自动识别厂商：${vendors}`);
-        } else {
-          setOK(`已完成 CLI 递归采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s，结果 ${data.row_count} 行。自动识别厂商：${vendors}`);
-        }
-      })
-      .catch((e) => {
-        stopCliTimer();
-        setStatus('CLI 查询失败');
-        setErr(`CLI 查询失败：${String(e && e.message ? e.message : e)}`);
-      })
-      .finally(() => {
-        stopCliTimer();
-        ctxAppendSingleHop = false;
+    try {
+      const startResp = await fetch(`${base}/api/cli/lldp-csv/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(reqPayload)
       });
+      const startData = await startResp.json();
+      if (!startResp.ok) throw new Error(startData?.detail || `HTTP ${startResp.status}`);
+      const taskId = String(startData.task_id || '').trim();
+      if (!taskId) throw new Error('CLI 任务创建失败：未返回 task_id');
+      currentCliLldpTaskId = taskId;
+      setCliTaskUiRunning(true);
+
+      let taskData = null;
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const pollResp = await fetch(`${base}/api/cli/lldp-csv/tasks/${taskId}`);
+        const pollData = await pollResp.json();
+        if (!pollResp.ok) throw new Error(pollData?.detail || `HTTP ${pollResp.status}`);
+        taskData = pollData;
+        const st = String(taskData.status || '');
+        const prog = taskData.progress || {};
+        const finished = Number(prog.finished_devices || 0);
+        const total = Number(prog.total_devices || 0);
+        const cur = String(prog.current_device || '');
+        const depthNow = Number(prog.current_depth || 0);
+        const sec = Math.max(
+          Math.floor((Date.now() - cliStartedAt) / 1000),
+          Math.floor(Number(prog.elapsed_seconds || 0))
+        );
+        if (st === 'queued' || st === 'running') {
+          const doneText = total ? `${finished}/${total}` : `${finished}`;
+          const depthText = depthNow > 0 ? `，递归层 ${depthNow}` : '';
+          $('cliResultHintModal').textContent = `CLI 查询中，设备进度 ${doneText}${depthText}，已耗时 ${sec}s${cur ? `，当前 ${cur}` : ''}`;
+          continue;
+        }
+        if (st === 'failed') {
+          throw new Error(String(taskData.error || '任务失败'));
+        }
+        if (st === 'completed' || st === 'cancelled') break;
+        throw new Error(`未知任务状态：${st || 'N/A'}`);
+      }
+
+      const data = taskData?.response || {};
+      const wasCancelled = String(taskData?.status || '') === 'cancelled' || !!data.cancelled;
+      stopCliTimer();
+      lastSqlDownloadUrl = data.download_url ? `${base}${data.download_url}` : '';
+      lastCliDebugUrl = data.debug_download_url ? `${base}${data.debug_download_url}` : '';
+      const workersShown = data.cli_max_workers || maxWorkers;
+      const elapsedSec = Math.max(0, Math.floor((Date.now() - cliStartedAt) / 1000));
+      const only172Text = (data.recursive_only_172 ? '，仅172递归' : '');
+      const detectedNames = data.detected_device_names || {};
+      Object.entries(detectedNames).forEach(([ip, name]) => {
+        const n = String(name || '').trim();
+        const p = String(ip || '').trim();
+        if (!n || !p) return;
+        deviceNameToIpMap.set(n, p);
+        deviceNameToIpMap.set(stripAfterDot(n), p);
+      });
+      $('cliResultHintModal').textContent = `CLI 返回 ${data.row_count || 0} 行，已查询设备 ${data.queried_count || 0} 台，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s`;
+      let merged = { addedRows: 0, mergedRows: rawRows.length };
+      if (data.csv_text) {
+        merged = applyQueryCsvText(data.csv_text, { append: importInputAction === 'append', sourceName: 'cli' });
+      }
+      if (importInputAction !== 'append' && addr) {
+        primaryCliSource = addr;
+      }
+      if ((data.row_count || 0) > 0) {
+        if (wasCancelled) {
+          setStatus(`CLI 查询已取消（保留部分结果，总用时 ${elapsedSec}s）`);
+        } else if (importInputAction === 'append') {
+          setStatus(`CLI 数据已追加并生成拓扑（总用时 ${elapsedSec}s）`);
+        } else {
+          setStatus(`CLI 数据已载入并生成拓扑（总用时 ${elapsedSec}s）`);
+        }
+      } else if (wasCancelled) {
+        setStatus(`CLI 查询已取消（总用时 ${elapsedSec}s）`);
+      } else {
+        setStatus(`CLI 查询完成（无可用邻接，总用时 ${elapsedSec}s）`);
+        setErr('CLI 查询成功，但未解析到可用 LLDP 邻接记录。请下载 CLI 调试日志检查原始回显。');
+      }
+      const vendors = data.detected_vendors ? Object.values(data.detected_vendors).join(', ') : 'unknown';
+      if (wasCancelled) {
+        if (importInputAction === 'append') {
+          setOK(`已取消 CLI 追加采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s，新增 ${merged.addedRows} 行，当前总计 ${merged.mergedRows} 行。自动识别厂商：${vendors}`);
+        } else {
+          setOK(`已取消 CLI 递归采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s，已保留 ${data.row_count || 0} 行部分结果。自动识别厂商：${vendors}`);
+        }
+      } else if (importInputAction === 'append') {
+        setOK(`已完成 CLI 追加采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s，新增 ${merged.addedRows} 行，当前总计 ${merged.mergedRows} 行。自动识别厂商：${vendors}`);
+      } else {
+        setOK(`已完成 CLI 递归采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s，结果 ${data.row_count || 0} 行。自动识别厂商：${vendors}`);
+      }
+    } catch (e) {
+      stopCliTimer();
+      setStatus(cliLldpTaskCancelling ? 'CLI 查询已取消' : 'CLI 查询失败');
+      setErr(`CLI 查询失败：${String(e && e.message ? e.message : e)}`);
+    } finally {
+      stopCliTimer();
+      currentCliLldpTaskId = '';
+      cliLldpTaskCancelling = false;
+      setCliTaskUiRunning(false);
+      ctxAppendSingleHop = false;
+    }
+  });
+  $('cancelCliGenerateModal').addEventListener('click', async () => {
+    const taskId = String(currentCliLldpTaskId || '').trim();
+    if (!taskId) return;
+    cliLldpTaskCancelling = true;
+    setCliTaskUiRunning(true);
+    $('cliResultHintModal').textContent = '正在取消 CLI 查询...';
+    try {
+      const base = apiBaseUrl();
+      const resp = await fetch(`${base}/api/cli/lldp-csv/tasks/${taskId}/cancel`, { method: 'POST' });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data?.detail || `HTTP ${resp.status}`);
+    } catch (e) {
+      cliLldpTaskCancelling = false;
+      setCliTaskUiRunning(true);
+      setErr(`取消 CLI 查询失败：${String(e && e.message ? e.message : e)}`);
+    }
   });
   $('pickCsvModal').addEventListener('click', () => $('file').click());
   $('appendCsvModal').addEventListener('click', () => $('appendFile').click());

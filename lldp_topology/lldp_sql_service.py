@@ -30,7 +30,7 @@ import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed, wait
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -76,6 +76,9 @@ LINK_UTIL_JOB_TTL_SEC = int(os.getenv("LINK_UTIL_JOB_TTL_SEC", "21600") or "2160
 SQL_QUERY_JOBS: dict[str, dict[str, Any]] = {}
 SQL_QUERY_JOB_LOCK = threading.Lock()
 SQL_QUERY_JOB_TTL_SEC = int(os.getenv("SQL_QUERY_JOB_TTL_SEC", "21600") or "21600")
+CLI_QUERY_JOBS: dict[str, dict[str, Any]] = {}
+CLI_QUERY_JOB_LOCK = threading.Lock()
+CLI_QUERY_JOB_TTL_SEC = int(os.getenv("CLI_QUERY_JOB_TTL_SEC", "21600") or "21600")
 ZABBIX_URL_DEFAULT = "https://zbxdevice.nsoctools.insea.io/zabbix"
 ZABBIX_API_TOKEN_DEFAULT = "b00f27e1ae0bc322ecc8eebc904c21095ba32579c7def2c26025aaaa7f296dfb"
 
@@ -1301,6 +1304,8 @@ def build_cli_lldp_rows(
     smc_command: str | None = None,
     cli_command_timeout: int | None = None,
     cli_connect_timeout: int | None = None,
+    progress_cb: Callable[[dict[str, Any]], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     total_start = time.perf_counter()
     cfg = get_cli_runtime_config(
@@ -1323,13 +1328,39 @@ def build_cli_lldp_rows(
     env_workers = int(get_env("CLI_MAX_WORKERS", "4") or "4")
     workers = int(cli_max_workers if cli_max_workers is not None else env_workers)
     workers = max(1, min(16, workers))
+    finished_devices = 0
+    total_devices = len({normalize_device_id(start_device)}) if normalize_device_id(start_device) else 0
+    current_device = ""
+    current_depth = 0
+
+    def emit_progress(status: str) -> None:
+        if not progress_cb:
+            return
+        try:
+            progress_cb(
+                {
+                    "status": status,
+                    "finished_devices": finished_devices,
+                    "total_devices": total_devices,
+                    "current_device": current_device,
+                    "current_depth": current_depth,
+                    "elapsed_seconds": max(0.0, time.perf_counter() - total_start),
+                }
+            )
+        except Exception:
+            pass
 
     current_layer: list[str] = [normalize_device_id(start_device)]
+    emit_progress("running")
     for depth in range(1, max_depth + 1):
+        current_depth = depth
+        if cancel_event and cancel_event.is_set():
+            break
         targets = [t for t in current_layer if t and t not in visited_sources]
         if not targets:
             break
         visited_sources.update(targets)
+        total_devices = max(total_devices, len(visited_sources))
 
         next_layer: set[str] = set()
         with ThreadPoolExecutor(max_workers=min(workers, len(targets))) as pool:
@@ -1337,64 +1368,92 @@ def build_cli_lldp_rows(
                 pool.submit(collect_device_lldp_once, source, depth, cfg): source
                 for source in targets
             }
-            for fut in as_completed(future_map):
-                source = future_map.get(fut, "")
-                try:
-                    res = fut.result()
-                except Exception as exc:
-                    failed.append({"device": str(source), "error": f"worker_exception: {exc}"})
-                    debug_entries.append(
-                        {
-                            "device": source,
-                            "depth": depth,
-                            "status": "failed",
-                            "vendor": "unknown",
-                            "device_name": "",
-                            "neighbor_count": 0,
-                            "error": f"worker_exception: {exc}",
-                            "transcript": [],
-                        }
-                    )
+            pending = dict(future_map)
+            while pending:
+                if cancel_event and cancel_event.is_set():
+                    for fut in pending:
+                        try:
+                            fut.cancel()
+                        except Exception:
+                            pass
+                    emit_progress("cancelled")
+                    break
+                done, _ = wait(list(pending.keys()), timeout=1.0, return_when=FIRST_COMPLETED)
+                if not done:
+                    emit_progress("running")
                     continue
-                source = str(res.get("source", "") or "")
-                vendor = str(res.get("vendor", "unknown") or "unknown")
-                device_name = str(res.get("device_name", "") or "")
-                error = str(res.get("error", "") or "")
-                debug_entries.append(res.get("debug_entry", {}))
-
-                if vendor and vendor != "unknown":
-                    detected_vendors[source] = vendor
-                if device_name:
-                    detected_device_names[source] = device_name
-                if error:
-                    failed.append({"device": source, "error": error})
-                    continue
-
-                for row in res.get("rows", []):
-                    edge_key = "||".join(
-                        [
-                            str(row.get("depth", "")),
-                            str(row.get("localhostname", "")).lower(),
-                            str(row.get("localinterface", "")).lower(),
-                            str(row.get("remotehostname", "")).lower(),
-                            str(row.get("remoteinterface", "")).lower(),
-                        ]
-                    )
-                    if edge_key in edge_seen:
+                for fut in done:
+                    source = pending.pop(fut, "")
+                    current_device = str(source or "")
+                    emit_progress("running")
+                    try:
+                        res = fut.result()
+                    except Exception as exc:
+                        failed.append({"device": str(source), "error": f"worker_exception: {exc}"})
+                        debug_entries.append(
+                            {
+                                "device": source,
+                                "depth": depth,
+                                "status": "failed",
+                                "vendor": "unknown",
+                                "device_name": "",
+                                "neighbor_count": 0,
+                                "error": f"worker_exception: {exc}",
+                                "transcript": [],
+                            }
+                        )
+                        finished_devices += 1
+                        emit_progress("running")
                         continue
-                    edge_seen.add(edge_key)
-                    rows.append(row)
+                    source = str(res.get("source", "") or "")
+                    vendor = str(res.get("vendor", "unknown") or "unknown")
+                    device_name = str(res.get("device_name", "") or "")
+                    error = str(res.get("error", "") or "")
+                    debug_entries.append(res.get("debug_entry", {}))
 
-                if depth < max_depth:
-                    for ip in res.get("next_ips", []):
-                        if not ip or ip in visited_sources:
+                    if vendor and vendor != "unknown":
+                        detected_vendors[source] = vendor
+                    if device_name:
+                        detected_device_names[source] = device_name
+                    if error:
+                        failed.append({"device": source, "error": error})
+                        finished_devices += 1
+                        emit_progress("running")
+                        continue
+
+                    for row in res.get("rows", []):
+                        edge_key = "||".join(
+                            [
+                                str(row.get("depth", "")),
+                                str(row.get("localhostname", "")).lower(),
+                                str(row.get("localinterface", "")).lower(),
+                                str(row.get("remotehostname", "")).lower(),
+                                str(row.get("remoteinterface", "")).lower(),
+                            ]
+                        )
+                        if edge_key in edge_seen:
                             continue
-                        if recursive_only_172 and not str(ip).startswith("172."):
-                            continue
-                        if ip and ip not in visited_sources:
-                            next_layer.add(ip)
+                        edge_seen.add(edge_key)
+                        rows.append(row)
+
+                    if depth < max_depth:
+                        for ip in res.get("next_ips", []):
+                            if not ip or ip in visited_sources:
+                                continue
+                            if recursive_only_172 and not str(ip).startswith("172."):
+                                continue
+                            if ip and ip not in visited_sources:
+                                next_layer.add(ip)
+                    total_devices = max(total_devices, len(visited_sources) + len(next_layer) + len(pending))
+                    finished_devices += 1
+                    emit_progress("running")
+            if cancel_event and cancel_event.is_set():
+                current_layer = []
+                break
 
         current_layer = sorted(next_layer)
+        total_devices = max(total_devices, len(visited_sources) + len(current_layer))
+        emit_progress("running")
 
     meta = {
         "queried_devices": sorted(visited_sources),
@@ -1405,6 +1464,9 @@ def build_cli_lldp_rows(
         "cli_max_workers": workers,
         "recursive_only_172": bool(recursive_only_172),
         "total_elapsed_seconds": max(0.0, time.perf_counter() - total_start),
+        "finished_devices": finished_devices,
+        "total_devices": total_devices,
+        "cancelled": bool(cancel_event and cancel_event.is_set()),
     }
     # Pass 1: fill destination name from same-IP rows where name exists.
     ip_to_name: dict[str, str] = {}
@@ -1434,6 +1496,7 @@ def build_cli_lldp_rows(
                 r["remotehostname"] = ip_to_name[dst_ip]
         if dst_ip and dst_ip in detected_vendors:
             r["remotevendor"] = detected_vendors[dst_ip]
+    emit_progress("cancelled" if (cancel_event and cancel_event.is_set()) else "completed")
     return rows, meta
 
 
@@ -3189,6 +3252,151 @@ def _run_sql_query_task(task_id: str) -> None:
             cur["updated_at"] = time.time()
 
 
+def _cli_job_public(job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "task_id": job.get("task_id"),
+        "status": job.get("status"),
+        "created_at": job.get("created_at"),
+        "started_at": job.get("started_at"),
+        "updated_at": job.get("updated_at"),
+        "finished_at": job.get("finished_at"),
+        "progress": job.get("progress", {}),
+        "error": job.get("error", ""),
+        "response": job.get("response"),
+    }
+
+
+def _run_cli_query_task(task_id: str) -> None:
+    with CLI_QUERY_JOB_LOCK:
+        job = CLI_QUERY_JOBS.get(task_id)
+        if not job:
+            return
+        job["status"] = "running"
+        job["started_at"] = time.time()
+        job["updated_at"] = time.time()
+        payload = dict(job.get("payload", {}))
+        cancel_event = job.get("cancel_event")
+
+    def progress_cb(update: dict[str, Any]) -> None:
+        with CLI_QUERY_JOB_LOCK:
+            cur = CLI_QUERY_JOBS.get(task_id)
+            if not cur:
+                return
+            cur["progress"] = {
+                "status": update.get("status"),
+                "finished_devices": update.get("finished_devices", 0),
+                "total_devices": update.get("total_devices", 0),
+                "current_device": update.get("current_device", ""),
+                "current_depth": update.get("current_depth", 0),
+                "elapsed_seconds": update.get("elapsed_seconds", 0.0),
+            }
+            cur["updated_at"] = time.time()
+
+    try:
+        device_address = normalize_device_id(str(payload.get("device_address", "") or ""))
+        max_depth = int(payload.get("max_depth", 3) or 3)
+        rows, meta = build_cli_lldp_rows(
+            device_address,
+            max_depth=max_depth,
+            cli_max_workers=payload.get("cli_max_workers"),
+            recursive_only_172=bool(payload.get("recursive_only_172", False)),
+            device_username=payload.get("device_username"),
+            device_password=payload.get("device_password"),
+            smc_jump_host=payload.get("smc_jump_host"),
+            smc_jump_port=payload.get("smc_jump_port"),
+            smc_command=payload.get("smc_command"),
+            cli_command_timeout=payload.get("cli_command_timeout"),
+            cli_connect_timeout=payload.get("cli_connect_timeout"),
+            progress_cb=progress_cb,
+            cancel_event=cancel_event if isinstance(cancel_event, threading.Event) else None,
+        )
+        safe_name, out_path, csv_text = write_rows_to_csv(
+            f"lldp_cli_{device_address.replace('/', '_').replace(' ', '_')}_d{max_depth}",
+            rows,
+        )
+        debug_safe_name, debug_path = write_cli_debug_text(
+            f"lldp_cli_debug_{device_address.replace('/', '_').replace(' ', '_')}_d{max_depth}",
+            meta,
+        )
+        response = {
+            "ok": True,
+            "mode": "cli",
+            "device_address": device_address,
+            "max_depth": max_depth,
+            "cli_max_workers": meta.get("cli_max_workers"),
+            "recursive_only_172": meta.get("recursive_only_172", False),
+            "total_elapsed_seconds": meta.get("total_elapsed_seconds"),
+            "vendor_mode": "auto-detect-by-version",
+            "detected_vendors": meta.get("detected_vendors", {}),
+            "detected_device_names": meta.get("detected_device_names", {}),
+            "row_count": len(rows),
+            "queried_count": len(meta.get("queried_devices", [])),
+            "queried_devices": meta.get("queried_devices", []),
+            "failed_devices": meta.get("failed_devices", []),
+            "finished_devices": meta.get("finished_devices", 0),
+            "total_devices": meta.get("total_devices", 0),
+            "cancelled": bool(meta.get("cancelled")),
+            "temp_file": str(out_path),
+            "download_url": f"/api/lldp-csv/file/{safe_name}",
+            "debug_file": str(debug_path),
+            "debug_download_url": f"/api/lldp-debug/file/{debug_safe_name}",
+            "csv_text": csv_text,
+        }
+        final_status = "cancelled" if meta.get("cancelled") else "completed"
+        with CLI_QUERY_JOB_LOCK:
+            cur = CLI_QUERY_JOBS.get(task_id)
+            if not cur:
+                return
+            cur["status"] = final_status
+            cur["response"] = response
+            cur["error"] = "cancelled_by_user" if final_status == "cancelled" else ""
+            cur["finished_at"] = time.time()
+            cur["updated_at"] = time.time()
+            cur["progress"] = {
+                "status": final_status,
+                "finished_devices": meta.get("finished_devices", 0),
+                "total_devices": meta.get("total_devices", 0),
+                "current_device": "",
+                "current_depth": max_depth,
+                "elapsed_seconds": meta.get("total_elapsed_seconds", 0.0),
+            }
+    except Exception as exc:
+        with CLI_QUERY_JOB_LOCK:
+            cur = CLI_QUERY_JOBS.get(task_id)
+            if not cur:
+                return
+            cur["status"] = "failed"
+            cur["response"] = None
+            cur["error"] = str(exc)
+            cur["finished_at"] = time.time()
+            cur["updated_at"] = time.time()
+
+
+def _create_cli_query_task(payload: CliQueryRequest) -> dict[str, Any]:
+    _cleanup_expired_jobs(CLI_QUERY_JOBS, CLI_QUERY_JOB_LOCK, CLI_QUERY_JOB_TTL_SEC)
+    body = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    task_id = uuid.uuid4().hex
+    created = time.time()
+    job = {
+        "task_id": task_id,
+        "status": "queued",
+        "payload": body,
+        "created_at": created,
+        "started_at": 0.0,
+        "updated_at": created,
+        "finished_at": 0.0,
+        "error": "",
+        "response": None,
+        "progress": {"status": "queued", "finished_devices": 0, "total_devices": 0, "current_device": "", "current_depth": 0, "elapsed_seconds": 0.0},
+        "cancel_event": threading.Event(),
+    }
+    with CLI_QUERY_JOB_LOCK:
+        CLI_QUERY_JOBS[task_id] = job
+    t = threading.Thread(target=_run_cli_query_task, args=(task_id,), daemon=True)
+    t.start()
+    return {"task_id": task_id, "status": "queued"}
+
+
 def _create_sql_query_task(payload: QueryRequest) -> dict[str, Any]:
     _cleanup_expired_jobs(SQL_QUERY_JOBS, SQL_QUERY_JOB_LOCK, SQL_QUERY_JOB_TTL_SEC)
     body = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
@@ -3234,6 +3442,50 @@ def get_sql_lldp_task(task_id: str) -> dict[str, Any]:
         body = _sql_job_public(job)
     body["ok"] = True
     return body
+
+
+@app.post("/api/cli/lldp-csv/tasks")
+def create_cli_lldp_task(payload: CliQueryRequest) -> dict[str, Any]:
+    device_address = normalize_device_id(payload.device_address)
+    if not device_address:
+        raise HTTPException(status_code=400, detail="device_address is required")
+    try:
+        task = _create_cli_query_task(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"create CLI task failed: {exc}") from exc
+    return {"ok": True, "task_id": task["task_id"], "status": task["status"]}
+
+
+@app.get("/api/cli/lldp-csv/tasks/{task_id}")
+def get_cli_lldp_task(task_id: str) -> dict[str, Any]:
+    _cleanup_expired_jobs(CLI_QUERY_JOBS, CLI_QUERY_JOB_LOCK, CLI_QUERY_JOB_TTL_SEC)
+    with CLI_QUERY_JOB_LOCK:
+        job = CLI_QUERY_JOBS.get(task_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="task not found")
+        body = _cli_job_public(job)
+    body["ok"] = True
+    return body
+
+
+@app.post("/api/cli/lldp-csv/tasks/{task_id}/cancel")
+def cancel_cli_lldp_task(task_id: str) -> dict[str, Any]:
+    with CLI_QUERY_JOB_LOCK:
+        job = CLI_QUERY_JOBS.get(task_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="task not found")
+        status = str(job.get("status") or "")
+        if status in {"completed", "failed", "cancelled"}:
+            return {"ok": True, "task_id": task_id, "status": status}
+        ev = job.get("cancel_event")
+        if isinstance(ev, threading.Event):
+            ev.set()
+        else:
+            job["status"] = "cancelled"
+            job["finished_at"] = time.time()
+            job["updated_at"] = time.time()
+            job["error"] = "cancelled_by_user"
+    return {"ok": True, "task_id": task_id, "status": "cancelling"}
 
 
 @app.post("/api/sql/lldp-csv")
