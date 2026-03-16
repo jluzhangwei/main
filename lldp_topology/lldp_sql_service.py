@@ -3237,7 +3237,23 @@ def _run_sql_lldp_query(
     db_user: str | None = None,
     db_password: str | None = None,
     db_name: str | None = None,
+    cancel_event: threading.Event | None = None,
+    progress_cb: Callable[[dict[str, Any]], None] | None = None,
+    connection_cb: Callable[[pymysql.connections.Connection | None], None] | None = None,
 ) -> dict[str, Any]:
+    def emit_progress(status: str) -> None:
+        if not progress_cb:
+            return
+        try:
+            progress_cb({
+                "status": status,
+                "elapsed_seconds": max(0.0, time.perf_counter() - t0) if "t0" in locals() else 0.0,
+            })
+        except Exception:
+            return
+
+    if cancel_event and cancel_event.is_set():
+        raise RuntimeError("cancelled_by_user")
     try:
         conn = connect_db(
             db_host=db_host,
@@ -3250,15 +3266,33 @@ def _run_sql_lldp_query(
         raise RuntimeError(f"DB connect failed: {exc}") from exc
 
     t0 = time.perf_counter()
+    if connection_cb:
+        try:
+            connection_cb(conn)
+        except Exception:
+            pass
     try:
+        if cancel_event and cancel_event.is_set():
+            raise RuntimeError("cancelled_by_user")
         rows: list[dict[str, Any]] = []
         with conn.cursor() as cur:
+            emit_progress("running")
             seed_hosts = _resolve_sql_seed_hosts(cur, start_hostname)
+            if cancel_event and cancel_event.is_set():
+                raise RuntimeError("cancelled_by_user")
+            emit_progress("running")
             rows = _query_lldp_depth_rows(cur, seed_hosts, max_depth=max_depth)
     except Exception as exc:
         elapsed = max(0.0, time.perf_counter() - t0)
+        if cancel_event and cancel_event.is_set():
+            raise RuntimeError("cancelled_by_user") from exc
         raise RuntimeError(f"SQL execution failed after {elapsed:.1f}s: {exc}") from exc
     finally:
+        if connection_cb:
+            try:
+                connection_cb(None)
+            except Exception:
+                pass
         conn.close()
 
     for r in rows:
@@ -3298,6 +3332,7 @@ def _sql_job_public(job: dict[str, Any]) -> dict[str, Any]:
         "started_at": job.get("started_at"),
         "updated_at": job.get("updated_at"),
         "finished_at": job.get("finished_at"),
+        "progress": job.get("progress", {}),
         "error": job.get("error", ""),
         "response": job.get("response"),
     }
@@ -3394,10 +3429,34 @@ def _run_sql_query_task(task_id: str) -> None:
         job = SQL_QUERY_JOBS.get(task_id)
         if not job:
             return
+        cancel_event = job.get("cancel_event")
+        if str(job.get("status") or "") == "cancelled" or (isinstance(cancel_event, threading.Event) and cancel_event.is_set()):
+            job["finished_at"] = time.time()
+            job["updated_at"] = time.time()
+            job["progress"] = {"status": "cancelled", "elapsed_seconds": 0.0}
+            return
         job["status"] = "running"
         job["started_at"] = time.time()
         job["updated_at"] = time.time()
         payload = dict(job.get("payload", {}))
+
+    def progress_cb(update: dict[str, Any]) -> None:
+        with SQL_QUERY_JOB_LOCK:
+            cur = SQL_QUERY_JOBS.get(task_id)
+            if not cur:
+                return
+            cur["progress"] = {
+                "status": str(update.get("status", "running") or "running"),
+                "elapsed_seconds": float(update.get("elapsed_seconds", 0.0) or 0.0),
+            }
+            cur["updated_at"] = time.time()
+
+    def register_connection(conn: pymysql.connections.Connection | None) -> None:
+        with SQL_QUERY_JOB_LOCK:
+            cur = SQL_QUERY_JOBS.get(task_id)
+            if not cur:
+                return
+            cur["db_connection"] = conn
 
     try:
         start_hostname = str(payload.get("start_hostname", "")).strip()
@@ -3410,26 +3469,41 @@ def _run_sql_query_task(task_id: str) -> None:
             db_user=payload.get("db_user"),
             db_password=payload.get("db_password"),
             db_name=payload.get("db_name"),
+            cancel_event=cancel_event if isinstance(cancel_event, threading.Event) else None,
+            progress_cb=progress_cb,
+            connection_cb=register_connection,
         )
         with SQL_QUERY_JOB_LOCK:
             cur = SQL_QUERY_JOBS.get(task_id)
             if not cur:
                 return
-            cur["status"] = "completed"
+            final_status = "cancelled" if (isinstance(cancel_event, threading.Event) and cancel_event.is_set()) else "completed"
+            cur["status"] = final_status
             cur["response"] = response
-            cur["error"] = ""
+            cur["error"] = "cancelled_by_user" if final_status == "cancelled" else ""
             cur["finished_at"] = time.time()
             cur["updated_at"] = time.time()
+            cur["db_connection"] = None
+            cur["progress"] = {
+                "status": final_status,
+                "elapsed_seconds": float(response.get("elapsed_seconds", 0.0) or 0.0),
+            }
     except Exception as exc:
         with SQL_QUERY_JOB_LOCK:
             cur = SQL_QUERY_JOBS.get(task_id)
             if not cur:
                 return
-            cur["status"] = "failed"
+            is_cancelled = (isinstance(cancel_event, threading.Event) and cancel_event.is_set()) or str(exc) == "cancelled_by_user"
+            cur["status"] = "cancelled" if is_cancelled else "failed"
             cur["response"] = None
-            cur["error"] = str(exc)
+            cur["error"] = "cancelled_by_user" if is_cancelled else str(exc)
             cur["finished_at"] = time.time()
             cur["updated_at"] = time.time()
+            cur["db_connection"] = None
+            cur["progress"] = {
+                "status": "cancelled" if is_cancelled else "failed",
+                "elapsed_seconds": float(time.time() - float(cur.get("started_at") or time.time())),
+            }
 
 
 def _cli_job_public(job: dict[str, Any]) -> dict[str, Any]:
@@ -3590,6 +3664,9 @@ def _create_sql_query_task(payload: QueryRequest) -> dict[str, Any]:
         "started_at": 0.0,
         "updated_at": created,
         "finished_at": 0.0,
+        "progress": {"status": "queued", "elapsed_seconds": 0.0},
+        "cancel_event": threading.Event(),
+        "db_connection": None,
         "error": "",
         "response": None,
     }
@@ -3631,6 +3708,40 @@ def get_sql_lldp_task(task_id: str) -> dict[str, Any]:
         body = _sql_job_public(job)
     body["ok"] = True
     return body
+
+
+@app.post("/api/sql/lldp-csv/tasks/{task_id}/cancel")
+def cancel_sql_lldp_task(task_id: str) -> dict[str, Any]:
+    with SQL_QUERY_JOB_LOCK:
+        job = SQL_QUERY_JOBS.get(task_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="task not found")
+        status = str(job.get("status") or "")
+        if status in {"completed", "failed", "cancelled"}:
+            return {"ok": True, "task_id": task_id, "status": status}
+        ev = job.get("cancel_event")
+        if isinstance(ev, threading.Event):
+            ev.set()
+        conn = job.get("db_connection")
+        if status == "queued":
+            job["status"] = "cancelled"
+            job["finished_at"] = time.time()
+            job["updated_at"] = time.time()
+            job["error"] = "cancelled_by_user"
+            job["progress"] = {"status": "cancelled", "elapsed_seconds": 0.0}
+        else:
+            job["status"] = "cancelling"
+            job["updated_at"] = time.time()
+            job["progress"] = {
+                "status": "cancelling",
+                "elapsed_seconds": float(time.time() - float(job.get("started_at") or time.time())),
+            }
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return {"ok": True, "task_id": task_id, "status": "cancelling"}
 
 
 @app.post("/api/cli/lldp-csv/tasks")

@@ -607,6 +607,7 @@
       <input id="sqlStartHostnameModal" type="text" placeholder="例如：ID-DCI2-GENERAL.CONNECTION-R003-BRIDGE-02" />
       <div class="modal-actions">
         <button id="runSqlGenerateModal" class="primary">执行 SQL 查询</button>
+        <button id="cancelSqlGenerateModal" style="display:none;">取消查询</button>
         <button id="openSqlConfigModal" type="button">SQL配置</button>
         <button id="downloadSqlCsvModal">下载临时 CSV</button>
         <button class="closeImportModalBtn">关闭</button>
@@ -868,6 +869,8 @@
   let nodeIpMap = new Map();
   let deviceNameToIpMap = new Map();
   let lastCliPassword = '';
+  let currentSqlTaskId = '';
+  let sqlTaskCancelling = false;
   let currentCliLldpTaskId = '';
   let cliLldpTaskCancelling = false;
   let ctxAppendSingleHop = false;
@@ -1297,6 +1300,7 @@
     setText('openUtilFilterModal', 'btn_util_filter');
     setText('clearUtilFilterOnly', 'btn_clear_util_filter');
     setText('runSqlGenerateModal', 'btn_run_sql');
+    setText('cancelSqlGenerateModal', 'btn_cancel_query');
     setText('openSqlConfigModal', 'btn_sql_config');
     setText('downloadSqlCsvModal', 'btn_dl_sql_tmp');
     setText('runCliGenerateModal', 'btn_run_cli');
@@ -2057,6 +2061,164 @@
     };
   }
 
+  function cytoscapeStyleConfig(nodeLabelMode) {
+    return [
+      {
+        selector: 'node',
+        style: {
+          'label': nodeLabelMode === 'none' ? '' : (nodeLabelMode === 'full' ? 'data(label)' : 'data(short)'),
+          'font-size': 10,
+          'text-outline-width': 2,
+          'text-outline-color': '#ffffff',
+          'width': 30,
+          'height': 30,
+          'background-color': '#2563eb',
+          'border-width': 0
+        }
+      },
+      { selector: 'node[role = "CORE"]', style: { 'background-color': '#7c3aed' } },
+      { selector: 'node[role = "AGGR"]', style: { 'background-color': '#2563eb' } },
+      { selector: 'node[role = "TOR"]',  style: { 'background-color': '#059669' } },
+      { selector: 'node[role = "OTHER"]',style: { 'background-color': '#6b7280' } },
+
+      {
+        selector: 'edge',
+        style: {
+          'curve-style': 'bezier',
+          'target-arrow-shape': 'triangle',
+          'arrow-scale': 0.8,
+          'width': 1.2,
+          'line-color': '#9ca3af',
+          'target-arrow-color': '#9ca3af',
+          'label': 'data(labelShown)',
+          'font-size': 9,
+          'text-background-color': '#ffffff',
+          'text-background-opacity': 0.85,
+          'text-background-padding': 2,
+          'text-rotation': 'autorotate',
+          'color': '#374151'
+        }
+      },
+      {
+        selector: 'edge:selected',
+        style: {
+          'width': 2.6,
+          'line-color': '#2563eb',
+          'target-arrow-color': '#2563eb'
+        }
+      },
+      { selector: 'edge.util-low', style: { 'line-color': '#16a34a', 'target-arrow-color': '#16a34a' } },
+      { selector: 'edge.util-mid', style: { 'line-color': '#ca8a04', 'target-arrow-color': '#ca8a04' } },
+      { selector: 'edge.util-high', style: { 'line-color': '#dc2626', 'target-arrow-color': '#dc2626' } },
+      { selector: 'edge.util-na', style: { 'line-style': 'dashed', 'line-color': '#9ca3af', 'target-arrow-color': '#9ca3af' } },
+      {
+        selector: 'edge.heavy',
+        style: {
+          'curve-style': 'bezier',
+          'target-arrow-shape': 'triangle',
+          'line-opacity': 0.75,
+          'arrow-scale': 0.65,
+          'text-background-opacity': 0.35
+        }
+      },
+      {
+        selector: 'edge.drag-lite',
+        style: {
+          'curve-style': 'haystack',
+          'target-arrow-shape': 'none',
+          'label': '',
+          'text-background-opacity': 0,
+          'arrow-scale': 0
+        }
+      },
+      {
+        selector: 'node.drag-lite',
+        style: {
+          'label': ''
+        }
+      },
+      { selector: 'edge.hovered', style: { 'label': 'data(label)' } },
+
+      { selector: '.hit', style: { 'border-width': 2, 'border-color': '#111827' } },
+      { selector: '.dim', style: { 'opacity': 0.15 } },
+      { selector: '.filtered', style: { 'display': 'none' } },
+      { selector: '.onlyHidden', style: { 'display': 'none' } },
+      { selector: '.utilHidden', style: { 'display': 'none' } },
+      { selector: ':selected', style: {
+        'border-width': 3,
+        'border-color': '#2563eb',
+        'shadow-blur': 14,
+        'shadow-color': '#2563eb',
+        'shadow-opacity': 0.6,
+        'shadow-offset-x': 0,
+        'shadow-offset-y': 0
+      } }
+    ];
+  }
+
+  function bindCyInteractions() {
+    if (!cy) return;
+    cy.on('tap', 'node', () => {
+      cy.elements().removeClass('hit dim');
+      cy.nodes(':selected').addClass('hit');
+    });
+    cy.on('grab', 'node', () => {
+      if (shouldUseDragLiteMode()) setDragPerfMode(true);
+    });
+    cy.on('free', 'node', () => {
+      if (dragPerfMode) setDragPerfMode(false);
+    });
+    cy.on('tap', (evt) => {
+      if (evt.target === cy) cy.elements().removeClass('dim hit');
+    });
+    cy.on('cxttap', 'node', (evt) => {
+      if (!evt.target.selected() && !cy.nodes(':selected').length) evt.target.select();
+      evt.originalEvent.preventDefault();
+      showCtx(evt);
+    });
+    cy.on('cxttap', 'edge', (evt) => {
+      if (!evt.target.selected() && !cy.edges(':selected').length) evt.target.select();
+      evt.originalEvent.preventDefault();
+      showCtx(evt);
+    });
+    cy.on('tap', () => hideCtx());
+    cy.on('pan', () => hideCtx());
+    cy.on('zoom', () => {
+      hideCtx();
+      scheduleZoomAwareNodeSizing();
+    });
+  }
+
+  function ensureCyInstance(elements, nodeLabelMode) {
+    if (!cy) {
+      cy = cytoscape({
+        container: $('cy'),
+        elements,
+        style: cytoscapeStyleConfig(nodeLabelMode),
+        layout: { name: 'preset' },
+        wheelSensitivity: 0.22,
+        pixelRatio: 1,
+        hideEdgesOnViewport: true,
+        textureOnViewport: true
+      });
+      cy.autoungrabify(false);
+      cy.autounselectify(false);
+      cy.boxSelectionEnabled(boxSelectMode);
+      cy.userPanningEnabled(true);
+      cy.userZoomingEnabled(true);
+      cy.nodes().unlock().grabify();
+      bindCyInteractions();
+      return;
+    }
+
+    cy.startBatch();
+    cy.elements().remove();
+    cy.add(elements);
+    cy.endBatch();
+    cy.boxSelectionEnabled(boxSelectMode);
+    cy.nodes().unlock().grabify();
+  }
+
   function buildGraph(keepPositions = null, opts = {}) {
     const forceNodesInput = Array.isArray(opts.forceNodes) ? opts.forceNodes : [];
     if (!rawRows.length && !forceNodesInput.length) { setErr('请先导入 CSV'); return; }
@@ -2224,8 +2386,6 @@
       ...edgesForCy
     ];
 
-    if (cy) cy.destroy();
-
     // ✅ 初始随机位置，或保持已有位置
     const rand = (min, max) => Math.random() * (max - min) + min;
     for (const el of elements) {
@@ -2245,115 +2405,15 @@
       }
     }
 
-    cy = cytoscape({
-      container: $('cy'),
-      elements,
-      style: [
-        {
-          selector: 'node',
-          style: {
-            'label': nodeLabelMode === 'none' ? '' : (nodeLabelMode === 'full' ? 'data(label)' : 'data(short)'),
-            'font-size': 10,
-            'text-outline-width': 2,
-            'text-outline-color': '#ffffff',
-            'width': 30,
-            'height': 30,
-            'background-color': '#2563eb',
-            'border-width': 0
-          }
-        },
-        { selector: 'node[role = "CORE"]', style: { 'background-color': '#7c3aed' } },
-        { selector: 'node[role = "AGGR"]', style: { 'background-color': '#2563eb' } },
-        { selector: 'node[role = "TOR"]',  style: { 'background-color': '#059669' } },
-        { selector: 'node[role = "OTHER"]',style: { 'background-color': '#6b7280' } },
-
-        {
-          selector: 'edge',
-          style: {
-            'curve-style': 'bezier',
-            'target-arrow-shape': 'triangle',
-            'arrow-scale': 0.8,
-            'width': 1.2,
-            'line-color': '#9ca3af',
-            'target-arrow-color': '#9ca3af',
-            'label': 'data(labelShown)',
-            'font-size': 9,
-            'text-background-color': '#ffffff',
-            'text-background-opacity': 0.85,
-            'text-background-padding': 2,
-            'text-rotation': 'autorotate',
-            'color': '#374151'
-          }
-        },
-        {
-          selector: 'edge:selected',
-          style: {
-            'width': 2.6,
-            'line-color': '#2563eb',
-            'target-arrow-color': '#2563eb'
-          }
-        },
-        { selector: 'edge.util-low', style: { 'line-color': '#16a34a', 'target-arrow-color': '#16a34a' } },
-        { selector: 'edge.util-mid', style: { 'line-color': '#ca8a04', 'target-arrow-color': '#ca8a04' } },
-        { selector: 'edge.util-high', style: { 'line-color': '#dc2626', 'target-arrow-color': '#dc2626' } },
-        { selector: 'edge.util-na', style: { 'line-style': 'dashed', 'line-color': '#9ca3af', 'target-arrow-color': '#9ca3af' } },
-        {
-          selector: 'edge.heavy',
-          style: {
-            'curve-style': 'bezier',
-            'target-arrow-shape': 'triangle',
-            'line-opacity': 0.75,
-            'arrow-scale': 0.65,
-            'text-background-opacity': 0.35
-          }
-        },
-        {
-          selector: 'edge.drag-lite',
-          style: {
-            'curve-style': 'haystack',
-            'target-arrow-shape': 'none',
-            'label': '',
-            'text-background-opacity': 0,
-            'arrow-scale': 0
-          }
-        },
-        {
-          selector: 'node.drag-lite',
-          style: {
-            'label': ''
-          }
-        },
-        { selector: 'edge.hovered', style: { 'label': 'data(label)' } },
-
-        { selector: '.hit', style: { 'border-width': 2, 'border-color': '#111827' } },
-        { selector: '.dim', style: { 'opacity': 0.15 } },
-        { selector: '.filtered', style: { 'display': 'none' } },
-        { selector: '.onlyHidden', style: { 'display': 'none' } },
-        { selector: '.utilHidden', style: { 'display': 'none' } },
-        { selector: ':selected', style: {
-          'border-width': 3,
-          'border-color': '#2563eb',
-          'shadow-blur': 14,
-          'shadow-color': '#2563eb',
-          'shadow-opacity': 0.6,
-          'shadow-offset-x': 0,
-          'shadow-offset-y': 0
-        } }
-      ],
-      layout: { name: 'preset' },
-      wheelSensitivity: 0.22,
-      pixelRatio: 1,
-      hideEdgesOnViewport: true,
-      textureOnViewport: true
-    });
-    cy.autoungrabify(false);
-    cy.autounselectify(false);
-    cy.boxSelectionEnabled(boxSelectMode);
-    cy.userPanningEnabled(true);
-    cy.userZoomingEnabled(true);
-    cy.nodes().unlock().grabify();
+    const prevPan = cy ? { ...cy.pan() } : null;
+    const prevZoom = cy ? cy.zoom() : null;
+    ensureCyInstance(elements, nodeLabelMode);
 
     const hasKeep = keepPositions && Object.keys(keepPositions).length > 0;
+    const adjustViewport = opts.adjustViewport !== false;
+    const keepExactPositions = !!opts.keepExactPositions;
+    const shouldRelayout = opts.relayout === true || (!hasKeep && opts.relayout !== false);
+    const preserveViewport = hasKeep || !adjustViewport;
 
     // 根据分层关键字重新标记角色/层级
     applyLayersToNodes(cy.nodes());
@@ -2374,48 +2434,18 @@
     applyAdaptiveRenderMode();
     applyZoomAwareNodeSizing(true);
 
-    // click highlight：仅高亮选中节点本身，不再自动高亮邻居
-    cy.on('tap', 'node', () => {
-      cy.elements().removeClass('hit dim');
-      cy.nodes(':selected').addClass('hit');
-    });
-    cy.on('grab', 'node', () => {
-      if (shouldUseDragLiteMode()) setDragPerfMode(true);
-    });
-    cy.on('free', 'node', () => {
-      if (dragPerfMode) setDragPerfMode(false);
-    });
-    cy.on('tap', (evt) => {
-      if (evt.target === cy) cy.elements().removeClass('dim hit');
-    });
-
-    // 右键菜单：固定位置 / 删除节点
-    cy.on('cxttap', 'node', (evt) => {
-      if (!evt.target.selected() && !cy.nodes(':selected').length) evt.target.select();
-      evt.originalEvent.preventDefault();
-      showCtx(evt);
-    });
-    cy.on('cxttap', 'edge', (evt) => {
-      if (!evt.target.selected() && !cy.edges(':selected').length) evt.target.select();
-      evt.originalEvent.preventDefault();
-      showCtx(evt);
-    });
-    cy.on('tap', () => hideCtx());
-    cy.on('pan', () => hideCtx());
-    cy.on('zoom', () => {
-      hideCtx();
-      scheduleZoomAwareNodeSizing();
-    });
-
     reapplyViewStateAfterBuild();
     applyDeletedMaskAfterBuild();
-    const adjustViewport = opts.adjustViewport !== false;
-    const keepExactPositions = !!opts.keepExactPositions;
-    if (hasKeep && keepExactPositions) {
-      // Keep current dragged coordinates exactly as-is for scoped rebuild workflows.
+    if (preserveViewport && prevPan && Number.isFinite(prevZoom)) {
+      cy.zoom(prevZoom);
+      cy.pan(prevPan);
+    }
+    if (hasKeep && (keepExactPositions || !shouldRelayout)) {
       cy.layout({ name: 'preset', fit: false, padding: 30 }).run();
-    } else {
+    } else if (shouldRelayout) {
       runLayout(null, { adjustViewport });
+    } else {
+      cy.layout({ name: 'preset', fit: false, padding: 30 }).run();
     }
     if (hasKeep) {
       setTimeout(() => {
@@ -4323,6 +4353,9 @@
     setOK('');
     setStatus('SQL 查询中...');
     if ($(hintId)) $(hintId).textContent = '';
+    currentSqlTaskId = '';
+    sqlTaskCancelling = false;
+    setSqlTaskUiRunning(true);
     try {
       const base = apiBaseUrl();
       const sqlCfg = readSqlConfig();
@@ -4345,6 +4378,8 @@
       }
       const taskId = String(startData.task_id || '').trim();
       if (!taskId) throw new Error('SQL 任务创建失败：未返回 task_id');
+      currentSqlTaskId = taskId;
+      setSqlTaskUiRunning(true);
 
       let taskData = null;
       const startedAt = Date.now();
@@ -4356,13 +4391,23 @@
         taskData = pollData;
         const st = String(taskData.status || '');
         const sec = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
-        if ($(hintId) && (st === 'queued' || st === 'running')) {
-          $(hintId).textContent = `SQL 查询执行中，task=${taskId.slice(0, 8)}，已耗时 ${sec}s`;
+        if ($(hintId) && (st === 'queued' || st === 'running' || st === 'cancelling')) {
+          const prefix = st === 'cancelling' ? 'SQL 查询取消中' : 'SQL 查询执行中';
+          $(hintId).textContent = `${prefix}，task=${taskId.slice(0, 8)}，已耗时 ${sec}s`;
           continue;
         }
         if (st === 'failed') throw new Error(String(taskData.error || 'SQL 任务执行失败'));
+        if (st === 'cancelled') break;
         if (st === 'completed') break;
         throw new Error(`未知 SQL 任务状态：${st || 'N/A'}`);
+      }
+      const wasCancelled = String(taskData?.status || '') === 'cancelled';
+      if (wasCancelled) {
+        const sec = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+        if ($(hintId)) $(hintId).textContent = `SQL 查询已取消，task=${taskId.slice(0, 8)}，总用时 ${sec}s`;
+        setStatus('SQL 查询已取消');
+        setOK(`已取消 SQL 查询：${startHostname}`);
+        return { ok: false, startHostname, cancelled: true };
       }
       const data = taskData?.response || {};
       if (!data.download_url) throw new Error('SQL 返回缺少下载地址');
@@ -4392,11 +4437,14 @@
         tempFile: String(data.temp_file || '')
       };
     } catch (e) {
-      setStatus('SQL 生成失败');
+      setStatus(sqlTaskCancelling ? 'SQL 查询已取消' : 'SQL 生成失败');
       setErr(`SQL 查询失败：${String(e && e.message ? e.message : e)}`);
       if ($(hintId)) $(hintId).textContent = '请确认通过服务启动页面：http://127.0.0.1:18080/lldp.html';
       throw e;
     } finally {
+      currentSqlTaskId = '';
+      sqlTaskCancelling = false;
+      setSqlTaskUiRunning(false);
       ctxAppendSingleHop = false;
     }
   }
@@ -5371,6 +5419,17 @@
     }
   }
 
+  function setSqlTaskUiRunning(running) {
+    const runBtn = $('runSqlGenerateModal');
+    const cancelBtn = $('cancelSqlGenerateModal');
+    if (runBtn) runBtn.disabled = !!running;
+    if (cancelBtn) {
+      cancelBtn.style.display = running ? '' : 'none';
+      cancelBtn.disabled = !running || sqlTaskCancelling || !currentSqlTaskId;
+      cancelBtn.textContent = sqlTaskCancelling ? '取消中...' : tr('btn_cancel_query');
+    }
+  }
+
   // ---- Events ----
   $('file').addEventListener('change', async (e) => {
     const files = e.target.files;
@@ -5413,6 +5472,23 @@
     try {
       await runSqlGenerateAndBuild('sqlStartHostnameModal', 'sqlResultHintModal', importInputAction);
     } catch (_) {}
+  });
+  $('cancelSqlGenerateModal').addEventListener('click', async () => {
+    const taskId = String(currentSqlTaskId || '').trim();
+    if (!taskId) return;
+    sqlTaskCancelling = true;
+    setSqlTaskUiRunning(true);
+    $('sqlResultHintModal').textContent = '正在取消 SQL 查询...';
+    try {
+      const base = apiBaseUrl();
+      const resp = await fetch(`${base}/api/sql/lldp-csv/tasks/${taskId}/cancel`, { method: 'POST' });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data?.detail || `HTTP ${resp.status}`);
+    } catch (e) {
+      sqlTaskCancelling = false;
+      setSqlTaskUiRunning(true);
+      setErr(`取消 SQL 查询失败：${String(e && e.message ? e.message : e)}`);
+    }
   });
   $('downloadSqlCsvModal').addEventListener('click', downloadLastSqlCsv);
 
