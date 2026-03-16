@@ -145,7 +145,15 @@ start() {
   echo "Starting service..."
   (
     cd "$BASE_DIR"
-    DB_ENV_FILE="$DB_ENV_FILE_PATH" nohup "$PYTHON_BIN" "$SERVICE_FILE" >"$LOG_FILE" 2>&1 &
+    if command -v setsid >/dev/null 2>&1; then
+      nohup env DB_ENV_FILE="$DB_ENV_FILE_PATH" \
+        setsid "$PYTHON_BIN" -m uvicorn lldp_sql_service:app --host "$HOST" --port "$PORT" \
+        >"$LOG_FILE" 2>&1 < /dev/null &
+    else
+      nohup env DB_ENV_FILE="$DB_ENV_FILE_PATH" \
+        "$PYTHON_BIN" -m uvicorn lldp_sql_service:app --host "$HOST" --port "$PORT" \
+        >"$LOG_FILE" 2>&1 < /dev/null &
+    fi
     echo $! >"$PID_FILE"
   )
 

@@ -22,10 +22,14 @@ import pty
 import re
 import select
 import signal
+import ssl
 import subprocess
 import threading
 import time
 import uuid
+import urllib.error
+import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from collections import deque
 from dataclasses import dataclass
@@ -49,6 +53,10 @@ STATE_LIMIT = int(os.getenv("LLDP_STATE_LIMIT", "15") or "15")
 LINK_UTIL_CACHE_FILE = TMP_DIR / "link_util_cache.csv"
 LINK_UTIL_CACHE_FIELDS = [
     "util_key",
+    "data_source",
+    "time_mode",
+    "time_from",
+    "time_till",
     "source_device",
     "source_interface",
     "vendor",
@@ -68,6 +76,8 @@ LINK_UTIL_JOB_TTL_SEC = int(os.getenv("LINK_UTIL_JOB_TTL_SEC", "21600") or "2160
 SQL_QUERY_JOBS: dict[str, dict[str, Any]] = {}
 SQL_QUERY_JOB_LOCK = threading.Lock()
 SQL_QUERY_JOB_TTL_SEC = int(os.getenv("SQL_QUERY_JOB_TTL_SEC", "21600") or "21600")
+ZABBIX_URL_DEFAULT = "https://zbxdevice.nsoctools.insea.io/zabbix"
+ZABBIX_API_TOKEN_DEFAULT = "b00f27e1ae0bc322ecc8eebc904c21095ba32579c7def2c26025aaaa7f296dfb"
 
 
 def load_dotenv_file(path: str) -> None:
@@ -89,6 +99,57 @@ def load_dotenv_file(path: str) -> None:
 def get_env(name: str, default: str = "") -> str:
     value = os.getenv(name, default)
     return value.strip() if isinstance(value, str) else value
+
+
+def zabbix_api_url(url_override: str | None = None) -> str:
+    base = str(url_override or get_env("ZABBIX_URL", ZABBIX_URL_DEFAULT)).strip().rstrip("/")
+    if base.endswith("/api_jsonrpc.php"):
+        return base
+    return f"{base}/api_jsonrpc.php"
+
+
+def zabbix_api_url_candidates(url_override: str | None = None) -> list[str]:
+    raw = str(url_override or get_env("ZABBIX_URL", ZABBIX_URL_DEFAULT)).strip()
+    if not raw:
+        return [zabbix_api_url(None)]
+    base = raw.rstrip("/")
+    if base.endswith("/api_jsonrpc.php"):
+        return [base]
+
+    parsed = urllib.parse.urlsplit(base)
+    root = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", "")).rstrip("/")
+    path = (parsed.path or "").rstrip("/")
+    candidates: list[str] = []
+
+    def add(url: str) -> None:
+        val = str(url or "").strip().rstrip("/")
+        if not val:
+            return
+        if not val.endswith("/api_jsonrpc.php"):
+            val = f"{val}/api_jsonrpc.php"
+        if val not in candidates:
+            candidates.append(val)
+
+    add(base)
+    if root:
+        if not path:
+            add(f"{root}/zabbix")
+            add(root)
+        elif path != "/zabbix":
+            add(f"{root}/zabbix")
+            add(root)
+    return candidates
+
+
+def zabbix_api_token(token_override: str | None = None) -> str:
+    return str(token_override or get_env("ZABBIX_API_TOKEN", ZABBIX_API_TOKEN_DEFAULT)).strip()
+
+
+def zabbix_verify_ssl(verify_ssl_override: bool | None = None) -> bool:
+    if isinstance(verify_ssl_override, bool):
+        return verify_ssl_override
+    raw = get_env("ZABBIX_VERIFY_SSL", "false").lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def ensure_env_loaded() -> None:
@@ -1415,6 +1476,17 @@ class LinkUtilRequest(BaseModel):
     debug_enabled: bool = False
 
 
+class ZabbixLinkUtilRequest(BaseModel):
+    targets: list[LinkUtilTarget]
+    metric: str = Field(default="max")
+    time_mode: str = Field(default="current")
+    time_from: int | None = None
+    time_till: int | None = None
+    zabbix_url: str | None = None
+    zabbix_api_token: str | None = None
+    zabbix_verify_ssl: bool | None = None
+
+
 class StateSnapshotSaveRequest(BaseModel):
     snapshot: dict[str, Any]
     name: str | None = None
@@ -1774,6 +1846,409 @@ def _parse_num(v: Any) -> float | None:
         return None
 
 
+def _zabbix_rpc(
+    method: str,
+    params: dict[str, Any] | list[Any],
+    *,
+    url_override: str | None = None,
+    token_override: str | None = None,
+    verify_ssl_override: bool | None = None,
+) -> Any:
+    token = zabbix_api_token(token_override)
+    if not token:
+        raise RuntimeError("Missing ZABBIX_API_TOKEN")
+    payload = json.dumps(
+        {"jsonrpc": "2.0", "method": method, "params": params, "id": int(time.time() * 1000) % 1000000}
+    ).encode("utf-8")
+    ssl_ctx = ssl.create_default_context() if zabbix_verify_ssl(verify_ssl_override) else ssl._create_unverified_context()
+    last_exc: Exception | None = None
+    for endpoint in zabbix_api_url_candidates(url_override):
+        req = urllib.request.Request(
+            endpoint,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30, context=ssl_ctx) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            if body.get("error"):
+                err = body["error"]
+                raise RuntimeError(f"Zabbix API error {err.get('code')}: {err.get('data') or err.get('message')}")
+            return body.get("result")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")
+            if exc.code == 404:
+                last_exc = RuntimeError(f"Zabbix HTTP {exc.code} on {endpoint}: {detail}")
+                continue
+            raise RuntimeError(f"Zabbix HTTP {exc.code} on {endpoint}: {detail}") from exc
+        except Exception as exc:
+            last_exc = exc
+            if "404" in str(exc):
+                continue
+            raise RuntimeError(f"Zabbix request failed on {endpoint}: {exc}") from exc
+    if last_exc:
+        raise RuntimeError(str(last_exc))
+    raise RuntimeError("Zabbix request failed: no valid API endpoint candidate")
+
+
+def _normalize_units_multiplier(units: str, item_key: str = "") -> float:
+    u = str(units or "").strip().lower()
+    k = str(item_key or "").strip().lower()
+    if u in {"bps", "b/s", "bit/s"}:
+        return 1.0
+    if u in {"Bps".lower(), "byte/s", "bytes/s"}:
+        return 8.0
+    if u in {"kbps", "kbit/s"}:
+        return 1_000.0
+    if u in {"mbps", "mbit/s"}:
+        return 1_000_000.0
+    if u in {"gbps", "gbit/s"}:
+        return 1_000_000_000.0
+    # In this environment ifHC* items are already preprocessed to bps.
+    if "ifhc" in k or "traffic" in k:
+        return 1.0
+    return 1.0
+
+
+def _zabbix_item_last_bps(item: dict[str, Any]) -> float | None:
+    val = _parse_num(item.get("lastvalue"))
+    if val is None:
+        return None
+    return val * _normalize_units_multiplier(str(item.get("units", "")), str(item.get("key_", "")))
+
+
+def _zabbix_iface_match_score(item: dict[str, Any], iface: str) -> int:
+    iface_raw = str(iface or "").strip()
+    if not iface_raw:
+        return -10
+    iface_l = iface_raw.lower()
+    name = str(item.get("name", "") or "").lower()
+    key = str(item.get("key_", "") or "").lower()
+    score = 0
+    if iface_l in key:
+        score += 40
+    if iface_l in name:
+        score += 30
+    if f"[{iface_l}]" in key:
+        score += 40
+    if f"interface {iface_l}" in name:
+        score += 20
+    return score
+
+
+def _zabbix_item_kind(item: dict[str, Any]) -> str:
+    name = str(item.get("name", "") or "").lower()
+    key = str(item.get("key_", "") or "").lower()
+    if "ifhighspeed[" in key or "ifspeed[" in key or "speed of interface" in name:
+        return "speed"
+    if "ifhcoutoctets[" in key or "ifoutoctets[" in key or "outgoing traffic" in name or "bits sent" in name:
+        return "tx"
+    if "ifhcinoctets[" in key or "ifinoctets[" in key or "incoming traffic" in name or "bits received" in name:
+        return "rx"
+    return ""
+
+
+def _pick_best_zabbix_item(items: list[dict[str, Any]], iface: str, kind: str) -> dict[str, Any] | None:
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    for item in items:
+        if _zabbix_item_kind(item) != kind:
+            continue
+        score = _zabbix_iface_match_score(item, iface)
+        if score < 0:
+            continue
+        candidates.append((score, item))
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda x: (
+            -x[0],
+            str(x[1].get("name", "")),
+            str(x[1].get("key_", "")),
+        )
+    )
+    return candidates[0][1]
+
+
+def _zabbix_get_host_map_by_ip(
+    device_ips: list[str],
+    *,
+    url_override: str | None = None,
+    token_override: str | None = None,
+    verify_ssl_override: bool | None = None,
+) -> dict[str, dict[str, str]]:
+    ips = sorted({str(ip or "").strip() for ip in device_ips if _looks_like_ip(str(ip or "").strip())})
+    if not ips:
+        return {}
+    interfaces = _zabbix_rpc(
+        "hostinterface.get",
+        {"output": ["hostid", "ip", "interfaceid"], "filter": {"ip": ips}},
+        url_override=url_override,
+        token_override=token_override,
+        verify_ssl_override=verify_ssl_override,
+    ) or []
+    ip_to_hostid: dict[str, str] = {}
+    for row in interfaces:
+        ip = str(row.get("ip", "")).strip()
+        hostid = str(row.get("hostid", "")).strip()
+        if ip and hostid and ip not in ip_to_hostid:
+            ip_to_hostid[ip] = hostid
+    if not ip_to_hostid:
+        return {}
+    hosts = _zabbix_rpc(
+        "host.get",
+        {"output": ["hostid", "host", "name"], "hostids": sorted(set(ip_to_hostid.values()))},
+        url_override=url_override,
+        token_override=token_override,
+        verify_ssl_override=verify_ssl_override,
+    ) or []
+    host_by_id = {
+        str(h.get("hostid", "")).strip(): {
+            "hostid": str(h.get("hostid", "")).strip(),
+            "host": str(h.get("host", "")).strip(),
+            "name": str(h.get("name", "")).strip(),
+        }
+        for h in hosts
+    }
+    return {
+        ip: host_by_id[hostid]
+        for ip, hostid in ip_to_hostid.items()
+        if hostid in host_by_id
+    }
+
+
+def _zabbix_get_items_for_interface(
+    hostid: str,
+    iface: str,
+    *,
+    url_override: str | None = None,
+    token_override: str | None = None,
+    verify_ssl_override: bool | None = None,
+) -> list[dict[str, Any]]:
+    iface_raw = str(iface or "").strip()
+    if not hostid or not iface_raw:
+        return []
+    return _zabbix_rpc(
+        "item.get",
+        {
+            "output": ["itemid", "name", "key_", "units", "value_type", "lastvalue"],
+            "hostids": [str(hostid)],
+            "search": {"name": iface_raw, "key_": iface_raw},
+            "searchByAny": True,
+            "sortfield": ["name"],
+            "limit": 100,
+        },
+        url_override=url_override,
+        token_override=token_override,
+        verify_ssl_override=verify_ssl_override,
+    ) or []
+
+
+def _zabbix_item_time_max(
+    item: dict[str, Any],
+    time_from: int,
+    time_till: int,
+    *,
+    url_override: str | None = None,
+    token_override: str | None = None,
+    verify_ssl_override: bool | None = None,
+) -> float | None:
+    itemid = str(item.get("itemid", "")).strip()
+    if not itemid:
+        return None
+    span = max(0, int(time_till) - int(time_from))
+    if span >= 7200:
+        rows = _zabbix_rpc(
+            "trend.get",
+            {
+                "output": ["value_max"],
+                "itemids": [itemid],
+                "time_from": int(time_from),
+                "time_till": int(time_till),
+                "sortfield": "clock",
+                "sortorder": "ASC",
+                "limit": 10000,
+            },
+            url_override=url_override,
+            token_override=token_override,
+            verify_ssl_override=verify_ssl_override,
+        ) or []
+        vals = [_parse_num(r.get("value_max")) for r in rows]
+        nums = [v for v in vals if v is not None]
+        if nums:
+            return max(nums) * _normalize_units_multiplier(str(item.get("units", "")), str(item.get("key_", "")))
+    history_type = int(_parse_num(item.get("value_type")) or 3)
+    rows = _zabbix_rpc(
+        "history.get",
+        {
+            "output": ["value", "clock"],
+            "history": history_type,
+            "itemids": [itemid],
+            "time_from": int(time_from),
+            "time_till": int(time_till),
+            "sortfield": "clock",
+            "sortorder": "ASC",
+            "limit": 100000,
+        },
+        url_override=url_override,
+        token_override=token_override,
+        verify_ssl_override=verify_ssl_override,
+    ) or []
+    vals = [_parse_num(r.get("value")) for r in rows]
+    nums = [v for v in vals if v is not None]
+    if not nums:
+        return None
+    return max(nums) * _normalize_units_multiplier(str(item.get("units", "")), str(item.get("key_", "")))
+
+
+def collect_zabbix_link_utilization(
+    targets: list[LinkUtilTarget],
+    metric: str,
+    *,
+    time_mode: str = "current",
+    time_from: int | None = None,
+    time_till: int | None = None,
+    zabbix_url: str | None = None,
+    zabbix_api_token: str | None = None,
+    zabbix_verify_ssl: bool | None = None,
+) -> dict[str, Any]:
+    metric_l = (metric or "max").strip().lower()
+    if metric_l not in {"tx", "rx", "max"}:
+        metric_l = "max"
+    mode = (time_mode or "current").strip().lower()
+    if mode not in {"current", "range_max"}:
+        mode = "current"
+    if mode == "range_max":
+        if not isinstance(time_from, int) or not isinstance(time_till, int):
+            raise RuntimeError("time_from and time_till are required for range_max mode")
+        if time_till <= time_from:
+            raise RuntimeError("time_till must be greater than time_from")
+    total_start = time.perf_counter()
+    cleaned_targets = [
+        t for t in (targets or [])
+        if _looks_like_ip(str(t.source_device or "").strip()) and str(t.source_interface or "").strip()
+    ]
+    device_ips = sorted({str(t.source_device).strip() for t in cleaned_targets})
+    host_map = _zabbix_get_host_map_by_ip(
+        device_ips,
+        url_override=zabbix_url,
+        token_override=zabbix_api_token,
+        verify_ssl_override=zabbix_verify_ssl,
+    )
+
+    results: list[dict[str, Any]] = []
+    queried_devices: list[str] = []
+    for target in cleaned_targets:
+        src_ip = str(target.source_device or "").strip()
+        iface = str(target.source_interface or "").strip()
+        util_key = str(target.util_key or "").strip()
+        host = host_map.get(src_ip)
+        if not host:
+            results.append(
+                {
+                    "util_key": util_key,
+                    "data_source": "zabbix",
+                    "source_device": src_ip,
+                    "source_interface": iface,
+                    "vendor": "zabbix",
+                    "status": "failed",
+                    "tx_pct": None,
+                    "rx_pct": None,
+                    "used_pct": None,
+                    "tx_bps": None,
+                    "rx_bps": None,
+                    "bw_bps": None,
+                    "error": "host not found by device IP in Zabbix",
+                }
+            )
+            continue
+        queried_devices.append(src_ip)
+        items = _zabbix_get_items_for_interface(
+            host["hostid"],
+            iface,
+            url_override=zabbix_url,
+            token_override=zabbix_api_token,
+            verify_ssl_override=zabbix_verify_ssl,
+        )
+        tx_item = _pick_best_zabbix_item(items, iface, "tx")
+        rx_item = _pick_best_zabbix_item(items, iface, "rx")
+        speed_item = _pick_best_zabbix_item(items, iface, "speed")
+        tx_bps = (
+            _zabbix_item_last_bps(tx_item)
+            if mode == "current"
+            else _zabbix_item_time_max(
+                tx_item,
+                int(time_from),
+                int(time_till),
+                url_override=zabbix_url,
+                token_override=zabbix_api_token,
+                verify_ssl_override=zabbix_verify_ssl,
+            )
+        ) if tx_item else None
+        rx_bps = (
+            _zabbix_item_last_bps(rx_item)
+            if mode == "current"
+            else _zabbix_item_time_max(
+                rx_item,
+                int(time_from),
+                int(time_till),
+                url_override=zabbix_url,
+                token_override=zabbix_api_token,
+                verify_ssl_override=zabbix_verify_ssl,
+            )
+        ) if rx_item else None
+        bw_bps = _zabbix_item_last_bps(speed_item) if speed_item else None
+        tx_pct = (tx_bps / bw_bps * 100.0) if (tx_bps is not None and bw_bps and bw_bps > 0) else None
+        rx_pct = (rx_bps / bw_bps * 100.0) if (rx_bps is not None and bw_bps and bw_bps > 0) else None
+        if metric_l == "tx":
+            used_pct = tx_pct
+        elif metric_l == "rx":
+            used_pct = rx_pct
+        else:
+            vals = [v for v in [tx_pct, rx_pct] if isinstance(v, (int, float))]
+            used_pct = max(vals) if vals else None
+        err_parts = []
+        if not tx_item:
+            err_parts.append("tx item not found")
+        if not rx_item:
+            err_parts.append("rx item not found")
+        if not speed_item:
+            err_parts.append("speed item not found")
+        status = "ok" if (isinstance(used_pct, (int, float)) or isinstance(tx_pct, (int, float)) or isinstance(rx_pct, (int, float))) else "no_data"
+        results.append(
+            {
+                "util_key": util_key,
+                "data_source": "zabbix",
+                "time_mode": mode,
+                "time_from": int(time_from) if mode == "range_max" and time_from is not None else "",
+                "time_till": int(time_till) if mode == "range_max" and time_till is not None else "",
+                "source_device": src_ip,
+                "source_interface": iface,
+                "vendor": "zabbix",
+                "status": status,
+                "tx_pct": tx_pct,
+                "rx_pct": rx_pct,
+                "used_pct": used_pct,
+                "tx_bps": tx_bps,
+                "rx_bps": rx_bps,
+                "bw_bps": bw_bps,
+                "error": "; ".join(err_parts) if status != "ok" else "",
+                "zabbix_host": host.get("host") or host.get("name") or "",
+            }
+        )
+    return {
+        "results": results,
+        "queried_devices": sorted(set(queried_devices)),
+        "total_elapsed_seconds": max(0.0, time.perf_counter() - total_start),
+        "time_mode": mode,
+        "time_from": int(time_from) if mode == "range_max" and time_from is not None else None,
+        "time_till": int(time_till) if mode == "range_max" and time_till is not None else None,
+    }
+
+
 def read_link_util_cache_rows() -> list[dict[str, Any]]:
     if not LINK_UTIL_CACHE_FILE.exists():
         return []
@@ -1788,6 +2263,10 @@ def read_link_util_cache_rows() -> list[dict[str, Any]]:
                 rows.append(
                     {
                         "util_key": util_key,
+                        "data_source": str(r.get("data_source", "")).strip() or "cli",
+                        "time_mode": str(r.get("time_mode", "")).strip() or "current",
+                        "time_from": str(r.get("time_from", "")).strip(),
+                        "time_till": str(r.get("time_till", "")).strip(),
                         "source_device": str(r.get("source_device", "")).strip(),
                         "source_interface": str(r.get("source_interface", "")).strip(),
                         "vendor": str(r.get("vendor", "")).strip(),
@@ -1826,6 +2305,10 @@ def merge_link_util_cache(results: list[dict[str, Any]]) -> int:
             continue
         by_key[util_key] = {
             "util_key": util_key,
+            "data_source": str(r.get("data_source", "")).strip() or "cli",
+            "time_mode": str(r.get("time_mode", "")).strip() or "current",
+            "time_from": str(r.get("time_from", "")).strip(),
+            "time_till": str(r.get("time_till", "")).strip(),
             "source_device": str(r.get("source_device", "")).strip(),
             "source_interface": str(r.get("source_interface", "")).strip(),
             "vendor": str(r.get("vendor", "")).strip(),
@@ -1850,6 +2333,10 @@ def merge_link_util_cache(results: list[dict[str, Any]]) -> int:
                 writer.writerow(
                     {
                         "util_key": row.get("util_key", ""),
+                        "data_source": row.get("data_source", ""),
+                        "time_mode": row.get("time_mode", ""),
+                        "time_from": row.get("time_from", ""),
+                        "time_till": row.get("time_till", ""),
                         "source_device": row.get("source_device", ""),
                         "source_interface": row.get("source_interface", ""),
                         "vendor": row.get("vendor", ""),
@@ -2077,6 +2564,7 @@ def collect_device_interface_utils_once(
             for ref in refs:
                 results.append(
                     {
+                        "data_source": "cli",
                         "source_device": source,
                         "source_interface": ifname,
                         "util_key": ref.util_key or "",
@@ -2102,6 +2590,7 @@ def collect_device_interface_utils_once(
             for ref in refs:
                 results.append(
                     {
+                        "data_source": "cli",
                         "source_device": source,
                         "source_interface": ifname,
                         "util_key": ref.util_key or "",
@@ -2933,6 +3422,47 @@ def query_link_utilization(payload: LinkUtilRequest) -> dict[str, Any]:
         "cache_total": cache_total,
         "debug_file": debug_file,
         "debug_download_url": debug_download_url,
+    }
+
+
+@app.post("/api/zabbix/link-utilization")
+def query_zabbix_link_utilization(payload: ZabbixLinkUtilRequest) -> dict[str, Any]:
+    if not payload.targets:
+        raise HTTPException(status_code=400, detail="targets is required")
+    metric = (payload.metric or "max").strip().lower()
+    if metric not in {"tx", "rx", "max"}:
+        metric = "max"
+    time_mode = (payload.time_mode or "current").strip().lower()
+    if time_mode not in {"current", "range_max"}:
+        time_mode = "current"
+    try:
+        meta = collect_zabbix_link_utilization(
+            payload.targets,
+            metric=metric,
+            time_mode=time_mode,
+            time_from=payload.time_from,
+            time_till=payload.time_till,
+            zabbix_url=payload.zabbix_url,
+            zabbix_api_token=payload.zabbix_api_token,
+            zabbix_verify_ssl=payload.zabbix_verify_ssl,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Zabbix link utilization failed: {exc}") from exc
+    cache_updates = merge_link_util_cache(meta.get("results", [])) if time_mode == "current" else 0
+    cache_total = len(read_link_util_cache_rows())
+    return {
+        "ok": True,
+        "mode": "zabbix-link-utilization",
+        "metric": metric,
+        "time_mode": time_mode,
+        "time_from": meta.get("time_from"),
+        "time_till": meta.get("time_till"),
+        "result_count": len(meta.get("results", [])),
+        "results": meta.get("results", []),
+        "queried_devices": meta.get("queried_devices", []),
+        "total_elapsed_seconds": meta.get("total_elapsed_seconds"),
+        "cache_updates": cache_updates,
+        "cache_total": cache_total,
     }
 
 

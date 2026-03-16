@@ -167,6 +167,54 @@
       text-align: center;
       background: #fff;
     }
+    .zbx-time-wrap {
+      display: grid;
+      grid-template-columns: minmax(220px, 260px) 1fr;
+      gap: 14px;
+      align-items: start;
+    }
+    .zbx-time-left {
+      display: grid;
+      gap: 8px;
+    }
+    .zbx-time-row {
+      display: grid;
+      grid-template-columns: 42px 1fr;
+      gap: 8px;
+      align-items: center;
+    }
+    .zbx-time-presets {
+      border-left: 1px solid #e5e7eb;
+      padding-left: 14px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px 10px;
+    }
+    .zbx-time-presets button {
+      text-align: left;
+      padding: 6px 0;
+      border: none;
+      background: transparent;
+      color: #2563eb;
+      border-radius: 0;
+    }
+    .zbx-time-presets button:hover {
+      filter: none;
+      transform: none;
+      text-decoration: underline;
+    }
+    @media (max-width: 740px) {
+      .zbx-time-wrap {
+        grid-template-columns: 1fr;
+      }
+      .zbx-time-presets {
+        border-left: none;
+        padding-left: 0;
+        border-top: 1px solid #e5e7eb;
+        padding-top: 12px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
     .modal-form-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -379,7 +427,7 @@
           <button id="keepSelected">仅保留选中</button>
         </div>
         <div class="row inline">
-          <button id="keepAdjacentOnly">删除非邻接</button>
+          <button id="keepAdjacentOnly">仅保留邻接</button>
           <button id="restoreDeleted">恢复删除设备</button>
         </div>
         <div class="row inline">
@@ -412,6 +460,9 @@
         </div>
         <div>
           <button id="refreshUtilizationZbx" type="button">Zabbix链路利用率</button>
+        </div>
+        <div>
+          <button id="openZbxConfig" type="button">Zabbix配置</button>
         </div>
         <div>
           <button id="downloadUtilCache" type="button">下载链路缓存CSV</button>
@@ -567,6 +618,75 @@
     </div>
   </div>
 </div>
+<div id="zbxConfigModal" class="modal-backdrop">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="zbxConfigTitle">
+    <div class="modal-title" id="zbxConfigTitle">Zabbix 配置</div>
+    <div class="modal-form-grid">
+      <div class="field span-2">
+        <label>Zabbix URL</label>
+        <input id="zbxServerUrl" type="text" placeholder="例如：https://zbxdevice.nsoctools.insea.io/zabbix" />
+      </div>
+      <div class="field span-2">
+        <label>Zabbix API Token</label>
+        <input id="zbxApiToken" type="password" placeholder="请输入 API Token" />
+      </div>
+      <div class="field span-2">
+        <label><input id="zbxVerifySsl" type="checkbox" style="width:auto; margin-right:8px;" />严格校验 SSL 证书</label>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button id="saveZbxConfig" class="primary">保存配置</button>
+      <button id="closeZbxConfigModal">关闭</button>
+    </div>
+  </div>
+</div>
+<div id="zbxUtilModal" class="modal-backdrop">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="zbxUtilTitle">
+    <div class="modal-title" id="zbxUtilTitle">Zabbix 链路利用率</div>
+    <div class="modal-form-grid">
+      <div class="field span-2">
+        <label>查询模式</label>
+        <select id="zbxTimeMode">
+          <option value="current" selected>当前值</option>
+          <option value="range_max">时间段最大值</option>
+        </select>
+      </div>
+      <div class="field span-2" id="zbxRangeField" style="display:none;">
+        <div class="zbx-time-wrap">
+          <div class="zbx-time-left">
+            <div class="zbx-time-row">
+              <label for="zbxTimeFromExpr">From</label>
+              <input id="zbxTimeFromExpr" type="text" value="now-1h" placeholder="例如 now-1h" />
+            </div>
+            <div class="zbx-time-row">
+              <label for="zbxTimeTillExpr">To</label>
+              <input id="zbxTimeTillExpr" type="text" value="now" placeholder="例如 now" />
+            </div>
+          </div>
+          <div class="zbx-time-presets">
+            <button type="button" data-zbx-range="now-5m|now">Last 5 minutes</button>
+            <button type="button" data-zbx-range="now-15m|now">Last 15 minutes</button>
+            <button type="button" data-zbx-range="now-30m|now">Last 30 minutes</button>
+            <button type="button" data-zbx-range="now-1h|now">Last 1 hour</button>
+            <button type="button" data-zbx-range="now-3h|now">Last 3 hours</button>
+            <button type="button" data-zbx-range="now-6h|now">Last 6 hours</button>
+            <button type="button" data-zbx-range="now-12h|now">Last 12 hours</button>
+            <button type="button" data-zbx-range="now-1d|now">Last 1 day</button>
+            <button type="button" data-zbx-range="now-7d|now">Last 7 days</button>
+            <button type="button" data-zbx-range="now-30d|now">Last 30 days</button>
+            <button type="button" data-zbx-range="now-3M|now">Last 3 months</button>
+            <button type="button" data-zbx-range="now-1y|now">Last 1 year</button>
+          </div>
+        </div>
+        <div class="hint">支持 `now`、`now-1h`、`now-7d`、`now-3M`、`now-1y` 这类表达式。</div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button id="runZbxUtilQuery" class="primary">执行查询</button>
+      <button id="closeZbxUtilModal">关闭</button>
+    </div>
+  </div>
+</div>
 
 <script>
   let sourceRows = [];
@@ -677,7 +797,7 @@
       btn_show172: '只显示172设备',
       btn_delete_selected: '删除选中',
       btn_delete_unselected: '仅保留选中',
-      btn_delete_non_adjacent: '删除非邻接',
+      btn_delete_non_adjacent: '仅保留邻接',
       btn_restore_deleted: '恢复删除设备',
       btn_save_state: '保存状态',
       btn_import_state: '导入状态',
@@ -686,6 +806,7 @@
       btn_import_session: '导入会话',
       btn_cli_util: 'CLI 链路利用率',
       btn_zbx_util: 'Zabbix链路利用率',
+      btn_zbx_config: 'Zabbix配置',
       btn_dl_cache: '下载链路缓存CSV',
       btn_dl_util_debug: '下载利用率调试日志',
       btn_run_sql: '执行 SQL 查询',
@@ -699,6 +820,8 @@
       ctx_util: '链路利用率',
       state_modal_title: '导入状态',
       state_modal_hint: '服务器会保留最近 15 个状态。',
+      zbx_config_title: 'Zabbix 配置',
+      zbx_config_save: '保存配置',
       state_refresh: '刷新列表',
       state_close: '关闭',
       state_empty: '服务器上还没有已保存状态。',
@@ -761,7 +884,7 @@
       btn_show172: 'Show 172.* Only',
       btn_delete_selected: 'Delete Selected',
       btn_delete_unselected: 'Keep Selected Only',
-      btn_delete_non_adjacent: 'Delete Non-Adjacent',
+      btn_delete_non_adjacent: 'Keep Adjacent Only',
       btn_restore_deleted: 'Restore Deleted Nodes',
       btn_save_state: 'Save State',
       btn_import_state: 'Load State',
@@ -770,6 +893,7 @@
       btn_import_session: 'Import Session',
       btn_cli_util: 'CLI Link Utilization',
       btn_zbx_util: 'Zabbix Link Utilization',
+      btn_zbx_config: 'Zabbix Config',
       btn_dl_cache: 'Download Link Cache CSV',
       btn_dl_util_debug: 'Download Util Debug Log',
       btn_run_sql: 'Run SQL Query',
@@ -783,6 +907,8 @@
       ctx_util: 'Link Utilization',
       state_modal_title: 'Load State',
       state_modal_hint: 'The server keeps the latest 15 saved states.',
+      zbx_config_title: 'Zabbix Config',
+      zbx_config_save: 'Save Config',
       state_refresh: 'Refresh',
       state_close: 'Close',
       state_empty: 'No saved state on the server.',
@@ -889,6 +1015,7 @@
     setText('importSessionBtn', 'btn_import_session');
     setText('refreshUtilization', 'btn_cli_util');
     setText('refreshUtilizationZbx', 'btn_zbx_util');
+    setText('openZbxConfig', 'btn_zbx_config');
     setText('downloadUtilCache', 'btn_dl_cache');
     setText('downloadUtilDebug', 'btn_dl_util_debug');
     setText('runSqlGenerateModal', 'btn_run_sql');
@@ -906,8 +1033,11 @@
     setText('ctxRenameGroup', 'ctx_rename_group');
     setText('stateModalTitle', 'state_modal_title');
     setText('stateModalHint', 'state_modal_hint');
+    setText('zbxConfigTitle', 'zbx_config_title');
+    setText('saveZbxConfig', 'zbx_config_save');
     setText('refreshStateList', 'state_refresh');
     setText('closeStateModal', 'state_close');
+    setText('closeZbxConfigModal', 'state_close');
 
     setOptionText('importMode', 'sql', 'import_mode_sql');
     setOptionText('importMode', 'cli', 'import_mode_cli');
@@ -1232,6 +1362,79 @@
     const ident = inferUtilIdentity(deviceNameOrIp, ipHint);
     const nif = normalizeUtilInterface(iface);
     return ident && nif ? `${ident}||${nif}` : '';
+  }
+
+  function splitUtilKey(utilKey) {
+    const raw = String(utilKey || '').trim();
+    if (!raw) return null;
+    const idx = raw.indexOf('||');
+    if (idx <= 0) return null;
+    const ident = raw.slice(0, idx).trim();
+    const iface = normalizeUtilInterface(raw.slice(idx + 2));
+    if (!ident || !iface) return null;
+    return { ident, iface };
+  }
+
+  function resolveQueryDeviceForUtilIdent(ident) {
+    const raw = String(ident || '').trim();
+    if (!raw) return '';
+    if (raw.startsWith('ip:')) {
+      const ip = raw.slice(3).trim();
+      return isIpv4(ip) ? ip : '';
+    }
+    if (!raw.startsWith('name:')) return '';
+    const nameLower = raw.slice(5).trim().toLowerCase();
+    if (!nameLower) return '';
+    const shortLower = stripAfterDot(nameLower).toLowerCase();
+    const mapHit = deviceNameToIpMap.get(nameLower)
+      || deviceNameToIpMap.get(shortLower)
+      || nodeIpMap.get(nameLower)
+      || nodeIpMap.get(shortLower);
+    if (isIpv4(mapHit)) return mapHit;
+    if (cy) {
+      let hit = '';
+      cy.nodes().some((n) => {
+        const label = String(n.data('label') || '').trim();
+        const short = stripAfterDot(label);
+        const ip = String(n.data('ip') || '').trim();
+        const l1 = label.toLowerCase();
+        const l2 = String(short || '').toLowerCase();
+        if (l1 === nameLower || l2 === nameLower || l1 === shortLower || l2 === shortLower) {
+          if (isIpv4(ip)) {
+            hit = ip;
+            return true;
+          }
+        }
+        return false;
+      });
+      if (isIpv4(hit)) return hit;
+    }
+    return '';
+  }
+
+  function utilTargetFromKey(utilKey) {
+    const parsed = splitUtilKey(utilKey);
+    if (!parsed) return null;
+    const queryDevice = resolveQueryDeviceForUtilIdent(parsed.ident);
+    if (!queryDevice) return null;
+    return {
+      source_device: queryDevice,
+      source_interface: parsed.iface,
+      util_key: String(utilKey || '').trim(),
+      dedupe_key: String(utilKey || '').trim().toLowerCase()
+    };
+  }
+
+  function resolveUtilSourceColumns() {
+    const pick = (selId, candidates) => {
+      const selected = String($(selId)?.value || '').trim();
+      if (selected && headers.includes(selected)) return selected;
+      return autoPickColumn(candidates);
+    };
+    return {
+      colLH: pick('colLocalHost', ['localhostname', 'local_host', 'src', 'from', '源设备名称']),
+      colLI: pick('colLocalIf', ['localinterface', 'local_if', 'src_if', 'from_if', '源设备端口'])
+    };
   }
 
   function buildCanonicalEdgeRowKey(aId, bId, li, ri) {
@@ -2903,7 +3106,7 @@
     cy.elements().removeClass('sel-hidden dim hit');
     const sel = cy.nodes(':selected');
     if (!sel.length) {
-      setOK('未选中节点，无法删除非邻接。');
+      setOK('未选中节点，无法执行仅保留邻接。');
       return;
     }
     const neigh = sel.closedNeighborhood();
@@ -2917,7 +3120,7 @@
     removeNodes.remove();
     updateCounts();
     sel.addClass('hit');
-    setOK(`已删除非邻接节点：${removeNodes.length} 个（可恢复）。`);
+    setOK(`已仅保留邻接，隐藏其余 ${removeNodes.length} 个节点（可恢复）。`);
   }
 
   function clearSelectionHide() {
@@ -3382,7 +3585,16 @@
       source_rows: sourceRows.slice(),
       working_rows: rawRows.slice(),
       positions: capturePositions(),
+      deleted_stack: deletedStack.map((x) => (Array.isArray(x) ? x.slice() : [])),
+      view_state: {
+        filterTerms: Array.isArray(viewState.filterTerms) ? viewState.filterTerms.slice() : [],
+        onlyMode: viewState.onlyMode || 'none',
+        onlyTerms: Array.isArray(viewState.onlyTerms) ? viewState.onlyTerms.slice() : [],
+      },
       ui: {
+        filter: $('filter')?.value || '',
+        showOnly: $('showOnly')?.value || '',
+        layerTerms: $('layerTerms')?.value || '',
         stripDomain: $('stripDomain')?.value || 'yes',
         layoutMode: $('layoutMode')?.value || 'layer',
         nodeLabelMode: $('nodeLabelMode')?.value || 'full',
@@ -3416,10 +3628,16 @@
     headers = hs.slice();
     sourceRows = (srcRows.length ? srcRows : rs).slice();
     rawRows = rs.slice();
-    clearDeleteState();
-    resetViewState();
+    deletedStack = (snapshot?.deleted_stack || []).map((x) => (Array.isArray(x) ? x.slice() : []));
+    rebuildDeletedNodeIdsFromStack();
+    viewState.filterTerms = (snapshot?.view_state?.filterTerms || []).slice();
+    viewState.onlyMode = snapshot?.view_state?.onlyMode || 'none';
+    viewState.onlyTerms = (snapshot?.view_state?.onlyTerms || []).slice();
 
     const ui = snapshot?.ui || {};
+    if ($('filter') && ui.filter != null) $('filter').value = String(ui.filter);
+    if ($('showOnly') && ui.showOnly != null) $('showOnly').value = String(ui.showOnly);
+    if ($('layerTerms') && ui.layerTerms != null) $('layerTerms').value = String(ui.layerTerms);
     if ($('stripDomain') && ui.stripDomain) $('stripDomain').value = String(ui.stripDomain);
     if ($('layoutMode') && ui.layoutMode) $('layoutMode').value = String(ui.layoutMode);
     if ($('nodeLabelMode') && ui.nodeLabelMode) $('nodeLabelMode').value = String(ui.nodeLabelMode);
@@ -3509,6 +3727,84 @@
     await refreshServerStateList();
   }
 
+  function refreshZbxRangeFields() {
+    const mode = ($('zbxTimeMode')?.value || 'current').trim();
+    const showRange = mode === 'range_max';
+    $('zbxRangeField').style.display = showRange ? '' : 'none';
+    if (showRange) {
+      if (!$('zbxTimeFromExpr').value) $('zbxTimeFromExpr').value = 'now-1h';
+      if (!$('zbxTimeTillExpr').value) $('zbxTimeTillExpr').value = 'now';
+    }
+  }
+
+  function openZbxUtilModal() {
+    loadZbxPrefs();
+    $('zbxTimeMode').value = 'current';
+    $('zbxTimeFromExpr').value = 'now-1h';
+    $('zbxTimeTillExpr').value = 'now';
+    refreshZbxRangeFields();
+    $('zbxUtilModal').style.display = 'flex';
+  }
+
+  function closeZbxUtilModal() {
+    $('zbxUtilModal').style.display = 'none';
+  }
+
+  function openZbxConfigModal() {
+    loadZbxPrefs();
+    $('zbxConfigModal').style.display = 'flex';
+  }
+
+  function closeZbxConfigModal() {
+    $('zbxConfigModal').style.display = 'none';
+  }
+
+  function parseZbxTimeExpr(raw) {
+    const text = String(raw || '').trim();
+    if (!text) throw new Error('时间表达式不能为空');
+    const nowMs = Date.now();
+    if (text.toLowerCase() === 'now') return Math.floor(nowMs / 1000);
+    const m = text.match(/^now\s*([+-])\s*(\d+)\s*([mhdwMy])$/);
+    if (m) {
+      const sign = m[1] === '-' ? -1 : 1;
+      const amount = Number(m[2]);
+      const unit = m[3];
+      if (!Number.isFinite(amount) || amount < 0) throw new Error(`无效时间表达式：${text}`);
+      const base = new Date(nowMs);
+      if (unit === 'm') base.setMinutes(base.getMinutes() + sign * amount);
+      else if (unit === 'h') base.setHours(base.getHours() + sign * amount);
+      else if (unit === 'd') base.setDate(base.getDate() + sign * amount);
+      else if (unit === 'w') base.setDate(base.getDate() + sign * amount * 7);
+      else if (unit === 'M') base.setMonth(base.getMonth() + sign * amount);
+      else if (unit === 'y') base.setFullYear(base.getFullYear() + sign * amount);
+      else throw new Error(`不支持的时间单位：${unit}`);
+      return Math.floor(base.getTime() / 1000);
+    }
+    const parsed = Date.parse(text);
+    if (Number.isFinite(parsed)) return Math.floor(parsed / 1000);
+    throw new Error(`无法识别时间表达式：${text}`);
+  }
+
+  function readZbxTimeSelection() {
+    const mode = ($('zbxTimeMode')?.value || 'current').trim();
+    if (mode !== 'range_max') {
+      return { time_mode: 'current', time_from: null, time_till: null, hint: '当前值' };
+    }
+    const fromExpr = $('zbxTimeFromExpr').value;
+    const tillExpr = $('zbxTimeTillExpr').value;
+    const time_from = parseZbxTimeExpr(fromExpr);
+    const time_till = parseZbxTimeExpr(tillExpr);
+    if (time_till <= time_from) {
+      throw new Error('结束时间必须大于开始时间');
+    }
+    return {
+      time_mode: 'range_max',
+      time_from,
+      time_till,
+      hint: `时间段最大值（${fromExpr} ~ ${tillExpr}）`
+    };
+  }
+
   async function saveServerStateSnapshot() {
     if (!headers.length || !rawRows.length) {
       throw new Error('当前没有可保存的拓扑状态');
@@ -3574,6 +3870,7 @@
   let importInputAction = 'import'; // import | append
   const CLI_PREF_KEY = 'lldp_cli_import_prefs_v1';
   const TOPOLOGY_UI_PREF_KEY = 'lldp_topology_ui_prefs_v1';
+  const ZBX_PREF_KEY = 'lldp_zabbix_prefs_v1';
   function apiBaseUrl() {
     // If opened as file://, use local service endpoint explicitly.
     if (window.location.protocol === 'file:') return 'http://127.0.0.1:18080';
@@ -3748,6 +4045,10 @@
         if (!key) return;
         map.set(key, {
           ...r,
+          data_source: String(r?.data_source || '').trim().toLowerCase(),
+          time_mode: String(r?.time_mode || '').trim().toLowerCase() || 'current',
+          time_from: r?.time_from ?? '',
+          time_till: r?.time_till ?? '',
           tx_pct: (typeof r.tx_pct === 'number') ? r.tx_pct : (r.tx_pct === null || r.tx_pct === '' ? null : Number(r.tx_pct)),
           rx_pct: (typeof r.rx_pct === 'number') ? r.rx_pct : (r.rx_pct === null || r.rx_pct === '' ? null : Number(r.rx_pct)),
           used_pct: (typeof r.used_pct === 'number') ? r.used_pct : (r.used_pct === null || r.used_pct === '' ? null : Number(r.used_pct)),
@@ -3777,6 +4078,31 @@
       if (p.smc_command) $('cliSmcCommandModal').value = p.smc_command;
       if (p.cli_connect_timeout) $('cliConnectTimeoutModal').value = String(p.cli_connect_timeout);
       if (p.cli_command_timeout) $('cliCommandTimeoutModal').value = String(p.cli_command_timeout);
+    } catch (_) {
+      // Ignore local storage errors.
+    }
+  }
+
+  function loadZbxPrefs() {
+    try {
+      const raw = localStorage.getItem(ZBX_PREF_KEY);
+      if (!raw) return;
+      const p = JSON.parse(raw);
+      if (typeof p.url === 'string') $('zbxServerUrl').value = p.url;
+      if (typeof p.token === 'string') $('zbxApiToken').value = p.token;
+      if (typeof p.verify_ssl === 'boolean') $('zbxVerifySsl').checked = p.verify_ssl;
+    } catch (_) {
+      // Ignore local storage errors.
+    }
+  }
+
+  function saveZbxPrefs() {
+    try {
+      localStorage.setItem(ZBX_PREF_KEY, JSON.stringify({
+        url: ($('zbxServerUrl')?.value || '').trim(),
+        token: ($('zbxApiToken')?.value || '').trim(),
+        verify_ssl: !!$('zbxVerifySsl')?.checked
+      }));
     } catch (_) {
       // Ignore local storage errors.
     }
@@ -3930,8 +4256,7 @@
     const scopeNodes = (opts && opts.scopeNodes && typeof opts.scopeNodes.connectedEdges === 'function')
       ? opts.scopeNodes
       : null;
-    const colLH = $('colLocalHost').value;
-    const colLI = $('colLocalIf').value;
+    const { colLH, colLI } = resolveUtilSourceColumns();
     const allByUtilKey = new Map();
     for (const r of rawRows) {
       const srcRaw = String(r[colLH] || '').trim();
@@ -3976,6 +4301,13 @@
         if (single) neededUtilKeys.add(String(single).toLowerCase());
       });
     }
+
+    neededUtilKeys.forEach((k) => {
+      if (allByUtilKey.has(k)) return;
+      const item = utilTargetFromKey(k);
+      if (!item) return;
+      allByUtilKey.set(k, item);
+    });
 
     const out = [];
     const seenDedupe = new Set();
@@ -4034,10 +4366,20 @@
     return buildUtilTargetsFromRows({ matchSource, scopeNodes: nodes });
   }
 
-  function hasSuccessfulUtilCache(utilKey) {
+  function hasSuccessfulUtilCache(utilKey, source = '', meta = null) {
     const k = String(utilKey || '').toLowerCase();
     if (!k) return false;
     const hit = utilByKey.get(k);
+    const src = String(source || '').trim().toLowerCase();
+    if (src && String(hit?.data_source || '').trim().toLowerCase() !== src) return false;
+    if (meta && typeof meta === 'object') {
+      const timeMode = String(meta.time_mode || '').trim().toLowerCase();
+      if (timeMode && String(hit?.time_mode || '').trim().toLowerCase() !== timeMode) return false;
+      if (timeMode === 'range_max') {
+        if (String(hit?.time_from ?? '') !== String(meta.time_from ?? '')) return false;
+        if (String(hit?.time_till ?? '') !== String(meta.time_till ?? '')) return false;
+      }
+    }
     return !!(hit && hit.status === 'ok' && typeof hit.used_pct === 'number');
   }
 
@@ -4056,7 +4398,9 @@
       setErr(emptyMsg);
       return;
     }
-    const targets = allTargets.filter(t => !hasSuccessfulUtilCache(t.util_key));
+    const cacheSource = String(opts.cacheSource || '').trim().toLowerCase();
+    const cacheMeta = opts.cacheMeta && typeof opts.cacheMeta === 'object' ? opts.cacheMeta : null;
+    const targets = allTargets.filter(t => !hasSuccessfulUtilCache(t.util_key, cacheSource, cacheMeta));
     const skippedCached = allTargets.length - targets.length;
     if (!targets.length) {
       applyUtilizationToEdges();
@@ -4146,6 +4490,8 @@
       for (const r of (data.results || [])) {
         const key = String(r.util_key || `${r.source_device || ''}||${r.source_interface || ''}`).toLowerCase();
         if (!key) continue;
+        r.data_source = String(r.data_source || 'cli').trim().toLowerCase();
+        r.time_mode = String(r.time_mode || 'current').trim().toLowerCase();
         utilByKey.set(key, r);
       }
       applyUtilizationToEdges();
@@ -4381,6 +4727,7 @@
     if (e.target && e.target.id === 'importModal') closeImportModal();
   });
   loadCliPrefs();
+  loadZbxPrefs();
   loadTopologyUiPrefs();
   refreshKeywordHistories();
   loadUtilCacheFromServer();
@@ -4540,8 +4887,143 @@
   });
 
   $('refreshUtilization').addEventListener('click', refreshLinkUtilization);
+  $('openZbxConfig').addEventListener('click', () => {
+    openZbxConfigModal();
+  });
   $('refreshUtilizationZbx').addEventListener('click', () => {
-    setOK('Zabbix 链路利用率：预留功能，待对接数据源。');
+    openZbxUtilModal();
+  });
+  $('saveZbxConfig').addEventListener('click', () => {
+    const zabbixUrl = ($('zbxServerUrl')?.value || '').trim();
+    const zabbixApiToken = ($('zbxApiToken')?.value || '').trim();
+    if (!zabbixUrl) {
+      setErr('请先填写 Zabbix URL');
+      return;
+    }
+    if (!zabbixApiToken) {
+      setErr('请先填写 Zabbix API Token');
+      return;
+    }
+    saveZbxPrefs();
+    closeZbxConfigModal();
+    setOK('Zabbix 配置已保存');
+    setErr('');
+  });
+  $('closeZbxConfigModal').addEventListener('click', closeZbxConfigModal);
+  $('zbxConfigModal').addEventListener('click', (e) => {
+    if (e.target === $('zbxConfigModal')) closeZbxConfigModal();
+  });
+  $('zbxTimeMode').addEventListener('change', refreshZbxRangeFields);
+  $('closeZbxUtilModal').addEventListener('click', closeZbxUtilModal);
+  $('zbxUtilModal').addEventListener('click', (e) => {
+    if (e.target === $('zbxUtilModal')) closeZbxUtilModal();
+  });
+  $('zbxRangeField').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-zbx-range]');
+    if (!btn) return;
+    const raw = btn.getAttribute('data-zbx-range') || '';
+    const parts = raw.split('|');
+    $('zbxTimeFromExpr').value = parts[0] || 'now-1h';
+    $('zbxTimeTillExpr').value = parts[1] || 'now';
+  });
+  $('runZbxUtilQuery').addEventListener('click', async () => {
+    if (!cy || !rawRows.length) {
+      setErr('请先生成拓扑，再刷新链路利用率');
+      return;
+    }
+    let timeSel = null;
+    try {
+      timeSel = readZbxTimeSelection();
+    } catch (err) {
+      setErr(`Zabbix 时间范围无效：${String(err && err.message ? err.message : err)}`);
+      return;
+    }
+    const allTargets = buildUtilTargetsFromRows();
+    if (!allTargets.length) {
+      setErr('未找到可查询的 source 设备端口');
+      return;
+    }
+    const useCache = timeSel.time_mode === 'current';
+    const targets = useCache
+      ? allTargets.filter(t => !hasSuccessfulUtilCache(t.util_key, 'zabbix', { time_mode: 'current' }))
+      : allTargets.slice();
+    const skippedCached = allTargets.length - targets.length;
+    if (!targets.length) {
+      applyUtilizationToEdges();
+      $('utilResultHint').textContent = `无需刷新：当前可见链路端口 ${allTargets.length} 个，已缓存 Zabbix 成功 ${skippedCached} 个。`;
+      setOK('Zabbix 链路利用率已是最新缓存结果');
+      closeZbxUtilModal();
+      return;
+    }
+    const btn = $('refreshUtilizationZbx');
+    const old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '查询中...';
+    setErr('');
+    $('utilResultHint').textContent = timeSel.time_mode === 'current'
+      ? `正在通过 Zabbix 增量查询 ${targets.length} 个 source 端口（跳过已缓存 ${skippedCached} 个）...`
+      : `正在通过 Zabbix 查询 ${targets.length} 个 source 端口的时间段最大值...`;
+    const metric = (($('utilMetric')?.value || 'max').trim().toLowerCase());
+    const zabbixUrl = ($('zbxServerUrl')?.value || '').trim();
+    const zabbixApiToken = ($('zbxApiToken')?.value || '').trim();
+    const zabbixVerifySsl = !!$('zbxVerifySsl')?.checked;
+    if (!zabbixUrl) {
+      setErr('请先填写 Zabbix URL');
+      return;
+    }
+    if (!zabbixApiToken) {
+      setErr('请先填写 Zabbix API Token');
+      return;
+    }
+    saveZbxPrefs();
+    const base = apiBaseUrl();
+    try {
+      const resp = await fetch(`${base}/api/zabbix/link-utilization`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targets,
+          metric,
+          ...timeSel,
+          zabbix_url: zabbixUrl || null,
+          zabbix_api_token: zabbixApiToken || null,
+          zabbix_verify_ssl: zabbixVerifySsl
+        })
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data?.ok) throw new Error(data?.detail || `HTTP ${resp.status}`);
+      for (const r of (data.results || [])) {
+        const key = String(r.util_key || `${r.source_device || ''}||${r.source_interface || ''}`).toLowerCase();
+        if (!key) continue;
+        r.data_source = 'zabbix';
+        r.time_mode = String(r.time_mode || timeSel.time_mode || 'current').trim().toLowerCase();
+        utilByKey.set(key, r);
+      }
+      applyUtilizationToEdges();
+      const results = Array.isArray(data.results) ? data.results : [];
+      const okCount = results.filter(r => r && r.status === 'ok').length;
+      const noDataCount = results.filter(r => r && r.status === 'no_data').length;
+      const failCount = results.filter(r => r && r.status === 'failed').length;
+      const secs = Number(data.total_elapsed_seconds || 0).toFixed(1);
+      $('utilResultHint').textContent = timeSel.time_mode === 'current'
+        ? `Zabbix 利用率已增量更新：本次查询 ${targets.length}（跳过已缓存 ${skippedCached}），查询设备 ${(data.queried_devices || []).length}，耗时 ${secs}s，口径 ${metric.toUpperCase()}，模式 当前值，本次成功 ${okCount}，无数据 ${noDataCount}，失败 ${failCount}，缓存更新 ${Number(data.cache_updates || 0)}，缓存总计 ${Number(data.cache_total || 0)}`
+        : `Zabbix 利用率已更新：本次查询 ${targets.length}，查询设备 ${(data.queried_devices || []).length}，耗时 ${secs}s，口径 ${metric.toUpperCase()}，模式 ${timeSel.hint}，本次成功 ${okCount}，无数据 ${noDataCount}，失败 ${failCount}`;
+      if (okCount === 0) {
+        const firstErr = results.find(r => r && r.error)?.error || '';
+        setErr(`Zabbix 链路利用率未获取到有效结果。${firstErr ? `首个错误：${firstErr}` : ''}`);
+      } else {
+        setOK(`Zabbix 链路利用率刷新成功（${timeSel.hint}，成功 ${okCount}）`);
+      }
+      applyAdaptiveRenderMode();
+      closeZbxUtilModal();
+    } catch (e) {
+      const msg = String(e && e.message ? e.message : e);
+      setErr(`Zabbix 链路利用率查询失败：${msg}`);
+      $('utilResultHint').textContent = `Zabbix 链路利用率查询失败：${msg}`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
   });
   $('utilColorEnabled').addEventListener('change', () => applyUtilizationToEdges());
   $('utilLabelEnabled').addEventListener('change', () => {
