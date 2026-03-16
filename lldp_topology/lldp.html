@@ -26,10 +26,64 @@
     .box { padding: 10px; border: 1px solid #e5e7eb; border-radius: 12px; margin: 10px 0; background: linear-gradient(180deg,#fff,#f9fafb); }
     .section-box { padding: 10px; border: 1px solid #e5e7eb; border-radius: 12px; margin: 10px 0; background: linear-gradient(180deg,#fff,#f9fafb); }
     .section-box h2 { margin: 0 0 8px; }
+    .section-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      width: calc(100% + 4px);
+      margin: -2px -2px 8px;
+      padding: 2px 2px 8px;
+      background: transparent;
+      border: none;
+      border-radius: 0;
+      font-weight: 700;
+      color: #0f172a;
+      box-shadow: none;
+      transform: none !important;
+    }
+    .section-toggle:hover { filter: none; }
+    .section-toggle-text { font-size: 13px; text-align: left; }
+    .section-toggle-indicator {
+      width: 22px;
+      height: 22px;
+      border-radius: 999px;
+      border: 1px solid #d1d5db;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #475569;
+      font-size: 12px;
+      flex: 0 0 auto;
+      background: #fff;
+    }
+    .section-box.collapsed .section-body { display: none; }
+    .section-box.collapsed .section-toggle { margin-bottom: 0; padding-bottom: 0; }
     .util-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .util-grid .span-2 { grid-column: 1 / -1; }
     .util-grid .check-row { display:flex; align-items:center; gap:8px; font-size:12px; color:#111827; font-weight:600; }
     .util-grid .check-row input[type="checkbox"] { width:auto; margin:0; }
+    .util-filter-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 10px;
+      border: 1px solid #dbeafe;
+      border-radius: 10px;
+      background: #eff6ff;
+      color: #1d4ed8;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .util-filter-bar.hidden { display: none; }
+    .util-filter-bar button {
+      width: auto;
+      min-width: 96px;
+      padding: 6px 10px;
+      font-size: 12px;
+      background: #fff;
+    }
     .row { display: grid; grid-template-columns: 1fr; gap: 8px; margin: 10px 0; }
     .row.inline { grid-template-columns: 1fr 1fr; gap: 10px; }
     .action-group {
@@ -236,6 +290,11 @@
       font-weight: 600;
       color: #111827;
     }
+    .save-state-note {
+      margin-top: 8px;
+      font-size: 12px;
+      color: #64748b;
+    }
     .hidden { display: none !important; }
     @media (max-width: 740px) {
       .modal-form-grid { grid-template-columns: 1fr; }
@@ -272,8 +331,12 @@
       <div class="err" id="err"></div>
     </div>
 
-    <div class="section-box">
-      <h2 id="secImportTitle">导入数据</h2>
+    <div class="section-box" data-section-key="import">
+      <button type="button" class="section-toggle" data-section-target="secImportBody" aria-expanded="true">
+        <span id="secImportTitle" class="section-toggle-text">导入数据</span>
+        <span class="section-toggle-indicator">-</span>
+      </button>
+      <div id="secImportBody" class="section-body">
       <div class="row inline">
         <div>
           <label id="lblImportMode">导入方式</label>
@@ -296,6 +359,7 @@
         <input id="file" type="file" accept=".csv,text/csv" multiple />
         <input id="appendFile" type="file" accept=".csv,text/csv" multiple />
       </div>
+      </div>
     </div>
 
     <div class="hidden">
@@ -305,8 +369,12 @@
       <select id="colRemoteIf"></select>
     </div>
 
-    <div class="section-box">
-      <h2 id="secLayoutTitle">布局 & 分散</h2>
+    <div class="section-box" data-section-key="layout">
+      <button type="button" class="section-toggle" data-section-target="secLayoutBody" aria-expanded="true">
+        <span id="secLayoutTitle" class="section-toggle-text">布局 & 分散</span>
+        <span class="section-toggle-indicator">-</span>
+      </button>
+      <div id="secLayoutBody" class="section-body">
       <div class="row inline">
         <div>
           <label>布局模式</label>
@@ -439,10 +507,15 @@
           <button id="rollbackStep">回到上一步</button>
         </div>
       </div>
+      </div>
     </div>
 
-    <div class="section-box">
-      <h2 id="secExportTitle">导出</h2>
+    <div class="section-box" data-section-key="export">
+      <button type="button" class="section-toggle" data-section-target="secExportBody" aria-expanded="false">
+        <span id="secExportTitle" class="section-toggle-text">导出</span>
+        <span class="section-toggle-indicator">+</span>
+      </button>
+      <div id="secExportBody" class="section-body">
       <div class="row inline">
         <button id="exportPng">导出 PNG</button>
       </div>
@@ -451,11 +524,20 @@
         <button id="importSessionBtn">导入会话</button>
         <input id="importSessionFile" type="file" accept=".json,application/json" style="display:none" />
       </div>
+      </div>
     </div>
 
-    <div class="section-box">
-      <h2 id="secUtilTitle">链路利用率</h2>
+    <div class="section-box" data-section-key="util">
+      <button type="button" class="section-toggle" data-section-target="secUtilBody" aria-expanded="false">
+        <span id="secUtilTitle" class="section-toggle-text">链路利用率</span>
+        <span class="section-toggle-indicator">+</span>
+      </button>
+      <div id="secUtilBody" class="section-body">
       <div class="util-grid">
+        <div id="utilFilterActiveBar" class="util-filter-bar hidden span-2">
+          <div id="utilFilterActiveText">已启用利用率过滤：>= 40%</div>
+          <button id="clearUtilFilterOnly" type="button">清除过滤</button>
+        </div>
         <div>
           <button id="refreshUtilization" class="primary">CLI 链路利用率</button>
         </div>
@@ -488,6 +570,7 @@
         <label class="check-row"><input id="utilColorEnabled" type="checkbox" checked />链路颜色映射</label>
         <label class="check-row"><input id="utilLabelEnabled" type="checkbox" checked />显示利用率标签</label>
         <div class="hint span-2" id="utilResultHint">阈值：绿色 &lt; 40%，黄色 40-70%，红色 ≥ 70%。</div>
+      </div>
       </div>
     </div>
   </div>
@@ -550,16 +633,16 @@
         </div>
 
         <div class="field">
-          <label>SMC 跳板地址</label>
+          <label>跳板地址</label>
           <input id="cliSmcJumpHostModal" type="text" placeholder="例如：103.115.79.114" />
         </div>
         <div class="field">
-          <label>SMC 跳板端口</label>
+          <label>端口</label>
           <input id="cliSmcJumpPortModal" type="number" min="1" max="65535" step="1" value="22" />
         </div>
 
         <div class="field span-2">
-          <label>SMC 命令</label>
+          <label>SSH 命令</label>
           <input id="cliSmcCommandModal" type="text" value="smc server toc {jump_host}" />
         </div>
 
@@ -622,6 +705,20 @@
     <div class="modal-actions">
       <button id="refreshStateList">刷新列表</button>
       <button id="closeStateModal">关闭</button>
+    </div>
+  </div>
+</div>
+<div id="saveStateModal" class="modal-backdrop">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="saveStateModalTitle">
+    <div class="modal-title" id="saveStateModalTitle">保存状态</div>
+    <div class="row">
+      <label>状态名称</label>
+      <input id="saveStateNameInput" type="text" placeholder="例如：SG IPLC 局部排布 v1" />
+      <div class="save-state-note" id="saveStateModalHint">服务器会保留最近 15 个状态，建议用业务名或阶段名命名。</div>
+    </div>
+    <div class="modal-actions">
+      <button id="confirmSaveState" class="primary">保存状态</button>
+      <button id="closeSaveStateModal">关闭</button>
     </div>
   </div>
 </div>
@@ -746,6 +843,12 @@
   const KEYWORD_HISTORY_MAX = 10;
   const LAYER_HISTORY_KEY = 'lldp_layer_terms_history';
   const PARTITION_HISTORY_KEY = 'lldp_partition_terms_history';
+  const SECTION_PREF_KEY = 'lldp_section_collapse_state_v1';
+  const DEFAULT_SECTION_STATE = { import: true, layout: true, export: false, util: false };
+  const utilFilterState = {
+    active: false,
+    threshold: null
+  };
   const rollbackState = {
     before: null,
     after: null,
@@ -834,6 +937,7 @@
       btn_clear_cache: '删除链路缓存',
       btn_dl_util_debug: '下载利用率调试日志',
       btn_util_filter: '利用率过滤',
+      btn_clear_util_filter: '清除过滤',
       btn_run_sql: '执行 SQL 查询',
       btn_dl_sql_tmp: '下载临时 CSV',
       btn_run_cli: '执行 CLI 查询',
@@ -845,6 +949,9 @@
       ctx_util: '链路利用率',
       state_modal_title: '导入状态',
       state_modal_hint: '服务器会保留最近 15 个状态。',
+      save_state_modal_title: '保存状态',
+      save_state_name_label: '状态名称',
+      save_state_name_hint: '服务器会保留最近 15 个状态，建议用业务名或阶段名命名。',
       zbx_config_title: 'Zabbix 配置',
       zbx_config_save: '保存配置',
       state_refresh: '刷新列表',
@@ -861,6 +968,7 @@
       import_mode_sql: 'SQL 导入',
       import_mode_cli: 'CLI 导入',
       import_mode_csv: 'CSV 导入',
+      util_filter_active: '已启用利用率过滤：>= {threshold}%',
     },
     en: {
       doc_title: 'LLDP Topology Builder (Final)',
@@ -923,6 +1031,7 @@
       btn_clear_cache: 'Clear Link Cache',
       btn_dl_util_debug: 'Download Util Debug Log',
       btn_util_filter: 'Util Filter',
+      btn_clear_util_filter: 'Clear Filter',
       btn_run_sql: 'Run SQL Query',
       btn_dl_sql_tmp: 'Download Temp CSV',
       btn_run_cli: 'Run CLI Query',
@@ -934,6 +1043,9 @@
       ctx_util: 'Link Utilization',
       state_modal_title: 'Load State',
       state_modal_hint: 'The server keeps the latest 15 saved states.',
+      save_state_modal_title: 'Save State',
+      save_state_name_label: 'State Name',
+      save_state_name_hint: 'The server keeps the latest 15 states. Use a business or stage name.',
       zbx_config_title: 'Zabbix Config',
       zbx_config_save: 'Save Config',
       state_refresh: 'Refresh',
@@ -950,6 +1062,7 @@
       import_mode_sql: 'SQL Import',
       import_mode_cli: 'CLI Import',
       import_mode_csv: 'CSV Import',
+      util_filter_active: 'Utilization filter active: >= {threshold}%',
     }
   };
 
@@ -967,6 +1080,7 @@
 
   let uiLang = resolveUiLang();
   const tr = (k) => (UI_TEXT[uiLang] && UI_TEXT[uiLang][k]) || UI_TEXT.zh[k] || k;
+  const trf = (k, vars = {}) => Object.entries(vars).reduce((s, [kk, vv]) => s.replaceAll(`{${kk}}`, String(vv)), tr(k));
 
   function setText(id, key) {
     const el = $(id);
@@ -993,6 +1107,72 @@
     const btn = $('toggleMerge');
     if (!btn) return;
     btn.textContent = `${tr('merge_prefix')}${mergedMode ? tr('on') : tr('off')}`;
+  }
+
+  function readSectionPrefs() {
+    try {
+      const raw = localStorage.getItem(SECTION_PREF_KEY);
+      if (!raw) return { ...DEFAULT_SECTION_STATE };
+      return { ...DEFAULT_SECTION_STATE, ...(JSON.parse(raw) || {}) };
+    } catch (_) {
+      return { ...DEFAULT_SECTION_STATE };
+    }
+  }
+
+  function saveSectionPrefs(state) {
+    try {
+      localStorage.setItem(SECTION_PREF_KEY, JSON.stringify(state || {}));
+    } catch (_) {
+      // Ignore local storage errors.
+    }
+  }
+
+  function setSectionCollapsed(box, collapsed) {
+    if (!box) return;
+    const toggle = box.querySelector('.section-toggle');
+    box.classList.toggle('collapsed', !!collapsed);
+    if (toggle) toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  }
+
+  function updateSectionToggleUi() {
+    document.querySelectorAll('.section-box[data-section-key]').forEach((box) => {
+      const indicator = box.querySelector('.section-toggle-indicator');
+      if (!indicator) return;
+      indicator.textContent = box.classList.contains('collapsed') ? '+' : '-';
+    });
+  }
+
+  function initCollapsibleSections() {
+    const prefs = readSectionPrefs();
+    document.querySelectorAll('.section-box[data-section-key]').forEach((box) => {
+      const key = String(box.dataset.sectionKey || '').trim();
+      if (!key) return;
+      const expanded = prefs[key] !== false;
+      setSectionCollapsed(box, !expanded);
+      const toggle = box.querySelector('.section-toggle');
+      if (!toggle) return;
+      toggle.addEventListener('click', () => {
+        const willExpand = box.classList.contains('collapsed');
+        setSectionCollapsed(box, !willExpand);
+        const next = readSectionPrefs();
+        next[key] = willExpand;
+        saveSectionPrefs(next);
+        updateSectionToggleUi();
+      });
+    });
+    updateSectionToggleUi();
+  }
+
+  function updateUtilFilterUi() {
+    const bar = $('utilFilterActiveBar');
+    const text = $('utilFilterActiveText');
+    if (!bar || !text) return;
+    if (!utilFilterState.active || !Number.isFinite(utilFilterState.threshold)) {
+      bar.classList.add('hidden');
+      return;
+    }
+    text.textContent = trf('util_filter_active', { threshold: utilFilterState.threshold });
+    bar.classList.remove('hidden');
   }
 
   function applyStaticI18n() {
@@ -1047,6 +1227,7 @@
     setText('clearUtilCache', 'btn_clear_cache');
     setText('downloadUtilDebug', 'btn_dl_util_debug');
     setText('openUtilFilterModal', 'btn_util_filter');
+    setText('clearUtilFilterOnly', 'btn_clear_util_filter');
     setText('runSqlGenerateModal', 'btn_run_sql');
     setText('downloadSqlCsvModal', 'btn_dl_sql_tmp');
     setText('runCliGenerateModal', 'btn_run_cli');
@@ -1062,6 +1243,11 @@
     setText('ctxRenameGroup', 'ctx_rename_group');
     setText('stateModalTitle', 'state_modal_title');
     setText('stateModalHint', 'state_modal_hint');
+    setText('saveStateModalTitle', 'save_state_modal_title');
+    setParentLabel('saveStateNameInput', 'save_state_name_label');
+    setText('saveStateModalHint', 'save_state_name_hint');
+    setText('confirmSaveState', 'btn_save_state');
+    setText('closeSaveStateModal', 'state_close');
     setText('zbxConfigTitle', 'zbx_config_title');
     setText('saveZbxConfig', 'zbx_config_save');
     setText('refreshStateList', 'state_refresh');
@@ -1098,6 +1284,8 @@
     if ($('status') && String($('status').textContent || '').trim() === '等待导入') {
       $('status').textContent = tr('waiting_import');
     }
+    updateSectionToggleUi();
+    updateUtilFilterUi();
   }
 
   function initLangToggle() {
@@ -3160,6 +3348,9 @@
     resetViewState();
     saveTopologyUiPrefs();
     cy.elements().removeClass('sel-hidden onlyHidden filtered utilHidden dim hit');
+    utilFilterState.active = false;
+    utilFilterState.threshold = null;
+    updateUtilFilterUi();
     setOK('已恢复显示全部节点与链路。');
   }
 
@@ -3547,6 +3738,15 @@
     refreshEdgeLabelDisplay();
   }
 
+  function clearUtilFilterOnly(opts = {}) {
+    if (!cy) return;
+    cy.elements().removeClass('utilHidden');
+    utilFilterState.active = false;
+    utilFilterState.threshold = null;
+    updateUtilFilterUi();
+    if (!opts.silent) setOK('已清除利用率过滤。');
+  }
+
   function openUtilFilterModal() {
     if ($('utilFilterModal')) $('utilFilterModal').style.display = 'flex';
   }
@@ -3565,6 +3765,9 @@
       setErr('请输入有效的利用率阈值');
       return false;
     }
+    utilFilterState.active = true;
+    utilFilterState.threshold = num;
+    updateUtilFilterUi();
     cy.elements().removeClass('utilHidden');
     const hitEdges = cy.edges().filter((e) => {
       const pct = edgeUtilFromKeys(e);
@@ -3758,6 +3961,20 @@
     if ($('stateModal')) $('stateModal').style.display = 'none';
   }
 
+  function openSaveStateModal() {
+    const input = $('saveStateNameInput');
+    if (input && !String(input.value || '').trim()) {
+      const ts = new Date().toLocaleString();
+      input.value = `状态 ${ts}`;
+      input.select();
+    }
+    if ($('saveStateModal')) $('saveStateModal').style.display = 'flex';
+  }
+
+  function closeSaveStateModal() {
+    if ($('saveStateModal')) $('saveStateModal').style.display = 'none';
+  }
+
   function formatStateTime(ts) {
     const num = Number(ts);
     if (!Number.isFinite(num) || num <= 0) return '-';
@@ -3889,7 +4106,7 @@
     };
   }
 
-  async function saveServerStateSnapshot() {
+  async function saveServerStateSnapshot(name = '') {
     if (!headers.length || !rawRows.length) {
       throw new Error('当前没有可保存的拓扑状态');
     }
@@ -3898,7 +4115,7 @@
     const resp = await fetch(`${base}/api/state-snapshots`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ snapshot: snap })
+      body: JSON.stringify({ snapshot: snap, name: String(name || '').trim() || null })
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || data?.ok !== true) {
@@ -5154,6 +5371,7 @@
   $('downloadUtilCache').addEventListener('click', downloadUtilCacheCsv);
   $('clearUtilCache').addEventListener('click', clearUtilCache);
   $('openUtilFilterModal').addEventListener('click', openUtilFilterModal);
+  $('clearUtilFilterOnly').addEventListener('click', () => clearUtilFilterOnly());
   $('closeUtilFilterModal').addEventListener('click', closeUtilFilterModal);
   $('applyUtilFilter').addEventListener('click', () => {
     const threshold = Number(($('utilFilterThreshold')?.value || '40').trim());
@@ -5176,6 +5394,8 @@
   loadTopologyUiPrefs();
   refreshKeywordHistories();
   loadUtilCacheFromServer();
+  initCollapsibleSections();
+  updateUtilFilterUi();
 
   $('build').addEventListener('click', () => {
     commitKeywordHistories();
@@ -5263,14 +5483,28 @@
     }
   });
 
-  $('saveServerState').addEventListener('click', async () => {
+  $('saveServerState').addEventListener('click', () => {
+    openSaveStateModal();
+  });
+
+  $('confirmSaveState').addEventListener('click', async () => {
     try {
-      const data = await saveServerStateSnapshot();
+      const name = ($('saveStateNameInput')?.value || '').trim();
+      const data = await saveServerStateSnapshot(name);
+      closeSaveStateModal();
       setOK(`${tr('state_saved')}：${data.name || data.snapshot_id}`);
       setErr('');
     } catch (err) {
       setErr(`保存状态失败：${String(err && err.message ? err.message : err)}`);
     }
+  });
+
+  $('closeSaveStateModal').addEventListener('click', closeSaveStateModal);
+  $('saveStateModal').addEventListener('click', (e) => {
+    if (e.target && e.target.id === 'saveStateModal') closeSaveStateModal();
+  });
+  $('saveStateNameInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') $('confirmSaveState').click();
   });
 
   $('importServerState').addEventListener('click', async () => {
