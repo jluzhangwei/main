@@ -1250,6 +1250,7 @@ def collect_device_lldp_once(source: str, depth: int, cfg: CliRuntimeConfig) -> 
             row = {
                 "depth": depth,
                 "localhostname": source,
+                "sourceip": source if _looks_like_ip(source) else "",
                 "localinterface": (rec.get("local_if") or "").strip(),
                 "remotehostname": remote_candidate,
                 "remoteinterface": (rec.get("remote_if") or "").strip(),
@@ -1479,11 +1480,21 @@ def build_cli_lldp_rows(
     for ip, name in detected_device_names.items():
         if ip and name:
             ip_to_name.setdefault(ip, name)
+    name_to_ip: dict[str, str] = {}
+    for ip, name in detected_device_names.items():
+        if ip and name and _looks_like_ip(ip):
+            name_to_ip.setdefault(name, ip)
     # Normalize source device display name to avoid duplicate nodes (IP + hostname).
     for r in rows:
         src = str(r.get("localhostname", "") or "").strip()
+        src_ip = str(r.get("sourceip", "") or "").strip()
         if not src:
             continue
+        if not _looks_like_ip(src_ip):
+            if _looks_like_ip(src):
+                r["sourceip"] = src
+            elif src in name_to_ip:
+                r["sourceip"] = name_to_ip[src]
         if src in detected_device_names and detected_device_names[src]:
             r["localhostname"] = detected_device_names[src]
         elif _looks_like_ip(src) and src in ip_to_name:
@@ -1523,6 +1534,7 @@ class LinkUtilTarget(BaseModel):
     source_device: str
     source_interface: str
     util_key: str | None = None
+    source_name: str | None = None
 
 
 class LinkUtilRequest(BaseModel):
@@ -2083,6 +2095,50 @@ def _zabbix_get_host_map_by_ip(
     }
 
 
+def _zabbix_get_host_map_by_name(
+    names: list[str],
+    *,
+    url_override: str | None = None,
+    token_override: str | None = None,
+    verify_ssl_override: bool | None = None,
+) -> dict[str, dict[str, str]]:
+    wanted = [str(n or "").strip() for n in names if str(n or "").strip()]
+    if not wanted:
+        return {}
+    rows = _zabbix_rpc(
+        "host.get",
+        {
+            "output": ["hostid", "host", "name"],
+            "search": {"host": wanted, "name": wanted},
+            "searchByAny": True,
+            "limit": max(50, len(wanted) * 5),
+        },
+        url_override=url_override,
+        token_override=token_override,
+        verify_ssl_override=verify_ssl_override,
+    ) or []
+    out: dict[str, dict[str, str]] = {}
+    wanted_l = {w.lower() for w in wanted}
+    for row in rows:
+        host = str(row.get("host", "")).strip()
+        name = str(row.get("name", "")).strip()
+        keys = []
+        if host and host.lower() in wanted_l:
+            keys.append(host.lower())
+        if name and name.lower() in wanted_l:
+            keys.append(name.lower())
+        for key in keys:
+            out.setdefault(
+                key,
+                {
+                    "hostid": str(row.get("hostid", "")).strip(),
+                    "host": host,
+                    "name": name,
+                },
+            )
+    return out
+
+
 def _zabbix_get_items_for_interface(
     hostid: str,
     iface: str,
@@ -2195,8 +2251,15 @@ def collect_zabbix_link_utilization(
         if _looks_like_ip(str(t.source_device or "").strip()) and str(t.source_interface or "").strip()
     ]
     device_ips = sorted({str(t.source_device).strip() for t in cleaned_targets})
+    source_names = sorted({str(t.source_name or "").strip() for t in cleaned_targets if str(t.source_name or "").strip()})
     host_map = _zabbix_get_host_map_by_ip(
         device_ips,
+        url_override=zabbix_url,
+        token_override=zabbix_api_token,
+        verify_ssl_override=zabbix_verify_ssl,
+    )
+    host_map_by_name = _zabbix_get_host_map_by_name(
+        source_names,
         url_override=zabbix_url,
         token_override=zabbix_api_token,
         verify_ssl_override=zabbix_verify_ssl,
@@ -2208,13 +2271,17 @@ def collect_zabbix_link_utilization(
         src_ip = str(target.source_device or "").strip()
         iface = str(target.source_interface or "").strip()
         util_key = str(target.util_key or "").strip()
+        source_name = str(target.source_name or "").strip()
         host = host_map.get(src_ip)
+        if not host and source_name:
+            host = host_map_by_name.get(source_name.lower())
         if not host:
             results.append(
                 {
                     "util_key": util_key,
                     "data_source": "zabbix",
                     "source_device": src_ip,
+                    "source_name": source_name,
                     "source_interface": iface,
                     "vendor": "zabbix",
                     "status": "failed",
@@ -2224,7 +2291,7 @@ def collect_zabbix_link_utilization(
                     "tx_bps": None,
                     "rx_bps": None,
                     "bw_bps": None,
-                    "error": "host not found by device IP in Zabbix",
+                    "error": "host not found by device IP/name in Zabbix",
                 }
             )
             continue
@@ -2289,6 +2356,7 @@ def collect_zabbix_link_utilization(
                 "time_from": int(time_from) if mode == "range_max" and time_from is not None else "",
                 "time_till": int(time_till) if mode == "range_max" and time_till is not None else "",
                 "source_device": src_ip,
+                "source_name": source_name,
                 "source_interface": iface,
                 "vendor": "zabbix",
                 "status": status,
@@ -2417,6 +2485,17 @@ def merge_link_util_cache(results: list[dict[str, Any]]) -> int:
     except Exception:
         return 0
     return updates
+
+
+def clear_link_util_cache() -> int:
+    rows = read_link_util_cache_rows()
+    try:
+        with LINK_UTIL_CACHE_FILE.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=LINK_UTIL_CACHE_FIELDS, extrasaction="ignore")
+            writer.writeheader()
+    except Exception:
+        return 0
+    return len(rows)
 
 
 def _unit_multiplier(unit: str) -> float:
@@ -3735,6 +3814,17 @@ def download_link_utilization_cache():
             writer = csv.DictWriter(f, fieldnames=LINK_UTIL_CACHE_FIELDS, extrasaction="ignore")
             writer.writeheader()
     return FileResponse(LINK_UTIL_CACHE_FILE, media_type="text/csv", filename=LINK_UTIL_CACHE_FILE.name)
+
+
+@app.post("/api/cli/link-utilization-cache/clear")
+def clear_link_utilization_cache() -> dict[str, Any]:
+    cleared = clear_link_util_cache()
+    cache_total = len(read_link_util_cache_rows())
+    return {
+        "ok": True,
+        "cleared": cleared,
+        "cache_total": cache_total,
+    }
 
 
 @app.post("/api/state-snapshots")

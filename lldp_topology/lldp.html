@@ -75,6 +75,7 @@
     .badge { display:inline-block; padding:2px 6px; border-radius: 999px; background:#e9f2ff; font-size:11px; color:var(--sea-blue); margin-left:6px; }
     .filtered { display: none; }
     .sel-hidden { display: none; }
+    .utilHidden { display: none; }
     .selected-overlay {
       box-shadow: 0 0 0 3px rgba(15, 111, 255, 0.35);
       border-color: var(--sea-blue) !important;
@@ -468,7 +469,13 @@
           <button id="downloadUtilCache" type="button">下载链路缓存CSV</button>
         </div>
         <div>
+          <button id="clearUtilCache" type="button">删除链路缓存</button>
+        </div>
+        <div>
           <button id="downloadUtilDebug" type="button">下载利用率调试日志</button>
+        </div>
+        <div>
+          <button id="openUtilFilterModal" type="button">利用率过滤</button>
         </div>
         <label class="check-row"><input id="utilDebugEnabled" type="checkbox" />开启调试日志</label>
         <div class="span-2">
@@ -569,7 +576,6 @@
         <button id="runCliGenerateModal" class="primary">执行 CLI 查询</button>
         <button id="cancelCliGenerateModal" style="display:none;">取消查询</button>
         <button id="downloadCliCsvModal">导出临时 CSV</button>
-        <button id="downloadCliDebugModal">下载 CLI 调试日志</button>
         <button class="closeImportModalBtn">关闭</button>
       </div>
       <div class="hint" id="cliResultHintModal"></div>
@@ -685,6 +691,20 @@
     <div class="modal-actions">
       <button id="runZbxUtilQuery" class="primary">执行查询</button>
       <button id="closeZbxUtilModal">关闭</button>
+    </div>
+  </div>
+</div>
+<div id="utilFilterModal" class="modal-backdrop">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="utilFilterTitle">
+    <div class="modal-title" id="utilFilterTitle">利用率过滤</div>
+    <div class="row">
+      <label>仅显示利用率大于等于该阈值的链路（%）</label>
+      <input id="utilFilterThreshold" type="number" min="0" max="100" step="0.1" value="40" />
+      <div class="hint">会同步隐藏没有任何可见链路的节点；点击“恢复显示”可取消本次过滤。</div>
+    </div>
+    <div class="modal-actions">
+      <button id="applyUtilFilter" class="primary">确定</button>
+      <button id="closeUtilFilterModal">关闭</button>
     </div>
   </div>
 </div>
@@ -811,13 +831,14 @@
       btn_zbx_util: 'Zabbix链路利用率',
       btn_zbx_config: 'Zabbix配置',
       btn_dl_cache: '下载链路缓存CSV',
+      btn_clear_cache: '删除链路缓存',
       btn_dl_util_debug: '下载利用率调试日志',
+      btn_util_filter: '利用率过滤',
       btn_run_sql: '执行 SQL 查询',
       btn_dl_sql_tmp: '下载临时 CSV',
       btn_run_cli: '执行 CLI 查询',
       btn_cancel_query: '取消查询',
       btn_dl_cli_tmp: '导出临时 CSV',
-      btn_dl_cli_debug: '下载 CLI 调试日志',
       btn_pick_csv: '选择 CSV 文件',
       btn_append_csv: '追加 CSV',
       btn_load_paste: '从粘贴内容载入',
@@ -899,13 +920,14 @@
       btn_zbx_util: 'Zabbix Link Utilization',
       btn_zbx_config: 'Zabbix Config',
       btn_dl_cache: 'Download Link Cache CSV',
+      btn_clear_cache: 'Clear Link Cache',
       btn_dl_util_debug: 'Download Util Debug Log',
+      btn_util_filter: 'Util Filter',
       btn_run_sql: 'Run SQL Query',
       btn_dl_sql_tmp: 'Download Temp CSV',
       btn_run_cli: 'Run CLI Query',
       btn_cancel_query: 'Cancel Query',
       btn_dl_cli_tmp: 'Export Temp CSV',
-      btn_dl_cli_debug: 'Download CLI Debug Log',
       btn_pick_csv: 'Select CSV File',
       btn_append_csv: 'Append CSV',
       btn_load_paste: 'Load Pasted CSV',
@@ -1022,13 +1044,14 @@
     setText('refreshUtilizationZbx', 'btn_zbx_util');
     setText('openZbxConfig', 'btn_zbx_config');
     setText('downloadUtilCache', 'btn_dl_cache');
+    setText('clearUtilCache', 'btn_clear_cache');
     setText('downloadUtilDebug', 'btn_dl_util_debug');
+    setText('openUtilFilterModal', 'btn_util_filter');
     setText('runSqlGenerateModal', 'btn_run_sql');
     setText('downloadSqlCsvModal', 'btn_dl_sql_tmp');
     setText('runCliGenerateModal', 'btn_run_cli');
     setText('cancelCliGenerateModal', 'btn_cancel_query');
     setText('downloadCliCsvModal', 'btn_dl_cli_tmp');
-    setText('downloadCliDebugModal', 'btn_dl_cli_debug');
     setText('pickCsvModal', 'btn_pick_csv');
     setText('appendCsvModal', 'btn_append_csv');
     setText('loadPasteModal', 'btn_load_paste');
@@ -1422,9 +1445,11 @@
     const parsed = splitUtilKey(utilKey);
     if (!parsed) return null;
     const queryDevice = resolveQueryDeviceForUtilIdent(parsed.ident);
+    const sourceName = parsed.ident.startsWith('name:') ? parsed.ident.slice(5) : '';
     if (!queryDevice) return null;
     return {
       source_device: queryDevice,
+      source_name: sourceName || '',
       source_interface: parsed.iface,
       util_key: String(utilKey || '').trim(),
       dedupe_key: String(utilKey || '').trim().toLowerCase()
@@ -2041,6 +2066,7 @@
         { selector: '.dim', style: { 'opacity': 0.15 } },
         { selector: '.filtered', style: { 'display': 'none' } },
         { selector: '.onlyHidden', style: { 'display': 'none' } },
+        { selector: '.utilHidden', style: { 'display': 'none' } },
         { selector: ':selected', style: {
           'border-width': 3,
           'border-color': '#2563eb',
@@ -3133,7 +3159,7 @@
     if (!cy) return;
     resetViewState();
     saveTopologyUiPrefs();
-    cy.elements().removeClass('sel-hidden onlyHidden filtered dim hit');
+    cy.elements().removeClass('sel-hidden onlyHidden filtered utilHidden dim hit');
     setOK('已恢复显示全部节点与链路。');
   }
 
@@ -3512,6 +3538,58 @@
     refreshEdgeLabelDisplay();
   }
 
+  function clearUtilizationFromGraph() {
+    if (!cy) return;
+    cy.edges().forEach((e) => {
+      e.removeClass('util-low util-mid util-high util-na');
+      e.data('utilText', '');
+    });
+    refreshEdgeLabelDisplay();
+  }
+
+  function openUtilFilterModal() {
+    if ($('utilFilterModal')) $('utilFilterModal').style.display = 'flex';
+  }
+
+  function closeUtilFilterModal() {
+    if ($('utilFilterModal')) $('utilFilterModal').style.display = 'none';
+  }
+
+  function applyUtilThresholdFilter(threshold) {
+    if (!cy) {
+      setErr('请先生成拓扑，再执行利用率过滤');
+      return false;
+    }
+    const num = Number(threshold);
+    if (!Number.isFinite(num) || num < 0) {
+      setErr('请输入有效的利用率阈值');
+      return false;
+    }
+    cy.elements().removeClass('utilHidden');
+    const hitEdges = cy.edges().filter((e) => {
+      const pct = edgeUtilFromKeys(e);
+      return typeof pct === 'number' && pct >= num;
+    });
+    if (!hitEdges.length) {
+      cy.elements().addClass('utilHidden');
+      setOK(`已应用利用率过滤：阈值 ${num}% ，未命中链路`);
+      $('utilResultHint').textContent = `利用率过滤已应用：当前口径下没有大于等于 ${num}% 的链路。点击“恢复显示”可取消。`;
+      return true;
+    }
+    const visibleNodeIds = new Set();
+    hitEdges.forEach((e) => {
+      visibleNodeIds.add(e.source().id());
+      visibleNodeIds.add(e.target().id());
+    });
+    cy.edges().not(hitEdges).addClass('utilHidden');
+    cy.nodes().forEach((n) => {
+      if (!visibleNodeIds.has(n.id())) n.addClass('utilHidden');
+    });
+    setOK(`已按利用率过滤：仅显示 ≥ ${num}% 的 ${hitEdges.length} 条链路`);
+    $('utilResultHint').textContent = `利用率过滤已应用：阈值 ${num}% ，保留 ${hitEdges.length} 条链路、${visibleNodeIds.size} 个节点。点击“恢复显示”可取消。`;
+    return true;
+  }
+
   function showCtx(evt) {
     ctxTarget = evt.target;
     const menu = $('ctxMenu');
@@ -3525,7 +3603,7 @@
       const el = $(id);
       if (!el) return;
       if (isEdgeTarget) {
-        el.style.display = 'none';
+        el.style.display = (id === 'ctxUtil') ? '' : 'none';
         return;
       }
       if (isGroupNode && ['ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxAppendQuery'].includes(id)) {
@@ -3988,10 +4066,19 @@
         setStatus('SQL 数据已载入并生成拓扑');
         setOK(`已按 ${startHostname} 生成拓扑，结果 ${data.row_count} 行。`);
       }
+      return {
+        ok: true,
+        startHostname,
+        shownRows,
+        mergedRows: Number(merged?.mergedRows || 0),
+        addedRows: Number(merged?.addedRows || 0),
+        tempFile: String(data.temp_file || '')
+      };
     } catch (e) {
       setStatus('SQL 生成失败');
       setErr(`SQL 查询失败：${String(e && e.message ? e.message : e)}`);
       if ($(hintId)) $(hintId).textContent = '请确认通过服务启动页面：http://127.0.0.1:18080/lldp.html';
+      throw e;
     } finally {
       ctxAppendSingleHop = false;
     }
@@ -4036,6 +4123,26 @@
     a.href = `${base}/api/cli/link-utilization-cache/file`;
     a.target = '_blank';
     a.click();
+  }
+
+  async function clearUtilCache() {
+    if (!confirm('确认删除当前链路利用率缓存？')) return;
+    const base = apiBaseUrl();
+    try {
+      const resp = await fetch(`${base}/api/cli/link-utilization-cache/clear`, { method: 'POST' });
+      const data = await resp.json();
+      if (!resp.ok || !data?.ok) throw new Error(data?.detail || `HTTP ${resp.status}`);
+      utilByKey = new Map();
+      utilCacheLoadedAt = '';
+      clearUtilizationFromGraph();
+      const cleared = Number(data?.cleared || 0);
+      setOK(`已删除链路利用率缓存 ${cleared} 条`);
+      $('utilResultHint').textContent = '链路利用率缓存已清空，当前图上的利用率颜色和标签已移除。';
+    } catch (e) {
+      const msg = String(e && e.message ? e.message : e);
+      setErr(`删除链路缓存失败：${msg}`);
+      $('utilResultHint').textContent = `删除链路缓存失败：${msg}`;
+    }
   }
 
   async function loadUtilCacheFromServer() {
@@ -4262,6 +4369,9 @@
     const scopeNodes = (opts && opts.scopeNodes && typeof opts.scopeNodes.connectedEdges === 'function')
       ? opts.scopeNodes
       : null;
+    const scopeEdges = (opts && opts.scopeEdges && typeof opts.scopeEdges.intersection === 'function')
+      ? opts.scopeEdges
+      : null;
     const { colLH, colLI } = resolveUtilSourceColumns();
     const allByUtilKey = new Map();
     for (const r of rawRows) {
@@ -4284,6 +4394,7 @@
       if (!allByUtilKey.has(utilKey)) {
         allByUtilKey.set(utilKey, {
           source_device: queryDevice,
+          source_name: srcRaw,
           source_interface: srcIf,
           util_key: utilKey,
           dedupe_key: dedupeKey
@@ -4294,9 +4405,11 @@
     // Query all currently visible source ports; cache skip happens later.
     const neededUtilKeys = new Set();
     if (cy) {
-      const edgeScope = (scopeNodes && scopeNodes.length)
+      const edgeScope = (scopeEdges && scopeEdges.length)
+        ? scopeEdges.intersection(cy.edges(':visible'))
+        : ((scopeNodes && scopeNodes.length)
         ? scopeNodes.connectedEdges().intersection(cy.edges(':visible'))
-        : cy.edges(':visible');
+        : cy.edges(':visible'));
       edgeScope.forEach((e) => {
         const keys = e.data('utilKeys');
         if (Array.isArray(keys)) {
@@ -4325,8 +4438,34 @@
       seenDedupe.add(item.dedupe_key);
       out.push({
         source_device: item.source_device,
+        source_name: item.source_name || '',
         source_interface: item.source_interface,
         util_key: item.util_key
+      });
+    });
+    return out;
+  }
+
+  function buildUtilTargetsForEdges(edges) {
+    if (!cy || !edges || !edges.length) return [];
+    return buildUtilTargetsFromRows({ scopeEdges: edges });
+  }
+
+  function mergeUtilTargets(groups) {
+    const out = [];
+    const seen = new Set();
+    (groups || []).forEach((group) => {
+      (group || []).forEach((item) => {
+        if (!item) return;
+        const key = String(item.util_key || `${item.source_device || ''}||${item.source_interface || ''}`).trim().toLowerCase();
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        out.push({
+          source_device: item.source_device,
+          source_name: item.source_name || '',
+          source_interface: item.source_interface,
+          util_key: item.util_key
+        });
       });
     });
     return out;
@@ -4372,6 +4511,27 @@
     return buildUtilTargetsFromRows({ matchSource, scopeNodes: nodes });
   }
 
+  function buildUtilTargetsForSelection(nodes, edges) {
+    return mergeUtilTargets([
+      buildUtilTargetsForNodes(nodes),
+      buildUtilTargetsForEdges(edges)
+    ]);
+  }
+
+  function readZabbixConfig() {
+    loadZbxPrefs();
+    return {
+      url: ($('zbxServerUrl')?.value || '').trim(),
+      token: ($('zbxApiToken')?.value || '').trim(),
+      verify_ssl: !!$('zbxVerifySsl')?.checked
+    };
+  }
+
+  function readConfiguredCliRuntime() {
+    const cfg = readCliRuntimeInputs();
+    return (cfg.device_username && cfg.device_password) ? cfg : null;
+  }
+
   function hasSuccessfulUtilCache(utilKey, source = '', meta = null) {
     const k = String(utilKey || '').toLowerCase();
     if (!k) return false;
@@ -4389,21 +4549,10 @@
     return !!(hit && hit.status === 'ok' && typeof hit.used_pct === 'number');
   }
 
-  async function refreshLinkUtilization(opts = {}) {
-    const customTargets = Array.isArray(opts.targets) ? opts.targets : null;
+  async function queryCliUtilizationTargets(allTargets, opts = {}) {
     const buttonId = String(opts.buttonId || 'refreshUtilization').trim();
     const okPrefix = String(opts.okPrefix || '').trim();
     const failPrefix = String(opts.failPrefix || '刷新链路利用率失败').trim();
-    const emptyMsg = String(opts.emptyMsg || '未找到可查询的 source 设备端口').trim();
-    if (!cy || !rawRows.length) {
-      setErr('请先生成拓扑，再刷新链路利用率');
-      return;
-    }
-    const allTargets = customTargets || buildUtilTargetsFromRows(opts);
-    if (!allTargets.length) {
-      setErr(emptyMsg);
-      return;
-    }
     const cacheSource = String(opts.cacheSource || '').trim().toLowerCase();
     const cacheMeta = opts.cacheMeta && typeof opts.cacheMeta === 'object' ? opts.cacheMeta : null;
     const targets = allTargets.filter(t => !hasSuccessfulUtilCache(t.util_key, cacheSource, cacheMeta));
@@ -4411,8 +4560,8 @@
     if (!targets.length) {
       applyUtilizationToEdges();
       $('utilResultHint').textContent = `无需刷新：当前可见链路端口 ${allTargets.length} 个，已缓存成功 ${skippedCached} 个。`;
-      setOK('链路利用率已是最新缓存结果（仅新增链路会触发查询）');
-      return;
+      if (!opts.silentSuccess) setOK('链路利用率已是最新缓存结果（仅新增链路会触发查询）');
+      return { skipped: true, okCount: 0, noDataCount: 0, failCount: 0, skippedCached, unresolvedTargets: [] };
     }
     const btn = buttonId ? $(buttonId) : null;
     const old = btn ? btn.textContent : '';
@@ -4427,16 +4576,23 @@
     const workersRaw = parseInt(($('cliMaxWorkersModal')?.value || '4').trim(), 10);
     const maxWorkers = Number.isFinite(workersRaw) ? Math.min(16, Math.max(1, workersRaw)) : 4;
     const metric = (($('utilMetric')?.value || 'tx').trim().toLowerCase());
-    const runtimeCfg = await ensureCliCredentials('未检测到设备 SSH 用户名/密码，请先输入后再执行链路利用率查询。');
+    let runtimeCfg = opts.runtimeCfg || null;
     if (!runtimeCfg) {
-      setErr('已取消链路利用率查询：未提供设备用户名/密码');
+      runtimeCfg = opts.promptCredentials === false
+        ? readConfiguredCliRuntime()
+        : await ensureCliCredentials('未检测到设备 SSH 用户名/密码，请先输入后再执行链路利用率查询。');
+    }
+    if (!runtimeCfg) {
+      const msg = opts.promptCredentials === false
+        ? '未配置 CLI 设备用户名/密码，无法执行 CLI 回退查询'
+        : '已取消链路利用率查询：未提供设备用户名/密码';
       if (btn) {
         btn.disabled = false;
         btn.textContent = old;
       }
-      return;
+      throw new Error(msg);
     }
-    // Utilization query should fail fast; avoid inheriting overly large CLI import timeouts.
+    runtimeCfg = { ...runtimeCfg };
     runtimeCfg.cli_connect_timeout = Math.min(20, Math.max(5, Number(runtimeCfg.cli_connect_timeout || 20)));
     runtimeCfg.cli_command_timeout = Math.min(20, Math.max(5, Number(runtimeCfg.cli_command_timeout || 20)));
     const reqPayload = {
@@ -4479,12 +4635,8 @@
           $('utilResultHint').textContent = `${hintBase}，设备进度 ${doneText}，已耗时 ${sec}s${cur ? `，当前 ${cur}` : ''}`;
           continue;
         }
-        if (st === 'failed') {
-          throw new Error(String(taskData.error || '任务失败'));
-        }
-        if (st === 'cancelled') {
-          throw new Error('任务已取消');
-        }
+        if (st === 'failed') throw new Error(String(taskData.error || '任务失败'));
+        if (st === 'cancelled') throw new Error('任务已取消');
         if (st === 'completed') break;
         throw new Error(`未知任务状态：${st || 'N/A'}`);
       }
@@ -4515,20 +4667,196 @@
       if (okCount === 0) {
         const sample = targets.slice(0, 5).map(t => t.source_device).join(', ');
         setErr(`链路利用率未获取到有效结果。${firstErr ? `首个错误：${firstErr}。` : ''}样例查询设备：${sample}`);
-      } else {
+      } else if (!opts.silentSuccess) {
         const deltaOk = Math.max(0, totalOkCount - beforeOkCount);
         setOK(okPrefix ? `${okPrefix}（新增成功 ${deltaOk}）` : `链路利用率刷新成功（新增成功 ${deltaOk}）`);
       }
       applyAdaptiveRenderMode();
+      const unresolvedTargets = allTargets.filter(t => !hasSuccessfulUtilCache(t.util_key, 'cli', { time_mode: 'current' }));
+      return { data, okCount, noDataCount, failCount, skippedCached, unresolvedTargets, results };
     } catch (e) {
       const msg = String(e && e.message ? e.message : e);
       setErr(`${failPrefix}：${msg}`);
       $('utilResultHint').textContent = `链路利用率查询失败：${msg}`;
+      throw e;
     } finally {
       if (btn) {
         btn.disabled = false;
         btn.textContent = old;
       }
+    }
+  }
+
+  async function queryZabbixUtilizationTargets(allTargets, timeSel, opts = {}) {
+    const useCache = timeSel.time_mode === 'current';
+    const targets = useCache
+      ? allTargets.filter(t => !hasSuccessfulUtilCache(t.util_key, 'zabbix', { time_mode: 'current' }))
+      : allTargets.slice();
+    const skippedCached = allTargets.length - targets.length;
+    if (!targets.length) {
+      applyUtilizationToEdges();
+      $('utilResultHint').textContent = `无需刷新：当前可见链路端口 ${allTargets.length} 个，已缓存 Zabbix 成功 ${skippedCached} 个。`;
+      if (!opts.silentSuccess) setOK('Zabbix 链路利用率已是最新缓存结果');
+      return { skipped: true, okCount: 0, noDataCount: 0, failCount: 0, skippedCached, unresolvedTargets: [] };
+    }
+    const btn = opts.buttonId ? $(opts.buttonId) : null;
+    const old = btn ? btn.textContent : '';
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = '查询中...';
+    }
+    setErr('');
+    $('utilResultHint').textContent = timeSel.time_mode === 'current'
+      ? `正在通过 Zabbix 增量查询 ${targets.length} 个 source 端口（跳过已缓存 ${skippedCached} 个）...`
+      : `正在通过 Zabbix 查询 ${targets.length} 个 source 端口的时间段最大值...`;
+    const metric = (($('utilMetric')?.value || 'max').trim().toLowerCase());
+    const zcfg = opts.zabbixConfig || readZabbixConfig();
+    if (!zcfg.url || !zcfg.token) {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = old;
+      }
+      throw new Error('未配置 Zabbix URL 或 API Token');
+    }
+    saveZbxPrefs();
+    const base = apiBaseUrl();
+    try {
+      const resp = await fetch(`${base}/api/zabbix/link-utilization`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targets,
+          metric,
+          ...timeSel,
+          zabbix_url: zcfg.url || null,
+          zabbix_api_token: zcfg.token || null,
+          zabbix_verify_ssl: !!zcfg.verify_ssl
+        })
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data?.ok) throw new Error(data?.detail || `HTTP ${resp.status}`);
+      for (const r of (data.results || [])) {
+        const key = String(r.util_key || `${r.source_device || ''}||${r.source_interface || ''}`).toLowerCase();
+        if (!key) continue;
+        r.data_source = 'zabbix';
+        r.time_mode = String(r.time_mode || timeSel.time_mode || 'current').trim().toLowerCase();
+        utilByKey.set(key, r);
+      }
+      applyUtilizationToEdges();
+      const results = Array.isArray(data.results) ? data.results : [];
+      const okCount = results.filter(r => r && r.status === 'ok').length;
+      const noDataCount = results.filter(r => r && r.status === 'no_data').length;
+      const failCount = results.filter(r => r && r.status === 'failed').length;
+      const secs = Number(data.total_elapsed_seconds || 0).toFixed(1);
+      $('utilResultHint').textContent = timeSel.time_mode === 'current'
+        ? `Zabbix 利用率已增量更新：本次查询 ${targets.length}（跳过已缓存 ${skippedCached}），查询设备 ${(data.queried_devices || []).length}，耗时 ${secs}s，口径 ${metric.toUpperCase()}，模式 当前值，本次成功 ${okCount}，无数据 ${noDataCount}，失败 ${failCount}，缓存更新 ${Number(data.cache_updates || 0)}，缓存总计 ${Number(data.cache_total || 0)}`
+        : `Zabbix 利用率已更新：本次查询 ${targets.length}，查询设备 ${(data.queried_devices || []).length}，耗时 ${secs}s，口径 ${metric.toUpperCase()}，模式 ${timeSel.hint}，本次成功 ${okCount}，无数据 ${noDataCount}，失败 ${failCount}`;
+      if (okCount > 0 && !opts.silentSuccess) {
+        setOK(`Zabbix 链路利用率刷新成功（${timeSel.hint}，成功 ${okCount}）`);
+      }
+      const cacheMeta = timeSel.time_mode === 'current'
+        ? { time_mode: 'current' }
+        : { time_mode: timeSel.time_mode, time_from: timeSel.time_from, time_till: timeSel.time_till };
+      const unresolvedTargets = allTargets.filter(t => !hasSuccessfulUtilCache(t.util_key, 'zabbix', cacheMeta));
+      return { data, okCount, noDataCount, failCount, skippedCached, unresolvedTargets, results };
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = old;
+      }
+    }
+  }
+
+  async function refreshPreferredLinkUtilization(opts = {}) {
+    const customTargets = Array.isArray(opts.targets) ? opts.targets : null;
+    const emptyMsg = String(opts.emptyMsg || '未找到可查询的 source 设备端口').trim();
+    if (!cy || !rawRows.length) {
+      setErr('请先生成拓扑，再查询链路利用率');
+      return;
+    }
+    const allTargets = customTargets || buildUtilTargetsFromRows(opts);
+    if (!allTargets.length) {
+      setErr(emptyMsg);
+      return;
+    }
+    const timeSel = { time_mode: 'current', time_from: null, time_till: null, hint: '当前值' };
+    const zcfg = readZabbixConfig();
+    let zbxSummary = null;
+    let zbxError = '';
+    let unresolvedTargets = allTargets.slice();
+    if (zcfg.url && zcfg.token) {
+      try {
+        zbxSummary = await queryZabbixUtilizationTargets(allTargets, timeSel, {
+          buttonId: opts.buttonId || '',
+          zabbixConfig: zcfg,
+          silentSuccess: true
+        });
+        unresolvedTargets = zbxSummary.unresolvedTargets || [];
+      } catch (e) {
+        zbxError = String(e && e.message ? e.message : e);
+      }
+    }
+    if (unresolvedTargets.length) {
+      const cliCfg = readConfiguredCliRuntime();
+      if (cliCfg) {
+        const cliLabel = opts.scopeLabel || '当前选择';
+        const cliSummary = await queryCliUtilizationTargets(unresolvedTargets, {
+          buttonId: '',
+          okPrefix: `链路利用率已更新（${cliLabel}）`,
+          failPrefix: 'CLI 回退链路利用率查询失败',
+          hintBase: `正在按优先级查询链路利用率：Zabbix 已完成，CLI 回退 ${unresolvedTargets.length} 个 source 端口`,
+          promptCredentials: false,
+          runtimeCfg: cliCfg,
+          silentSuccess: true
+        });
+        const zOk = Number(zbxSummary?.okCount || 0);
+        const cOk = Number(cliSummary?.okCount || 0);
+        setOK(`链路利用率已更新（${cliLabel}，Zabbix 成功 ${zOk}，CLI 回退成功 ${cOk}）`);
+        return;
+      }
+      if (zbxSummary && Number(zbxSummary.okCount || 0) > 0) {
+        setErr(`部分链路未从 Zabbix 获取到结果，且当前未配置 CLI 用户名/密码，无法回退查询。剩余 ${unresolvedTargets.length} 条。${zbxError ? ` Zabbix 错误：${zbxError}` : ''}`);
+        setOK(`链路利用率已部分更新（Zabbix 成功 ${zbxSummary.okCount}）`);
+        return;
+      }
+      if (zcfg.url && zcfg.token) {
+        throw new Error(zbxError || 'Zabbix 未获取到有效结果，且未配置 CLI 用户名/密码作为回退');
+      }
+      throw new Error('未配置 Zabbix，且未配置 CLI 用户名/密码');
+    }
+    if (zbxSummary) {
+      setOK(`链路利用率已更新（${opts.scopeLabel || '当前选择'}，Zabbix 成功 ${Number(zbxSummary.okCount || 0)}）`);
+      return;
+    }
+    throw new Error('未配置 Zabbix，且未配置 CLI 用户名/密码');
+  }
+
+  async function refreshLinkUtilization(opts = {}) {
+    const customTargets = Array.isArray(opts.targets) ? opts.targets : null;
+    const buttonId = String(opts.buttonId || 'refreshUtilization').trim();
+    const okPrefix = String(opts.okPrefix || '').trim();
+    const failPrefix = String(opts.failPrefix || '刷新链路利用率失败').trim();
+    const emptyMsg = String(opts.emptyMsg || '未找到可查询的 source 设备端口').trim();
+    if (!cy || !rawRows.length) {
+      setErr('请先生成拓扑，再刷新链路利用率');
+      return;
+    }
+    const allTargets = customTargets || buildUtilTargetsFromRows(opts);
+    if (!allTargets.length) {
+      setErr(emptyMsg);
+      return;
+    }
+    try {
+      await queryCliUtilizationTargets(allTargets, {
+        buttonId,
+        okPrefix,
+        failPrefix,
+        hintBase: opts.hintBase,
+        cacheSource: opts.cacheSource,
+        cacheMeta: opts.cacheMeta
+      });
+    } catch (_) {
+      // Error is already surfaced in queryCliUtilizationTargets.
     }
   }
 
@@ -4645,10 +4973,16 @@
     if (e.target && e.target.id === 'cliCredModal') closeCliCredModal(null);
   });
   $('importMode').addEventListener('change', (e) => showImportPanel(e.target.value));
-  $('runSqlGenerateModal').addEventListener('click', () => runSqlGenerateAndBuild('sqlStartHostnameModal', 'sqlResultHintModal', importInputAction));
+  $('runSqlGenerateModal').addEventListener('click', async () => {
+    try {
+      await runSqlGenerateAndBuild('sqlStartHostnameModal', 'sqlResultHintModal', importInputAction);
+    } catch (_) {}
+  });
   $('downloadSqlCsvModal').addEventListener('click', downloadLastSqlCsv);
-  $('runCliGenerateModal').addEventListener('click', async () => {
-    const addr = ($('cliDeviceAddrModal').value || '').trim();
+
+  async function runCliGenerateAndBuild(opts = {}) {
+    const addr = String(opts.addr != null ? opts.addr : ($('cliDeviceAddrModal').value || '')).trim();
+    const action = String(opts.action || importInputAction || 'import').trim();
     const depthRaw = parseInt(($('cliMaxDepthModal').value || '3').trim(), 10);
     const maxDepth = ctxAppendSingleHop ? 1 : (Number.isFinite(depthRaw) ? Math.min(5, Math.max(1, depthRaw)) : 3);
     const workersRaw = parseInt(($('cliMaxWorkersModal').value || '4').trim(), 10);
@@ -4738,15 +5072,15 @@
       $('cliResultHintModal').textContent = `CLI 返回 ${data.row_count || 0} 行，已查询设备 ${data.queried_count || 0} 台，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s`;
       let merged = { addedRows: 0, mergedRows: rawRows.length };
       if (data.csv_text) {
-        merged = applyQueryCsvText(data.csv_text, { append: importInputAction === 'append', sourceName: 'cli' });
+        merged = applyQueryCsvText(data.csv_text, { append: action === 'append', sourceName: 'cli' });
       }
-      if (importInputAction !== 'append' && addr) {
+      if (action !== 'append' && addr) {
         primaryCliSource = addr;
       }
       if ((data.row_count || 0) > 0) {
         if (wasCancelled) {
           setStatus(`CLI 查询已取消（保留部分结果，总用时 ${elapsedSec}s）`);
-        } else if (importInputAction === 'append') {
+        } else if (action === 'append') {
           setStatus(`CLI 数据已追加并生成拓扑（总用时 ${elapsedSec}s）`);
         } else {
           setStatus(`CLI 数据已载入并生成拓扑（总用时 ${elapsedSec}s）`);
@@ -4755,24 +5089,33 @@
         setStatus(`CLI 查询已取消（总用时 ${elapsedSec}s）`);
       } else {
         setStatus(`CLI 查询完成（无可用邻接，总用时 ${elapsedSec}s）`);
-        setErr('CLI 查询成功，但未解析到可用 LLDP 邻接记录。请下载 CLI 调试日志检查原始回显。');
+        setErr('CLI 查询成功，但未解析到可用 LLDP 邻接记录。请检查原始回显或重新开启调试后排查。');
       }
       const vendors = data.detected_vendors ? Object.values(data.detected_vendors).join(', ') : 'unknown';
       if (wasCancelled) {
-        if (importInputAction === 'append') {
+        if (action === 'append') {
           setOK(`已取消 CLI 追加采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s，新增 ${merged.addedRows} 行，当前总计 ${merged.mergedRows} 行。自动识别厂商：${vendors}`);
         } else {
           setOK(`已取消 CLI 递归采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s，已保留 ${data.row_count || 0} 行部分结果。自动识别厂商：${vendors}`);
         }
-      } else if (importInputAction === 'append') {
+      } else if (action === 'append') {
         setOK(`已完成 CLI 追加采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s，新增 ${merged.addedRows} 行，当前总计 ${merged.mergedRows} 行。自动识别厂商：${vendors}`);
       } else {
         setOK(`已完成 CLI 递归采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s，结果 ${data.row_count || 0} 行。自动识别厂商：${vendors}`);
       }
+      return {
+        ok: true,
+        addr,
+        rowCount: Number(data.row_count || 0),
+        mergedRows: Number(merged?.mergedRows || 0),
+        addedRows: Number(merged?.addedRows || 0),
+        cancelled: !!wasCancelled
+      };
     } catch (e) {
       stopCliTimer();
       setStatus(cliLldpTaskCancelling ? 'CLI 查询已取消' : 'CLI 查询失败');
       setErr(`CLI 查询失败：${String(e && e.message ? e.message : e)}`);
+      throw e;
     } finally {
       stopCliTimer();
       currentCliLldpTaskId = '';
@@ -4780,6 +5123,12 @@
       setCliTaskUiRunning(false);
       ctxAppendSingleHop = false;
     }
+  }
+
+  $('runCliGenerateModal').addEventListener('click', async () => {
+    try {
+      await runCliGenerateAndBuild();
+    } catch (_) {}
   });
   $('cancelCliGenerateModal').addEventListener('click', async () => {
     const taskId = String(currentCliLldpTaskId || '').trim();
@@ -4801,9 +5150,18 @@
   $('pickCsvModal').addEventListener('click', () => $('file').click());
   $('appendCsvModal').addEventListener('click', () => $('appendFile').click());
   $('downloadCliCsvModal').addEventListener('click', downloadLastSqlCsv);
-  $('downloadCliDebugModal').addEventListener('click', downloadLastCliDebug);
   $('downloadUtilDebug').addEventListener('click', downloadLastUtilDebug);
   $('downloadUtilCache').addEventListener('click', downloadUtilCacheCsv);
+  $('clearUtilCache').addEventListener('click', clearUtilCache);
+  $('openUtilFilterModal').addEventListener('click', openUtilFilterModal);
+  $('closeUtilFilterModal').addEventListener('click', closeUtilFilterModal);
+  $('applyUtilFilter').addEventListener('click', () => {
+    const threshold = Number(($('utilFilterThreshold')?.value || '40').trim());
+    if (applyUtilThresholdFilter(threshold)) closeUtilFilterModal();
+  });
+  $('utilFilterModal').addEventListener('click', (e) => {
+    if (e.target && e.target.id === 'utilFilterModal') closeUtilFilterModal();
+  });
   $('loadPasteModal').addEventListener('click', () => {
     const t = ($('pasteModal').value || '').trim();
     if (!t) { setErr('粘贴内容为空'); return; }
@@ -5030,86 +5388,17 @@
       setErr('未找到可查询的 source 设备端口');
       return;
     }
-    const useCache = timeSel.time_mode === 'current';
-    const targets = useCache
-      ? allTargets.filter(t => !hasSuccessfulUtilCache(t.util_key, 'zabbix', { time_mode: 'current' }))
-      : allTargets.slice();
-    const skippedCached = allTargets.length - targets.length;
-    if (!targets.length) {
-      applyUtilizationToEdges();
-      $('utilResultHint').textContent = `无需刷新：当前可见链路端口 ${allTargets.length} 个，已缓存 Zabbix 成功 ${skippedCached} 个。`;
-      setOK('Zabbix 链路利用率已是最新缓存结果');
-      closeZbxUtilModal();
-      return;
-    }
-    const btn = $('refreshUtilizationZbx');
-    const old = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = '查询中...';
-    setErr('');
-    $('utilResultHint').textContent = timeSel.time_mode === 'current'
-      ? `正在通过 Zabbix 增量查询 ${targets.length} 个 source 端口（跳过已缓存 ${skippedCached} 个）...`
-      : `正在通过 Zabbix 查询 ${targets.length} 个 source 端口的时间段最大值...`;
-    const metric = (($('utilMetric')?.value || 'max').trim().toLowerCase());
-    const zabbixUrl = ($('zbxServerUrl')?.value || '').trim();
-    const zabbixApiToken = ($('zbxApiToken')?.value || '').trim();
-    const zabbixVerifySsl = !!$('zbxVerifySsl')?.checked;
-    if (!zabbixUrl) {
-      setErr('请先填写 Zabbix URL');
-      return;
-    }
-    if (!zabbixApiToken) {
-      setErr('请先填写 Zabbix API Token');
-      return;
-    }
-    saveZbxPrefs();
-    const base = apiBaseUrl();
     try {
-      const resp = await fetch(`${base}/api/zabbix/link-utilization`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          targets,
-          metric,
-          ...timeSel,
-          zabbix_url: zabbixUrl || null,
-          zabbix_api_token: zabbixApiToken || null,
-          zabbix_verify_ssl: zabbixVerifySsl
-        })
+      await queryZabbixUtilizationTargets(allTargets, timeSel, {
+        buttonId: 'refreshUtilizationZbx',
+        zabbixConfig: readZabbixConfig()
       });
-      const data = await resp.json();
-      if (!resp.ok || !data?.ok) throw new Error(data?.detail || `HTTP ${resp.status}`);
-      for (const r of (data.results || [])) {
-        const key = String(r.util_key || `${r.source_device || ''}||${r.source_interface || ''}`).toLowerCase();
-        if (!key) continue;
-        r.data_source = 'zabbix';
-        r.time_mode = String(r.time_mode || timeSel.time_mode || 'current').trim().toLowerCase();
-        utilByKey.set(key, r);
-      }
-      applyUtilizationToEdges();
-      const results = Array.isArray(data.results) ? data.results : [];
-      const okCount = results.filter(r => r && r.status === 'ok').length;
-      const noDataCount = results.filter(r => r && r.status === 'no_data').length;
-      const failCount = results.filter(r => r && r.status === 'failed').length;
-      const secs = Number(data.total_elapsed_seconds || 0).toFixed(1);
-      $('utilResultHint').textContent = timeSel.time_mode === 'current'
-        ? `Zabbix 利用率已增量更新：本次查询 ${targets.length}（跳过已缓存 ${skippedCached}），查询设备 ${(data.queried_devices || []).length}，耗时 ${secs}s，口径 ${metric.toUpperCase()}，模式 当前值，本次成功 ${okCount}，无数据 ${noDataCount}，失败 ${failCount}，缓存更新 ${Number(data.cache_updates || 0)}，缓存总计 ${Number(data.cache_total || 0)}`
-        : `Zabbix 利用率已更新：本次查询 ${targets.length}，查询设备 ${(data.queried_devices || []).length}，耗时 ${secs}s，口径 ${metric.toUpperCase()}，模式 ${timeSel.hint}，本次成功 ${okCount}，无数据 ${noDataCount}，失败 ${failCount}`;
-      if (okCount === 0) {
-        const firstErr = results.find(r => r && r.error)?.error || '';
-        setErr(`Zabbix 链路利用率未获取到有效结果。${firstErr ? `首个错误：${firstErr}` : ''}`);
-      } else {
-        setOK(`Zabbix 链路利用率刷新成功（${timeSel.hint}，成功 ${okCount}）`);
-      }
       applyAdaptiveRenderMode();
       closeZbxUtilModal();
     } catch (e) {
       const msg = String(e && e.message ? e.message : e);
       setErr(`Zabbix 链路利用率查询失败：${msg}`);
       $('utilResultHint').textContent = `Zabbix 链路利用率查询失败：${msg}`;
-    } finally {
-      btn.disabled = false;
-      btn.textContent = old;
     }
   });
   $('utilColorEnabled').addEventListener('change', () => applyUtilizationToEdges());
@@ -5347,26 +5636,33 @@
 
   $('ctxUtil').addEventListener('click', async () => {
     const nodes = ctxNodes();
+    const edges = ctxEdges();
     hideCtx();
-    if (!nodes.length) return;
+    if (!nodes.length && !edges.length) return;
     if (!cy || !rawRows.length) {
       setErr('请先生成拓扑，再查询链路利用率');
       return;
     }
-    const allTargets = buildUtilTargetsForNodes(nodes);
+    const allTargets = buildUtilTargetsForSelection(nodes, edges);
     if (!allTargets.length) {
-      setErr('选中节点未找到可查询的 source 设备端口');
+      setErr('当前选择未找到可查询的 source 设备端口');
       return;
     }
     const names = nodes.map((n) => String(n.data('label') || n.id())).filter(Boolean);
-    const nameText = names.length > 1 ? `${names[0]} 等${names.length}台` : (names[0] || '选中节点');
-    await refreshLinkUtilization({
-      targets: allTargets,
-      hintBase: `正在按右键节点查询链路利用率：${allTargets.length} 个 source 端口`,
-      okPrefix: `右键链路利用率已更新（${nameText}）`,
-      failPrefix: '右键链路利用率查询失败',
-      emptyMsg: '选中节点未找到可查询的 source 设备端口'
-    });
+    const edgeCount = edges.length || 0;
+    const scopeLabel = names.length
+      ? (names.length > 1 ? `${names[0]} 等${names.length}台` : names[0])
+      : (edgeCount > 1 ? `已选 ${edgeCount} 条链路` : '当前链路');
+    try {
+      await refreshPreferredLinkUtilization({
+        targets: allTargets,
+        buttonId: '',
+        scopeLabel,
+        emptyMsg: '当前选择未找到可查询的 source 设备端口'
+      });
+    } catch (e) {
+      setErr(`右键链路利用率查询失败：${String(e && e.message ? e.message : e)}`);
+    }
   });
 
   function collectNodeIpsFromRows(node) {
@@ -5426,12 +5722,17 @@
     return label;
   }
 
+  function resolveSqlQueryTargetForNode(node) {
+    if (!node) return '';
+    const label = String(node.data('label') || '').trim();
+    const ip = String(node.data('ip') || '').trim();
+    const fallbackIps = collectNodeIpsFromRows(node).filter(isIpv4);
+    return ip || fallbackIps[0] || label;
+  }
+
   $('ctxAppendQuery').addEventListener('click', async () => {
-    const nodes = ctxNodes();
+    const nodes = ctxNodes().filter((n) => !n.data('isGroup'));
     if (!nodes.length) return hideCtx();
-    const node = nodes[0];
-    const label = (node.data('label') || '').trim();
-    const ip = (node.data('ip') || '').trim();
     const mode = ($('importMode')?.value || 'sql').toLowerCase();
 
     if (mode === 'csv') {
@@ -5443,28 +5744,72 @@
     ctxAppendSingleHop = true;
     hideCtx();
 
-      if (mode === 'sql') {
-      // Prefer management IP for SQL append to avoid hostname alias drift.
-      const target = ip || label;
-      if (!target) {
-        setErr('当前节点没有可用于 SQL 查询的设备名称。');
+    if (mode === 'sql') {
+      const targets = [];
+      const seen = new Set();
+      nodes.forEach((node) => {
+        const target = resolveSqlQueryTargetForNode(node);
+        const label = String(node.data('label') || '').trim();
+        const key = String(target || '').trim().toLowerCase();
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        targets.push({ target, label });
+      });
+      if (!targets.length) {
+        setErr('当前选中节点没有可用于 SQL 查询的设备名称。');
         return;
       }
-      $('sqlStartHostnameModal').value = target;
-      setOK(`正在以 SQL 方式追加查询：${target}`);
-      await runSqlGenerateAndBuild('sqlStartHostnameModal', 'sqlResultHintModal', 'append', { maxDepth: 1 });
+      const beforeRows = rawRows.length;
+      let okCount = 0;
+      let failCount = 0;
+      for (let i = 0; i < targets.length; i++) {
+        const item = targets[i];
+        try {
+          ctxAppendSingleHop = true;
+          $('sqlStartHostnameModal').value = item.target;
+          setOK(`正在以 SQL 方式追加查询：${item.target}${targets.length > 1 ? `（${i + 1}/${targets.length}）` : ''}`);
+          await runSqlGenerateAndBuild('sqlStartHostnameModal', 'sqlResultHintModal', 'append', { maxDepth: 1 });
+          okCount += 1;
+        } catch (_) {
+          failCount += 1;
+        }
+      }
+      const addedRows = Math.max(0, rawRows.length - beforeRows);
+      setOK(`已完成 SQL 批量追加：选中 ${targets.length} 台，成功 ${okCount} 台，失败 ${failCount} 台，新增 ${addedRows} 行，当前总计 ${rawRows.length} 行。`);
       return;
     }
 
-    // CLI mode: strongly prefer management IP to avoid jump-host DNS resolution failures.
-    const target = resolveCliQueryTargetForNode(node);
-    if (!target) {
-      setErr('当前节点没有可用于 CLI 查询的设备地址/名称。');
+    const targets = [];
+    const seen = new Set();
+    nodes.forEach((node) => {
+      const target = resolveCliQueryTargetForNode(node);
+      const label = String(node.data('label') || '').trim();
+      const key = String(target || '').trim().toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      targets.push({ target, label });
+    });
+    if (!targets.length) {
+      setErr('当前选中节点没有可用于 CLI 查询的设备地址/名称。');
       return;
     }
-    $('cliDeviceAddrModal').value = target;
-    setOK(`正在以 CLI 方式追加查询：${target}${target !== label ? `（节点：${label}）` : ''}`);
-    $('runCliGenerateModal').click();
+    const beforeRows = rawRows.length;
+    let okCount = 0;
+    let failCount = 0;
+    for (let i = 0; i < targets.length; i++) {
+      const item = targets[i];
+      try {
+        ctxAppendSingleHop = true;
+        $('cliDeviceAddrModal').value = item.target;
+        setOK(`正在以 CLI 方式追加查询：${item.target}${item.target !== item.label ? `（节点：${item.label}）` : ''}${targets.length > 1 ? `（${i + 1}/${targets.length}）` : ''}`);
+        await runCliGenerateAndBuild({ addr: item.target, action: 'append' });
+        okCount += 1;
+      } catch (_) {
+        failCount += 1;
+      }
+    }
+    const addedRows = Math.max(0, rawRows.length - beforeRows);
+    setOK(`已完成 CLI 批量追加：选中 ${targets.length} 台，成功 ${okCount} 台，失败 ${failCount} 台，新增 ${addedRows} 行，当前总计 ${rawRows.length} 行。`);
   });
 
   $('nodeLabelMode').addEventListener('change', (e) => updateNodeLabels(e.target.value));
