@@ -399,6 +399,7 @@
           <select id="nodeLabelMode">
             <option value="short">缩略（推荐）</option>
             <option value="full" selected>全名（容易挤）</option>
+            <option value="none">隐藏</option>
           </select>
         </div>
         <div>
@@ -524,6 +525,14 @@
         <button id="importSessionBtn">导入会话</button>
         <input id="importSessionFile" type="file" accept=".json,application/json" style="display:none" />
       </div>
+      <div class="action-group">
+        <div id="cleanupGroupTitle" class="action-group-title">清理与分享</div>
+        <div class="row inline">
+          <button id="clearTempDataBtn">删除临时数据</button>
+          <button id="clearConnectionPrefsBtn">删除连接配置</button>
+        </div>
+        <div class="hint" id="cleanupHint">删除临时数据会清空服务器上的临时 CSV、调试日志、状态快照和服务日志；删除连接配置只清空当前浏览器保存的 SQL / CLI / Zabbix 配置。</div>
+      </div>
       </div>
     </div>
 
@@ -598,6 +607,7 @@
       <input id="sqlStartHostnameModal" type="text" placeholder="例如：ID-DCI2-GENERAL.CONNECTION-R003-BRIDGE-02" />
       <div class="modal-actions">
         <button id="runSqlGenerateModal" class="primary">执行 SQL 查询</button>
+        <button id="openSqlConfigModal" type="button">SQL配置</button>
         <button id="downloadSqlCsvModal">下载临时 CSV</button>
         <button class="closeImportModalBtn">关闭</button>
       </div>
@@ -741,6 +751,37 @@
     <div class="modal-actions">
       <button id="saveZbxConfig" class="primary">保存配置</button>
       <button id="closeZbxConfigModal">关闭</button>
+    </div>
+  </div>
+</div>
+<div id="sqlConfigModal" class="modal-backdrop">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="sqlConfigTitle">
+    <div class="modal-title" id="sqlConfigTitle">SQL 配置</div>
+    <div class="modal-form-grid">
+      <div class="field">
+        <label>Host</label>
+        <input id="sqlDbHost" type="text" placeholder="例如：10.73.255.35" />
+      </div>
+      <div class="field">
+        <label>Port</label>
+        <input id="sqlDbPort" type="number" min="1" max="65535" step="1" value="8080" />
+      </div>
+      <div class="field">
+        <label>User</label>
+        <input id="sqlDbUser" type="text" placeholder="例如：readonly" />
+      </div>
+      <div class="field">
+        <label>Database</label>
+        <input id="sqlDbName" type="text" placeholder="例如：monitoring" />
+      </div>
+      <div class="field span-2">
+        <label>Password</label>
+        <input id="sqlDbPassword" type="password" placeholder="请输入数据库密码" />
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button id="saveSqlConfig" class="primary">保存配置</button>
+      <button id="closeSqlConfigModal">关闭</button>
     </div>
   </div>
 </div>
@@ -917,6 +958,9 @@
       btn_center: '居中 + 放大',
       btn_select_visible: '全选可见节点',
       btn_relayout_selected: '重排选中设备',
+      node_label_short: '缩略（推荐）',
+      node_label_full: '全名（容易挤）',
+      node_label_none: '隐藏',
       btn_fit_selection: '定位选中',
       btn_isolate: '仅显示邻接',
       btn_clear_visibility: '恢复显示',
@@ -930,6 +974,10 @@
       btn_export_png: '导出 PNG',
       btn_export_session: '导出会话',
       btn_import_session: '导入会话',
+      cleanup_group_title: '清理与分享',
+      btn_clear_temp_data: '删除临时数据',
+      btn_clear_connection_prefs: '删除连接配置',
+      cleanup_hint: '删除临时数据会清空服务器上的临时 CSV、调试日志、状态快照和服务日志；删除连接配置只清空当前浏览器保存的 SQL / CLI / Zabbix 配置。',
       btn_cli_util: 'CLI 链路利用率',
       btn_zbx_util: 'Zabbix链路利用率',
       btn_zbx_config: 'Zabbix配置',
@@ -939,6 +987,7 @@
       btn_util_filter: '利用率过滤',
       btn_clear_util_filter: '清除过滤',
       btn_run_sql: '执行 SQL 查询',
+      btn_sql_config: 'SQL配置',
       btn_dl_sql_tmp: '下载临时 CSV',
       btn_run_cli: '执行 CLI 查询',
       btn_cancel_query: '取消查询',
@@ -952,6 +1001,8 @@
       save_state_modal_title: '保存状态',
       save_state_name_label: '状态名称',
       save_state_name_hint: '服务器会保留最近 15 个状态，建议用业务名或阶段名命名。',
+      sql_config_title: 'SQL 配置',
+      sql_config_save: '保存配置',
       zbx_config_title: 'Zabbix 配置',
       zbx_config_save: '保存配置',
       state_refresh: '刷新列表',
@@ -1011,6 +1062,9 @@
       btn_center: 'Center + Zoom',
       btn_select_visible: 'Select Visible Nodes',
       btn_relayout_selected: 'Relayout Selected',
+      node_label_short: 'Short (Recommended)',
+      node_label_full: 'Full (Crowded)',
+      node_label_none: 'Hidden',
       btn_fit_selection: 'Focus Selection',
       btn_isolate: 'Show Adjacent Only',
       btn_clear_visibility: 'Reset Visibility',
@@ -1024,6 +1078,10 @@
       btn_export_png: 'Export PNG',
       btn_export_session: 'Export Session',
       btn_import_session: 'Import Session',
+      cleanup_group_title: 'Cleanup & Sharing',
+      btn_clear_temp_data: 'Delete Temp Data',
+      btn_clear_connection_prefs: 'Delete Connection Config',
+      cleanup_hint: 'Delete Temp Data clears server-side temp CSV/debug/state/log files; Delete Connection Config clears only browser-stored SQL/CLI/Zabbix settings.',
       btn_cli_util: 'CLI Link Utilization',
       btn_zbx_util: 'Zabbix Link Utilization',
       btn_zbx_config: 'Zabbix Config',
@@ -1033,6 +1091,7 @@
       btn_util_filter: 'Util Filter',
       btn_clear_util_filter: 'Clear Filter',
       btn_run_sql: 'Run SQL Query',
+      btn_sql_config: 'SQL Config',
       btn_dl_sql_tmp: 'Download Temp CSV',
       btn_run_cli: 'Run CLI Query',
       btn_cancel_query: 'Cancel Query',
@@ -1046,6 +1105,8 @@
       save_state_modal_title: 'Save State',
       save_state_name_label: 'State Name',
       save_state_name_hint: 'The server keeps the latest 15 states. Use a business or stage name.',
+      sql_config_title: 'SQL Config',
+      sql_config_save: 'Save Config',
       zbx_config_title: 'Zabbix Config',
       zbx_config_save: 'Save Config',
       state_refresh: 'Refresh',
@@ -1187,6 +1248,9 @@
     setParentLabel('layoutMode', 'layout_mode_label');
     setParentLabel('stripDomain', 'strip_domain_label');
     setParentLabel('nodeLabelMode', 'node_label_label');
+    setOptionText('nodeLabelMode', 'short', 'node_label_short');
+    setOptionText('nodeLabelMode', 'full', 'node_label_full');
+    setOptionText('nodeLabelMode', 'none', 'node_label_none');
     setParentLabel('edgeLabelMode', 'edge_label_label');
     setParentLabel('search', 'search_label');
     setParentLabel('filter', 'filter_label');
@@ -1202,6 +1266,7 @@
     setText('grpDeleteTitle', 'grp_delete');
     setText('secExportTitle', 'sec_export');
     setText('secUtilTitle', 'sec_util');
+    setText('cleanupGroupTitle', 'cleanup_group_title');
     setText('build', 'btn_build');
     setText('fit', 'btn_fit');
     setText('center', 'btn_center');
@@ -1220,6 +1285,9 @@
     setText('exportPng', 'btn_export_png');
     setText('exportSession', 'btn_export_session');
     setText('importSessionBtn', 'btn_import_session');
+    setText('clearTempDataBtn', 'btn_clear_temp_data');
+    setText('clearConnectionPrefsBtn', 'btn_clear_connection_prefs');
+    setText('cleanupHint', 'cleanup_hint');
     setText('refreshUtilization', 'btn_cli_util');
     setText('refreshUtilizationZbx', 'btn_zbx_util');
     setText('openZbxConfig', 'btn_zbx_config');
@@ -1229,6 +1297,7 @@
     setText('openUtilFilterModal', 'btn_util_filter');
     setText('clearUtilFilterOnly', 'btn_clear_util_filter');
     setText('runSqlGenerateModal', 'btn_run_sql');
+    setText('openSqlConfigModal', 'btn_sql_config');
     setText('downloadSqlCsvModal', 'btn_dl_sql_tmp');
     setText('runCliGenerateModal', 'btn_run_cli');
     setText('cancelCliGenerateModal', 'btn_cancel_query');
@@ -1248,6 +1317,9 @@
     setText('saveStateModalHint', 'save_state_name_hint');
     setText('confirmSaveState', 'btn_save_state');
     setText('closeSaveStateModal', 'state_close');
+    setText('sqlConfigTitle', 'sql_config_title');
+    setText('saveSqlConfig', 'sql_config_save');
+    setText('closeSqlConfigModal', 'state_close');
     setText('zbxConfigTitle', 'zbx_config_title');
     setText('saveZbxConfig', 'zbx_config_save');
     setText('refreshStateList', 'state_refresh');
@@ -1427,7 +1499,10 @@
       if ($('layerTerms')) $('layerTerms').value = snapshot.ui?.layerTerms || '';
       if ($('bizIsolationTerms')) $('bizIsolationTerms').value = snapshot.ui?.bizIsolationTerms || '';
       if ($('layoutMode')) $('layoutMode').value = snapshot.ui?.layoutMode || 'layer';
-      if ($('nodeLabelMode')) $('nodeLabelMode').value = snapshot.ui?.nodeLabelMode || 'full';
+      if ($('nodeLabelMode')) {
+        const savedNodeLabelMode = snapshot.ui?.nodeLabelMode || (snapshot.ui?.nodeLabelsHidden ? 'none' : 'full');
+        $('nodeLabelMode').value = savedNodeLabelMode;
+      }
       if ($('edgeLabelMode')) $('edgeLabelMode').value = snapshot.ui?.edgeLabelMode || 'none';
       if ($('spacing')) $('spacing').value = snapshot.ui?.spacing || '0.5';
       if ($('stripDomain')) $('stripDomain').value = snapshot.ui?.stripDomain || 'yes';
@@ -2177,7 +2252,7 @@
         {
           selector: 'node',
           style: {
-            'label': nodeLabelMode === 'full' ? 'data(label)' : 'data(short)',
+            'label': nodeLabelMode === 'none' ? '' : (nodeLabelMode === 'full' ? 'data(label)' : 'data(short)'),
             'font-size': 10,
             'text-outline-width': 2,
             'text-outline-color': '#ffffff',
@@ -3842,12 +3917,15 @@
 
   function updateNodeLabels(mode) {
     if (!cy) return;
-    const useFull = mode === 'full';
+    const normalized = ['short', 'full', 'none'].includes(String(mode || '')) ? String(mode) : 'full';
+    const useFull = normalized === 'full';
+    const hidden = normalized === 'none';
     cy.style()
       .selector('node')
-      .style('label', useFull ? 'data(label)' : 'data(short)')
+      .style('label', hidden ? '' : (useFull ? 'data(label)' : 'data(short)'))
       .update();
-    setOK(useFull ? '节点标签：全名' : '节点标签：缩略');
+    if (hidden) setOK('节点标签：隐藏');
+    else setOK(useFull ? '节点标签：全名' : '节点标签：缩略');
   }
 
   function download(filename, text, mime='text/plain') {
@@ -3927,7 +4005,10 @@
     if ($('layerTerms') && ui.layerTerms != null) $('layerTerms').value = String(ui.layerTerms);
     if ($('stripDomain') && ui.stripDomain) $('stripDomain').value = String(ui.stripDomain);
     if ($('layoutMode') && ui.layoutMode) $('layoutMode').value = String(ui.layoutMode);
-    if ($('nodeLabelMode') && ui.nodeLabelMode) $('nodeLabelMode').value = String(ui.nodeLabelMode);
+    if ($('nodeLabelMode')) {
+      const savedNodeLabelMode = ui.nodeLabelMode || (ui.nodeLabelsHidden ? 'none' : 'full');
+      $('nodeLabelMode').value = String(savedNodeLabelMode);
+    }
     if ($('edgeLabelMode') && ui.edgeLabelMode) $('edgeLabelMode').value = String(ui.edgeLabelMode);
     if ($('spacing') && ui.spacing != null) $('spacing').value = String(ui.spacing);
     if ($('bizIsolationTerms') && ui.bizIsolationTerms != null) $('bizIsolationTerms').value = String(ui.bizIsolationTerms);
@@ -4060,6 +4141,15 @@
     $('zbxConfigModal').style.display = 'none';
   }
 
+  async function openSqlConfigModal() {
+    await loadSqlPrefs();
+    $('sqlConfigModal').style.display = 'flex';
+  }
+
+  function closeSqlConfigModal() {
+    $('sqlConfigModal').style.display = 'none';
+  }
+
   function parseZbxTimeExpr(raw) {
     const text = String(raw || '').trim();
     if (!text) throw new Error('时间表达式不能为空');
@@ -4172,6 +4262,7 @@
   const CLI_PREF_KEY = 'lldp_cli_import_prefs_v1';
   const TOPOLOGY_UI_PREF_KEY = 'lldp_topology_ui_prefs_v1';
   const ZBX_PREF_KEY = 'lldp_zabbix_prefs_v1';
+  const SQL_PREF_KEY = 'lldp_sql_prefs_v1';
   function apiBaseUrl() {
     // If opened as file://, use local service endpoint explicitly.
     if (window.location.protocol === 'file:') return 'http://127.0.0.1:18080';
@@ -4234,10 +4325,19 @@
     if ($(hintId)) $(hintId).textContent = '';
     try {
       const base = apiBaseUrl();
+      const sqlCfg = readSqlConfig();
       const startResp = await fetch(`${base}/api/sql/lldp-csv/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ start_hostname: startHostname, max_depth: maxDepth })
+        body: JSON.stringify({
+          start_hostname: startHostname,
+          max_depth: maxDepth,
+          db_host: sqlCfg.db_host || null,
+          db_port: sqlCfg.db_port || null,
+          db_user: sqlCfg.db_user || null,
+          db_password: sqlCfg.db_password || null,
+          db_name: sqlCfg.db_name || null
+        })
       });
       const startData = await startResp.json();
       if (!startResp.ok) {
@@ -4362,6 +4462,31 @@
     }
   }
 
+  async function clearTempRuntimeData() {
+    if (!confirm('确认删除服务器上的临时数据？这会清空临时 CSV、调试日志、状态快照和服务日志。')) return;
+    const base = apiBaseUrl();
+    try {
+      const resp = await fetch(`${base}/api/admin/cleanup-temp-data`, { method: 'POST' });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || !data?.ok) throw new Error(data?.detail || `HTTP ${resp.status}`);
+      lastSqlDownloadUrl = '';
+      lastCliDebugUrl = '';
+      lastUtilDebugUrl = '';
+      utilByKey = new Map();
+      utilCacheLoadedAt = '';
+      clearUtilizationFromGraph();
+      closeStateModal();
+      const tmpCount = Number(data.removed_tmp_files || 0);
+      const snapCount = Number(data.removed_snapshot_files || 0);
+      const logCount = Number(data.cleared_log_files || 0);
+      setOK(`已删除临时数据：临时文件 ${tmpCount} 个，状态快照 ${snapCount} 个，服务日志 ${logCount} 个。`);
+      setErr('');
+      if ($('utilResultHint')) $('utilResultHint').textContent = '临时数据已清空，链路利用率缓存与调试文件已移除。';
+    } catch (e) {
+      setErr(`删除临时数据失败：${String(e && e.message ? e.message : e)}`);
+    }
+  }
+
   async function loadUtilCacheFromServer() {
     const base = apiBaseUrl();
     try {
@@ -4413,6 +4538,63 @@
     }
   }
 
+  async function loadSqlPrefs() {
+    let hasLocal = false;
+    try {
+      const raw = localStorage.getItem(SQL_PREF_KEY);
+      if (raw) {
+        const p = JSON.parse(raw);
+        if (typeof p.db_host === 'string') $('sqlDbHost').value = p.db_host;
+        if (p.db_port != null) $('sqlDbPort').value = String(p.db_port);
+        if (typeof p.db_user === 'string') $('sqlDbUser').value = p.db_user;
+        if (typeof p.db_password === 'string') $('sqlDbPassword').value = p.db_password;
+        if (typeof p.db_name === 'string') $('sqlDbName').value = p.db_name;
+        hasLocal = true;
+      }
+    } catch (_) {
+      // Ignore local storage errors.
+    }
+    if (hasLocal) return;
+    try {
+      const base = apiBaseUrl();
+      const resp = await fetch(`${base}/api/sql/config-defaults`, { cache: 'no-store' });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || data?.ok !== true) return;
+      if (typeof data.db_host === 'string') $('sqlDbHost').value = data.db_host;
+      if (data.db_port != null) $('sqlDbPort').value = String(data.db_port);
+      if (typeof data.db_user === 'string') $('sqlDbUser').value = data.db_user;
+      if (typeof data.db_password === 'string') $('sqlDbPassword').value = data.db_password;
+      if (typeof data.db_name === 'string') $('sqlDbName').value = data.db_name;
+      saveSqlPrefs();
+    } catch (_) {
+      // Ignore server default load errors.
+    }
+  }
+
+  function saveSqlPrefs() {
+    try {
+      localStorage.setItem(SQL_PREF_KEY, JSON.stringify({
+        db_host: ($('sqlDbHost')?.value || '').trim(),
+        db_port: Number(($('sqlDbPort')?.value || '8080').trim()) || 8080,
+        db_user: ($('sqlDbUser')?.value || '').trim(),
+        db_password: $('sqlDbPassword')?.value || '',
+        db_name: ($('sqlDbName')?.value || '').trim()
+      }));
+    } catch (_) {
+      // Ignore local storage errors.
+    }
+  }
+
+  function readSqlConfig() {
+    return {
+      db_host: ($('sqlDbHost')?.value || '').trim(),
+      db_port: Number(($('sqlDbPort')?.value || '8080').trim()) || 8080,
+      db_user: ($('sqlDbUser')?.value || '').trim(),
+      db_password: $('sqlDbPassword')?.value || '',
+      db_name: ($('sqlDbName')?.value || '').trim()
+    };
+  }
+
   function loadZbxPrefs() {
     try {
       const raw = localStorage.getItem(ZBX_PREF_KEY);
@@ -4458,6 +4640,35 @@
     }
   }
 
+  function clearConnectionPrefs() {
+    if (!confirm('确认删除当前浏览器保存的连接配置？这会清空 SQL、CLI 与 Zabbix 的本地保存项。')) return;
+    try {
+      localStorage.removeItem(SQL_PREF_KEY);
+      localStorage.removeItem(CLI_PREF_KEY);
+      localStorage.removeItem(ZBX_PREF_KEY);
+    } catch (_) {
+      // Ignore local storage errors.
+    }
+    if ($('sqlDbHost')) $('sqlDbHost').value = '';
+    if ($('sqlDbPort')) $('sqlDbPort').value = '8080';
+    if ($('sqlDbUser')) $('sqlDbUser').value = '';
+    if ($('sqlDbPassword')) $('sqlDbPassword').value = '';
+    if ($('sqlDbName')) $('sqlDbName').value = '';
+    lastCliPassword = '';
+    if ($('cliUsernameModal')) $('cliUsernameModal').value = '';
+    if ($('cliPasswordModal')) $('cliPasswordModal').value = '';
+    if ($('cliSmcJumpHostModal')) $('cliSmcJumpHostModal').value = '';
+    if ($('cliSmcJumpPortModal')) $('cliSmcJumpPortModal').value = '22';
+    if ($('cliSmcCommandModal')) $('cliSmcCommandModal').value = 'smc server toc {jump_host}';
+    if ($('cliConnectTimeoutModal')) $('cliConnectTimeoutModal').value = '60';
+    if ($('cliCommandTimeoutModal')) $('cliCommandTimeoutModal').value = '45';
+    if ($('zbxServerUrl')) $('zbxServerUrl').value = '';
+    if ($('zbxApiToken')) $('zbxApiToken').value = '';
+    if ($('zbxVerifySsl')) $('zbxVerifySsl').checked = false;
+    setOK('已删除当前浏览器保存的连接配置。');
+    setErr('');
+  }
+
   function loadTopologyUiPrefs() {
     try {
       const raw = localStorage.getItem(TOPOLOGY_UI_PREF_KEY);
@@ -4469,6 +4680,13 @@
       if (typeof p.show_only_terms === 'string') $('showOnly').value = p.show_only_terms;
       if (typeof p.name_cluster_mode === 'string' && $('nameClusterMode')) {
         $('nameClusterMode').value = p.name_cluster_mode === 'off' ? 'off' : 'on';
+      }
+      if ($('nodeLabelMode')) {
+        if (typeof p.node_label_mode === 'string' && ['short', 'full', 'none'].includes(p.node_label_mode)) {
+          $('nodeLabelMode').value = p.node_label_mode;
+        } else if (typeof p.node_labels_hidden === 'boolean') {
+          $('nodeLabelMode').value = p.node_labels_hidden ? 'none' : 'full';
+        }
       }
       if (typeof p.auto_group_mode === 'string' && $('autoGroupMode')) {
         $('autoGroupMode').value = p.auto_group_mode === 'on' ? 'on' : 'off';
@@ -4495,6 +4713,7 @@
         filter_terms: ($('filter')?.value || '').trim(),
         show_only_terms: ($('showOnly')?.value || '').trim(),
         name_cluster_mode: ($('nameClusterMode')?.value || 'on'),
+        node_label_mode: ($('nodeLabelMode')?.value || 'full'),
         auto_group_mode: ($('autoGroupMode')?.value || 'off'),
         name_cluster_strength: ($('nameClusterStrength')?.value || '0.6'),
         only_mode: viewState.onlyMode || 'none'
@@ -5390,6 +5609,7 @@
     if (e.target && e.target.id === 'importModal') closeImportModal();
   });
   loadCliPrefs();
+  loadSqlPrefs();
   loadZbxPrefs();
   loadTopologyUiPrefs();
   refreshKeywordHistories();
@@ -5483,6 +5703,13 @@
     }
   });
 
+  $('clearTempDataBtn').addEventListener('click', async () => {
+    await clearTempRuntimeData();
+  });
+  $('clearConnectionPrefsBtn').addEventListener('click', () => {
+    clearConnectionPrefs();
+  });
+
   $('saveServerState').addEventListener('click', () => {
     openSaveStateModal();
   });
@@ -5566,6 +5793,9 @@
   });
 
   $('refreshUtilization').addEventListener('click', refreshLinkUtilization);
+  $('openSqlConfigModal').addEventListener('click', async () => {
+    await openSqlConfigModal();
+  });
   $('openZbxConfig').addEventListener('click', () => {
     openZbxConfigModal();
   });
@@ -5588,9 +5818,36 @@
     setOK('Zabbix 配置已保存');
     setErr('');
   });
+  $('saveSqlConfig').addEventListener('click', () => {
+    const cfg = readSqlConfig();
+    if (!cfg.db_host) {
+      setErr('请先填写 SQL Host');
+      return;
+    }
+    if (!cfg.db_user) {
+      setErr('请先填写 SQL User');
+      return;
+    }
+    if (!cfg.db_name) {
+      setErr('请先填写 SQL Database');
+      return;
+    }
+    if (!cfg.db_password) {
+      setErr('请先填写 SQL Password');
+      return;
+    }
+    saveSqlPrefs();
+    closeSqlConfigModal();
+    setOK('SQL 配置已保存');
+    setErr('');
+  });
   $('closeZbxConfigModal').addEventListener('click', closeZbxConfigModal);
+  $('closeSqlConfigModal').addEventListener('click', closeSqlConfigModal);
   $('zbxConfigModal').addEventListener('click', (e) => {
     if (e.target === $('zbxConfigModal')) closeZbxConfigModal();
+  });
+  $('sqlConfigModal').addEventListener('click', (e) => {
+    if (e.target === $('sqlConfigModal')) closeSqlConfigModal();
   });
   $('zbxTimeMode').addEventListener('change', refreshZbxRangeFields);
   $('closeZbxUtilModal').addEventListener('click', closeZbxUtilModal);
@@ -6046,7 +6303,10 @@
     setOK(`已完成 CLI 批量追加：选中 ${targets.length} 台，成功 ${okCount} 台，失败 ${failCount} 台，新增 ${addedRows} 行，当前总计 ${rawRows.length} 行。`);
   });
 
-  $('nodeLabelMode').addEventListener('change', (e) => updateNodeLabels(e.target.value));
+  $('nodeLabelMode').addEventListener('change', (e) => {
+    saveTopologyUiPrefs();
+    updateNodeLabels(e.target.value);
+  });
   $('edgeLabelMode').addEventListener('change', (e) => updateEdgeLabels(e.target.value));
 
   $('fitSelection').addEventListener('click', () => {

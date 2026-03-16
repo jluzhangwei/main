@@ -160,14 +160,31 @@ def ensure_env_loaded() -> None:
     load_dotenv_file(env_file)
 
 
-def connect_db() -> pymysql.connections.Connection:
+def current_db_config_defaults() -> dict[str, Any]:
     ensure_env_loaded()
+    return {
+        "db_host": get_env("DB_HOST", "10.73.255.35"),
+        "db_port": int(get_env("DB_PORT", "8080")),
+        "db_user": get_env("DB_USER", "readonly"),
+        "db_password": os.getenv("DB_PASSWORD", ""),
+        "db_name": get_env("DB_NAME", "monitoring"),
+    }
 
-    host = get_env("DB_HOST", "10.73.255.35")
-    port = int(get_env("DB_PORT", "8080"))
-    user = get_env("DB_USER", "readonly")
-    password = os.getenv("DB_PASSWORD", "")
-    database = get_env("DB_NAME", "monitoring")
+
+def connect_db(
+    *,
+    db_host: str | None = None,
+    db_port: int | None = None,
+    db_user: str | None = None,
+    db_password: str | None = None,
+    db_name: str | None = None,
+) -> pymysql.connections.Connection:
+    cfg = current_db_config_defaults()
+    host = str(db_host or cfg["db_host"]).strip()
+    port = int(db_port or cfg["db_port"])
+    user = str(db_user or cfg["db_user"]).strip()
+    password = str(db_password if db_password is not None else cfg["db_password"])
+    database = str(db_name or cfg["db_name"]).strip()
 
     if not password:
         raise RuntimeError("Missing DB_PASSWORD. Set it in .env.mysql or environment")
@@ -1514,6 +1531,11 @@ def build_cli_lldp_rows(
 class QueryRequest(BaseModel):
     start_hostname: str
     max_depth: int = Field(default=3, ge=1, le=3)
+    db_host: str | None = None
+    db_port: int | None = Field(default=None, ge=1, le=65535)
+    db_user: str | None = None
+    db_password: str | None = None
+    db_name: str | None = None
 
 
 class CliQueryRequest(BaseModel):
@@ -2498,6 +2520,62 @@ def clear_link_util_cache() -> int:
     return len(rows)
 
 
+def _has_active_jobs() -> bool:
+    active_status = {"queued", "running", "cancelling"}
+    for jobs, lock in (
+        (SQL_QUERY_JOBS, SQL_QUERY_JOB_LOCK),
+        (CLI_QUERY_JOBS, CLI_QUERY_JOB_LOCK),
+        (LINK_UTIL_JOBS, LINK_UTIL_JOB_LOCK),
+    ):
+        with lock:
+            for job in jobs.values():
+                status = str(job.get("status") or "").strip().lower()
+                if status in active_status:
+                    return True
+    return False
+
+
+def cleanup_temp_runtime_data() -> dict[str, int]:
+    if _has_active_jobs():
+        raise HTTPException(status_code=409, detail="active tasks are running; stop or wait for them before cleanup")
+
+    removed_tmp_files = 0
+    removed_snapshot_files = 0
+    cleared_log_files = 0
+
+    if TMP_DIR.exists():
+        for path in TMP_DIR.iterdir():
+            if not path.is_file():
+                continue
+            try:
+                path.unlink(missing_ok=True)
+                removed_tmp_files += 1
+            except Exception:
+                continue
+
+    if STATE_DIR.exists():
+        for path in STATE_DIR.glob("*.json"):
+            try:
+                path.unlink(missing_ok=True)
+                removed_snapshot_files += 1
+            except Exception:
+                continue
+
+    log_path = BASE_DIR / ".lldp_service.log"
+    if log_path.exists():
+        try:
+            log_path.write_text("", encoding="utf-8")
+            cleared_log_files = 1
+        except Exception:
+            cleared_log_files = 0
+
+    return {
+        "removed_tmp_files": removed_tmp_files,
+        "removed_snapshot_files": removed_snapshot_files,
+        "cleared_log_files": cleared_log_files,
+    }
+
+
 def _unit_multiplier(unit: str) -> float:
     u = (unit or "").strip().lower()
     if u in {"g", "gb", "gbit", "gbps"}:
@@ -3150,9 +3228,24 @@ def _create_link_utilization_task(payload: LinkUtilRequest) -> dict[str, Any]:
     return {"task_id": task_id, "status": "queued"}
 
 
-def _run_sql_lldp_query(start_hostname: str, max_depth: int) -> dict[str, Any]:
+def _run_sql_lldp_query(
+    start_hostname: str,
+    max_depth: int,
+    *,
+    db_host: str | None = None,
+    db_port: int | None = None,
+    db_user: str | None = None,
+    db_password: str | None = None,
+    db_name: str | None = None,
+) -> dict[str, Any]:
     try:
-        conn = connect_db()
+        conn = connect_db(
+            db_host=db_host,
+            db_port=db_port,
+            db_user=db_user,
+            db_password=db_password,
+            db_name=db_name,
+        )
     except Exception as exc:
         raise RuntimeError(f"DB connect failed: {exc}") from exc
 
@@ -3309,7 +3402,15 @@ def _run_sql_query_task(task_id: str) -> None:
     try:
         start_hostname = str(payload.get("start_hostname", "")).strip()
         max_depth = int(payload.get("max_depth", 3) or 3)
-        response = _run_sql_lldp_query(start_hostname, max_depth)
+        response = _run_sql_lldp_query(
+            start_hostname,
+            max_depth,
+            db_host=payload.get("db_host"),
+            db_port=payload.get("db_port"),
+            db_user=payload.get("db_user"),
+            db_password=payload.get("db_password"),
+            db_name=payload.get("db_name"),
+        )
         with SQL_QUERY_JOB_LOCK:
             cur = SQL_QUERY_JOBS.get(task_id)
             if not cur:
@@ -3509,6 +3610,15 @@ def create_sql_lldp_task(payload: QueryRequest) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"create SQL task failed: {exc}") from exc
     return {"ok": True, "task_id": task["task_id"], "status": task["status"]}
+
+
+@app.get("/api/sql/config-defaults")
+def get_sql_config_defaults() -> dict[str, Any]:
+    cfg = current_db_config_defaults()
+    return {
+        "ok": True,
+        **cfg,
+    }
 
 
 @app.get("/api/sql/lldp-csv/tasks/{task_id}")
@@ -3825,6 +3935,17 @@ def clear_link_utilization_cache() -> dict[str, Any]:
         "cleared": cleared,
         "cache_total": cache_total,
     }
+
+
+@app.post("/api/admin/cleanup-temp-data")
+def cleanup_temp_data() -> dict[str, Any]:
+    try:
+        stats = cleanup_temp_runtime_data()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"cleanup temp data failed: {exc}") from exc
+    return {"ok": True, **stats}
 
 
 @app.post("/api/state-snapshots")
