@@ -128,6 +128,45 @@
     .modal-title { font-size: 16px; font-weight: 700; margin: 0 0 8px; color: #111827; }
     .modal-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
     .modal-actions button { width: auto; min-width: 110px; }
+    .state-list {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+      max-height: min(55vh, 420px);
+      overflow: auto;
+    }
+    .state-item {
+      border: 1px solid #dbe3ef;
+      border-radius: 10px;
+      background: #f8fafc;
+      padding: 10px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px 12px;
+      align-items: center;
+    }
+    .state-item-main { min-width: 0; }
+    .state-item-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #0f172a;
+      word-break: break-word;
+    }
+    .state-item-meta {
+      font-size: 12px;
+      color: #64748b;
+      margin-top: 2px;
+      word-break: break-word;
+    }
+    .state-empty {
+      border: 1px dashed #d1d5db;
+      border-radius: 10px;
+      padding: 14px;
+      color: #64748b;
+      font-size: 12px;
+      text-align: center;
+      background: #fff;
+    }
     .modal-form-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -269,11 +308,13 @@
       </div>
       <div class="row">
         <label>分层关键字（高->低，逗号分层，斜杠同层，&需全部命中，如 EDGE&CORE,CORE,AGGR/SPINE,LEAF/tor）</label>
-        <input id="layerTerms" type="text" value="EDGE,CORE,AGGR,LEAF" />
+        <input id="layerTerms" type="text" list="layerTermsHistory" value="EDGE,CORE,AGGR,LEAF" />
+        <datalist id="layerTermsHistory"></datalist>
       </div>
       <div class="row">
         <label>分区关键字（左->右分区，逗号分区，斜杠同区，&需全部命中，如 PAY/SHOP,MGMT&CORE,EDGE）</label>
-        <input id="bizIsolationTerms" type="text" placeholder="例如：PAY/SHOP,MGMT,EDGE" />
+        <input id="bizIsolationTerms" type="text" list="bizIsolationTermsHistory" placeholder="例如：PAY/SHOP,MGMT,EDGE" />
+        <datalist id="bizIsolationTermsHistory"></datalist>
       </div>
       <div class="row inline">
         <div>
@@ -281,6 +322,13 @@
           <select id="nameClusterMode">
             <option value="on" selected>开启</option>
             <option value="off">关闭</option>
+          </select>
+        </div>
+        <div>
+          <label>自动合组</label>
+          <select id="autoGroupMode">
+            <option value="off" selected>关闭</option>
+            <option value="on">开启</option>
           </select>
         </div>
         <div>
@@ -328,11 +376,15 @@
         <div id="grpDeleteTitle" class="action-group-title">删除恢复与回退</div>
         <div class="row inline">
           <button id="deleteSelection">删除选中</button>
-          <button id="keepSelected">删除未选中</button>
+          <button id="keepSelected">仅保留选中</button>
         </div>
         <div class="row inline">
           <button id="keepAdjacentOnly">删除非邻接</button>
           <button id="restoreDeleted">恢复删除设备</button>
+        </div>
+        <div class="row inline">
+          <button id="saveServerState">保存状态</button>
+          <button id="importServerState">导入状态</button>
         </div>
         <div class="row">
           <button id="rollbackStep">回到上一步</button>
@@ -387,6 +439,10 @@
 <div id="ctxMenu">
   <button id="ctxLock">固定位置</button>
   <button id="ctxDelete">删除设备</button>
+  <button id="ctxDeleteLink">删除链路</button>
+  <button id="ctxCreateGroup">设备合组</button>
+  <button id="ctxToggleGroup">合组展开</button>
+  <button id="ctxRenameGroup">修改组名</button>
   <button id="ctxCopy">复制名称</button>
   <button id="ctxCopyIp">复制地址</button>
   <button id="ctxUtil">链路利用率</button>
@@ -500,6 +556,17 @@
     <div class="hint" id="cliCredHint"></div>
   </div>
 </div>
+<div id="stateModal" class="modal-backdrop">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="stateModalTitle">
+    <div class="modal-title" id="stateModalTitle">导入状态</div>
+    <div class="hint" id="stateModalHint">服务器会保留最近 15 个状态。</div>
+    <div id="stateList" class="state-list"></div>
+    <div class="modal-actions">
+      <button id="refreshStateList">刷新列表</button>
+      <button id="closeStateModal">关闭</button>
+    </div>
+  </div>
+</div>
 
 <script>
   let sourceRows = [];
@@ -526,10 +593,16 @@
   let utilByKey = new Map();
   let primaryCliSource = '';
   let dragPerfMode = false;
+  let expandedAutoGroupKeys = new Set();
+  let manualGroups = [];
+  let expandedManualGroupKeys = new Set();
   const NODE_BASE_SIZE = 30;
   const NODE_BASE_FONT_SIZE = 10;
   let lastZoomNodeScale = null;
   let zoomNodeRaf = 0;
+  const KEYWORD_HISTORY_MAX = 10;
+  const LAYER_HISTORY_KEY = 'lldp_layer_terms_history';
+  const PARTITION_HISTORY_KEY = 'lldp_partition_terms_history';
   const rollbackState = {
     before: null,
     after: null,
@@ -549,6 +622,12 @@
   const setStatus = (t) => $('status').textContent = t;
   const setOK = (t) => $('ok').textContent = t || '';
   const setErr = (t) => $('err').textContent = t || '';
+  const escapeHtml = (value) => String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
   const UI_LANG_KEY = 'lldp_ui_lang';
   const UI_TEXT = {
     zh: {
@@ -573,6 +652,12 @@
       layer_terms_label: '分层关键字（高->低，逗号分层，斜杠同层，&需全部命中，如 EDGE&CORE,CORE,AGGR/SPINE,LEAF/tor）',
       partition_terms_label: '分区关键字（左->右分区，逗号分区，斜杠同区，&需全部命中，如 PAY/SHOP,MGMT&CORE,EDGE）',
       name_cluster_label: '名称相似聚拢',
+      auto_group_label: '自动合组',
+      ctx_create_group: '设备合组',
+      ctx_delete_link: '删除链路',
+      ctx_group_expand: '合组展开',
+      ctx_group_collapse: '收起合组',
+      ctx_rename_group: '修改组名',
       cluster_strength_label: '近似度强度 0~1',
       spacing_label: '分散强度（越大越分散） 建议 0.3~0.8',
       sec_layout: '布局 & 分散',
@@ -591,9 +676,11 @@
       btn_clear_visibility: '恢复显示',
       btn_show172: '只显示172设备',
       btn_delete_selected: '删除选中',
-      btn_delete_unselected: '删除未选中',
+      btn_delete_unselected: '仅保留选中',
       btn_delete_non_adjacent: '删除非邻接',
       btn_restore_deleted: '恢复删除设备',
+      btn_save_state: '保存状态',
+      btn_import_state: '导入状态',
       btn_export_png: '导出 PNG',
       btn_export_session: '导出会话',
       btn_import_session: '导入会话',
@@ -610,6 +697,14 @@
       btn_append_csv: '追加 CSV',
       btn_load_paste: '从粘贴内容载入',
       ctx_util: '链路利用率',
+      state_modal_title: '导入状态',
+      state_modal_hint: '服务器会保留最近 15 个状态。',
+      state_refresh: '刷新列表',
+      state_close: '关闭',
+      state_empty: '服务器上还没有已保存状态。',
+      state_load: '导入',
+      state_saved: '状态已保存到服务器',
+      state_loaded: '已导入服务器状态',
       merge_prefix: '合并多条链路：',
       on: '开启',
       off: '关闭',
@@ -641,6 +736,12 @@
       layer_terms_label: 'Layer Keywords (high->low, comma=layer, slash=same layer, &=all terms)',
       partition_terms_label: 'Partition Keywords (left->right, comma=partition, slash=same partition, &=all terms)',
       name_cluster_label: 'Name Similarity Clustering',
+      auto_group_label: 'Auto Grouping',
+      ctx_create_group: 'Create Group',
+      ctx_delete_link: 'Delete Link',
+      ctx_group_expand: 'Expand Group',
+      ctx_group_collapse: 'Collapse Group',
+      ctx_rename_group: 'Rename Group',
       cluster_strength_label: 'Similarity Strength 0~1',
       spacing_label: 'Dispersion Strength (higher = more spread)',
       sec_layout: 'Layout & Dispersion',
@@ -659,9 +760,11 @@
       btn_clear_visibility: 'Reset Visibility',
       btn_show172: 'Show 172.* Only',
       btn_delete_selected: 'Delete Selected',
-      btn_delete_unselected: 'Delete Unselected',
+      btn_delete_unselected: 'Keep Selected Only',
       btn_delete_non_adjacent: 'Delete Non-Adjacent',
       btn_restore_deleted: 'Restore Deleted Nodes',
+      btn_save_state: 'Save State',
+      btn_import_state: 'Load State',
       btn_export_png: 'Export PNG',
       btn_export_session: 'Export Session',
       btn_import_session: 'Import Session',
@@ -678,6 +781,14 @@
       btn_append_csv: 'Append CSV',
       btn_load_paste: 'Load Pasted CSV',
       ctx_util: 'Link Utilization',
+      state_modal_title: 'Load State',
+      state_modal_hint: 'The server keeps the latest 15 saved states.',
+      state_refresh: 'Refresh',
+      state_close: 'Close',
+      state_empty: 'No saved state on the server.',
+      state_load: 'Load',
+      state_saved: 'State saved to server',
+      state_loaded: 'Loaded server state',
       merge_prefix: 'Merge Multi-links: ',
       on: 'ON',
       off: 'OFF',
@@ -750,6 +861,7 @@
     setParentLabel('layerTerms', 'layer_terms_label');
     setParentLabel('bizIsolationTerms', 'partition_terms_label');
     setParentLabel('nameClusterMode', 'name_cluster_label');
+    setParentLabel('autoGroupMode', 'auto_group_label');
     setParentLabel('nameClusterStrength', 'cluster_strength_label');
     setParentLabel('spacing', 'spacing_label');
     setText('grpTopologyTitle', 'grp_topology');
@@ -770,6 +882,8 @@
     setText('keepSelected', 'btn_delete_unselected');
     setText('keepAdjacentOnly', 'btn_delete_non_adjacent');
     setText('restoreDeleted', 'btn_restore_deleted');
+    setText('saveServerState', 'btn_save_state');
+    setText('importServerState', 'btn_import_state');
     setText('exportPng', 'btn_export_png');
     setText('exportSession', 'btn_export_session');
     setText('importSessionBtn', 'btn_import_session');
@@ -786,10 +900,22 @@
     setText('appendCsvModal', 'btn_append_csv');
     setText('loadPasteModal', 'btn_load_paste');
     setText('ctxUtil', 'ctx_util');
+    setText('ctxCreateGroup', 'ctx_create_group');
+    setText('ctxDeleteLink', 'ctx_delete_link');
+    setText('ctxToggleGroup', 'ctx_group_expand');
+    setText('ctxRenameGroup', 'ctx_rename_group');
+    setText('stateModalTitle', 'state_modal_title');
+    setText('stateModalHint', 'state_modal_hint');
+    setText('refreshStateList', 'state_refresh');
+    setText('closeStateModal', 'state_close');
 
     setOptionText('importMode', 'sql', 'import_mode_sql');
     setOptionText('importMode', 'cli', 'import_mode_cli');
     setOptionText('importMode', 'csv', 'import_mode_csv');
+    setOptionText('nameClusterMode', 'on', 'on');
+    setOptionText('nameClusterMode', 'off', 'off');
+    setOptionText('autoGroupMode', 'on', 'on');
+    setOptionText('autoGroupMode', 'off', 'off');
 
     setText('openImportModalImport', 'import_input');
     setText('openImportModalAppend', 'append_input');
@@ -838,6 +964,12 @@
     deletedNodeIds = new Set();
   }
 
+  function clearGroupState() {
+    manualGroups = [];
+    expandedManualGroupKeys = new Set();
+    expandedAutoGroupKeys = new Set();
+  }
+
   function rebuildDeletedNodeIdsFromStack() {
     const ids = new Set();
     for (const item of deletedStack) {
@@ -859,6 +991,26 @@
 
   function cloneRows(rows) {
     return Array.isArray(rows) ? rows.map((r) => ({ ...(r || {}) })) : [];
+  }
+
+  function cloneManualGroups(groups) {
+    return Array.isArray(groups)
+      ? groups.map((g) => ({
+          key: String(g?.key || '').trim(),
+          label: String(g?.label || '').trim(),
+          members: Array.isArray(g?.members) ? g.members.map((id) => String(id || '').trim()).filter(Boolean) : [],
+          memberPositions: (g?.memberPositions && typeof g.memberPositions === 'object')
+            ? Object.fromEntries(
+                Object.entries(g.memberPositions).filter(([id, p]) => (
+                  String(id || '').trim()
+                  && p
+                  && Number.isFinite(p.x)
+                  && Number.isFinite(p.y)
+                )).map(([id, p]) => [String(id).trim(), { x: Number(p.x), y: Number(p.y) }])
+              )
+            : {}
+        })).filter((g) => g.key && g.members.length)
+      : [];
   }
 
   function updateRollbackButtonState() {
@@ -893,12 +1045,16 @@
         spacing: $('spacing')?.value || '0.5',
         stripDomain: $('stripDomain')?.value || 'yes',
         nameClusterMode: $('nameClusterMode')?.value || 'on',
+        autoGroupMode: $('autoGroupMode')?.value || 'off',
         nameClusterStrength: $('nameClusterStrength')?.value || '0.6',
         colLocalHost: $('colLocalHost')?.value || '',
         colRemoteHost: $('colRemoteHost')?.value || '',
         colLocalIf: $('colLocalIf')?.value || '',
         colRemoteIf: $('colRemoteIf')?.value || '',
       },
+      expandedAutoGroupKeys: Array.from(expandedAutoGroupKeys),
+      manualGroups: cloneManualGroups(manualGroups),
+      expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
       mergedMode: !!mergedMode,
       selectedNodeIds: cy ? cy.nodes(':selected').map((n) => n.id()) : [],
     };
@@ -929,7 +1085,11 @@
       if ($('spacing')) $('spacing').value = snapshot.ui?.spacing || '0.5';
       if ($('stripDomain')) $('stripDomain').value = snapshot.ui?.stripDomain || 'yes';
       if ($('nameClusterMode')) $('nameClusterMode').value = snapshot.ui?.nameClusterMode || 'on';
+      if ($('autoGroupMode')) $('autoGroupMode').value = snapshot.ui?.autoGroupMode || 'off';
       if ($('nameClusterStrength')) $('nameClusterStrength').value = snapshot.ui?.nameClusterStrength || '0.6';
+      expandedAutoGroupKeys = new Set((snapshot.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
+      manualGroups = cloneManualGroups(snapshot.manualGroups || []);
+      expandedManualGroupKeys = new Set((snapshot.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
 
       $('nRows').textContent = rawRows.length;
       $('nCols').textContent = headers.length;
@@ -1073,6 +1233,64 @@
     const nif = normalizeUtilInterface(iface);
     return ident && nif ? `${ident}||${nif}` : '';
   }
+
+  function buildCanonicalEdgeRowKey(aId, bId, li, ri) {
+    const leftIsA = String(aId || '') <= String(bId || '');
+    const leftId = leftIsA ? String(aId || '') : String(bId || '');
+    const rightId = leftIsA ? String(bId || '') : String(aId || '');
+    const leftIf = normalizeUtilInterface(leftIsA ? li : ri) || 'n/a';
+    const rightIf = normalizeUtilInterface(leftIsA ? ri : li) || 'n/a';
+    return leftId && rightId ? `${leftId}||${rightId}||${leftIf}||${rightIf}` : '';
+  }
+
+  function resolveGraphRowContext(r, cols, strip) {
+    const lhRaw = String(r[cols.colLH] || '').trim();
+    const rhRaw = String(r[cols.colRH] || '').trim();
+    const li = String(r[cols.colLI] || '').trim();
+    const ri = String(r[cols.colRI] || '').trim();
+    if (!lhRaw || !rhRaw) return null;
+    const lh = strip ? stripAfterDot(lhRaw) : lhRaw;
+    const rh = strip ? stripAfterDot(rhRaw) : rhRaw;
+
+    const rowSourceIp = rowValue(r, ['源设备IP', '源设备ip', 'ipaddr', 'sourceip']);
+    const rowRemoteIp = rowValue(r, ['目的设备IP', '目的设备ip', 'remoteip']);
+    const aIp = (isIpv4(rowSourceIp) ? rowSourceIp : '')
+      || nodeIpMap.get(lhRaw)
+      || nodeIpMap.get(stripAfterDot(lhRaw))
+      || nodeIpMap.get(lh)
+      || deviceNameToIpMap.get(lhRaw)
+      || deviceNameToIpMap.get(stripAfterDot(lhRaw))
+      || (isIpv4(lhRaw) ? lhRaw : '');
+    const bIp = (isIpv4(rowRemoteIp) ? rowRemoteIp : '')
+      || nodeIpMap.get(rhRaw)
+      || nodeIpMap.get(stripAfterDot(rhRaw))
+      || nodeIpMap.get(rh)
+      || deviceNameToIpMap.get(rhRaw)
+      || deviceNameToIpMap.get(stripAfterDot(rhRaw))
+      || (isIpv4(rhRaw) ? rhRaw : '');
+
+    const aEntityKey = inferEntityKey(lhRaw || lh, aIp);
+    const bEntityKey = inferEntityKey(rhRaw || rh, bIp);
+    const aId = nodeIdFromEntityKey(aEntityKey);
+    const bId = nodeIdFromEntityKey(bEntityKey);
+    if (!aId || !bId) return null;
+
+    return {
+      lhRaw,
+      rhRaw,
+      li,
+      ri,
+      lh,
+      rh,
+      aIp,
+      bIp,
+      aId,
+      bId,
+      aEntityKey,
+      bEntityKey,
+      rowKey: buildCanonicalEdgeRowKey(aId, bId, li, ri)
+    };
+  }
   function collectCandidateNodeIds(name, ip = '') {
     const ids = new Set();
     const base = normalizeEntityName(name);
@@ -1208,6 +1426,7 @@
     setErr(''); setOK('');
     setStatus('解析中...');
     clearDeleteState();
+    clearGroupState();
     resetViewState();
     const parsed = parseCSV(text);
     headers = parsed.headers;
@@ -1256,6 +1475,7 @@
       setErr(''); setOK('');
       setStatus('读取/解析中...');
       clearDeleteState();
+      clearGroupState();
       resetViewState();
       headers = [];
       sourceRows = [];
@@ -1348,6 +1568,7 @@
     const colRH = $('colRemoteHost').value;
     const colLI = $('colLocalIf').value;
     const colRI = $('colRemoteIf').value;
+    const cols = { colLH, colRH, colLI, colRI };
 
     const strip = $('stripDomain').value === 'yes';
     const nodeLabelMode = $('nodeLabelMode').value;
@@ -1406,39 +1627,12 @@
     }
 
     for (const r of rows) {
-      const lhRaw = (r[colLH] || '').trim();
-      const rhRaw = (r[colRH] || '').trim();
-      const li = (r[colLI] || '').trim();
-      const ri = (r[colRI] || '').trim();
-      if (!lhRaw || !rhRaw) continue;
-      const lh = strip ? stripAfterDot(lhRaw) : lhRaw;
-      const rh = strip ? stripAfterDot(rhRaw) : rhRaw;
+      const rowCtx = resolveGraphRowContext(r, cols, strip);
+      if (!rowCtx) continue;
+      const { lhRaw, rhRaw, li, ri, lh, rh, aIp, bIp, aId, bId, aEntityKey, bEntityKey, rowKey } = rowCtx;
 
       const aRole = roleOf(lh);
       const bRole = roleOf(rh);
-
-      const rowSourceIp = rowValue(r, ['源设备IP', '源设备ip', 'ipaddr', 'sourceip']);
-      const rowRemoteIp = rowValue(r, ['目的设备IP', '目的设备ip', 'remoteip']);
-      const aIp = (isIpv4(rowSourceIp) ? rowSourceIp : '')
-        || nodeIpMap.get(lhRaw)
-        || nodeIpMap.get(stripAfterDot(lhRaw))
-        || nodeIpMap.get(lh)
-        || deviceNameToIpMap.get(lhRaw)
-        || deviceNameToIpMap.get(stripAfterDot(lhRaw))
-        || (isIpv4(lhRaw) ? lhRaw : '');
-      const bIp = (isIpv4(rowRemoteIp) ? rowRemoteIp : '')
-        || nodeIpMap.get(rhRaw)
-        || nodeIpMap.get(stripAfterDot(rhRaw))
-        || nodeIpMap.get(rh)
-        || deviceNameToIpMap.get(rhRaw)
-        || deviceNameToIpMap.get(stripAfterDot(rhRaw))
-        || (isIpv4(rhRaw) ? rhRaw : '');
-
-      const aEntityKey = inferEntityKey(lhRaw || lh, aIp);
-      const bEntityKey = inferEntityKey(rhRaw || rh, bIp);
-      const aId = nodeIdFromEntityKey(aEntityKey);
-      const bId = nodeIdFromEntityKey(bEntityKey);
-      if (!aId || !bId) continue;
 
       const aExisting = nodes.get(aId);
       const bExisting = nodes.get(bId);
@@ -1459,10 +1653,53 @@
       if (edgeSet.has(k1) || edgeSet.has(k2)) continue;
       edgeSet.add(k1);
 
-      edges.push({ data: { id: `e_${edges.length}`, source: aId, target: bId, label: edgeLabel, labelShown: '', utilKey, utilKeys: utilKey ? [utilKey] : [] } });
+      edges.push({ data: { id: `e_${edges.length}`, source: aId, target: bId, label: edgeLabel, labelShown: '', utilKey, utilKeys: utilKey ? [utilKey] : [], rowKeys: rowKey ? [rowKey] : [] } });
       degreeMap.set(aId, (degreeMap.get(aId) || 0) + 1);
       degreeMap.set(bId, (degreeMap.get(bId) || 0) + 1);
     }
+
+    const baseNodeIds = Array.from(nodes.keys());
+    const baseNameById = new Map();
+    nodes.forEach((n, id) => {
+      n.groupKey = '';
+      n.groupKind = '';
+      n.manualGroupKey = '';
+      n.autoGroupKey = '';
+      n.isGroup = false;
+      n.isManualGroup = false;
+      n.isAutoGroup = false;
+      baseNameById.set(id, n.label || id);
+    });
+
+    const manualGroupInfo = normalizeManualGroups(baseNodeIds, baseNameById);
+    manualGroups = manualGroupInfo.infos.map((info) => ({
+      key: info.key,
+      label: info.label,
+      members: info.members.slice(),
+      memberPositions: { ...(info.memberPositions || {}) }
+    }));
+    const manualGroupKeys = new Set(manualGroups.map((g) => g.key));
+    expandedManualGroupKeys = new Set(Array.from(expandedManualGroupKeys).filter((key) => manualGroupKeys.has(key)));
+    nodes.forEach((n) => {
+      const groupKey = manualGroupInfo.memberToGroupKey.get(n.id) || '';
+      n.groupKey = groupKey;
+      n.groupKind = groupKey ? 'manual' : '';
+      n.manualGroupKey = groupKey;
+    });
+    applyCollapsedGroupInfos(nodes, edges, manualGroupInfo.infos, expandedManualGroupKeys, 'manual');
+
+    const autoNodeIds = Array.from(nodes.values()).filter((n) => !n.isGroup).map((n) => n.id);
+    const autoNameById = new Map();
+    autoNodeIds.forEach((id) => autoNameById.set(id, nodes.get(id)?.label || id));
+    const autoGroupInfo = buildAutoGroupInfo(autoNodeIds, autoNameById, buildNeighborMapFromEdges(edges));
+    nodes.forEach((n) => {
+      if (n.groupKind === 'manual') return;
+      const groupKey = autoGroupInfo.memberToGroupKey.get(n.id) || '';
+      n.groupKey = groupKey;
+      n.groupKind = groupKey ? 'auto' : '';
+      n.autoGroupKey = groupKey;
+    });
+    applyCollapsedGroupInfos(nodes, edges, autoGroupInfo.infos, expandedAutoGroupKeys, 'auto');
 
     $('nNodes').textContent = nodes.size;
     baseEdges = edges.slice(); // 保存原始边
@@ -1472,6 +1709,16 @@
       setErr('⚠️ 节点数量异常偏少。说明可能存在 hostname 为空/列映射错误。请检查列映射是否正确。');
     } else {
       setErr('');
+    }
+
+    if (keepPositions) {
+      manualGroupInfo.infos.forEach((info) => {
+        Object.entries(info.memberPositions || {}).forEach(([id, p]) => {
+          if (!keepPositions[id] && p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+            keepPositions[id] = { x: Number(p.x), y: Number(p.y) };
+          }
+        });
+      });
     }
 
     const edgesForCy = mergedMode ? aggregateEdges(baseEdges) : baseEdges;
@@ -1486,7 +1733,17 @@
     const rand = (min, max) => Math.random() * (max - min) + min;
     for (const el of elements) {
       if (el.data && el.data.id && el.data.label !== undefined && !el.data.source) {
-        const keep = keepPositions && keepPositions[el.data.id];
+        let keep = null;
+        if (keepPositions && Array.isArray(el.data.groupMembers) && el.data.groupMembers.length) {
+          const pts = el.data.groupMembers.map((id) => keepPositions[id]).filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+          if (pts.length) {
+            keep = {
+              x: pts.reduce((sum, p) => sum + p.x, 0) / pts.length,
+              y: pts.reduce((sum, p) => sum + p.y, 0) / pts.length
+            };
+          }
+        }
+        if (!keep) keep = keepPositions && keepPositions[el.data.id];
         el.position = keep ? { ...keep } : { x: rand(-500, 500), y: rand(-500, 500) };
       }
     }
@@ -1529,6 +1786,14 @@
             'text-background-padding': 2,
             'text-rotation': 'autorotate',
             'color': '#374151'
+          }
+        },
+        {
+          selector: 'edge:selected',
+          style: {
+            'width': 2.6,
+            'line-color': '#2563eb',
+            'target-arrow-color': '#2563eb'
           }
         },
         { selector: 'edge.util-low', style: { 'line-color': '#16a34a', 'target-arrow-color': '#16a34a' } },
@@ -1628,6 +1893,12 @@
 
     // 右键菜单：固定位置 / 删除节点
     cy.on('cxttap', 'node', (evt) => {
+      if (!evt.target.selected() && !cy.nodes(':selected').length) evt.target.select();
+      evt.originalEvent.preventDefault();
+      showCtx(evt);
+    });
+    cy.on('cxttap', 'edge', (evt) => {
+      if (!evt.target.selected() && !cy.edges(':selected').length) evt.target.select();
       evt.originalEvent.preventDefault();
       showCtx(evt);
     });
@@ -2262,6 +2533,280 @@
     return out;
   }
 
+  function splitAlphaNumericName(raw) {
+    return String(raw || '').trim().match(/\d+|[^\d]+/g) || [];
+  }
+
+  function buildGroupLabelFromMany(rawLabels) {
+    const labels = Array.isArray(rawLabels)
+      ? rawLabels.map((x) => String(x || '').trim()).filter(Boolean)
+      : [];
+    if (!labels.length) return '';
+    let current = labels[0];
+    for (let i = 1; i < labels.length; i++) {
+      current = buildAutoGroupLabel(current, labels[i]);
+      if (!current) break;
+    }
+    return String(current || labels[0] || '').trim();
+  }
+
+  function normalizeManualGroups(ids, nameById) {
+    const idSet = new Set(Array.isArray(ids) ? ids.map((id) => String(id || '').trim()).filter(Boolean) : []);
+    const infos = [];
+    const memberToGroupKey = new Map();
+    const used = new Set();
+    cloneManualGroups(manualGroups).forEach((group) => {
+      const members = Array.from(new Set((group.members || []).map((id) => String(id || '').trim()).filter((id) => idSet.has(id) && !used.has(id))));
+      if (members.length < 2) return;
+      members.forEach((id) => used.add(id));
+      const fallbackLabel = buildGroupLabelFromMany(members.map((id) => nameById.get(id) || id));
+      const label = String(group.label || fallbackLabel || members[0]).trim();
+      const memberPositions = {};
+      members.forEach((id) => {
+        const p = group.memberPositions && group.memberPositions[id];
+        if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) memberPositions[id] = { x: Number(p.x), y: Number(p.y) };
+      });
+      const info = { key: group.key, members, label, memberPositions };
+      infos.push(info);
+      members.forEach((id) => memberToGroupKey.set(id, group.key));
+    });
+    return { infos, memberToGroupKey };
+  }
+
+  function applyCollapsedGroupInfos(nodes, edges, infos, expandedSet, groupKind) {
+    const collapsedInfos = (infos || []).filter((info) => !expandedSet.has(info.key));
+    if (!collapsedInfos.length) return;
+    const collapsedMemberToNodeId = new Map();
+    collapsedInfos.forEach((info) => {
+      const groupId = `g_${fnv1a(`${groupKind}:${info.key}`)}`;
+      const memberNodes = info.members.map((id) => nodes.get(id)).filter(Boolean);
+      const ranks = memberNodes.map((n) => Number(n.rank)).filter((v) => Number.isFinite(v));
+      const role = memberNodes.length ? memberNodes[0].role : 'OTHER';
+      const rank = ranks.length ? Math.min(...ranks) : roleRank(role);
+      const groupNode = {
+        id: groupId,
+        label: info.label,
+        short: shortLabel(info.label),
+        role,
+        rank,
+        ip: '',
+        entityKey: `group:${groupKind}:${info.key}`,
+        groupKey: info.key,
+        groupKind,
+        isGroup: true,
+        isAutoGroup: groupKind === 'auto',
+        isManualGroup: groupKind === 'manual',
+        groupCount: info.members.length,
+        groupMembers: info.members.slice(),
+        groupLabels: memberNodes.map((n) => n.label || n.id)
+      };
+      info.members.forEach((memberId) => collapsedMemberToNodeId.set(memberId, groupId));
+      nodes.set(groupId, groupNode);
+    });
+
+    collapsedInfos.forEach((info) => {
+      info.members.forEach((memberId) => nodes.delete(memberId));
+    });
+
+    const remappedEdges = [];
+    const remapIndex = new Map();
+    edges.forEach((edge) => {
+      const srcRaw = String(edge.data.source || '');
+      const dstRaw = String(edge.data.target || '');
+      const src = collapsedMemberToNodeId.get(srcRaw) || srcRaw;
+      const dst = collapsedMemberToNodeId.get(dstRaw) || dstRaw;
+      if (!src || !dst || src === dst) return;
+      const label = String(edge.data.label || '');
+      const dedupeKey = `${src}||${dst}||${label}`;
+      const reverseKey = `${dst}||${src}||${label}`;
+      const existingIdx = remapIndex.has(dedupeKey) ? remapIndex.get(dedupeKey) : remapIndex.get(reverseKey);
+      if (existingIdx != null) {
+        const existing = remappedEdges[existingIdx];
+        existing.data.utilKeys = Array.from(new Set([...(existing.data.utilKeys || []), ...(edge.data.utilKeys || [])]));
+        existing.data.rowKeys = Array.from(new Set([...(existing.data.rowKeys || []), ...(edge.data.rowKeys || [])]));
+        return;
+      }
+      remapIndex.set(dedupeKey, remappedEdges.length);
+      remappedEdges.push({
+        data: {
+          ...edge.data,
+          id: `e_${remappedEdges.length}`,
+          source: src,
+          target: dst
+        }
+      });
+    });
+    edges.length = 0;
+    remappedEdges.forEach((edge) => edges.push(edge));
+  }
+
+  function autoGroupPairScore(aRaw, bRaw) {
+    const aParts = splitAlphaNumericName(aRaw);
+    const bParts = splitAlphaNumericName(bRaw);
+    if (!aParts.length || aParts.length !== bParts.length) return null;
+    let diffGroups = 0;
+    let distance = 0;
+    for (let i = 0; i < aParts.length; i++) {
+      const a = aParts[i];
+      const b = bParts[i];
+      const aNum = /^\d+$/.test(a);
+      const bNum = /^\d+$/.test(b);
+      if (aNum !== bNum) return null;
+      if (!aNum) {
+        if (a.toLowerCase() !== b.toLowerCase()) return null;
+        continue;
+      }
+      const av = Number(a);
+      const bv = Number(b);
+      if (av !== bv) {
+        diffGroups += 1;
+        distance += Math.abs(av - bv);
+      }
+    }
+    if (diffGroups <= 0 || diffGroups > 2) return null;
+    return diffGroups * 100000 + distance;
+  }
+
+  function buildAutoGroupLabel(aRaw, bRaw) {
+    const aParts = splitAlphaNumericName(aRaw);
+    const bParts = splitAlphaNumericName(bRaw);
+    const out = [];
+    for (let i = 0; i < Math.min(aParts.length, bParts.length); i++) {
+      const a = aParts[i];
+      const b = bParts[i];
+      if (/^\d+$/.test(a) || /^\d+$/.test(b)) {
+        if (a === b) out.push(a);
+        else {
+          const prefixLen = commonPrefixLength(a, b);
+          if (prefixLen > 0) out.push(a.slice(0, prefixLen));
+        }
+        continue;
+      }
+      if (a.toLowerCase() === b.toLowerCase()) out.push(a);
+    }
+    let label = out.join('');
+    label = label.replace(/[-_.:/\s]{2,}/g, (m) => m[0]);
+    label = label.replace(/[-_.:/\s]+$/g, '').replace(/^[-_.:/\s]+/g, '');
+    if (!label) label = String(aRaw || '').trim() || String(bRaw || '').trim();
+    return label;
+  }
+
+  function buildNeighborMapFromEdges(edges) {
+    const out = new Map();
+    (edges || []).forEach((edge) => {
+      const s = String(edge?.data?.source || '').trim();
+      const t = String(edge?.data?.target || '').trim();
+      if (!s || !t || s === t) return;
+      if (!out.has(s)) out.set(s, new Set());
+      if (!out.has(t)) out.set(t, new Set());
+      out.get(s).add(t);
+      out.get(t).add(s);
+    });
+    return out;
+  }
+
+  function buildAutoGroupPairMap(ids, nameById, neighborMapInput = null) {
+    const mode = ($('autoGroupMode')?.value || 'off');
+    if (mode !== 'on' || !Array.isArray(ids) || ids.length < 2) return new Map();
+    const neighborMap = neighborMapInput instanceof Map ? neighborMapInput : null;
+    if (!neighborMap && !cy) return new Map();
+    const idSet = new Set(ids);
+    const pairSeen = new Set();
+    const candidates = [];
+    ids.forEach((id) => {
+      const neighbors = neighborMap
+        ? Array.from(neighborMap.get(id) || [])
+        : (() => {
+            const node = cy.getElementById(id);
+            if (!node || !node.length) return [];
+            return node.connectedEdges().map((e) => (e.source().id() === id ? e.target().id() : e.source().id()));
+          })();
+      neighbors.forEach((otherId) => {
+        if (!otherId || !idSet.has(otherId) || otherId === id) return;
+        const pairKey = [id, otherId].sort().join('||');
+        if (pairSeen.has(pairKey)) return;
+        pairSeen.add(pairKey);
+        const score = autoGroupPairScore(nameById.get(id), nameById.get(otherId));
+        if (score == null) return;
+        candidates.push({
+          a: id,
+          b: otherId,
+          score,
+          sim: hostnameSimilarityScore(nameById.get(id), nameById.get(otherId))
+        });
+      });
+    });
+    candidates.sort((x, y) => (
+      x.score - y.score
+      || y.sim - x.sim
+      || labelByIdForOrdering(nameById, x.a).localeCompare(labelByIdForOrdering(nameById, y.a))
+      || labelByIdForOrdering(nameById, x.b).localeCompare(labelByIdForOrdering(nameById, y.b))
+    ));
+    const used = new Set();
+    const out = new Map();
+    candidates.forEach((c) => {
+      if (used.has(c.a) || used.has(c.b)) return;
+      used.add(c.a);
+      used.add(c.b);
+      out.set(c.a, c.b);
+      out.set(c.b, c.a);
+    });
+    return out;
+  }
+
+  function buildAutoGroupInfo(ids, nameById, neighborMapInput = null) {
+    const pairMap = buildAutoGroupPairMap(ids, nameById, neighborMapInput);
+    const infos = [];
+    const memberToGroupKey = new Map();
+    const seen = new Set();
+    ids.forEach((id) => {
+      const mate = pairMap.get(id);
+      if (!mate) return;
+      const members = [id, mate].sort();
+      const key = members.join('||');
+      if (seen.has(key)) return;
+      seen.add(key);
+      const label = buildAutoGroupLabel(nameById.get(members[0]), nameById.get(members[1]));
+      const info = { key, members, label };
+      infos.push(info);
+      members.forEach((memberId) => memberToGroupKey.set(memberId, key));
+    });
+    return { pairMap, infos, memberToGroupKey };
+  }
+
+  function reorderIdsWithAutoGroups(ids, pairMap) {
+    if (!Array.isArray(ids) || ids.length < 2 || !(pairMap instanceof Map) || !pairMap.size) return ids.slice();
+    const indexMap = new Map(ids.map((id, idx) => [id, idx]));
+    const used = new Set();
+    const out = [];
+    ids.forEach((id) => {
+      if (used.has(id)) return;
+      const mate = pairMap.get(id);
+      if (!mate || used.has(mate) || !indexMap.has(mate)) {
+        used.add(id);
+        out.push(id);
+        return;
+      }
+      const pair = [id, mate].sort((a, b) => (indexMap.get(a) || 0) - (indexMap.get(b) || 0));
+      pair.forEach((item) => {
+        if (used.has(item)) return;
+        used.add(item);
+        out.push(item);
+      });
+    });
+    return out;
+  }
+
+  function buildOrderedGaps(orderedIds, nameById, baseGap, minGap, strength, pairMap) {
+    const gaps = buildSimilarityGaps(orderedIds, nameById, baseGap, minGap, strength);
+    if (!(pairMap instanceof Map) || !pairMap.size) return gaps;
+    const innerGap = Math.max(12, minGap * 0.38);
+    for (let i = 0; i < orderedIds.length - 1; i++) {
+      if (pairMap.get(orderedIds[i]) === orderedIds[i + 1]) gaps[i] = innerGap;
+    }
+    return gaps;
+  }
+
   function buildLayerPositions(nodes, opts = {}) {
     const ranks = new Map();
     const nameById = new Map();
@@ -2294,7 +2839,9 @@
         : Math.max(140, height / Math.max(1, sortedRanks.length + 1)));
     sortedRanks.forEach((r, layerIdx) => {
       const rawIds = ranks.get(r);
-      const ids = clusterOn ? orderLayerIdsByNameSimilarity(rawIds, nameById) : rawIds.slice();
+      const orderedIds = clusterOn ? orderLayerIdsByNameSimilarity(rawIds, nameById) : rawIds.slice();
+      const pairMap = buildAutoGroupPairMap(orderedIds, nameById);
+      const ids = reorderIdsWithAutoGroups(orderedIds, pairMap);
       const count = ids.length;
       const y = sortedRanks.length <= 1
         ? (offsetY + Math.max(topPad, height / 2))
@@ -2310,7 +2857,7 @@
       const baseGap = useArea
         ? (usableW / Math.max(1, count - 1))
         : Math.max(minGap, width / Math.max(1, count));
-      if (!clusterOn || clusterStrength <= 0) {
+      if ((!clusterOn || clusterStrength <= 0) && !pairMap.size) {
         const xGap = usableW / Math.max(1, count - 1);
         ids.forEach((id, idx) => {
           positions[id] = { x: offsetX + sidePad + xGap * idx, y };
@@ -2318,7 +2865,8 @@
         return;
       }
 
-      const gaps = buildSimilarityGaps(ids, nameById, baseGap, minGap, clusterStrength);
+      const gapStrength = (clusterOn && clusterStrength > 0) ? clusterStrength : 0;
+      const gaps = buildOrderedGaps(ids, nameById, baseGap, minGap, gapStrength, pairMap);
       let span = gaps.reduce((sum, g) => sum + g, 0);
       if (span > usableW && span > 0) {
         const scale = usableW / span;
@@ -2394,6 +2942,38 @@
     runLayout(scopeNodes, { selectedOnly: true, adjustViewport: false });
     setStatus('选中重排已完成');
     setOK(`已重排选中设备：${scopeNodes.length} 个（仅调整选中节点，不影响其他节点和当前数据）。`);
+  }
+
+  function removeLinkRowsByEdgeKeys(edgeKeys) {
+    const kill = new Set((edgeKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
+    if (!kill.size) return 0;
+    const cols = {
+      colLH: $('colLocalHost')?.value || 'localhostname',
+      colRH: $('colRemoteHost')?.value || 'remotehostname',
+      colLI: $('colLocalIf')?.value || 'localinterface',
+      colRI: $('colRemoteIf')?.value || 'remoteinterface'
+    };
+    const strip = $('stripDomain')?.value === 'yes';
+    const keepRows = (rows) => {
+      let removed = 0;
+      const kept = [];
+      for (const row of rows || []) {
+        const rowCtx = resolveGraphRowContext(row, cols, strip);
+        const rowKey = rowCtx?.rowKey || '';
+        if (rowKey && kill.has(rowKey)) {
+          removed += 1;
+          continue;
+        }
+        kept.push(row);
+      }
+      return { kept, removed };
+    };
+    const rawRes = keepRows(rawRows);
+    const srcRes = keepRows(sourceRows);
+    rawRows = rawRes.kept;
+    sourceRows = srcRes.kept;
+    $('nRows').textContent = rawRows.length;
+    return rawRes.removed;
   }
 
   function updateCounts() {
@@ -2472,7 +3052,8 @@
       const labels = list.map(x => x.data.label).filter(Boolean);
       const label = count > 1 ? `${count} 条链路` : (labels[0] || '');
       const utilKeys = Array.from(new Set(list.flatMap(x => Array.isArray(x.data.utilKeys) ? x.data.utilKeys : (x.data.utilKey ? [x.data.utilKey] : []))));
-      merged.push({ data: { id: `m_${idx++}`, source: a, target: b, label, labelShown: '', utilKeys } });
+      const rowKeys = Array.from(new Set(list.flatMap(x => Array.isArray(x.data.rowKeys) ? x.data.rowKeys : [])));
+      merged.push({ data: { id: `m_${idx++}`, source: a, target: b, label, labelShown: '', utilKeys, rowKeys } });
     });
     return merged;
   }
@@ -2513,9 +3094,79 @@
     return ctxTarget ? ctxTarget.collection() : cy.collection();
   }
 
+  function ctxEdges() {
+    if (!cy) return cy.collection();
+    const sel = cy.edges(':selected');
+    if (sel.length) return sel;
+    if (ctxTarget && typeof ctxTarget.isEdge === 'function' && ctxTarget.isEdge()) return ctxTarget.collection();
+    return cy.collection();
+  }
+
+  function ctxGroupKey() {
+    if (!ctxTarget || typeof ctxTarget.data !== 'function') return '';
+    return String(ctxTarget.data('groupKey') || ctxTarget.data('manualGroupKey') || ctxTarget.data('autoGroupKey') || '').trim();
+  }
+
+  function ctxGroupKind() {
+    if (!ctxTarget || typeof ctxTarget.data !== 'function') return '';
+    return String(ctxTarget.data('groupKind') || (ctxTarget.data('manualGroupKey') ? 'manual' : (ctxTarget.data('autoGroupKey') ? 'auto' : '')) || '').trim();
+  }
+
   function updateEdgeLabels(mode) {
     if (!cy) return;
     refreshEdgeLabelDisplay();
+  }
+
+  function upsertManualGroup(members, preferredLabel = '', memberPositions = null) {
+    const cleanMembers = Array.from(new Set((members || []).map((id) => String(id || '').trim()).filter(Boolean))).sort();
+    if (cleanMembers.length < 2) return null;
+
+    const labels = cleanMembers.map((id) => {
+      if (cy) {
+        const n = cy.getElementById(id);
+        if (n && n.length) return String(n.data('label') || id).trim();
+      }
+      return id;
+    });
+    const nextLabel = String(preferredLabel || buildGroupLabelFromMany(labels) || cleanMembers[0]).trim();
+    const nextKey = `manual:${fnv1a(cleanMembers.join('||'))}`;
+    const nextPositions = {};
+    if (memberPositions && typeof memberPositions === 'object') {
+      cleanMembers.forEach((id) => {
+        const p = memberPositions[id];
+        if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) nextPositions[id] = { x: Number(p.x), y: Number(p.y) };
+      });
+    }
+
+    const rebuilt = [];
+    cloneManualGroups(manualGroups).forEach((group) => {
+      const left = (group.members || []).map((id) => String(id || '').trim()).filter((id) => !cleanMembers.includes(id));
+      if (left.length >= 2) {
+        const leftPositions = {};
+        left.forEach((id) => {
+          const p = group.memberPositions && group.memberPositions[id];
+          if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) leftPositions[id] = { x: Number(p.x), y: Number(p.y) };
+        });
+        rebuilt.push({ key: group.key, label: group.label, members: Array.from(new Set(left)), memberPositions: leftPositions });
+      }
+    });
+    rebuilt.push({ key: nextKey, label: nextLabel, members: cleanMembers, memberPositions: nextPositions });
+    manualGroups = rebuilt;
+    expandedManualGroupKeys.delete(nextKey);
+    return { key: nextKey, label: nextLabel, members: cleanMembers };
+  }
+
+  function renameManualGroup(groupKey, nextLabel) {
+    const cleanKey = String(groupKey || '').trim();
+    const label = String(nextLabel || '').trim();
+    if (!cleanKey || !label) return false;
+    let changed = false;
+    manualGroups = cloneManualGroups(manualGroups).map((group) => {
+      if (group.key !== cleanKey) return group;
+      changed = true;
+      return { ...group, label };
+    });
+    return changed;
   }
 
   function refreshEdgeLabelDisplay() {
@@ -2655,10 +3306,42 @@
   function showCtx(evt) {
     ctxTarget = evt.target;
     const menu = $('ctxMenu');
-    // 切换按钮文案
-    const nodes = ctxNodes();
-    const locked = nodes.length ? nodes.every(n => n.locked()) : false;
-    $('ctxLock').textContent = locked ? '取消固定' : '固定位置';
+    const isEdgeTarget = !!(ctxTarget && typeof ctxTarget.isEdge === 'function' && ctxTarget.isEdge());
+    const isGroupNode = !!(ctxTarget && typeof ctxTarget.data === 'function' && ctxTarget.data('isGroup'));
+    const isManualGroup = ctxGroupKind() === 'manual';
+    const groupKey = ctxGroupKey();
+    const canToggleGroup = !!groupKey;
+    const nodeBtnIds = ['ctxLock', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxAppendQuery'];
+    nodeBtnIds.forEach((id) => {
+      const el = $(id);
+      if (!el) return;
+      if (isEdgeTarget) {
+        el.style.display = 'none';
+        return;
+      }
+      if (isGroupNode && ['ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxAppendQuery'].includes(id)) {
+        el.style.display = 'none';
+        return;
+      }
+      el.style.display = '';
+    });
+    if ($('ctxCreateGroup')) {
+      const groupableNodes = ctxNodes().filter((n) => !n.data('isGroup'));
+      $('ctxCreateGroup').style.display = (!isEdgeTarget && groupableNodes.length >= 2) ? '' : 'none';
+    }
+    if ($('ctxDeleteLink')) $('ctxDeleteLink').style.display = isEdgeTarget ? '' : 'none';
+    if ($('ctxToggleGroup')) {
+      $('ctxToggleGroup').style.display = (!isEdgeTarget && canToggleGroup) ? '' : 'none';
+      $('ctxToggleGroup').textContent = isGroupNode ? tr('ctx_group_expand') : tr('ctx_group_collapse');
+    }
+    if ($('ctxRenameGroup')) {
+      $('ctxRenameGroup').style.display = (!isEdgeTarget && isManualGroup && canToggleGroup) ? '' : 'none';
+    }
+    if (!isEdgeTarget) {
+      const nodes = ctxNodes();
+      const locked = nodes.length ? nodes.every(n => n.locked()) : false;
+      $('ctxLock').textContent = locked ? '取消固定' : '固定位置';
+    }
     const { clientX, clientY } = evt.originalEvent || {};
     if (clientX !== undefined) {
       menu.style.left = `${clientX}px`;
@@ -2670,9 +3353,10 @@
   function updateNodeLabels(mode) {
     if (!cy) return;
     const useFull = mode === 'full';
-    const val = useFull ? 'data(label)' : 'data(short)';
-    // 更新样式表确保全局生效（含后续新增节点）
-    cy.style().selector('node').style('label', val).update();
+    cy.style()
+      .selector('node')
+      .style('label', useFull ? 'data(label)' : 'data(short)')
+      .update();
     setOK(useFull ? '节点标签：全名' : '节点标签：缩略');
   }
 
@@ -2706,7 +3390,11 @@
         spacing: $('spacing')?.value || '0.5',
         bizIsolationTerms: $('bizIsolationTerms')?.value || '',
         nameClusterMode: $('nameClusterMode')?.value || 'on',
+        autoGroupMode: $('autoGroupMode')?.value || 'off',
         nameClusterStrength: $('nameClusterStrength')?.value || '0.6',
+        expandedAutoGroupKeys: Array.from(expandedAutoGroupKeys),
+        manualGroups: cloneManualGroups(manualGroups),
+        expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
         mergeMode: !!mergedMode,
         colLocalHost: $('colLocalHost')?.value || '',
         colRemoteHost: $('colRemoteHost')?.value || '',
@@ -2739,7 +3427,11 @@
     if ($('spacing') && ui.spacing != null) $('spacing').value = String(ui.spacing);
     if ($('bizIsolationTerms') && ui.bizIsolationTerms != null) $('bizIsolationTerms').value = String(ui.bizIsolationTerms);
     if ($('nameClusterMode') && ui.nameClusterMode) $('nameClusterMode').value = String(ui.nameClusterMode);
+    if ($('autoGroupMode') && ui.autoGroupMode) $('autoGroupMode').value = String(ui.autoGroupMode);
     if ($('nameClusterStrength') && ui.nameClusterStrength != null) $('nameClusterStrength').value = String(ui.nameClusterStrength);
+    expandedAutoGroupKeys = new Set((ui.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
+    manualGroups = cloneManualGroups(ui.manualGroups || []);
+    expandedManualGroupKeys = new Set((ui.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     if (typeof ui.mergeMode === 'boolean') mergedMode = ui.mergeMode;
     setMergeButtonText();
 
@@ -2758,6 +3450,94 @@
     const pos = (snapshot?.positions && typeof snapshot.positions === 'object') ? snapshot.positions : {};
     buildGraph(pos);
     applyPositions(pos);
+  }
+
+  function closeStateModal() {
+    if ($('stateModal')) $('stateModal').style.display = 'none';
+  }
+
+  function formatStateTime(ts) {
+    const num = Number(ts);
+    if (!Number.isFinite(num) || num <= 0) return '-';
+    try {
+      return new Date(num * 1000).toLocaleString();
+    } catch (_) {
+      return '-';
+    }
+  }
+
+  function renderServerStateList(items) {
+    const box = $('stateList');
+    if (!box) return;
+    const rows = Array.isArray(items) ? items : [];
+    if (!rows.length) {
+      box.innerHTML = `<div class="state-empty">${tr('state_empty')}</div>`;
+      return;
+    }
+    box.innerHTML = rows.map((item) => {
+      const id = String(item?.snapshot_id || '').trim();
+      const name = String(item?.name || id).trim() || id;
+      const created = formatStateTime(item?.created_at);
+      const rowCount = Number(item?.row_count || 0);
+      const nodeCount = Number(item?.node_count || 0);
+      return `
+        <div class="state-item">
+          <div class="state-item-main">
+            <div class="state-item-title">${escapeHtml(name)}</div>
+            <div class="state-item-meta">${escapeHtml(created)} | 行 ${rowCount} | 节点 ${nodeCount}</div>
+          </div>
+          <button type="button" data-state-load="${escapeHtml(id)}">${tr('state_load')}</button>
+        </div>
+      `;
+    }).join('');
+  }
+
+  async function refreshServerStateList() {
+    const box = $('stateList');
+    if (box) box.innerHTML = `<div class="state-empty">Loading...</div>`;
+    const base = apiBaseUrl();
+    const resp = await fetch(`${base}/api/state-snapshots`, { cache: 'no-store' });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data?.ok !== true) {
+      throw new Error(data?.detail || `HTTP ${resp.status}`);
+    }
+    renderServerStateList(data.items || []);
+  }
+
+  async function openServerStateModal() {
+    if ($('stateModal')) $('stateModal').style.display = 'flex';
+    await refreshServerStateList();
+  }
+
+  async function saveServerStateSnapshot() {
+    if (!headers.length || !rawRows.length) {
+      throw new Error('当前没有可保存的拓扑状态');
+    }
+    const snap = buildSessionSnapshot();
+    const base = apiBaseUrl();
+    const resp = await fetch(`${base}/api/state-snapshots`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshot: snap })
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data?.ok !== true) {
+      throw new Error(data?.detail || `HTTP ${resp.status}`);
+    }
+    return data;
+  }
+
+  async function loadServerStateSnapshot(snapshotId) {
+    const id = String(snapshotId || '').trim();
+    if (!id) throw new Error('缺少状态 ID');
+    const base = apiBaseUrl();
+    const resp = await fetch(`${base}/api/state-snapshots/${encodeURIComponent(id)}`, { cache: 'no-store' });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data?.ok !== true) {
+      throw new Error(data?.detail || `HTTP ${resp.status}`);
+    }
+    applySessionSnapshot(data.snapshot || {});
+    return data;
   }
 
   function downloadBlob(filename, blob, fallbackDataUrl = '') {
@@ -3034,6 +3814,9 @@
       if (typeof p.name_cluster_mode === 'string' && $('nameClusterMode')) {
         $('nameClusterMode').value = p.name_cluster_mode === 'off' ? 'off' : 'on';
       }
+      if (typeof p.auto_group_mode === 'string' && $('autoGroupMode')) {
+        $('autoGroupMode').value = p.auto_group_mode === 'on' ? 'on' : 'off';
+      }
       if (p.name_cluster_strength != null && $('nameClusterStrength')) {
         const v = Number(p.name_cluster_strength);
         if (Number.isFinite(v)) $('nameClusterStrength').value = String(Math.max(0, Math.min(1, v)));
@@ -3056,6 +3839,7 @@
         filter_terms: ($('filter')?.value || '').trim(),
         show_only_terms: ($('showOnly')?.value || '').trim(),
         name_cluster_mode: ($('nameClusterMode')?.value || 'on'),
+        auto_group_mode: ($('autoGroupMode')?.value || 'off'),
         name_cluster_strength: ($('nameClusterStrength')?.value || '0.6'),
         only_mode: viewState.onlyMode || 'none'
       };
@@ -3063,6 +3847,58 @@
     } catch (_) {
       // Ignore local storage errors.
     }
+  }
+
+  function loadKeywordHistory(storageKey) {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) return [];
+      return arr
+        .map((x) => String(x || '').trim())
+        .filter(Boolean)
+        .slice(0, KEYWORD_HISTORY_MAX);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function saveKeywordHistory(storageKey, values) {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify((values || []).slice(0, KEYWORD_HISTORY_MAX)));
+    } catch (_) {
+      // Ignore local storage errors.
+    }
+  }
+
+  function renderKeywordHistory(datalistId, values) {
+    const el = $(datalistId);
+    if (!el) return;
+    el.innerHTML = '';
+    (values || []).forEach((value) => {
+      const opt = document.createElement('option');
+      opt.value = value;
+      el.appendChild(opt);
+    });
+  }
+
+  function recordKeywordHistory(storageKey, datalistId, rawValue) {
+    const value = String(rawValue || '').trim();
+    if (!value) return;
+    const next = [value, ...loadKeywordHistory(storageKey).filter((x) => x !== value)].slice(0, KEYWORD_HISTORY_MAX);
+    saveKeywordHistory(storageKey, next);
+    renderKeywordHistory(datalistId, next);
+  }
+
+  function refreshKeywordHistories() {
+    renderKeywordHistory('layerTermsHistory', loadKeywordHistory(LAYER_HISTORY_KEY));
+    renderKeywordHistory('bizIsolationTermsHistory', loadKeywordHistory(PARTITION_HISTORY_KEY));
+  }
+
+  function commitKeywordHistories() {
+    recordKeywordHistory(LAYER_HISTORY_KEY, 'layerTermsHistory', $('layerTerms')?.value || '');
+    recordKeywordHistory(PARTITION_HISTORY_KEY, 'bizIsolationTermsHistory', $('bizIsolationTerms')?.value || '');
   }
 
   function readCliRuntimeInputs() {
@@ -3546,9 +4382,11 @@
   });
   loadCliPrefs();
   loadTopologyUiPrefs();
+  refreshKeywordHistories();
   loadUtilCacheFromServer();
 
   $('build').addEventListener('click', () => {
+    commitKeywordHistories();
     runWithRollback(() => buildGraph(), { delayMs: 1300 });
   });
   $('fit').addEventListener('click', () => cy && cy.fit({ padding: 30 }));
@@ -3633,6 +4471,55 @@
     }
   });
 
+  $('saveServerState').addEventListener('click', async () => {
+    try {
+      const data = await saveServerStateSnapshot();
+      setOK(`${tr('state_saved')}：${data.name || data.snapshot_id}`);
+      setErr('');
+    } catch (err) {
+      setErr(`保存状态失败：${String(err && err.message ? err.message : err)}`);
+    }
+  });
+
+  $('importServerState').addEventListener('click', async () => {
+    try {
+      await openServerStateModal();
+      setErr('');
+    } catch (err) {
+      closeStateModal();
+      setErr(`读取状态列表失败：${String(err && err.message ? err.message : err)}`);
+    }
+  });
+
+  $('refreshStateList').addEventListener('click', async () => {
+    try {
+      await refreshServerStateList();
+      setErr('');
+    } catch (err) {
+      setErr(`读取状态列表失败：${String(err && err.message ? err.message : err)}`);
+    }
+  });
+
+  $('closeStateModal').addEventListener('click', closeStateModal);
+  $('stateModal').addEventListener('click', (e) => {
+    if (e.target && e.target.id === 'stateModal') closeStateModal();
+  });
+  $('stateList').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-state-load]');
+    if (!btn) return;
+    const snapshotId = btn.getAttribute('data-state-load') || '';
+    if (!snapshotId) return;
+    try {
+      const data = await loadServerStateSnapshot(snapshotId);
+      closeStateModal();
+      setStatus('服务器状态已导入并恢复拓扑');
+      setOK(`${tr('state_loaded')}：${data.name || data.snapshot_id}`);
+      setErr('');
+    } catch (err) {
+      setErr(`导入状态失败：${String(err && err.message ? err.message : err)}`);
+    }
+  });
+
   $('importSessionBtn').addEventListener('click', () => {
     $('importSessionFile').value = '';
     $('importSessionFile').click();
@@ -3671,6 +4558,7 @@
   $('layerTerms').addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
     saveTopologyUiPrefs();
+    recordKeywordHistory(LAYER_HISTORY_KEY, 'layerTermsHistory', $('layerTerms').value);
     if (!cy) return;
     runWithRollback(() => {
       applyLayersToNodes(cy.nodes());
@@ -3679,9 +4567,14 @@
     }, { delayMs: 1300 });
   });
   $('layerTerms').addEventListener('input', saveTopologyUiPrefs);
+  $('layerTerms').addEventListener('change', () => {
+    saveTopologyUiPrefs();
+    recordKeywordHistory(LAYER_HISTORY_KEY, 'layerTermsHistory', $('layerTerms').value);
+  });
   $('bizIsolationTerms').addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
     saveTopologyUiPrefs();
+    recordKeywordHistory(PARTITION_HISTORY_KEY, 'bizIsolationTermsHistory', $('bizIsolationTerms').value);
     if (!cy) return;
     runWithRollback(() => {
       runLayout();
@@ -3689,12 +4582,24 @@
     }, { delayMs: 1300 });
   });
   $('bizIsolationTerms').addEventListener('input', saveTopologyUiPrefs);
+  $('bizIsolationTerms').addEventListener('change', () => {
+    saveTopologyUiPrefs();
+    recordKeywordHistory(PARTITION_HISTORY_KEY, 'bizIsolationTermsHistory', $('bizIsolationTerms').value);
+  });
   $('nameClusterMode').addEventListener('change', () => {
     saveTopologyUiPrefs();
     if (!cy || $('layoutMode').value !== 'layer') return;
     runWithRollback(() => {
       runLayout();
       setOK('已按设备名称近似度重新布局');
+    }, { delayMs: 1300 });
+  });
+  $('autoGroupMode').addEventListener('change', () => {
+    saveTopologyUiPrefs();
+    if (!cy || $('layoutMode').value !== 'layer') return;
+    runWithRollback(() => {
+      runLayout();
+      setOK($('autoGroupMode').value === 'on' ? '已按 LLDP 邻接自动合组重新布局' : '已取消自动合组并重新布局');
     }, { delayMs: 1300 });
   });
   $('nameClusterStrength').addEventListener('input', saveTopologyUiPrefs);
@@ -3728,6 +4633,109 @@
       updateCounts();
       setOK(`已删除 ${nodes.length} 个节点及其相关边`);
     }, { delayMs: 0 });
+  });
+
+  $('ctxDeleteLink').addEventListener('click', () => {
+    runWithRollback(() => {
+      const edges = ctxEdges();
+      hideCtx();
+      if (!edges.length) {
+        setOK('未选中链路');
+        return;
+      }
+      const rowKeySet = new Set();
+      edges.forEach((e) => {
+        const keys = e.data('rowKeys');
+        if (!Array.isArray(keys)) return;
+        keys.forEach((key) => {
+          const s = String(key || '').trim();
+          if (s) rowKeySet.add(s);
+        });
+      });
+      const rowKeys = Array.from(rowKeySet);
+      if (!rowKeys.length) {
+        setErr('当前链路没有可删除的原始记录');
+        return;
+      }
+      const removedRows = removeLinkRowsByEdgeKeys(rowKeys);
+      const pos = capturePositions();
+      buildGraph(pos);
+      applyPositions(pos);
+      setOK(`已删除 ${edges.length} 条链路，对应原始记录 ${removedRows} 行。`);
+    }, { delayMs: 0 });
+  });
+
+  $('ctxCreateGroup').addEventListener('click', () => {
+    const targetNodes = ctxNodes().filter((n) => !n.data('isGroup'));
+    hideCtx();
+    if (!targetNodes.length || targetNodes.length < 2) {
+      setOK('请先选中至少 2 台设备后再执行设备合组。');
+      return;
+    }
+    runWithRollback(() => {
+      const memberIds = targetNodes.map((n) => n.id());
+      const labels = targetNodes.map((n) => String(n.data('label') || n.id()).trim());
+      const memberPositions = {};
+      targetNodes.forEach((n) => {
+        const p = n.position();
+        if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) memberPositions[n.id()] = { x: p.x, y: p.y };
+      });
+      const info = upsertManualGroup(memberIds, buildGroupLabelFromMany(labels), memberPositions);
+      if (!info) {
+        setErr('设备合组失败：有效设备不足 2 台。');
+        return;
+      }
+      const pos = capturePositions();
+      buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
+      setOK(`已合组 ${info.members.length} 台设备，组名：${info.label}`);
+    }, { delayMs: 1300 });
+  });
+
+  $('ctxToggleGroup').addEventListener('click', () => {
+    const target = ctxTarget;
+    const groupKey = ctxGroupKey();
+    const groupKind = ctxGroupKind();
+    hideCtx();
+    if (!target || !groupKey) {
+      setOK('当前节点不属于合组。');
+      return;
+    }
+    const isCollapsedGroup = !!(typeof target.data === 'function' && target.data('isGroup'));
+    const expandedSet = groupKind === 'manual' ? expandedManualGroupKeys : expandedAutoGroupKeys;
+    runWithRollback(() => {
+      if (isCollapsedGroup) expandedSet.add(groupKey);
+      else expandedSet.delete(groupKey);
+      const pos = capturePositions();
+      buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
+      setOK(isCollapsedGroup ? '已展开合组。' : '已收起合组。');
+    }, { delayMs: 1300 });
+  });
+
+  $('ctxRenameGroup').addEventListener('click', () => {
+    const groupKey = ctxGroupKey();
+    const groupKind = ctxGroupKind();
+    const currentName = String((manualGroups.find((g) => g.key === groupKey)?.label) || ctxTarget?.data?.('label') || '').trim();
+    hideCtx();
+    if (!groupKey || groupKind !== 'manual') {
+      setOK('当前节点不支持修改组名。');
+      return;
+    }
+    const nextLabel = window.prompt('请输入新的组名', currentName);
+    if (nextLabel == null) return;
+    const cleanLabel = String(nextLabel || '').trim();
+    if (!cleanLabel) {
+      setErr('组名不能为空。');
+      return;
+    }
+    runWithRollback(() => {
+      if (!renameManualGroup(groupKey, cleanLabel)) {
+        setErr('修改组名失败：未找到对应手动组。');
+        return;
+      }
+      const pos = capturePositions();
+      buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
+      setOK(`已修改组名：${cleanLabel}`);
+    }, { delayMs: 1300 });
   });
 
   $('ctxCopy').addEventListener('click', async () => {
@@ -3997,14 +5005,14 @@ $('filter').addEventListener('keydown', (e) => {
     runWithRollback(() => {
       if (!cy) return;
       const selected = cy.nodes(':selected');
-      if (!selected.length) { setOK('未选中节点，无法删除未选中设备。'); return; }
+      if (!selected.length) { setOK('未选中节点，无法执行仅保留选中。'); return; }
       const removeNodes = cy.nodes().difference(selected);
       if (!removeNodes.length) { setOK('当前没有未选中设备可删除。'); return; }
       const ids = removeNodes.map(n => n.id());
       pushDeletedNodeIds(ids);
       removeNodes.remove();
       updateCounts();
-      setOK(`已删除未选中 ${removeNodes.length} 个节点，保留选中 ${selected.length} 个节点（可恢复）。`);
+      setOK(`已仅保留选中 ${selected.length} 个节点，隐藏其余 ${removeNodes.length} 个节点（可恢复）。`);
     }, { delayMs: 0 });
   });
   $('rollbackStep').addEventListener('click', () => {

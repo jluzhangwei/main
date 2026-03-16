@@ -16,6 +16,7 @@ Then open:
 from __future__ import annotations
 
 import csv
+import json
 import os
 import pty
 import re
@@ -42,6 +43,9 @@ BASE_DIR = Path(__file__).resolve().parent
 SHARED_DIR = BASE_DIR.parent / "service_hub" / "shared"
 TMP_DIR = BASE_DIR / "tmp_csv"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
+STATE_DIR = BASE_DIR / "state_snapshots"
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+STATE_LIMIT = int(os.getenv("LLDP_STATE_LIMIT", "15") or "15")
 LINK_UTIL_CACHE_FILE = TMP_DIR / "link_util_cache.csv"
 LINK_UTIL_CACHE_FIELDS = [
     "util_key",
@@ -1411,6 +1415,11 @@ class LinkUtilRequest(BaseModel):
     debug_enabled: bool = False
 
 
+class StateSnapshotSaveRequest(BaseModel):
+    snapshot: dict[str, Any]
+    name: str | None = None
+
+
 app = FastAPI(title="LLDP SQL Service", version="1.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -2570,6 +2579,92 @@ def _sql_job_public(job: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _state_snapshot_path(snapshot_id: str) -> Path:
+    safe_id = re.sub(r"[^A-Za-z0-9_-]+", "", str(snapshot_id or ""))
+    if not safe_id:
+        raise HTTPException(status_code=400, detail="invalid snapshot id")
+    return STATE_DIR / f"{safe_id}.json"
+
+
+def _state_snapshot_public(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to read state snapshot: {exc}") from exc
+    return {
+        "snapshot_id": str(payload.get("snapshot_id") or path.stem),
+        "name": str(payload.get("name") or path.stem),
+        "created_at": float(payload.get("created_at") or path.stat().st_mtime),
+        "row_count": int(payload.get("row_count") or 0),
+        "node_count": int(payload.get("node_count") or 0),
+        "edge_count": int(payload.get("edge_count") or 0),
+    }
+
+
+def _cleanup_old_state_snapshots() -> None:
+    files = sorted(
+        [p for p in STATE_DIR.glob("*.json") if p.is_file()],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for path in files[STATE_LIMIT:]:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            continue
+
+
+def list_state_snapshots() -> list[dict[str, Any]]:
+    files = sorted(
+        [p for p in STATE_DIR.glob("*.json") if p.is_file()],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return [_state_snapshot_public(path) for path in files[:STATE_LIMIT]]
+
+
+def save_state_snapshot(payload: StateSnapshotSaveRequest) -> dict[str, Any]:
+    snapshot = payload.snapshot or {}
+    if not isinstance(snapshot, dict) or not snapshot:
+        raise HTTPException(status_code=400, detail="snapshot is required")
+    snapshot_id = time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
+    created_at = time.time()
+    name = str(payload.name or f"状态 {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(created_at))}").strip()
+    wrapped = {
+        "snapshot_id": snapshot_id,
+        "name": name,
+        "created_at": created_at,
+        "row_count": len(snapshot.get("rows") or snapshot.get("working_rows") or []),
+        "node_count": len(snapshot.get("positions") or {}),
+        "edge_count": len(snapshot.get("working_rows") or snapshot.get("rows") or []),
+        "snapshot": snapshot,
+    }
+    path = _state_snapshot_path(snapshot_id)
+    path.write_text(json.dumps(wrapped, ensure_ascii=False, indent=2), encoding="utf-8")
+    _cleanup_old_state_snapshots()
+    return _state_snapshot_public(path)
+
+
+def load_state_snapshot(snapshot_id: str) -> dict[str, Any]:
+    path = _state_snapshot_path(snapshot_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="state snapshot not found")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to load state snapshot: {exc}") from exc
+    snapshot = payload.get("snapshot")
+    if not isinstance(snapshot, dict) or not snapshot:
+        raise HTTPException(status_code=500, detail="state snapshot content is invalid")
+    return {
+        "ok": True,
+        "snapshot_id": str(payload.get("snapshot_id") or snapshot_id),
+        "name": str(payload.get("name") or snapshot_id),
+        "created_at": float(payload.get("created_at") or path.stat().st_mtime),
+        "snapshot": snapshot,
+    }
+
+
 def _run_sql_query_task(task_id: str) -> None:
     with SQL_QUERY_JOB_LOCK:
         job = SQL_QUERY_JOBS.get(task_id)
@@ -2858,6 +2953,33 @@ def download_link_utilization_cache():
             writer = csv.DictWriter(f, fieldnames=LINK_UTIL_CACHE_FIELDS, extrasaction="ignore")
             writer.writeheader()
     return FileResponse(LINK_UTIL_CACHE_FILE, media_type="text/csv", filename=LINK_UTIL_CACHE_FILE.name)
+
+
+@app.post("/api/state-snapshots")
+def create_state_snapshot(payload: StateSnapshotSaveRequest) -> dict[str, Any]:
+    try:
+        item = save_state_snapshot(payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"save state snapshot failed: {exc}") from exc
+    return {"ok": True, **item}
+
+
+@app.get("/api/state-snapshots")
+def get_state_snapshots() -> dict[str, Any]:
+    try:
+        items = list_state_snapshots()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"list state snapshots failed: {exc}") from exc
+    return {"ok": True, "items": items}
+
+
+@app.get("/api/state-snapshots/{snapshot_id}")
+def get_state_snapshot(snapshot_id: str) -> dict[str, Any]:
+    return load_state_snapshot(snapshot_id)
 
 
 @app.get("/api/lldp-csv/file/{filename}")
