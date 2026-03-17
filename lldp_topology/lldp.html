@@ -413,27 +413,29 @@
       </div>
 
       <div class="row">
-        <label>定位设备（关键字逗号分隔，回车多选）</label>
-        <input id="search" type="text" placeholder="例如：MGMT,AGGR" />
+        <label>定位设备（逗号分层，斜杠同组，&需全部命中，回车多选）</label>
+        <input id="search" type="text" placeholder="例如：MGMT,AGGR/SPINE,EDGE&CORE" />
         <div class="hint" id="searchResult"></div>
       </div>
       <div class="row">
-        <label>不显示：逗号分隔，命中的设备会被隐藏</label>
-        <input id="filter" type="text" placeholder="例如：lab,backup" value="MGMT,null,ACC,SA" />
+        <label>不显示：逗号分层，斜杠同组，&需全部命中，命中的设备会被隐藏</label>
+        <input id="filter" type="text" placeholder="例如：lab,backup/OOB,EDGE&CORE" value="MGMT,null,ACC,SA" />
       </div>
       <div class="row">
-        <label>只显示：逗号分隔，回车生效（仅显示命中的设备，其余隐藏）</label>
-        <input id="showOnly" type="text" placeholder="例如：CORE,EDGE" />
+        <label>只显示：逗号分层，斜杠同组，&需全部命中，回车生效（仅显示命中的设备，其余隐藏）</label>
+        <input id="showOnly" type="text" placeholder="例如：CORE,EDGE/SPINE,LEAF&TOR" />
       </div>
       <div class="row">
         <label>分层关键字（高->低，逗号分层，斜杠同层，&需全部命中，如 EDGE&CORE,CORE,AGGR/SPINE,LEAF/tor）</label>
         <input id="layerTerms" type="text" list="layerTermsHistory" value="EDGE,CORE,AGGR,LEAF" />
         <datalist id="layerTermsHistory"></datalist>
+        <div class="hint" id="layerTermsHint">规则与分区一致：逗号分层，斜杠同层 OR，&需全部命中；若设置了分区，则每个分区内独立执行分层。</div>
       </div>
       <div class="row">
         <label>分区关键字（左->右分区，逗号分区，斜杠同区，&需全部命中，如 PAY/SHOP,MGMT&CORE,EDGE）</label>
         <input id="bizIsolationTerms" type="text" list="bizIsolationTermsHistory" placeholder="例如：PAY/SHOP,MGMT,EDGE" />
         <datalist id="bizIsolationTermsHistory"></datalist>
+        <div class="hint" id="partitionTermsHint">规则与分层一致：逗号分区，斜杠同区 OR，&需全部命中；分区先命中优先，命中后不再参与后续分区。</div>
       </div>
       <div class="row inline">
         <div>
@@ -938,11 +940,13 @@
       strip_domain_label: '去掉 hostname 域名后缀',
       node_label_label: '节点标签',
       edge_label_label: '端口标签',
-      search_label: '定位设备（关键字逗号分隔，回车多选）',
-      filter_label: '不显示：逗号分隔，命中的设备会被隐藏',
-      show_only_label: '只显示：逗号分隔，回车生效（仅显示命中的设备，其余隐藏）',
+      search_label: '定位设备（逗号分层，斜杠同组，&需全部命中，回车多选）',
+      filter_label: '不显示：逗号分层，斜杠同组，&需全部命中，命中的设备会被隐藏',
+      show_only_label: '只显示：逗号分层，斜杠同组，&需全部命中，回车生效（仅显示命中的设备，其余隐藏）',
       layer_terms_label: '分层关键字（高->低，逗号分层，斜杠同层，&需全部命中，如 EDGE&CORE,CORE,AGGR/SPINE,LEAF/tor）',
       partition_terms_label: '分区关键字（左->右分区，逗号分区，斜杠同区，&需全部命中，如 PAY/SHOP,MGMT&CORE,EDGE）',
+      layer_terms_hint: '规则与分区一致：逗号分层，斜杠同层 OR，&需全部命中；若设置了分区，则每个分区内独立执行分层。',
+      partition_terms_hint: '规则与分层一致：逗号分区，斜杠同区 OR，&需全部命中；分区先命中优先，命中后不再参与后续分区。',
       name_cluster_label: '名称相似聚拢',
       recursive_only_172_label: '只递归查询 172.* 网段（跳过 10.* / 143.* 等）',
       auto_group_label: '自动合组',
@@ -1044,11 +1048,13 @@
       strip_domain_label: 'Strip hostname domain suffix',
       node_label_label: 'Node Labels',
       edge_label_label: 'Port Labels',
-      search_label: 'Locate Devices (comma-separated keywords, press Enter for multi-select)',
-      filter_label: 'Hide: comma-separated keywords',
-      show_only_label: 'Show Only: comma-separated keywords, press Enter to apply',
+      search_label: 'Locate Devices (comma=tier, slash=OR group, &=all terms, press Enter for multi-select)',
+      filter_label: 'Hide: comma=tier, slash=OR group, &=all terms',
+      show_only_label: 'Show Only: comma=tier, slash=OR group, &=all terms, press Enter to apply',
       layer_terms_label: 'Layer Keywords (high->low, comma=layer, slash=same layer, &=all terms)',
       partition_terms_label: 'Partition Keywords (left->right, comma=partition, slash=same partition, &=all terms)',
+      layer_terms_hint: 'Uses the same expression syntax as partitions: comma=layer, slash=OR, &=all terms. If partitions are set, layering runs independently inside each partition.',
+      partition_terms_hint: 'Uses the same expression syntax as layering: comma=partition, slash=OR, &=all terms. First matching partition wins and later partitions are skipped.',
       name_cluster_label: 'Name Similarity Clustering',
       recursive_only_172_label: 'Recurse only into 172.* networks (skip 10.* / 143.* etc.)',
       auto_group_label: 'Auto Grouping',
@@ -1267,6 +1273,8 @@
     setParentLabel('showOnly', 'show_only_label');
     setParentLabel('layerTerms', 'layer_terms_label');
     setParentLabel('bizIsolationTerms', 'partition_terms_label');
+    setText('layerTermsHint', 'layer_terms_hint');
+    setText('partitionTermsHint', 'partition_terms_hint');
     setParentLabel('nameClusterMode', 'name_cluster_label');
     setParentLabel('autoGroupMode', 'auto_group_label');
     setParentLabel('nameClusterStrength', 'cluster_strength_label');
@@ -1460,9 +1468,9 @@
       positions: capturePositions(),
       deletedStack: deletedStack.map((x) => (Array.isArray(x) ? x.slice() : [])),
       viewState: {
-        filterTerms: Array.isArray(viewState.filterTerms) ? viewState.filterTerms.slice() : [],
+        filterTerms: cloneMatchExpression(viewState.filterTerms),
         onlyMode: viewState.onlyMode || 'none',
-        onlyTerms: Array.isArray(viewState.onlyTerms) ? viewState.onlyTerms.slice() : [],
+        onlyTerms: cloneMatchExpression(viewState.onlyTerms),
       },
       ui: {
         filter: $('filter')?.value || '',
@@ -1499,9 +1507,9 @@
       rawRows = cloneRows(snapshot.rawRows || []);
       deletedStack = (snapshot.deletedStack || []).map((x) => (Array.isArray(x) ? x.slice() : []));
       rebuildDeletedNodeIdsFromStack();
-      viewState.filterTerms = (snapshot.viewState?.filterTerms || []).slice();
+      viewState.filterTerms = cloneMatchExpression(snapshot.viewState?.filterTerms || []);
       viewState.onlyMode = snapshot.viewState?.onlyMode || 'none';
-      viewState.onlyTerms = (snapshot.viewState?.onlyTerms || []).slice();
+      viewState.onlyTerms = cloneMatchExpression(snapshot.viewState?.onlyTerms || []);
       mergedMode = !!snapshot.mergedMode;
       setMergeButtonText();
 
@@ -2673,33 +2681,35 @@
   function applyFilterTerms(terms, opts = {}) {
     if (!cy) return;
     const silent = !!opts.silent;
+    const expr = normalizeMatchExpression(terms);
     cy.elements().removeClass('filtered');
-    if (!terms.length) {
+    if (!expr.length) {
       if (!silent) setOK('已清空过滤，全部显示。');
       return;
     }
     const nodeHits = cy.nodes().filter(n => {
       const label = (n.data('label') || '');
-      return terms.some(t => matchTermInName(label, t));
+      return matchExpressionInName(label, expr);
     });
     nodeHits.addClass('filtered');
     cy.edges().forEach(e => {
       if (e.source().hasClass('filtered') || e.target().hasClass('filtered')) e.addClass('filtered');
     });
-    if (!silent) setOK(`已隐藏 ${nodeHits.length} 个节点，过滤条件：${terms.join(', ')}`);
+    if (!silent) setOK(`已隐藏 ${nodeHits.length} 个节点，过滤条件：${matchExpressionText(expr, $('filter')?.value || '')}`);
   }
 
   function applyShowOnlyTerms(terms, opts = {}) {
     if (!cy) return;
     const silent = !!opts.silent;
+    const expr = normalizeMatchExpression(terms);
     cy.elements().removeClass('onlyHidden');
-    if (!terms.length) {
+    if (!expr.length) {
       if (!silent) setOK('已取消“只显示”过滤，全部显示。');
       return;
     }
     const hits = cy.nodes().filter(n => {
       const label = (n.data('label') || '');
-      return terms.some(t => matchTermInName(label, t));
+      return matchExpressionInName(label, expr);
     });
     const hideNodes = cy.nodes().not(hits);
     hideNodes.addClass('onlyHidden');
@@ -2709,12 +2719,12 @@
       if (sHidden || tHidden) e.addClass('onlyHidden');
       else e.removeClass('onlyHidden');
     });
-    if (!silent) setOK(`只显示 ${hits.length} 个节点，条件：${terms.join(', ')}`);
+    if (!silent) setOK(`只显示 ${hits.length} 个节点，条件：${matchExpressionText(expr, $('showOnly')?.value || '')}`);
   }
 
   function applyShowOnly() {
     if (!cy) return;
-    const terms = parseTerms($('showOnly').value);
+    const terms = parseMatchExpression($('showOnly').value);
     viewState.onlyMode = terms.length ? 'showOnly' : 'none';
     viewState.onlyTerms = terms;
     saveTopologyUiPrefs();
@@ -2777,7 +2787,7 @@
 
   function applyFilter() {
     if (!cy) return;
-    const terms = parseTerms($('filter').value);
+    const terms = parseMatchExpression($('filter').value);
     viewState.filterTerms = terms;
     saveTopologyUiPrefs();
     applyFilterTerms(terms);
@@ -2794,13 +2804,6 @@
     if (viewState.onlyMode === 'showOnly') {
       applyShowOnlyTerms(viewState.onlyTerms, { silent: true });
     }
-  }
-
-  function parseTerms(raw) {
-    return String(raw || '')
-      .split(/[,\uff0c;\uff1b]+/g)
-      .map(t => t.trim().toLowerCase())
-      .filter(Boolean);
   }
 
   function parseTierExpression(raw) {
@@ -2821,6 +2824,48 @@
         return clauses;
       })
       .filter(arr => arr.length);
+  }
+
+  function normalizeMatchExpression(expr) {
+    if (typeof expr === 'string') return parseTierExpression(expr);
+    if (!Array.isArray(expr)) return [];
+    return expr.map((tier) => {
+      if (typeof tier === 'string') {
+        const t = tier.trim().toLowerCase();
+        return t ? [[t]] : [];
+      }
+      if (!Array.isArray(tier)) return [];
+      return tier.map((clause) => {
+        if (typeof clause === 'string') {
+          const t = clause.trim().toLowerCase();
+          return t ? [t] : [];
+        }
+        if (!Array.isArray(clause)) return [];
+        return clause
+          .map((term) => String(term || '').trim().toLowerCase())
+          .filter(Boolean);
+      }).filter((clause) => clause.length);
+    }).filter((tier) => tier.length);
+  }
+
+  function cloneMatchExpression(expr) {
+    return normalizeMatchExpression(expr).map((tier) => tier.map((clause) => clause.slice()));
+  }
+
+  function parseMatchExpression(raw) {
+    return normalizeMatchExpression(parseTierExpression(raw));
+  }
+
+  function matchExpressionInName(nameText, expr) {
+    return matchTierIndex(nameText, normalizeMatchExpression(expr)) >= 0;
+  }
+
+  function matchExpressionText(expr, fallback = '') {
+    const tiers = normalizeMatchExpression(expr);
+    if (!tiers.length) return String(fallback || '').trim();
+    return tiers.map((tier) => (
+      tier.map((clause) => clause.join('&')).join('/')
+    )).join(', ');
   }
 
   function compactMatchText(v) {
@@ -2851,12 +2896,12 @@
 
   function parseLayers() {
     const raw = $('layerTerms').value || '';
-    return parseTierExpression(raw);
+    return parseMatchExpression(raw);
   }
 
   function parseBizIsolation() {
     const raw = $('bizIsolationTerms')?.value || '';
-    return parseTierExpression(raw);
+    return parseMatchExpression(raw);
   }
 
   function groupNodesByBizIsolation(nodes, tiers) {
@@ -4035,9 +4080,9 @@
       positions: capturePositions(),
       deleted_stack: deletedStack.map((x) => (Array.isArray(x) ? x.slice() : [])),
       view_state: {
-        filterTerms: Array.isArray(viewState.filterTerms) ? viewState.filterTerms.slice() : [],
+        filterTerms: cloneMatchExpression(viewState.filterTerms),
         onlyMode: viewState.onlyMode || 'none',
-        onlyTerms: Array.isArray(viewState.onlyTerms) ? viewState.onlyTerms.slice() : [],
+        onlyTerms: cloneMatchExpression(viewState.onlyTerms),
       },
       ui: {
         filter: $('filter')?.value || '',
@@ -4078,9 +4123,9 @@
     rawRows = rs.slice();
     deletedStack = (snapshot?.deleted_stack || []).map((x) => (Array.isArray(x) ? x.slice() : []));
     rebuildDeletedNodeIdsFromStack();
-    viewState.filterTerms = (snapshot?.view_state?.filterTerms || []).slice();
+    viewState.filterTerms = cloneMatchExpression(snapshot?.view_state?.filterTerms || []);
     viewState.onlyMode = snapshot?.view_state?.onlyMode || 'none';
-    viewState.onlyTerms = (snapshot?.view_state?.onlyTerms || []).slice();
+    viewState.onlyTerms = cloneMatchExpression(snapshot?.view_state?.onlyTerms || []);
 
     const ui = snapshot?.ui || {};
     if ($('filter') && ui.filter != null) $('filter').value = String(ui.filter);
@@ -4810,8 +4855,8 @@
       if (typeof p.only_mode === 'string' && ['none', 'showOnly', 'show172'].includes(p.only_mode)) {
         viewState.onlyMode = p.only_mode;
       }
-      if (typeof p.filter_terms === 'string') viewState.filterTerms = parseTerms(p.filter_terms);
-      if (typeof p.show_only_terms === 'string') viewState.onlyTerms = parseTerms(p.show_only_terms);
+      if (typeof p.filter_terms === 'string') viewState.filterTerms = parseMatchExpression(p.filter_terms);
+      if (typeof p.show_only_terms === 'string') viewState.onlyTerms = parseMatchExpression(p.show_only_terms);
     } catch (_) {
       // Ignore local storage errors.
     }
@@ -6483,12 +6528,12 @@
   $('search').addEventListener('keydown', (e) => {
     if (!cy) return;
     if (e.key !== 'Enter') return;
-    const terms = parseTerms(e.target.value);
-    if (!terms.length) return;
+    const expr = parseMatchExpression(e.target.value);
+    if (!expr.length) return;
 
     const hits = cy.nodes().filter(n => {
       const label = (n.data('label') || '');
-      return terms.some(t => matchTermInName(label, t));
+      return matchExpressionInName(label, expr);
     });
 
     cy.elements().removeClass('hit dim');
@@ -6498,7 +6543,7 @@
       hits.select();
       hits.addClass('hit');
       cy.animate({ fit: { eles: hits, padding: 140 }, duration: 450 });
-      $('searchResult').textContent = `命中并选中 ${hits.length} 个节点`;
+      $('searchResult').textContent = `命中并选中 ${hits.length} 个节点：${matchExpressionText(expr, e.target.value)}`;
     } else {
       $('searchResult').textContent = '未找到匹配节点';
     }

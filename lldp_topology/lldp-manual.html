@@ -150,9 +150,9 @@
         <h2>近期更新（关键行为）</h2>
         <ul>
           <li><span class="pill">批量右键追加</span> 多选设备后右键「追加查询」已支持批量顺序执行，固定按单轮补链路。</li>
-          <li><span class="pill">链路利用率过滤</span> 新增「利用率过滤」，输入阈值后只显示高于阈值的链路与相关节点，点「恢复显示」即可取消。</li>
+          <li><span class="pill">链路利用率过滤</span> 新增「利用率过滤」，输入阈值后只显示高于阈值的链路与相关节点，点「清除过滤」即可取消。</li>
           <li><span class="pill">链路缓存管理</span> 新增「删除链路缓存」，会同时清空后端缓存和页面上的利用率颜色/标签。</li>
-          <li><span class="pill">分区 + 分层</span> 分区采用先命中优先（命中后不再参与后续分区）；每个分区内独立执行分层布局。</li>
+          <li><span class="pill">分区 + 分层</span> 分区与分层使用同一套语法：逗号分段、斜杠 OR、<code>&amp;</code> 全命中。分区采用先命中优先（命中后不再参与后续分区）；每个分区内独立执行分层布局。</li>
           <li><span class="pill">状态快照</span> 支持保存/导入服务器状态，服务器保留最近 15 个状态。</li>
         </ul>
       </section>
@@ -162,7 +162,8 @@
         <ul>
           <li><span class="pill">仅离线导入 CSV</span> 直接打开 <code>lldp.html</code>。</li>
           <li><span class="pill">启用 SQL/CLI</span> 需启动服务后访问 <code>http://127.0.0.1:18080/lldp.html</code>。</li>
-          <li><span class="pill">依赖安装</span> <code>pip install fastapi uvicorn pymysql</code>。</li>
+          <li><span class="pill">依赖检查</span> <code>./start_lldp_service.sh check</code>。</li>
+          <li><span class="pill">依赖安装</span> <code>./start_lldp_service.sh install-deps</code>，或手工执行 <code>pip install fastapi uvicorn pymysql</code>。</li>
           <li><span class="pill">数据库配置</span> 复制 <code>.env.mysql.example</code> 为 <code>.env.mysql</code> 并填写参数。</li>
         </ul>
       </section>
@@ -171,6 +172,8 @@
         <h2>一键启动（推荐）</h2>
         <ul>
           <li><span class="pill">脚本</span> <code>/Users/zhangwei/python/lldp_topology/start_lldp_service.sh</code></li>
+          <li><span class="pill">检查</span> <code>cd /Users/zhangwei/python/lldp_topology &amp;&amp; ./start_lldp_service.sh check</code></li>
+          <li><span class="pill">安装依赖</span> <code>./start_lldp_service.sh install-deps</code></li>
           <li><span class="pill">启动</span> <code>cd /Users/zhangwei/python/lldp_topology &amp;&amp; ./start_lldp_service.sh start</code></li>
           <li><span class="pill">状态</span> <code>./start_lldp_service.sh status</code></li>
           <li><span class="pill">日志</span> <code>./start_lldp_service.sh logs</code></li>
@@ -220,8 +223,9 @@
         <h2>布局与分层</h2>
         <ul>
           <li><span class="pill">布局</span> 上下分层 / 强分散 / 圆形。</li>
+          <li><span class="pill">统一语法</span> 分层、分区、定位设备、不显示、只显示都使用同一套表达式：逗号分段、斜杠 OR、<code>&amp;</code> 全命中。</li>
           <li><span class="pill">分层关键字</span> 逗号分层，斜杠同层，<code>&amp;</code> 同层内全命中。示例：<code>EDGE&amp;CORE,CORE,AGGR/SPINE,LEAF/tor</code></li>
-          <li><span class="pill">分区关键字</span> 逗号分区，斜杠同区，<code>&amp;</code> 同区内全命中。分区先匹配先归属，后续分区不重复匹配。</li>
+          <li><span class="pill">分区关键字</span> 逗号分区，斜杠同区，<code>&amp;</code> 同区内全命中。分区先匹配先归属，后续分区不重复匹配；分层在每个分区内独立执行。</li>
           <li><span class="pill">选中重排</span> 点击「重排选中设备」只对选中节点做局部布局，不影响其他节点和数据。</li>
           <li><span class="pill">默认</span> 布局模式默认上下分层。</li>
         </ul>
@@ -252,7 +256,7 @@
           <li><span class="pill">默认优先级</span> 右键链路利用率默认先查 Zabbix；若未配置或未命中，再回退到已配置的 CLI。</li>
           <li><span class="pill">缓存策略</span> 已成功链路结果写入缓存，仅新增链路增量查询；CLI 和 Zabbix 缓存分开存储。</li>
           <li><span class="pill">缓存管理</span> 支持下载链路缓存 CSV、删除链路缓存、下载利用率调试日志。</li>
-          <li><span class="pill">利用率过滤</span> 支持按阈值只显示高利用率链路，默认阈值 40%。</li>
+          <li><span class="pill">利用率过滤</span> 支持按阈值只显示高利用率链路，默认阈值 40%，通过「清除过滤」单独取消。</li>
         </ul>
       </section>
 
