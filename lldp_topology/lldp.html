@@ -399,6 +399,7 @@
           <select id="nodeLabelMode">
             <option value="short">缩略（推荐）</option>
             <option value="full" selected>全名（容易挤）</option>
+            <option value="full_ip">全名+IP</option>
             <option value="none">隐藏</option>
           </select>
         </div>
@@ -449,15 +450,16 @@
             <option value="on">开启</option>
           </select>
         </div>
+      </div>
+      <div class="row inline">
         <div>
           <label>近似度强度 <span class="badge">0~1</span></label>
           <input id="nameClusterStrength" type="range" min="0" max="1" step="0.1" value="0.6" />
         </div>
-      </div>
-
-      <div class="row">
-        <label>分散强度（越大越分散） <span class="badge">建议 0.3~0.8</span></label>
-        <input id="spacing" type="range" min="0.1" max="1" step="0.05" value="0.5" />
+        <div>
+          <label>分散强度（越大越分散） <span class="badge">建议 0.3~0.8</span></label>
+          <input id="spacing" type="range" min="0.1" max="1" step="0.05" value="0.5" />
+        </div>
       </div>
 
       <div class="action-group">
@@ -839,7 +841,7 @@
     <div class="row">
       <label>仅显示利用率大于等于该阈值的链路（%）</label>
       <input id="utilFilterThreshold" type="number" min="0" max="100" step="0.1" value="40" />
-      <div class="hint">会同步隐藏没有任何可见链路的节点；点击“恢复显示”可取消本次过滤。</div>
+      <div class="hint">会同步隐藏没有任何可见链路的节点；点击“清除过滤”可取消本次过滤。</div>
     </div>
     <div class="modal-actions">
       <button id="applyUtilFilter" class="primary">确定</button>
@@ -942,6 +944,7 @@
       layer_terms_label: '分层关键字（高->低，逗号分层，斜杠同层，&需全部命中，如 EDGE&CORE,CORE,AGGR/SPINE,LEAF/tor）',
       partition_terms_label: '分区关键字（左->右分区，逗号分区，斜杠同区，&需全部命中，如 PAY/SHOP,MGMT&CORE,EDGE）',
       name_cluster_label: '名称相似聚拢',
+      recursive_only_172_label: '只递归查询 172.* 网段（跳过 10.* / 143.* 等）',
       auto_group_label: '自动合组',
       ctx_create_group: '设备合组',
       ctx_delete_link: '删除链路',
@@ -963,6 +966,7 @@
       btn_relayout_selected: '重排选中设备',
       node_label_short: '缩略（推荐）',
       node_label_full: '全名（容易挤）',
+      node_label_full_ip: '全名+IP',
       node_label_none: '隐藏',
       btn_fit_selection: '定位选中',
       btn_isolate: '仅显示邻接',
@@ -1046,6 +1050,7 @@
       layer_terms_label: 'Layer Keywords (high->low, comma=layer, slash=same layer, &=all terms)',
       partition_terms_label: 'Partition Keywords (left->right, comma=partition, slash=same partition, &=all terms)',
       name_cluster_label: 'Name Similarity Clustering',
+      recursive_only_172_label: 'Recurse only into 172.* networks (skip 10.* / 143.* etc.)',
       auto_group_label: 'Auto Grouping',
       ctx_create_group: 'Create Group',
       ctx_delete_link: 'Delete Link',
@@ -1067,6 +1072,7 @@
       btn_relayout_selected: 'Relayout Selected',
       node_label_short: 'Short (Recommended)',
       node_label_full: 'Full (Crowded)',
+      node_label_full_ip: 'Full + IP',
       node_label_none: 'Hidden',
       btn_fit_selection: 'Focus Selection',
       btn_isolate: 'Show Adjacent Only',
@@ -1253,6 +1259,7 @@
     setParentLabel('nodeLabelMode', 'node_label_label');
     setOptionText('nodeLabelMode', 'short', 'node_label_short');
     setOptionText('nodeLabelMode', 'full', 'node_label_full');
+    setOptionText('nodeLabelMode', 'full_ip', 'node_label_full_ip');
     setOptionText('nodeLabelMode', 'none', 'node_label_none');
     setParentLabel('edgeLabelMode', 'edge_label_label');
     setParentLabel('search', 'search_label');
@@ -2062,12 +2069,18 @@
   }
 
   function cytoscapeStyleConfig(nodeLabelMode) {
+    const nodeLabelField = nodeLabelMode === 'none'
+      ? ''
+      : (nodeLabelMode === 'full_ip' ? 'data(labelIp)' : (nodeLabelMode === 'full' ? 'data(label)' : 'data(short)'));
     return [
       {
         selector: 'node',
         style: {
-          'label': nodeLabelMode === 'none' ? '' : (nodeLabelMode === 'full' ? 'data(label)' : 'data(short)'),
+          'label': nodeLabelField,
           'font-size': 10,
+          'line-height': 1.15,
+          'text-wrap': 'wrap',
+          'text-max-width': 220,
           'text-outline-width': 2,
           'text-outline-color': '#ffffff',
           'width': 30,
@@ -2210,13 +2223,45 @@
       bindCyInteractions();
       return;
     }
+    const incoming = new Map();
+    (elements || []).forEach((el) => {
+      const id = String(el?.data?.id || '').trim();
+      if (id) incoming.set(id, el);
+    });
+    const selectedNodeIds = new Set(cy.nodes(':selected').map((n) => n.id()));
+    const selectedEdgeIds = new Set(cy.edges(':selected').map((e) => e.id()));
 
     cy.startBatch();
-    cy.elements().remove();
-    cy.add(elements);
+    cy.elements().forEach((ele) => {
+      if (!incoming.has(ele.id())) ele.remove();
+    });
+    incoming.forEach((el, id) => {
+      const existing = cy.getElementById(id);
+      if (!existing || !existing.length) {
+        cy.add(el);
+        return;
+      }
+      const nextData = (el && el.data && typeof el.data === 'object') ? el.data : {};
+      const prevData = existing.data() || {};
+      Object.keys(prevData).forEach((key) => {
+        if (!(key in nextData)) existing.removeData(key);
+      });
+      existing.data(nextData);
+      if (existing.isNode() && el.position && Number.isFinite(el.position.x) && Number.isFinite(el.position.y)) {
+        existing.position({ x: Number(el.position.x), y: Number(el.position.y) });
+      }
+    });
     cy.endBatch();
     cy.boxSelectionEnabled(boxSelectMode);
     cy.nodes().unlock().grabify();
+    selectedNodeIds.forEach((id) => {
+      const n = cy.getElementById(id);
+      if (n && n.length) n.select();
+    });
+    selectedEdgeIds.forEach((id) => {
+      const e = cy.getElementById(id);
+      if (e && e.length) e.select();
+    });
   }
 
   function buildGraph(keepPositions = null, opts = {}) {
@@ -2312,7 +2357,8 @@
       if (edgeSet.has(k1) || edgeSet.has(k2)) continue;
       edgeSet.add(k1);
 
-      edges.push({ data: { id: `e_${edges.length}`, source: aId, target: bId, label: edgeLabel, labelShown: '', utilKey, utilKeys: utilKey ? [utilKey] : [], rowKeys: rowKey ? [rowKey] : [] } });
+      const edgeId = rowKey ? `e_${fnv1a(rowKey)}` : `e_${fnv1a(`${aId}||${bId}||${edgeLabel}`)}`;
+      edges.push({ data: { id: edgeId, source: aId, target: bId, label: edgeLabel, labelShown: '', utilKey, utilKeys: utilKey ? [utilKey] : [], rowKeys: rowKey ? [rowKey] : [] } });
       degreeMap.set(aId, (degreeMap.get(aId) || 0) + 1);
       degreeMap.set(bId, (degreeMap.get(bId) || 0) + 1);
     }
@@ -2320,6 +2366,8 @@
     const baseNodeIds = Array.from(nodes.keys());
     const baseNameById = new Map();
     nodes.forEach((n, id) => {
+      n.short = shortLabel(n.label);
+      n.labelIp = n.ip ? `${n.label}\n${n.ip}` : n.label;
       n.groupKey = '';
       n.groupKind = '';
       n.manualGroupKey = '';
@@ -2436,6 +2484,7 @@
 
     reapplyViewStateAfterBuild();
     applyDeletedMaskAfterBuild();
+    reapplyUtilFilterAfterBuild();
     if (preserveViewport && prevPan && Number.isFinite(prevZoom)) {
       cy.zoom(prevZoom);
       cy.pan(prevPan);
@@ -3452,11 +3501,8 @@
     if (!cy) return;
     resetViewState();
     saveTopologyUiPrefs();
-    cy.elements().removeClass('sel-hidden onlyHidden filtered utilHidden dim hit');
-    utilFilterState.active = false;
-    utilFilterState.threshold = null;
-    updateUtilFilterUi();
-    setOK('已恢复显示全部节点与链路。');
+    cy.elements().removeClass('sel-hidden onlyHidden filtered dim hit');
+    setOK('已恢复关键字过滤和临时隐藏。链路利用率过滤请使用“清除过滤”。');
   }
 
   function buildScopedTopologyFromVisible() {
@@ -3520,6 +3566,11 @@
     updateCounts();
   }
 
+  function reapplyUtilFilterAfterBuild() {
+    if (!cy || !utilFilterState.active || !Number.isFinite(utilFilterState.threshold)) return;
+    applyUtilThresholdFilter(utilFilterState.threshold, { silent: true });
+  }
+
   function hostValueFromRow(row, keys) {
     for (const k of keys) {
       const v = row?.[k];
@@ -3576,7 +3627,6 @@
       bucket.get(key).push(e);
     });
     const merged = [];
-    let idx = 0;
     bucket.forEach((list, key) => {
       const [a, b] = key.split('||');
       const count = list.length;
@@ -3584,7 +3634,7 @@
       const label = count > 1 ? `${count} 条链路` : (labels[0] || '');
       const utilKeys = Array.from(new Set(list.flatMap(x => Array.isArray(x.data.utilKeys) ? x.data.utilKeys : (x.data.utilKey ? [x.data.utilKey] : []))));
       const rowKeys = Array.from(new Set(list.flatMap(x => Array.isArray(x.data.rowKeys) ? x.data.rowKeys : [])));
-      merged.push({ data: { id: `m_${idx++}`, source: a, target: b, label, labelShown: '', utilKeys, rowKeys } });
+      merged.push({ data: { id: `m_${fnv1a(key)}`, source: a, target: b, label, labelShown: '', utilKeys, rowKeys } });
     });
     return merged;
   }
@@ -3860,11 +3910,12 @@
     if ($('utilFilterModal')) $('utilFilterModal').style.display = 'none';
   }
 
-  function applyUtilThresholdFilter(threshold) {
+  function applyUtilThresholdFilter(threshold, opts = {}) {
     if (!cy) {
       setErr('请先生成拓扑，再执行利用率过滤');
       return false;
     }
+    const silent = !!opts.silent;
     const num = Number(threshold);
     if (!Number.isFinite(num) || num < 0) {
       setErr('请输入有效的利用率阈值');
@@ -3880,8 +3931,8 @@
     });
     if (!hitEdges.length) {
       cy.elements().addClass('utilHidden');
-      setOK(`已应用利用率过滤：阈值 ${num}% ，未命中链路`);
-      $('utilResultHint').textContent = `利用率过滤已应用：当前口径下没有大于等于 ${num}% 的链路。点击“恢复显示”可取消。`;
+      if (!silent) setOK(`已应用利用率过滤：阈值 ${num}% ，未命中链路`);
+      $('utilResultHint').textContent = `利用率过滤已应用：当前口径下没有大于等于 ${num}% 的链路。点击“清除过滤”可取消。`;
       return true;
     }
     const visibleNodeIds = new Set();
@@ -3893,8 +3944,8 @@
     cy.nodes().forEach((n) => {
       if (!visibleNodeIds.has(n.id())) n.addClass('utilHidden');
     });
-    setOK(`已按利用率过滤：仅显示 ≥ ${num}% 的 ${hitEdges.length} 条链路`);
-    $('utilResultHint').textContent = `利用率过滤已应用：阈值 ${num}% ，保留 ${hitEdges.length} 条链路、${visibleNodeIds.size} 个节点。点击“恢复显示”可取消。`;
+    if (!silent) setOK(`已按利用率过滤：仅显示 ≥ ${num}% 的 ${hitEdges.length} 条链路`);
+    $('utilResultHint').textContent = `利用率过滤已应用：阈值 ${num}% ，保留 ${hitEdges.length} 条链路、${visibleNodeIds.size} 个节点。点击“清除过滤”可取消。`;
     return true;
   }
 
@@ -3947,14 +3998,16 @@
 
   function updateNodeLabels(mode) {
     if (!cy) return;
-    const normalized = ['short', 'full', 'none'].includes(String(mode || '')) ? String(mode) : 'full';
+    const normalized = ['short', 'full', 'full_ip', 'none'].includes(String(mode || '')) ? String(mode) : 'full';
     const useFull = normalized === 'full';
+    const useFullIp = normalized === 'full_ip';
     const hidden = normalized === 'none';
     cy.style()
       .selector('node')
-      .style('label', hidden ? '' : (useFull ? 'data(label)' : 'data(short)'))
+      .style('label', hidden ? '' : (useFullIp ? 'data(labelIp)' : (useFull ? 'data(label)' : 'data(short)')))
       .update();
     if (hidden) setOK('节点标签：隐藏');
+    else if (useFullIp) setOK('节点标签：全名+IP');
     else setOK(useFull ? '节点标签：全名' : '节点标签：缩略');
   }
 
@@ -4292,6 +4345,7 @@
   const CLI_PREF_KEY = 'lldp_cli_import_prefs_v1';
   const TOPOLOGY_UI_PREF_KEY = 'lldp_topology_ui_prefs_v1';
   const ZBX_PREF_KEY = 'lldp_zabbix_prefs_v1';
+  const ZBX_TOKEN_SESSION_KEY = 'lldp_zabbix_token_session_v1';
   const SQL_PREF_KEY = 'lldp_sql_prefs_v1';
   function apiBaseUrl() {
     // If opened as file://, use local service endpoint explicitly.
@@ -4311,16 +4365,6 @@
     const pos = capturePositions();
     const before = rawRows.length;
     const parsed = parseCSV(csvText);
-    const releaseIds = new Set();
-    for (const r of parsed.rows || []) {
-      const lh = hostValueFromRow(r, ['localhostname', 'local_host', 'src', 'from']);
-      const rh = hostValueFromRow(r, ['remotehostname', 'remote_host', 'dst', 'to']);
-      const srcIp = rowValue(r, ['源设备IP', '源设备ip', 'ipaddr', 'sourceip']);
-      const dstIp = rowValue(r, ['目的设备IP', '目的设备ip', 'remoteip']);
-      collectCandidateNodeIds(lh, srcIp).forEach((id) => releaseIds.add(id));
-      collectCandidateNodeIds(rh, dstIp).forEach((id) => releaseIds.add(id));
-    }
-    releaseNodesFromDeletedStack(releaseIds);
     const added = mergeParsed(parsed, `${sourceName}-append`);
     if (added) sourceRows.push(...parsed.rows);
 
@@ -4646,11 +4690,28 @@
   function loadZbxPrefs() {
     try {
       const raw = localStorage.getItem(ZBX_PREF_KEY);
-      if (!raw) return;
-      const p = JSON.parse(raw);
+      const p = raw ? JSON.parse(raw) : {};
       if (typeof p.url === 'string') $('zbxServerUrl').value = p.url;
-      if (typeof p.token === 'string') $('zbxApiToken').value = p.token;
       if (typeof p.verify_ssl === 'boolean') $('zbxVerifySsl').checked = p.verify_ssl;
+      let token = '';
+      try {
+        token = String(sessionStorage.getItem(ZBX_TOKEN_SESSION_KEY) || '').trim();
+      } catch (_) {
+        token = '';
+      }
+      if (!token && typeof p.token === 'string') {
+        token = p.token;
+        try {
+          sessionStorage.setItem(ZBX_TOKEN_SESSION_KEY, token);
+        } catch (_) {}
+        try {
+          localStorage.setItem(ZBX_PREF_KEY, JSON.stringify({
+            url: typeof p.url === 'string' ? p.url : '',
+            verify_ssl: !!p.verify_ssl
+          }));
+        } catch (_) {}
+      }
+      if (typeof token === 'string') $('zbxApiToken').value = token;
     } catch (_) {
       // Ignore local storage errors.
     }
@@ -4660,9 +4721,11 @@
     try {
       localStorage.setItem(ZBX_PREF_KEY, JSON.stringify({
         url: ($('zbxServerUrl')?.value || '').trim(),
-        token: ($('zbxApiToken')?.value || '').trim(),
         verify_ssl: !!$('zbxVerifySsl')?.checked
       }));
+      try {
+        sessionStorage.setItem(ZBX_TOKEN_SESSION_KEY, ($('zbxApiToken')?.value || '').trim());
+      } catch (_) {}
     } catch (_) {
       // Ignore local storage errors.
     }
@@ -4694,6 +4757,7 @@
       localStorage.removeItem(SQL_PREF_KEY);
       localStorage.removeItem(CLI_PREF_KEY);
       localStorage.removeItem(ZBX_PREF_KEY);
+      sessionStorage.removeItem(ZBX_TOKEN_SESSION_KEY);
     } catch (_) {
       // Ignore local storage errors.
     }
@@ -4730,7 +4794,7 @@
         $('nameClusterMode').value = p.name_cluster_mode === 'off' ? 'off' : 'on';
       }
       if ($('nodeLabelMode')) {
-        if (typeof p.node_label_mode === 'string' && ['short', 'full', 'none'].includes(p.node_label_mode)) {
+        if (typeof p.node_label_mode === 'string' && ['short', 'full', 'full_ip', 'none'].includes(p.node_label_mode)) {
           $('nodeLabelMode').value = p.node_label_mode;
         } else if (typeof p.node_labels_hidden === 'boolean') {
           $('nodeLabelMode').value = p.node_labels_hidden ? 'none' : 'full';
@@ -6036,7 +6100,6 @@
       setOK('已按设备名称近似度重新布局');
     }, { delayMs: 1300 });
   });
-
   $('ctxLock').addEventListener('click', () => {
     const nodes = ctxNodes();
     if (!nodes.length) return hideCtx();
