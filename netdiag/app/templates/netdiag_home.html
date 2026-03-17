@@ -1194,7 +1194,7 @@
                   <button type="button" class="auto-pop-pill" data-auto-field="act_auto_approve" onclick="toggleAutoPolicyField('act_auto_approve')">{{ 'Approve' if lang == 'en' else '批准' }}</button>
                   <button type="button" class="auto-pop-pill" data-auto-field="act_auto_execute_step" onclick="toggleAutoPolicyField('act_auto_execute_step')">{{ 'Execute' if lang == 'en' else '执行' }}</button>
                   <button type="button" class="auto-pop-pill" data-auto-field="act_auto_analyze" onclick="toggleAutoPolicyField('act_auto_analyze')">{{ 'Analyze' if lang == 'en' else '分析' }}</button>
-                  <button type="button" class="auto-pop-pill" data-auto-field="act_auto_next_round" onclick="toggleAutoPolicyField('act_auto_next_round')">{{ 'Next Round' if lang == 'en' else '下一轮' }}</button>
+                  <button type="button" class="auto-pop-pill" data-auto-field="act_auto_next_round" onclick="toggleAutoPolicyField('act_auto_next_round')">{{ 'Next Probe' if lang == 'en' else '下一枪' }}</button>
                   <button type="button" class="auto-pop-pill" data-auto-field="act_auto_conclude" onclick="toggleAutoPolicyField('act_auto_conclude')">{{ 'Conclude' if lang == 'en' else '结束' }}</button>
                 </div>
                 <div class="auto-pop-foot">
@@ -1339,6 +1339,44 @@
   const PLANNING_NO_ROUND_BUSY_MS = 120000;
   function autoRunEnabled() { return !!(id('act_auto_execute') && id('act_auto_execute').checked); }
   function isFullAutoMode() { return autoRunEnabled() && _autoPolicyCheckedCount() >= AUTO_POLICY_STEP_IDS.length; }
+  function _normalizeUiAction(action) {
+    const raw = String(action || '').trim().toLowerCase();
+    if (!raw) return '';
+    if (raw === 'next_round') return 'continue_probe';
+    return raw;
+  }
+  function _sessionStatusLabel(status) {
+    const raw0 = String(status || '').trim().toLowerCase();
+    const raw = raw0 === 'need_next_round' ? 'ready_for_next_probe' : raw0;
+    const map = {
+      draft: '{{ "draft" if lang == "en" else "草稿" }}',
+      calibrating_time: '{{ "calibrating time" if lang == "en" else "时间校准中" }}',
+      planning: '{{ "planning" if lang == "en" else "生成计划中" }}',
+      waiting_approval: '{{ "waiting approval" if lang == "en" else "待批准" }}',
+      executing: '{{ "executing" if lang == "en" else "执行中" }}',
+      analyzing: '{{ "analyzing" if lang == "en" else "分析中" }}',
+      ready_for_next_probe: '{{ "ready for next probe" if lang == "en" else "待继续验证" }}',
+      concluded: '{{ "concluded" if lang == "en" else "已收敛" }}',
+      aborted: '{{ "stopped" if lang == "en" else "已停止" }}',
+      stopped: '{{ "stopped" if lang == "en" else "已停止" }}',
+      failed: '{{ "failed" if lang == "en" else "失败" }}',
+    };
+    return map[raw] || (String(status || '').trim() || '-');
+  }
+  function _runStatusRaw() {
+    const el = id('run_status');
+    if (!el) return '';
+    return String(el.dataset.rawStatus || el.textContent || '').trim().toLowerCase();
+  }
+  function _sessionReadyForNextProbe(sessionRecord) {
+    const s = sessionRecord || CURRENT_SESSION_CACHE;
+    if (!s) return false;
+    const uiStatus = String((s.ui_status || s.status || '')).trim().toLowerCase();
+    if (uiStatus === 'ready_for_next_probe' || uiStatus === 'need_next_round') return true;
+    const next = (s && typeof s.next_action === 'object' && s.next_action) ? s.next_action : null;
+    const action = _normalizeUiAction((next && (next.raw_action || next.action)) || '');
+    return action === 'continue_probe';
+  }
   const AUTO_POLICY_STEP_IDS = [
     'act_auto_create', 'act_auto_baseline', 'act_auto_plan', 'act_auto_approve',
     'act_auto_execute_step', 'act_auto_analyze', 'act_auto_next_round', 'act_auto_conclude',
@@ -1352,9 +1390,10 @@
       execute: 'act_auto_execute_step',
       analyze: 'act_auto_analyze',
       next_round: 'act_auto_next_round',
+      continue_probe: 'act_auto_next_round',
       conclude: 'act_auto_conclude',
     };
-    return map[String(action || '').toLowerCase()] || '';
+    return map[_normalizeUiAction(action)] || '';
   }
   function isActionAutoApproved(action) {
     if (!autoRunEnabled()) return false;
@@ -2882,17 +2921,18 @@
       approve: '{{ "Approve" if lang == "en" else "批准计划" }}',
       execute: '{{ "Execute" if lang == "en" else "执行命令" }}',
       analyze: '{{ "Analyze" if lang == "en" else "AI 分析" }}',
-      next_round: '{{ "Next Round" if lang == "en" else "下一轮诊断" }}',
+      next_round: '{{ "Next Probe" if lang == "en" else "下一枪验证" }}',
+      continue_probe: '{{ "Next Probe" if lang == "en" else "下一枪验证" }}',
       conclude: '{{ "Conclude" if lang == "en" else "结束会话" }}',
       refresh: '{{ "Refresh" if lang == "en" else "刷新状态" }}',
       stop: '{{ "Stop" if lang == "en" else "停止" }}',
       next: '{{ "Next Step" if lang == "en" else "下一步" }}',
       autoflow: '{{ "One-Click Start" if lang == "en" else "一键开始诊断" }}',
     };
-    return map[String(action || '')] || String(action || '-');
+    return map[_normalizeUiAction(action)] || String(action || '-');
   }
   async function chatRunAction(action) {
-    const a = String(action || '').toLowerCase();
+    const a = _normalizeUiAction(action);
     if (!a) return;
     if (a === 'stop') return stopCurrentAction();
     if (a === 'continue_run') return continueAfterEmergencyStop();
@@ -2914,7 +2954,7 @@
     if (a === 'approve') return approveRound({ scroll: false });
     if (a === 'execute') return executeRound({ scroll: false });
     if (a === 'analyze') return analyzeRound({ scroll: false });
-    if (a === 'next_round') return prepareNextRound(true, { scroll: false });
+    if (a === 'continue_probe') return prepareNextRound(true, { scroll: false });
     if (a === 'conclude') return concludeSession();
     if (a === 'refresh') return refreshSession();
     if (a === 'autoflow') {
@@ -3519,7 +3559,7 @@
     if (action === 'approve') return 'approve';
     if (action === 'execute') return 'execute';
     if (action === 'analyze') return 'analyze';
-    if (action === 'conclude' || action === 'next_round') return 'converge';
+    if (action === 'conclude' || _normalizeUiAction(action) === 'continue_probe') return 'converge';
     return '';
   }
   function setActionEnabled(buttonId, enabled, titleText) {
@@ -3585,7 +3625,7 @@
       };
     }
     if (isSessionBusy(sessionRecord)) return { action: 'wait', message: 'session busy' };
-    const status = String(sessionRecord.status || '').toLowerCase();
+    const status = String((sessionRecord.ui_status || sessionRecord.status || '')).toLowerCase();
     if (status === 'concluded') return { action: 'none', message: 'session concluded' };
     if (!_hasBaseline(sessionRecord)) return { action: 'baseline', message: 'need baseline' };
     const round = _selectedOrLatestRound(sessionRecord) || _latestRound(sessionRecord);
@@ -3601,9 +3641,9 @@
       if (round.stop_decision && round.stop_decision.recommend_conclude === true) {
         return { action: 'conclude', round_no: Number(round.round_no || 0), message: 'ready to conclude' };
       }
-      return { action: 'next_round', round_no: Number(round.round_no || 0), message: 'continue next round' };
+      return { action: 'continue_probe', round_no: Number(round.round_no || 0), message: 'continue next probe' };
     }
-    if (rstatus === 'failed') return { action: 'next_round', round_no: Number(round.round_no || 0), message: 'round failed, start next round' };
+    if (rstatus === 'failed') return { action: 'continue_probe', round_no: Number(round.round_no || 0), message: 'round failed, continue probe' };
     if (hasExec) return { action: 'analyze', round_no: Number(round.round_no || 0), message: 'have outputs, analyze now' };
     return { action: 'plan', message: 'plan fallback' };
   }
@@ -3676,7 +3716,7 @@
     if (recommendConclude || status === 'concluded') {
       setCheckGateState('converge', 'success', 'concluded');
     } else if (rstatus === 'completed') {
-      setCheckGateState('converge', 'running', 'next round');
+      setCheckGateState('converge', 'running', '{{ "next probe" if lang == "en" else "继续验证" }}');
     } else if (rstatus === 'failed') {
       setCheckGateState('converge', 'failed', 'recheck');
     } else {
@@ -3727,7 +3767,7 @@
   function updateActionControls(sessionRecord) {
     const hasSid = !!sessionId();
     const controlReady = ensureControlReady(false);
-    const status = String((sessionRecord || {}).status || '').toLowerCase();
+    const status = String(((sessionRecord || {}).ui_status || (sessionRecord || {}).status || '')).toLowerCase();
     const round = _selectedOrLatestRound(sessionRecord);
     const rstatus = String((round || {}).status || '').toLowerCase();
     const hasBaseline = !!(sessionRecord && Array.isArray(sessionRecord.time_calibration) && sessionRecord.time_calibration.length > 0);
@@ -3744,12 +3784,12 @@
     const canExecute = hasSid && !busy && !concluded && !!round && (rstatus === 'executing' || (rstatus === 'waiting_approval' && !!round.approved));
     const canAnalyze = hasSid && !busy && !concluded && !!round && (rstatus === 'analyzing' || hasExecutions);
     const canConclude = hasSid && !busy && !concluded && !!round && (rstatus === 'completed' || recommendConclude);
-    const canNextRound = hasSid && _hasBaseline(sessionRecord) && !busy && !concluded && (!round || ['completed', 'failed'].includes(rstatus));
+    const canNextRound = hasSid && _hasBaseline(sessionRecord) && !busy && !concluded && (_sessionReadyForNextProbe(sessionRecord) || !round || ['completed', 'failed'].includes(rstatus));
     const canNextStep = !busy && !concluded && (hasSid || controlReady);
 
     setActionEnabled('btn_create_session', !busy, !busy ? '' : '{{ "Current workflow is busy." if lang == "en" else "当前流程运行中，请稍后再创建会话。" }}');
     setActionEnabled('btn_next_step', canNextStep, canNextStep ? '' : '{{ "Need connection profile and idle state." if lang == "en" else "需要先完成连接控制配置且当前非运行中。" }}');
-    setActionEnabled('btn_next_round', canNextRound, canNextRound ? '' : '{{ "Need baseline and previous round completed/failed." if lang == "en" else "需先完成 Baseline 且上一轮已完成/失败。" }}');
+    setActionEnabled('btn_next_round', canNextRound, canNextRound ? '' : '{{ "Need baseline and a completed/failed probe first." if lang == "en" else "需先完成 Baseline，且上一枪验证已完成/失败。" }}');
     setActionEnabled(
       'btn_baseline',
       canBaseline,
@@ -4541,6 +4581,7 @@
       waiting_approval: 3,
       executing: 4,
       analyzing: 5,
+      ready_for_next_probe: 2,
       need_next_round: 2,
       concluded: 6,
       failed: 0,
@@ -4765,15 +4806,17 @@
       syncRevolverFromSession(null, null);
       id('run_sid').textContent = '-';
       id('run_status').textContent = '-';
+      id('run_status').dataset.rawStatus = '';
       id('run_round').textContent = '-';
       id('run_updated').textContent = '-';
       _terminalSetPlaceholder('-');
       return;
     }
     id('run_sid').textContent = s.session_id || '-';
-    id('run_status').textContent = s.status || '-';
+    id('run_status').textContent = _sessionStatusLabel((s.ui_status || s.status || '-'));
+    id('run_status').dataset.rawStatus = String(s.status || '').trim().toLowerCase();
     id('run_updated').textContent = s.updated_at || '-';
-    renderStepStatus(s.status || 'draft');
+    renderStepStatus((s.ui_status || s.status || 'draft'));
     const rounds = Array.isArray(s.rounds) ? s.rounds : [];
     let rno = parseInt(id('act_round_no').value || '0', 10);
     let round = rounds.find(r => Number(r.round_no) === Number(rno));
@@ -4861,7 +4904,7 @@
       const tr = document.createElement('tr');
       tr.setAttribute('data-session', s.session_id || '');
       tr.style.cursor = 'pointer';
-      tr.innerHTML = `<td><code>${s.session_id}</code></td><td>${s.status}</td><td>${s.created_at}</td><td>${s.question || ''}</td>`;
+      tr.innerHTML = `<td><code>${s.session_id}</code></td><td>${escapeHtml(_sessionStatusLabel(s.ui_status || s.status || '-'))}</td><td>${s.created_at}</td><td>${s.question || ''}</td>`;
       tbody.appendChild(tr);
     }
   }
@@ -4941,18 +4984,25 @@
     const btn = id('btn_stop_chat');
     if (!btn) return;
     const s = sessionRecord || CURRENT_SESSION_CACHE;
-    const runStatus = String((id('run_status') && id('run_status').textContent) || '').trim().toLowerCase();
+    const sid = String(sessionId() || '').trim();
+    const loadedSid = String((s && s.session_id) || '').trim();
+    const sessStatus = String((s && s.status) || '').trim().toLowerCase();
+    const runStatus = _runStatusRaw();
     const statusBusy = ['calibrating_time', 'planning', 'executing', 'analyzing'].includes(runStatus);
     const busy = !!ACTION_ABORT_CTRL || LOCAL_ACTION_BUSY || isSessionBusy(s) || hasRunningFlowStepVisual() || statusBusy;
-    btn.disabled = !busy || STOP_REQUEST_LATCH || EMERGENCY_BRAKE_ACTIVE;
-    if (!busy) {
-      btn.title = '{{ "No running step" if lang == "en" else "当前无可停止步骤" }}';
-    } else if (EMERGENCY_BRAKE_ACTIVE) {
+    const canStopSession = !!loadedSid && loadedSid === sid && !['concluded'].includes(sessStatus);
+    const canStop = (busy || canStopSession) && !STOP_REQUEST_LATCH && !EMERGENCY_BRAKE_ACTIVE;
+    btn.disabled = !canStop;
+    if (EMERGENCY_BRAKE_ACTIVE) {
       btn.title = '{{ "Emergency stop active. Click Continue in chat to resume." if lang == "en" else "急刹停止中，请在对话点击“继续”恢复。" }}';
     } else if (STOP_REQUEST_LATCH) {
       btn.title = '{{ "Stop already requested, waiting..." if lang == "en" else "已请求停止，等待中..." }}';
-    } else {
+    } else if (busy) {
       btn.title = '{{ "Stop current running step" if lang == "en" else "停止当前运行步骤" }}';
+    } else if (canStopSession) {
+      btn.title = '{{ "Emergency stop and pause current session" if lang == "en" else "急刹并暂停当前会话" }}';
+    } else {
+      btn.title = '{{ "No active session to stop" if lang == "en" else "当前无可停止会话" }}';
     }
   }
   function setWorkflowBusy(busy) {
@@ -5381,7 +5431,7 @@
       if (next.action === 'execute') return executeRound({ scroll: false });
       if (next.action === 'analyze') return analyzeRound({ scroll: false });
       if (next.action === 'conclude') return concludeSession();
-      if (next.action === 'next_round') return prepareNextRound(true, { scroll: false });
+      if (_normalizeUiAction(next.action) === 'continue_probe') return prepareNextRound(true, { scroll: false });
       setResult({ ok: false, error: `unsupported next action: ${next.action}` });
     } catch (e) {
       setResult({ ok: false, error: String(e) });
@@ -5795,7 +5845,7 @@
     if (EMERGENCY_BRAKE_ACTIVE) return;
     const sid = sessionId();
     if (!sid) return;
-    const st = (id('run_status').textContent || '').toLowerCase();
+    const st = _runStatusRaw();
     if (['calibrating_time', 'planning', 'executing', 'analyzing'].includes(st)) {
       await refreshSession();
     }

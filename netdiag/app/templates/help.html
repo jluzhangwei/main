@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block content %}
+{% set lang_raw = request.query_params.get('lang', 'zh') %}
+{% set lang = 'en' if lang_raw.lower().startswith('en') else 'zh' %}
+
+{% if lang == 'en' %}
+<div class="card">
+  <h2>NetDiag Help</h2>
+  <p class="muted">Extract buffer logs from network devices by time range and run optional AI diagnosis.</p>
+</div>
+
+<div class="card">
+  <h3>Core Features</h3>
+  <ul>
+    <li>Single or batch device log extraction (text input)</li>
+    <li>Connection modes: Direct SSH (asyncssh) and SMC jump mode (pty + subprocess)</li>
+    <li>Auto vendor/profile handling for Cisco/Arista/Huawei/Palo Alto</li>
+    <li>Server-local time window input with device clock offset conversion</li>
+    <li>Hit lines with context preservation and merged overlapping ranges</li>
+    <li>Download outputs: per-device log, summary.json, and zip package</li>
+    <li>Debug mode shows login/command/response transcript</li>
+    <li>AI analysis with multi-provider models and markdown output</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>Quick Start</h3>
+  <ol>
+    <li>Open <code>Create Task</code>, choose <code>direct</code> or <code>smc</code>.</li>
+    <li>Fill device credentials and time range (<code>YYYY-MM-DD HH:MM:SS</code>).</li>
+    <li>Paste device list in the address box (one per line).</li>
+    <li>Create task and monitor progress in task detail.</li>
+    <li>Download <code>filtered.log</code>, <code>summary.json</code>, and <code>download.zip</code>.</li>
+    <li>Optionally run AI analysis on task detail page.</li>
+  </ol>
+</div>
+
+<div class="card">
+  <h3>SMC Mode Notes</h3>
+  <ul>
+    <li>Enter jump shell first, then SSH to target device in the same PTY session.</li>
+    <li>Auto-handles <code>yes/no</code> and password prompts.</li>
+    <li>Recognizes common device prompts before command execution.</li>
+    <li>One isolated SMC sub-session per device; cleaned up at task end.</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>Output Layout</h3>
+  <pre>output/{task_id}/
+  summary.json
+  download.zip
+  dev-1/
+    raw.log
+    filtered.log
+    meta.json
+    debug.log (debug mode)
+</pre>
+</div>
+
+<div class="card">
+  <h3>Troubleshooting</h3>
+  <ul>
+    <li><strong>CERTIFICATE_VERIFY_FAILED</strong>: start service with <code>./run.sh</code> to load CA bundle defaults.</li>
+    <li><strong>No log hits</strong>: verify device clock, timezone, and input window.</li>
+    <li><strong>Unsupported command</strong>: fallback commands are attempted; failure reason appears in task detail.</li>
+  </ul>
+</div>
+{% else %}
+<div class="card">
+  <h2>NetDiag Help</h2>
+  <p class="muted">用于从网络设备 buffer log 中按时间范围提取日志，并支持 AI 诊断分析。</p>
+</div>
+
+<div class="card">
+  <h3>核心功能</h3>
+  <ul>
+    <li>单台与批量设备日志提取（文本输入）</li>
+    <li>连接方式：Direct SSH（asyncssh）和 SMC 跳板模式（pty + subprocess）</li>
+    <li>自动识别设备厂商/系统（Cisco/Arista/Huawei/Palo Alto）并执行对应命令</li>
+    <li>按“服务器本机时间”输入时间窗，自动计算设备时钟偏移（offset）后过滤</li>
+    <li>命中日志保留前后上下文行，重叠/相邻区间自动合并去重</li>
+    <li>任务结果下载：单设备日志、任务 summary、整包 zip</li>
+    <li>Debug 模式可查看登录/命令执行/设备返回</li>
+    <li>AI 分析支持多模型源、提示词模板、Markdown 结果展示</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>使用流程</h3>
+  <ol>
+    <li>进入 <code>Create Task</code> 页面，选择 <code>direct</code> 或 <code>smc</code>。</li>
+    <li>填写设备账号和时间范围（格式：<code>YYYY-MM-DD HH:MM:SS</code>）。</li>
+    <li>在设备地址文本框粘贴设备列表（每行一台）。</li>
+    <li>点击创建任务后进入任务详情页，页面会自动轮询进度。</li>
+    <li>任务完成后下载 <code>filtered.log</code>、<code>summary.json</code>、<code>download.zip</code>。</li>
+    <li>可在任务详情页执行 AI 分析，查看渲染后的 Markdown 诊断结果。</li>
+  </ol>
+</div>
+
+<div class="card">
+  <h3>SMC 模式说明</h3>
+  <ul>
+    <li>先进入跳板 shell（自动处理 <code>yes/no</code> 和 token 提示）</li>
+    <li>再从跳板 ssh 到目标设备（自动发送密码，最多重试）</li>
+    <li>识别到设备提示符后执行版本/时间/日志命令</li>
+    <li>每台设备独立 SMC 子会话，并发执行，任务结束自动清理进程</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>输出目录结构</h3>
+  <pre>output/{task_id}/
+  summary.json
+  download.zip
+  dev-1/
+    raw.log
+    filtered.log
+    meta.json
+    debug.log (debug 模式)
+</pre>
+</div>
+
+<div class="card">
+  <h3>常见问题</h3>
+  <ul>
+    <li><strong>证书错误 CERTIFICATE_VERIFY_FAILED</strong>：优先使用 <code>./run.sh</code> 启动（会自动注入 CA bundle）。</li>
+    <li><strong>日志未命中</strong>：检查设备时钟、时区、输入时间窗，必要时在 Debug 中查看 <code>show/display clock</code> 返回。</li>
+    <li><strong>命令不兼容</strong>：系统会先做厂商识别，再回退到可用命令；失败原因会记录在任务详情 <code>reason</code>。</li>
+  </ul>
+</div>
+{% endif %}
+{% endblock %}

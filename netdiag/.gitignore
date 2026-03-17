@@ -1,0 +1,9 @@
+.venv/
+.venv*/
+__pycache__/
+*.pyc
+.pytest_cache/
+output/
+state/*.json
+tasks.db
+netlog_extractor/tasks.db

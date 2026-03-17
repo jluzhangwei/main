@@ -1,0 +1,250 @@
+{% extends "base.html" %}
+{% block content %}
+{% set lang_raw = request.query_params.get('lang', 'zh') %}
+{% set lang = 'en' if lang_raw.lower().startswith('en') else 'zh' %}
+<style>
+  .hist-page { display:grid; gap:12px; }
+  .hist-card { border:1px solid #d8e0ea; border-radius:12px; background:#ffffff; padding:12px; }
+  .hist-card h2 { margin:0 0 8px; font-size:20px; }
+  .hist-card h3 { margin:0 0 8px; font-size:14px; }
+  .hist-muted { color:#64748b; font-size:12px; }
+  .hist-actions { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
+  .hist-actions input { min-width:280px; flex:1 1 360px; max-width:640px; box-sizing:border-box; border:1px solid #d8e0ea; border-radius:8px; padding:8px 10px; background:#ffffff; color:#0f172a; }
+  .hist-actions button, .hist-btn {
+    border:1px solid #0f6cbd; border-radius:8px; background:#0f6cbd; color:#ffffff;
+    padding:8px 12px; cursor:pointer; font-weight:700; text-decoration:none; display:inline-flex; align-items:center; justify-content:center;
+  }
+  .hist-btn-subtle { background:#ffffff; color:#0f172a; border-color:#cdd7e3; }
+  .hist-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .hist-table th, .hist-table td { border-bottom:1px solid #d8e0ea; padding:8px; text-align:left; vertical-align:top; }
+  .hist-table tr:hover { background:#f8fafc; }
+  .status-badge { display:inline-block; border:1px solid #d8e0ea; border-radius:999px; padding:1px 7px; font-size:11px; line-height:1.5; }
+  .status-draft, .status-planning, .status-waiting_approval, .status-ready_for_next_probe { border-color:#facc15; color:#854d0e; background:#fff9db; }
+  .status-executing, .status-analyzing { border-color:#f59e0b; color:#9a3412; background:#fff7ed; }
+  .status-concluded, .status-completed { border-color:#22c55e; color:#166534; background:#ecfdf5; }
+  .status-failed, .status-aborted { border-color:#ef4444; color:#991b1b; background:#fef2f2; }
+  .detail-row { background:#f8fafc; }
+  .detail-box { border:1px solid #d8e0ea; border-radius:8px; background:#ffffff; padding:8px; margin:4px 0; }
+  .detail-grid { display:grid; grid-template-columns:repeat(2,minmax(220px,1fr)); gap:8px 12px; }
+  .detail-kv b { color:#334155; }
+  .round-list { display:grid; gap:8px; margin-top:8px; }
+  .round-item { border:1px solid #d8e0ea; border-radius:8px; background:#ffffff; padding:8px; }
+  .round-head { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:6px; }
+  .mono { font:12px/1.45 "JetBrains Mono", Menlo, monospace; white-space:pre-wrap; color:#334155; background:#f8fafc; border:1px solid #d8e0ea; border-radius:8px; padding:8px; max-height:220px; overflow:auto; }
+  @media (max-width: 980px) {
+    .detail-grid { grid-template-columns:1fr; }
+    .hist-actions input { min-width:0; }
+  }
+</style>
+
+<div class="hist-page">
+  <section class="hist-card">
+    <h2>{{ 'Session History' if lang == 'en' else '历史会话' }}</h2>
+    <div class="hist-muted">{{ 'Review previous diagnosis sessions and one-click summarize into case library.' if lang == 'en' else '查看历史诊断过程，并可一键总结沉淀到案例库。' }}</div>
+    <div class="hist-actions">
+      <input id="hist_filter" placeholder="{{ 'Search by session_id / question / status' if lang == 'en' else '按 session_id / 问题 / 状态筛选' }}" />
+      <button type="button" class="hist-btn-subtle" id="hist_refresh">{{ 'Refresh' if lang == 'en' else '刷新' }}</button>
+    </div>
+    <div id="hist_result" class="hist-muted">-</div>
+  </section>
+
+  <section class="hist-card">
+    <table class="hist-table" id="hist_tbl">
+      <thead>
+        <tr>
+          <th>session_id</th>
+          <th>{{ 'status' if lang == 'en' else '状态' }}</th>
+          <th>{{ 'created_at' if lang == 'en' else '创建时间' }}</th>
+          <th>{{ 'rounds' if lang == 'en' else '轮次' }}</th>
+          <th>{{ 'question' if lang == 'en' else '问题描述' }}</th>
+          <th>{{ 'actions' if lang == 'en' else '操作' }}</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td colspan="6" class="hist-muted">{{ 'Loading...' if lang == 'en' else '加载中...' }}</td></tr>
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<script>
+  const UI_LANG = {{ ('"en"' if lang == 'en' else '"zh"') | safe }};
+  function id(v) { return document.getElementById(v); }
+  function esc(v) {
+    return String(v == null ? '' : v)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+  function statusBadge(status) {
+    const s = String(status || '').trim() || '-';
+    return `<span class="status-badge status-${esc(s)}">${esc(s)}</span>`;
+  }
+  function latestRound(s) {
+    const rows = Array.isArray((s || {}).rounds) ? s.rounds : [];
+    return rows.length ? rows[rows.length - 1] : null;
+  }
+  function sortByCreated(items) {
+    return [...(items || [])].sort((a, b) => {
+      const ta = Date.parse((a || {}).created_at || '') || 0;
+      const tb = Date.parse((b || {}).created_at || '') || 0;
+      return tb - ta;
+    });
+  }
+  function roundSummary(s) {
+    const rounds = Array.isArray((s || {}).rounds) ? s.rounds : [];
+    const latest = latestRound(s);
+    const analyzed = rounds.filter((r) => String((r || {}).analysis_result || '').trim()).length;
+    return `${rounds.length} | ${UI_LANG === 'en' ? 'analyzed' : '已分析'} ${analyzed}${latest ? ` | ${latest.status || '-'}` : ''}`;
+  }
+  function renderRoundItems(rounds) {
+    if (!Array.isArray(rounds) || !rounds.length) {
+      return `<div class="hist-muted">${UI_LANG === 'en' ? 'No rounds yet' : '暂无轮次记录'}</div>`;
+    }
+    return rounds.map((r) => {
+      const cmds = Array.isArray(r.commands) ? r.commands.map((c) => c.command).filter(Boolean) : [];
+      const exes = Array.isArray(r.executions) ? r.executions : [];
+      const analysis = String((r || {}).analysis_result || '').trim();
+      const analysisPreview = analysis ? analysis.slice(0, 900) : '';
+      return `
+        <div class="round-item">
+          <div class="round-head">
+            <b>${UI_LANG === 'en' ? 'Round' : '轮次'} ${esc(r.round_no || '-')}</b>
+            ${statusBadge(r.status)}
+            <span class="hist-muted">cmds=${cmds.length} outputs=${exes.length}</span>
+          </div>
+          <div class="detail-grid">
+            <div>
+              <div class="hist-muted">${UI_LANG === 'en' ? 'Plan Commands' : '计划命令'}</div>
+              <div class="mono">${esc(cmds.length ? cmds.join('\n') : '-')}</div>
+            </div>
+            <div>
+              <div class="hist-muted">${UI_LANG === 'en' ? 'Analysis Summary' : '分析摘要'}</div>
+              <div class="mono">${esc(analysisPreview || '-')}</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+  async function apiGet(url) {
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.detail || data.error || `GET ${url} failed`);
+    return data;
+  }
+  async function apiPost(url, payload) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.detail || data.error || `POST ${url} failed`);
+    return data;
+  }
+
+  let SESSION_CACHE = [];
+  function renderSessions(rows) {
+    const tbody = id('hist_tbl').querySelector('tbody');
+    const kw = String(id('hist_filter').value || '').trim().toLowerCase();
+    const data = (rows || []).filter((s) => {
+      if (!kw) return true;
+      const txt = `${s.session_id || ''} ${(s.question || '')} ${(s.status || '')}`.toLowerCase();
+      return txt.includes(kw);
+    });
+    tbody.innerHTML = '';
+    if (!data.length) {
+      tbody.innerHTML = `<tr><td colspan="6" class="hist-muted">${UI_LANG === 'en' ? 'No sessions.' : '暂无会话。'}</td></tr>`;
+      return;
+    }
+    for (const s of data) {
+      const sid = String(s.session_id || '');
+      const rounds = Array.isArray(s.rounds) ? s.rounds : [];
+      const latest = latestRound(s);
+      const fw = (s && s.fault_window) ? s.fault_window : {};
+      const devices = Array.isArray(s.devices) ? s.devices : [];
+      const detailHtml = `
+        <div class="detail-box">
+          <div class="detail-grid">
+            <div class="detail-kv"><b>${UI_LANG === 'en' ? 'Fault Window' : '故障时间窗'}</b><br>${esc(fw.start_at || '-')} ~ ${esc(fw.end_at || '-')} (${esc(fw.timezone || '-')})</div>
+            <div class="detail-kv"><b>${UI_LANG === 'en' ? 'Focus Goals' : '诊断方向'}</b><br>${esc((s.focus_goals || []).join(' | ') || '-')}</div>
+            <div class="detail-kv"><b>${UI_LANG === 'en' ? 'Devices' : '设备'}</b><br>${esc(devices.map((d) => `${d.device_id || '-'}(${d.device_ip || '-'})`).join(' ; ') || '-')}</div>
+            <div class="detail-kv"><b>${UI_LANG === 'en' ? 'Last Error' : '最后错误'}</b><br>${esc(s.last_error || '-')}</div>
+          </div>
+          <div class="round-list">${renderRoundItems(rounds)}</div>
+        </div>
+      `;
+      const tr = document.createElement('tr');
+      tr.setAttribute('data-sid', sid);
+      tr.innerHTML = `
+        <td><code>${esc(sid)}</code></td>
+        <td>${statusBadge(s.status)}</td>
+        <td>${esc(s.created_at || '-')}</td>
+        <td>${esc(roundSummary(s))}</td>
+        <td>${esc(s.question || '-')}</td>
+        <td>
+          <button type="button" class="hist-btn-subtle" data-act="toggle">${UI_LANG === 'en' ? 'View Process' : '查看过程'}</button>
+          <button type="button" class="hist-btn-subtle" data-act="case">${UI_LANG === 'en' ? 'Summarize To Case' : '总结入案例库'}</button>
+          <a class="hist-btn-subtle" href="/netdiag?lang={{ lang }}&sid=${encodeURIComponent(sid)}">${UI_LANG === 'en' ? 'Open Workbench' : '打开工作台'}</a>
+        </td>
+      `;
+      const trDetail = document.createElement('tr');
+      trDetail.className = 'detail-row';
+      trDetail.setAttribute('data-detail', sid);
+      trDetail.style.display = 'none';
+      trDetail.innerHTML = `<td colspan="6">${detailHtml}</td>`;
+      tbody.appendChild(tr);
+      tbody.appendChild(trDetail);
+    }
+  }
+
+  async function loadSessions() {
+    try {
+      id('hist_result').textContent = UI_LANG === 'en' ? 'Loading sessions...' : '正在加载会话...';
+      const data = await apiGet('/api/netdiag/sessions');
+      SESSION_CACHE = sortByCreated(Array.isArray(data.items) ? data.items : []);
+      renderSessions(SESSION_CACHE);
+      id('hist_result').textContent = `${UI_LANG === 'en' ? 'Loaded' : '已加载'} ${SESSION_CACHE.length} ${UI_LANG === 'en' ? 'sessions' : '个会话'}`;
+    } catch (e) {
+      id('hist_result').textContent = `${UI_LANG === 'en' ? 'Load failed' : '加载失败'}: ${String(e)}`;
+    }
+  }
+
+  async function summarizeToCase(sid) {
+    try {
+      id('hist_result').textContent = `${UI_LANG === 'en' ? 'Summarizing session' : '正在总结会话'} ${sid}...`;
+      const data = await apiPost(`/api/netdiag/cases/from_session/${encodeURIComponent(sid)}`, {});
+      const row = data.case || {};
+      const libText = UI_LANG === 'en' ? 'Open Knowledge Library' : '打开知识库';
+      id('hist_result').innerHTML = `${UI_LANG === 'en' ? 'Case saved' : '案例已保存'}: <code>${esc(row.case_id || '-')}</code> · <a href="/netdiag/learning?lang={{ lang }}">${libText}</a>`;
+    } catch (e) {
+      id('hist_result').textContent = `${UI_LANG === 'en' ? 'Summarize failed' : '总结失败'}: ${String(e)}`;
+    }
+  }
+
+  id('hist_refresh').addEventListener('click', loadSessions);
+  id('hist_filter').addEventListener('input', () => renderSessions(SESSION_CACHE));
+  id('hist_tbl').addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('button[data-act]');
+    if (!btn) return;
+    const tr = btn.closest('tr[data-sid]');
+    if (!tr) return;
+    const sid = tr.getAttribute('data-sid') || '';
+    if (!sid) return;
+    const act = btn.getAttribute('data-act');
+    if (act === 'toggle') {
+      const row = document.querySelector(`tr[data-detail="${sid}"]`);
+      if (row) row.style.display = row.style.display === 'none' ? '' : 'none';
+      return;
+    }
+    if (act === 'case') {
+      await summarizeToCase(sid);
+    }
+  });
+
+  loadSessions();
+</script>
+{% endblock %}

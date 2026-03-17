@@ -1,0 +1,327 @@
+{% extends "base.html" %}
+{% block content %}
+{% set lang_raw = request.query_params.get('lang', 'zh') %}
+{% set lang = 'en' if lang_raw.lower().startswith('en') else 'zh' %}
+
+<div class="card">
+  <h2>{{ 'Lab Duel (Red vs Blue)' if lang == 'en' else '实验对抗（Red vs Blue）' }}</h2>
+  <p class="muted">
+    {{ 'Safety guard: this page only supports simulated fault injection plans. No device config command is executed by this build.' if lang == 'en'
+       else '安全护栏：本页面仅支持“模拟注入计划”，当前版本不会执行任何设备配置命令。' }}
+  </p>
+</div>
+
+<div class="card">
+  <h3>{{ 'Create Duel Session' if lang == 'en' else '创建对抗会话' }}</h3>
+  <div class="row">
+    <div><label>title</label><input id="d_title" placeholder="BGP flap drill" /></div>
+    <div><label>environment_tag</label><input id="d_env" value="lab" /></div>
+  </div>
+  <div class="row">
+    <div>
+      <label>template_id</label>
+      <select id="d_template"></select>
+    </div>
+    <div><label>mode</label><input id="d_mode" value="simulated" disabled /></div>
+  </div>
+  <div class="row">
+    <div><label>target_devices (comma)</label><input id="d_targets" placeholder="dev-1,dev-2" /></div>
+    <div><label>variables_json</label><input id="d_vars" placeholder='{"interface":"Eth1/1","asn":"65001","peer_ip":"10.1.1.1"}' /></div>
+  </div>
+  <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+    <button type="button" onclick="createDuel()">{{ 'Create Duel' if lang == 'en' else '创建会话' }}</button>
+    <button type="button" onclick="refreshAll()">{{ 'Refresh' if lang == 'en' else '刷新' }}</button>
+  </div>
+  <pre id="duel_create_result" style="margin-top:10px;max-height:220px;overflow:auto;background:#f8fafc;border:1px solid #d6dde8;border-radius:8px;padding:10px;"></pre>
+</div>
+
+<div class="card">
+  <h3>{{ 'Duel Actions' if lang == 'en' else '对抗动作' }}</h3>
+  <div class="row">
+    <div><label>duel_id</label><input id="a_duel_id" /></div>
+    <div><label>blue_session_id</label><input id="a_session_id" placeholder="netdiag session_id" /></div>
+  </div>
+  <div class="row">
+    <div><label>blue_round_no (0=latest)</label><input id="a_round_no" type="number" value="0" /></div>
+    <div><label>judge_domain</label><input id="a_domain" placeholder="routing/link/resource/firewall" /></div>
+  </div>
+  <div class="row">
+    <div><label>judge_root_cause</label><input id="a_root" placeholder="BGP peer instability" /></div>
+    <div><label>judge_confidence</label><input id="a_conf" type="number" value="0.8" step="0.01" min="0" max="1" /></div>
+  </div>
+  <div class="row">
+    <div><label>judge_evidence_signals (comma)</label><input id="a_signals" placeholder="bgp_peer_down,routing_session_unstable" /></div>
+    <div><label>recovery_verified</label><select id="a_recovery"><option value="true">true</option><option value="false">false</option></select></div>
+  </div>
+  <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+    <button type="button" onclick="injectDuel()">{{ 'Inject (Simulated)' if lang == 'en' else '模拟注入' }}</button>
+    <button type="button" onclick="bindBlue()">{{ 'Bind Blue Session' if lang == 'en' else '绑定 Blue 会话' }}</button>
+    <button type="button" onclick="judgeDuel()">{{ 'Judge' if lang == 'en' else '裁判打分' }}</button>
+    <button type="button" onclick="rollbackDuel()">{{ 'Rollback Mark' if lang == 'en' else '标记回滚' }}</button>
+    <button type="button" onclick="promoteCase()">{{ 'Promote To Case' if lang == 'en' else '晋升为案例' }}</button>
+    <button type="button" onclick="loadDuelDetail()">{{ 'Load Duel' if lang == 'en' else '加载详情' }}</button>
+  </div>
+  <pre id="duel_action_result" style="margin-top:10px;max-height:260px;overflow:auto;background:#f8fafc;border:1px solid #d6dde8;border-radius:8px;padding:10px;"></pre>
+</div>
+
+<div class="card">
+  <h3>{{ 'Duel List' if lang == 'en' else '对抗会话列表' }}</h3>
+  <table id="duel_tbl">
+    <thead>
+      <tr>
+        <th>duel_id</th>
+        <th>status</th>
+        <th>template</th>
+        <th>domain</th>
+        <th>updated_at</th>
+        <th>action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for d in duels %}
+      <tr>
+        <td><code>{{ d.duel_id }}</code></td>
+        <td>{{ d.status }}</td>
+        <td>{{ d.template_id }}</td>
+        <td>{{ d.domain }}</td>
+        <td>{{ d.updated_at }}</td>
+        <td><button type="button" class="btn_pick" data-id="{{ d.duel_id }}">Pick</button></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">{{ 'No duel sessions yet.' if lang == 'en' else '暂无对抗会话。' }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>{{ 'Duel Detail' if lang == 'en' else '会话详情' }}</h3>
+  <pre id="duel_detail" style="max-height:420px;overflow:auto;background:#f8fafc;border:1px solid #d6dde8;border-radius:8px;padding:10px;"></pre>
+</div>
+
+<script>
+  function id(v) { return document.getElementById(v); }
+  function esc(s) {
+    return String(s || '').replace(/[&<>"']/g, (m) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    }[m]));
+  }
+  function currentDuelId() { return (id('a_duel_id').value || '').trim(); }
+  function parseSignals() {
+    return (id('a_signals').value || '').split(',').map(x => x.trim()).filter(Boolean);
+  }
+  function parseVarsJson() {
+    const raw = (id('d_vars').value || '').trim();
+    if (!raw) return {};
+    try {
+      const v = JSON.parse(raw);
+      return (v && typeof v === 'object') ? v : {};
+    } catch (e) {
+      throw new Error('variables_json is not valid JSON');
+    }
+  }
+  function setResult(domId, obj) { id(domId).textContent = JSON.stringify(obj, null, 2); }
+
+  async function apiGet(url) {
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
+    return data;
+  }
+  async function apiPost(url, body) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
+    return data;
+  }
+  async function apiDelete(url) {
+    const res = await fetch(url, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
+    return data;
+  }
+
+  async function loadTemplates() {
+    const data = await apiGet('/api/netdiag/lab/templates');
+    const sel = id('d_template');
+    sel.innerHTML = '';
+    for (const x of (data.items || [])) {
+      const opt = document.createElement('option');
+      opt.value = x.template_id;
+      opt.textContent = `${x.template_id} (${x.domain})`;
+      sel.appendChild(opt);
+    }
+  }
+
+  async function refreshDuelTable() {
+    const data = await apiGet('/api/netdiag/lab/duels?limit=200');
+    const tbody = id('duel_tbl').querySelector('tbody');
+    tbody.innerHTML = '';
+    for (const d of (data.items || [])) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><code>${esc(d.duel_id)}</code></td>
+        <td>${esc(d.status || '-')}</td>
+        <td>${esc(d.template_id || '-')}</td>
+        <td>${esc(d.domain || '-')}</td>
+        <td>${esc(d.updated_at || '-')}</td>
+        <td><button type="button" class="btn_pick" data-id="${esc(d.duel_id)}">Pick</button>
+            <button type="button" class="btn_del" data-id="${esc(d.duel_id)}">Delete</button></td>
+      `;
+      tbody.appendChild(tr);
+    }
+    if (!tbody.children.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="muted">No duel sessions</td></tr>';
+    }
+  }
+
+  async function refreshAll() {
+    try {
+      await loadTemplates();
+      await refreshDuelTable();
+    } catch (e) {
+      setResult('duel_create_result', { ok: false, error: String(e) });
+    }
+  }
+
+  async function createDuel() {
+    try {
+      const payload = {
+        title: (id('d_title').value || '').trim(),
+        environment_tag: (id('d_env').value || 'lab').trim(),
+        template_id: (id('d_template').value || '').trim(),
+        mode: 'simulated',
+        target_devices: (id('d_targets').value || '').split(',').map(x => x.trim()).filter(Boolean),
+        variables: parseVarsJson(),
+      };
+      const data = await apiPost('/api/netdiag/lab/duels', payload);
+      setResult('duel_create_result', data);
+      if (data && data.duel && data.duel.duel_id) {
+        id('a_duel_id').value = data.duel.duel_id;
+      }
+      await refreshDuelTable();
+      await loadDuelDetail();
+    } catch (e) {
+      setResult('duel_create_result', { ok: false, error: String(e) });
+    }
+  }
+
+  async function loadDuelDetail() {
+    try {
+      const did = currentDuelId();
+      if (!did) throw new Error('duel_id is required');
+      const data = await apiGet(`/api/netdiag/lab/duels/${did}`);
+      setResult('duel_detail', data);
+      setResult('duel_action_result', data);
+    } catch (e) {
+      setResult('duel_action_result', { ok: false, error: String(e) });
+    }
+  }
+
+  async function injectDuel() {
+    try {
+      const did = currentDuelId();
+      const data = await apiPost(`/api/netdiag/lab/duels/${did}/inject`, { detail: 'simulated injection by lab duel page' });
+      setResult('duel_action_result', data);
+      await refreshDuelTable();
+      await loadDuelDetail();
+    } catch (e) {
+      setResult('duel_action_result', { ok: false, error: String(e) });
+    }
+  }
+
+  async function bindBlue() {
+    try {
+      const did = currentDuelId();
+      const payload = {
+        session_id: (id('a_session_id').value || '').trim(),
+        round_no: parseInt(id('a_round_no').value || '0', 10),
+      };
+      const data = await apiPost(`/api/netdiag/lab/duels/${did}/bind_blue_session`, payload);
+      setResult('duel_action_result', data);
+      await refreshDuelTable();
+      await loadDuelDetail();
+    } catch (e) {
+      setResult('duel_action_result', { ok: false, error: String(e) });
+    }
+  }
+
+  async function judgeDuel() {
+    try {
+      const did = currentDuelId();
+      const payload = {
+        round_no: parseInt(id('a_round_no').value || '0', 10),
+        predicted_domain: (id('a_domain').value || '').trim(),
+        predicted_root_cause: (id('a_root').value || '').trim(),
+        confidence: parseFloat(id('a_conf').value || '0'),
+        evidence_signals: parseSignals(),
+        recovery_verified: id('a_recovery').value === 'true',
+      };
+      const data = await apiPost(`/api/netdiag/lab/duels/${did}/judge`, payload);
+      setResult('duel_action_result', data);
+      await refreshDuelTable();
+      await loadDuelDetail();
+    } catch (e) {
+      setResult('duel_action_result', { ok: false, error: String(e) });
+    }
+  }
+
+  async function rollbackDuel() {
+    try {
+      const did = currentDuelId();
+      const data = await apiPost(`/api/netdiag/lab/duels/${did}/rollback`, { ok: true, detail: 'rollback marked in lab simulator' });
+      setResult('duel_action_result', data);
+      await refreshDuelTable();
+      await loadDuelDetail();
+    } catch (e) {
+      setResult('duel_action_result', { ok: false, error: String(e) });
+    }
+  }
+
+  async function promoteCase() {
+    try {
+      const did = currentDuelId();
+      const data = await apiPost(`/api/netdiag/lab/duels/${did}/promote_case`, {});
+      setResult('duel_action_result', data);
+      await refreshDuelTable();
+      await loadDuelDetail();
+    } catch (e) {
+      setResult('duel_action_result', { ok: false, error: String(e) });
+    }
+  }
+
+  id('duel_tbl').addEventListener('click', async (ev) => {
+    const btnPick = ev.target.closest('button.btn_pick');
+    if (btnPick) {
+      id('a_duel_id').value = btnPick.getAttribute('data-id') || '';
+      await loadDuelDetail();
+      return;
+    }
+    const btnDel = ev.target.closest('button.btn_del');
+    if (btnDel) {
+      const did = btnDel.getAttribute('data-id') || '';
+      try {
+        const data = await apiDelete(`/api/netdiag/lab/duels/${did}`);
+        setResult('duel_action_result', data);
+        if (currentDuelId() === did) {
+          id('a_duel_id').value = '';
+          setResult('duel_detail', {});
+        }
+        await refreshDuelTable();
+      } catch (e) {
+        setResult('duel_action_result', { ok: false, error: String(e) });
+      }
+    }
+  });
+
+  refreshAll();
+</script>
+{% endblock %}
