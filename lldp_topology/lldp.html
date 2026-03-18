@@ -589,6 +589,7 @@
         <label class="check-row"><input id="utilColorEnabled" type="checkbox" checked />链路颜色映射</label>
         <label class="check-row"><input id="utilLabelEnabled" type="checkbox" checked />显示利用率标签</label>
         <label class="check-row"><input id="utilShowTxRx" type="checkbox" />显示TX/RX（TX按箭头方向）</label>
+        <label class="check-row"><input id="utilShowBandwidth" type="checkbox" />显示总带宽</label>
         <div class="hint span-2" id="utilResultHint">阈值：绿色 &lt; 40%，黄色 40-70%，红色 ≥ 70%。</div>
       </div>
       </div>
@@ -2222,6 +2223,7 @@
     });
     cy.on('free', 'node', () => {
       if (dragPerfMode) setDragPerfMode(false);
+      schedulePersistCurrentPageSession(120);
     });
     cy.on('tap', (evt) => {
       if (evt.target === cy) cy.elements().removeClass('dim hit');
@@ -2241,6 +2243,9 @@
     cy.on('zoom', () => {
       hideCtx();
       scheduleZoomAwareNodeSizing();
+    });
+    cy.on('layoutstop', () => {
+      schedulePersistCurrentPageSession(150);
     });
   }
 
@@ -2550,6 +2555,7 @@
       }, 900);
     }
     initDragFollow();
+    schedulePersistCurrentPageSession(120);
 
     setStatus('拓扑已生成');
     setOK(`生成完成：${nodes.size} 节点，${edgesForCy.length} 边（去重后${mergedMode ? '，已合并多链路' : ''}）。\n提示：不要频繁点“适配画布”，会把图缩成很小；用“居中 + 放大”更好。`);
@@ -3941,17 +3947,21 @@
     const arr = Array.isArray(keys) ? keys : [];
     const txVals = [];
     const rxVals = [];
+    const bwVals = [];
     arr.forEach((k) => {
       const entry = utilByKey.get(String(k || '').toLowerCase());
       if (!entry || typeof entry !== 'object' || entry.status !== 'ok') return;
       const tx = (typeof entry.tx_pct === 'number') ? entry.tx_pct : null;
       const rx = (typeof entry.rx_pct === 'number') ? entry.rx_pct : null;
+      const bw = (typeof entry.bw_bps === 'number') ? entry.bw_bps : null;
       if (typeof tx === 'number') txVals.push(tx);
       if (typeof rx === 'number') rxVals.push(rx);
+      if (typeof bw === 'number' && bw > 0) bwVals.push(bw);
     });
     return {
       tx: txVals.length ? Math.max(...txVals) : null,
       rx: rxVals.length ? Math.max(...rxVals) : null,
+      bw: bwVals.length ? bwVals.reduce((sum, value) => sum + value, 0) : null,
     };
   }
 
@@ -3959,15 +3969,38 @@
     return `${prefix}:${typeof value === 'number' ? `${value.toFixed(1)}%` : 'N/A'}`;
   }
 
+  function formatBandwidthLabel(value) {
+    if (!(typeof value === 'number') || value <= 0) return 'BW:N/A';
+    const units = [
+      { unit: 'T', div: 1e12 },
+      { unit: 'G', div: 1e9 },
+      { unit: 'M', div: 1e6 },
+      { unit: 'K', div: 1e3 }
+    ];
+    for (const item of units) {
+      if (value >= item.div) return `BW:${(value / item.div).toFixed(value >= item.div * 10 ? 0 : 1)}${item.unit}`;
+    }
+    return `BW:${Math.round(value)}bps`;
+  }
+
   function formatEdgeUtilText(edge) {
     const showTxRx = !!$('utilShowTxRx')?.checked;
+    const showBandwidth = !!$('utilShowBandwidth')?.checked;
     const metric = (($('utilMetric')?.value || 'max').trim().toLowerCase());
     const tx = (typeof edge.data('utilTxPct') === 'number') ? edge.data('utilTxPct') : null;
     const rx = (typeof edge.data('utilRxPct') === 'number') ? edge.data('utilRxPct') : null;
     const used = (typeof edge.data('utilUsedPct') === 'number') ? edge.data('utilUsedPct') : null;
-    if (showTxRx) return `${formatUtilPctLabel('TX', tx)} ${formatUtilPctLabel('RX', rx)}`;
-    const prefix = metric === 'rx' ? 'RX' : (metric === 'max' ? 'MAX' : 'TX');
-    return formatUtilPctLabel(prefix, used);
+    const bw = (typeof edge.data('utilBwBps') === 'number') ? edge.data('utilBwBps') : null;
+    const parts = [];
+    if (showTxRx) {
+      parts.push(formatUtilPctLabel('TX', tx));
+      parts.push(formatUtilPctLabel('RX', rx));
+    } else {
+      const prefix = metric === 'rx' ? 'RX' : (metric === 'max' ? 'MAX' : 'TX');
+      parts.push(formatUtilPctLabel(prefix, used));
+    }
+    if (showBandwidth) parts.push(formatBandwidthLabel(bw));
+    return parts.join(' ');
   }
 
   function applyUtilizationToEdges() {
@@ -3978,6 +4011,7 @@
       const pct = edgeUtilFromKeys(e);
       e.data('utilTxPct', summary.tx);
       e.data('utilRxPct', summary.rx);
+      e.data('utilBwBps', summary.bw);
       e.data('utilUsedPct', pct);
       e.removeClass('util-low util-mid util-high util-na');
       if (pct == null) {
@@ -4002,6 +4036,7 @@
       e.data('utilText', '');
       e.data('utilTxPct', null);
       e.data('utilRxPct', null);
+      e.data('utilBwBps', null);
       e.data('utilUsedPct', null);
     });
     refreshEdgeLabelDisplay();
@@ -4178,6 +4213,58 @@
     };
   }
 
+  function clearPageSessionSnapshot() {
+    try {
+      sessionStorage.removeItem(PAGE_SESSION_KEY);
+    } catch (_) {
+      // Ignore browser storage errors.
+    }
+  }
+
+  function persistCurrentPageSession(force = false) {
+    if (!force && !headers.length && !rawRows.length) return false;
+    if (!headers.length || !rawRows.length) {
+      clearPageSessionSnapshot();
+      return false;
+    }
+    try {
+      const snap = buildSessionSnapshot();
+      sessionStorage.setItem(PAGE_SESSION_KEY, JSON.stringify(snap));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function schedulePersistCurrentPageSession(delayMs = 180) {
+    if (pageSessionPersistTimer) clearTimeout(pageSessionPersistTimer);
+    pageSessionPersistTimer = setTimeout(() => {
+      pageSessionPersistTimer = 0;
+      persistCurrentPageSession();
+    }, Math.max(0, Number(delayMs) || 0));
+  }
+
+  function restoreCurrentPageSession() {
+    let raw = '';
+    try {
+      raw = String(sessionStorage.getItem(PAGE_SESSION_KEY) || '');
+    } catch (_) {
+      raw = '';
+    }
+    if (!raw) return false;
+    try {
+      const snap = JSON.parse(raw);
+      applySessionSnapshot(snap);
+      setStatus('已恢复上次页面会话');
+      setOK(`已自动恢复当前页面会话：${rawRows.length} 行，坐标和筛选已保留。`);
+      setErr('');
+      return true;
+    } catch (_) {
+      clearPageSessionSnapshot();
+      return false;
+    }
+  }
+
   function applySessionSnapshot(snapshot) {
     const hs = Array.isArray(snapshot?.headers) ? snapshot.headers : [];
     const srcRows = Array.isArray(snapshot?.source_rows) ? snapshot.source_rows : [];
@@ -4233,6 +4320,7 @@
     const pos = (snapshot?.positions && typeof snapshot.positions === 'object') ? snapshot.positions : {};
     buildGraph(pos);
     applyPositions(pos);
+    schedulePersistCurrentPageSession(60);
   }
 
   function closeStateModal() {
@@ -4461,6 +4549,8 @@
   const ZBX_PREF_KEY = 'lldp_zabbix_prefs_v1';
   const ZBX_TOKEN_SESSION_KEY = 'lldp_zabbix_token_session_v1';
   const SQL_PREF_KEY = 'lldp_sql_prefs_v1';
+  const PAGE_SESSION_KEY = 'lldp_page_session_snapshot_v1';
+  let pageSessionPersistTimer = 0;
   function apiBaseUrl() {
     // If opened as file://, use local service endpoint explicitly.
     if (window.location.protocol === 'file:') return 'http://127.0.0.1:18080';
@@ -4681,6 +4771,7 @@
       utilByKey = new Map();
       utilCacheLoadedAt = '';
       clearUtilizationFromGraph();
+      clearPageSessionSnapshot();
       closeStateModal();
       const tmpCount = Number(data.removed_tmp_files || 0);
       const snapCount = Number(data.removed_snapshot_files || 0);
@@ -5865,6 +5956,7 @@
   loadSqlPrefs();
   loadZbxPrefs();
   loadTopologyUiPrefs();
+  restoreCurrentPageSession();
   refreshKeywordHistories();
   loadUtilCacheFromServer();
   initCollapsibleSections();
@@ -6151,6 +6243,10 @@
     applyAdaptiveRenderMode();
   });
   $('utilShowTxRx').addEventListener('change', () => {
+    refreshEdgeLabelDisplay();
+    applyAdaptiveRenderMode();
+  });
+  $('utilShowBandwidth').addEventListener('change', () => {
     refreshEdgeLabelDisplay();
     applyAdaptiveRenderMode();
   });
@@ -6661,6 +6757,7 @@ $('filter').addEventListener('keydown', (e) => {
       pushDeletedNodeIds(ids);
       nodes.remove();
       updateCounts();
+      schedulePersistCurrentPageSession(80);
       setOK(`已删除选中 ${nodes.length} 个节点及其相关边`);
     }, { delayMs: 0 });
   });
@@ -6675,6 +6772,7 @@ $('filter').addEventListener('keydown', (e) => {
       pushDeletedNodeIds(ids);
       removeNodes.remove();
       updateCounts();
+      schedulePersistCurrentPageSession(80);
       setOK(`已仅保留选中 ${selected.length} 个节点，隐藏其余 ${removeNodes.length} 个节点（可恢复）。`);
     }, { delayMs: 0 });
   });
@@ -6697,7 +6795,10 @@ $('filter').addEventListener('keydown', (e) => {
     } else {
       setOK('已回到变更后状态。');
     }
+    schedulePersistCurrentPageSession(80);
   });
+  window.addEventListener('pagehide', () => { persistCurrentPageSession(true); });
+  window.addEventListener('beforeunload', () => { persistCurrentPageSession(true); });
   initLangToggle();
   applyStaticI18n();
   updateRollbackButtonState();
