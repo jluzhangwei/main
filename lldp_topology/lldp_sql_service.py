@@ -45,6 +45,7 @@ from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent
 SHARED_DIR = BASE_DIR.parent / "service_hub" / "shared"
+LOCAL_SHARED_DIR = BASE_DIR / "shared"
 TMP_DIR = BASE_DIR / "tmp_csv"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 STATE_DIR = BASE_DIR / "state_snapshots"
@@ -4468,8 +4469,9 @@ def serve_lldp_html():
     return response
 
 
-if SHARED_DIR.is_dir():
-    app.mount("/shared", StaticFiles(directory=str(SHARED_DIR), html=False), name="shared")
+ACTIVE_SHARED_DIR = SHARED_DIR if SHARED_DIR.is_dir() else LOCAL_SHARED_DIR
+if ACTIVE_SHARED_DIR.is_dir():
+    app.mount("/shared", StaticFiles(directory=str(ACTIVE_SHARED_DIR), html=False), name="shared")
 app.mount("/", StaticFiles(directory=str(BASE_DIR), html=True), name="static")
 
 

@@ -126,6 +126,7 @@
         <a href="#updates">近期更新</a>
         <a href="#startup">启动方式</a>
         <a href="#oneclick">一键启动</a>
+        <a href="#docker">Docker 启动</a>
         <a href="#sql">SQL 导入</a>
         <a href="#cli">CLI 导入</a>
         <a href="#import">数据导入</a>
@@ -165,6 +166,7 @@
           <li><span class="pill">依赖检查</span> <code>./start_lldp_service.sh check</code>。</li>
           <li><span class="pill">依赖安装</span> <code>./start_lldp_service.sh install-deps</code>，或手工执行 <code>pip install fastapi uvicorn pymysql</code>。</li>
           <li><span class="pill">数据库配置</span> 复制 <code>.env.mysql.example</code> 为 <code>.env.mysql</code> 并填写参数。</li>
+          <li><span class="pill">Docker 发布</span> 也可在 <code>lldp_topology/</code> 目录执行 <code>docker compose up -d --build</code>。</li>
         </ul>
       </section>
 
@@ -179,6 +181,18 @@
           <li><span class="pill">日志</span> <code>./start_lldp_service.sh logs</code></li>
           <li><span class="pill">重启</span> <code>./start_lldp_service.sh restart</code></li>
           <li><span class="pill">停止</span> <code>./start_lldp_service.sh stop</code></li>
+        </ul>
+      </section>
+
+      <section id="docker">
+        <h2>Docker 启动</h2>
+        <ul>
+          <li><span class="pill">目录</span> <code>cd /Users/zhangwei/python/lldp_topology</code></li>
+          <li><span class="pill">构建并启动</span> <code>docker compose up -d --build</code></li>
+          <li><span class="pill">查看日志</span> <code>docker compose logs -f</code></li>
+          <li><span class="pill">停止</span> <code>docker compose down</code></li>
+          <li><span class="pill">配置方式</span> 通过 <code>docker-compose.yml</code> 的环境变量传入数据库、Zabbix、CLI 跳板参数。</li>
+          <li><span class="pill">持久化</span> <code>tmp_csv/</code> 与 <code>state_snapshots/</code> 已挂载为卷，容器重启后仍保留缓存与状态。</li>
         </ul>
       </section>
 

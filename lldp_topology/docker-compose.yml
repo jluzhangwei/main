@@ -1,0 +1,29 @@
+services:
+  lldp-topology:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lldp-topology
+    ports:
+      - "18080:18080"
+    environment:
+      LLDP_HOST: 0.0.0.0
+      LLDP_PORT: 18080
+      DB_HOST: ${DB_HOST:-}
+      DB_PORT: ${DB_PORT:-}
+      DB_USER: ${DB_USER:-}
+      DB_PASSWORD: ${DB_PASSWORD:-}
+      DB_NAME: ${DB_NAME:-}
+      ZABBIX_URL: ${ZABBIX_URL:-}
+      ZABBIX_API_TOKEN: ${ZABBIX_API_TOKEN:-}
+      ZABBIX_VERIFY_SSL: ${ZABBIX_VERIFY_SSL:-false}
+      CLI_DEVICE_USERNAME: ${CLI_DEVICE_USERNAME:-}
+      CLI_DEVICE_PASSWORD: ${CLI_DEVICE_PASSWORD:-}
+      SMC_JUMP_HOST: ${SMC_JUMP_HOST:-}
+      SMC_JUMP_PORT: ${SMC_JUMP_PORT:-22}
+      SMC_COMMAND: ${SMC_COMMAND:-}
+      LLDP_STATE_LIMIT: ${LLDP_STATE_LIMIT:-15}
+    volumes:
+      - ./tmp_csv:/app/tmp_csv
+      - ./state_snapshots:/app/state_snapshots
+    restart: unless-stopped
