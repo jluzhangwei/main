@@ -582,9 +582,10 @@
         <label class="check-row"><input id="utilDebugEnabled" type="checkbox" />开启调试日志</label>
         <div class="span-2">
           <select id="utilMetric">
-            <option value="tx">使用率口径：TX</option>
-            <option value="rx">使用率口径：RX</option>
-            <option value="max" selected>使用率口径：MAX(TX,RX)</option>
+            <option value="tx">查询口径：TX</option>
+            <option value="rx">查询口径：RX</option>
+            <option value="min">查询口径：双向较小值 MIN(TX,RX)</option>
+            <option value="max" selected>查询口径：双向较大值 MAX(TX,RX)</option>
           </select>
         </div>
         <label class="check-row"><input id="utilColorEnabled" type="checkbox" checked />链路颜色映射</label>
@@ -592,6 +593,7 @@
         <label class="check-row"><input id="utilShowTxRx" type="checkbox" />显示TX/RX（TX按箭头方向）</label>
         <label class="check-row"><input id="utilShowBandwidth" type="checkbox" />显示总带宽</label>
         <div class="hint span-2" id="utilResultHint">阈值：绿色 &lt; 40%，黄色 40-70%，红色 ≥ 70%。</div>
+        <div class="hint span-2" id="utilLegendHint">颜色图例：按当前 MAX 口径，绿色 &lt; 40%，黄色 40-70%，红色 ≥ 70%，灰色表示无数据。</div>
       </div>
       </div>
     </div>
@@ -807,6 +809,7 @@
         <label>查询模式</label>
         <select id="zbxTimeMode">
           <option value="current" selected>当前值</option>
+          <option value="range_min">时间段最小值</option>
           <option value="range_max">时间段最大值</option>
         </select>
       </div>
@@ -3966,6 +3969,10 @@
     const metric = (($('utilMetric')?.value || 'tx').trim().toLowerCase());
     const summary = edgeUtilSummary(edge);
     if (metric === 'rx') return summary.rx;
+    if (metric === 'min') {
+      const cands = [summary.tx, summary.rx].filter(v => typeof v === 'number');
+      return cands.length ? Math.min(...cands) : null;
+    }
     if (metric === 'max') {
       const cands = [summary.tx, summary.rx].filter(v => typeof v === 'number');
       return cands.length ? Math.max(...cands) : null;
@@ -4028,6 +4035,24 @@
     return `${Math.round(value)} bps`;
   }
 
+  function currentUtilMetricLabel() {
+    const metric = String(($('utilMetric')?.value || 'max')).trim().toLowerCase();
+    if (metric === 'tx') return 'TX';
+    if (metric === 'rx') return 'RX';
+    if (metric === 'min') return 'MIN';
+    return 'MAX';
+  }
+
+  function updateUtilLegendHint() {
+    const el = $('utilLegendHint');
+    if (!el) return;
+    const metric = currentUtilMetricLabel();
+    const enabled = !!$('utilColorEnabled')?.checked;
+    el.textContent = enabled
+      ? `颜色图例：按当前 ${metric} 口径，绿色 < 40%，黄色 40-70%，红色 ≥ 70%，灰色表示无数据。`
+      : `链路颜色映射已关闭；若开启，则按当前 ${metric} 口径使用绿色 < 40%，黄色 40-70%，红色 ≥ 70%，灰色表示无数据。`;
+  }
+
   function formatPctCsvValue(value) {
     return (typeof value === 'number') ? `${value.toFixed(1)}%` : '';
   }
@@ -4040,6 +4065,105 @@
 
   function buildCsvText(headersRow, rows) {
     const lines = [];
+    lines.push(headersRow.map(escapeCsvCell).join(','));
+    (rows || []).forEach((row) => {
+      lines.push((row || []).map(escapeCsvCell).join(','));
+    });
+    return lines.join('\n');
+  }
+
+  function formatUtilTimeValue(value) {
+    if (value == null || value === '') return '';
+    const num = Number(value);
+    if (Number.isFinite(num) && num > 0) {
+      try {
+        return new Date(num * 1000).toISOString();
+      } catch (_) {
+        return String(value);
+      }
+    }
+    return String(value);
+  }
+
+  function describeUtilMode(mode, timeFrom, timeTill) {
+    const normalized = String(mode || '').trim().toLowerCase();
+    if (!normalized || normalized === 'current') return '当前值';
+    if (normalized === 'range_min') {
+      const fromText = formatUtilTimeValue(timeFrom) || '';
+      const tillText = formatUtilTimeValue(timeTill) || '';
+      return `时间段最小值${fromText || tillText ? ` (${fromText || '-'} ~ ${tillText || '-'})` : ''}`;
+    }
+    if (normalized === 'range_max') {
+      const fromText = formatUtilTimeValue(timeFrom) || '';
+      const tillText = formatUtilTimeValue(timeTill) || '';
+      return `时间段最大值${fromText || tillText ? ` (${fromText || '-'} ~ ${tillText || '-'})` : ''}`;
+    }
+    return normalized;
+  }
+
+  function collectVisibleUtilMeta(edges) {
+    const sourceSet = new Set();
+    const modeSet = new Set();
+    const rangeSet = new Set();
+    (edges || []).forEach((edge) => {
+      const utilKeys = Array.isArray(edge.data('utilKeys')) ? edge.data('utilKeys') : [];
+      utilKeys.forEach((key) => {
+        const hit = utilByKey.get(String(key || '').trim().toLowerCase());
+        if (!hit || typeof hit !== 'object') return;
+        const src = String(hit.data_source || '').trim().toLowerCase();
+        const mode = String(hit.time_mode || '').trim().toLowerCase() || 'current';
+        const from = formatUtilTimeValue(hit.time_from);
+        const till = formatUtilTimeValue(hit.time_till);
+        if (src) sourceSet.add(src);
+        if (mode) modeSet.add(mode);
+        rangeSet.add(`${mode}||${from}||${till}`);
+      });
+    });
+    const sources = Array.from(sourceSet);
+    const modes = Array.from(modeSet);
+    const ranges = Array.from(rangeSet)
+      .map((item) => {
+        const parts = String(item || '').split('||');
+        return {
+          mode: parts[0] || 'current',
+          time_from: parts[1] || '',
+          time_till: parts[2] || ''
+        };
+      });
+    const dataSource = !sources.length
+      ? ''
+      : (sources.length === 1 ? sources[0].toUpperCase() : `MIXED(${sources.map((s) => s.toUpperCase()).join('+')})`);
+    const queryMode = !modes.length
+      ? ''
+      : (modes.length === 1 ? describeUtilMode(ranges[0]?.mode, ranges[0]?.time_from, ranges[0]?.time_till) : 'MIXED');
+    const timeRange = !ranges.length
+      ? ''
+      : (ranges.length === 1
+        ? (ranges[0].mode === 'current'
+          ? '当前值'
+          : `${ranges[0].time_from || '-'} ~ ${ranges[0].time_till || '-'}`)
+        : 'MIXED');
+    return {
+      dataSource,
+      currentMetric: String(($('utilMetric')?.value || 'max')).trim().toUpperCase(),
+      queryMode,
+      timeRange,
+      exportedAt: new Date().toISOString()
+    };
+  }
+
+  function buildCsvWithMeta(meta, headersRow, rows) {
+    const lines = [];
+    const metaRows = [
+      ['# 数据来源', meta?.dataSource || ''],
+      ['# 当前口径', meta?.currentMetric || ''],
+      ['# 查询模式', meta?.queryMode || ''],
+      ['# 时间范围', meta?.timeRange || ''],
+      ['# 导出时间', meta?.exportedAt || '']
+    ];
+    metaRows.forEach((row) => {
+      lines.push(row.map(escapeCsvCell).join(','));
+    });
     lines.push(headersRow.map(escapeCsvCell).join(','));
     (rows || []).forEach((row) => {
       lines.push((row || []).map(escapeCsvCell).join(','));
@@ -4083,6 +4207,7 @@
       return;
     }
     const rowIndex = buildRowContextIndex();
+    const meta = collectVisibleUtilMeta(visibleEdges);
     const rows = [];
     if (mergedMode) {
       visibleEdges.forEach((edge) => {
@@ -4096,7 +4221,7 @@
           formatBandwidthCsvValue(edge.data('utilBwBps'))
         ]);
       });
-      const csv = buildCsvText(['源节点', '目的节点', 'TX', 'RX', '带宽'], rows);
+      const csv = buildCsvWithMeta(meta, ['源节点', '目的节点', 'TX', 'RX', '带宽'], rows);
       const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
       download(`lldp-link-summary-${ts}.csv`, csv, 'text/csv;charset=utf-8');
       setOK(`链路汇总已导出：${rows.length} 条合并链路。`);
@@ -4141,7 +4266,7 @@
         });
       });
     });
-    const csv = buildCsvText(['源节点+端口', '目的节点+端口', 'TX', 'RX', '带宽'], rows);
+    const csv = buildCsvWithMeta(meta, ['源节点+端口', '目的节点+端口', 'TX', 'RX', '带宽'], rows);
     const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
     download(`lldp-link-detail-${ts}.csv`, csv, 'text/csv;charset=utf-8');
     setOK(`链路汇总已导出：${rows.length} 条链路明细。`);
@@ -4160,7 +4285,7 @@
       parts.push(formatUtilPctLabel('TX', tx));
       parts.push(formatUtilPctLabel('RX', rx));
     } else {
-      const prefix = metric === 'rx' ? 'RX' : (metric === 'max' ? 'MAX' : 'TX');
+      const prefix = metric === 'rx' ? 'RX' : (metric === 'max' ? 'MAX' : (metric === 'min' ? 'MIN' : 'TX'));
       parts.push(formatUtilPctLabel(prefix, used));
     }
     if (showBandwidth) parts.push(formatBandwidthLabel(bw));
@@ -4603,7 +4728,7 @@
 
   function refreshZbxRangeFields() {
     const mode = ($('zbxTimeMode')?.value || 'current').trim();
-    const showRange = mode === 'range_max';
+    const showRange = mode === 'range_max' || mode === 'range_min';
     $('zbxRangeField').style.display = showRange ? '' : 'none';
     if (showRange) {
       if (!$('zbxTimeFromExpr').value) $('zbxTimeFromExpr').value = 'now-1h';
@@ -4670,7 +4795,7 @@
 
   function readZbxTimeSelection() {
     const mode = ($('zbxTimeMode')?.value || 'current').trim();
-    if (mode !== 'range_max') {
+    if (mode !== 'range_max' && mode !== 'range_min') {
       return { time_mode: 'current', time_from: null, time_till: null, hint: '当前值' };
     }
     const fromExpr = $('zbxTimeFromExpr').value;
@@ -4681,10 +4806,10 @@
       throw new Error('结束时间必须大于开始时间');
     }
     return {
-      time_mode: 'range_max',
+      time_mode: mode,
       time_from,
       time_till,
-      hint: `时间段最大值（${fromExpr} ~ ${tillExpr}）`
+      hint: `${mode === 'range_min' ? '时间段最小值' : '时间段最大值'}（${fromExpr} ~ ${tillExpr}）`
     };
   }
 
@@ -5512,7 +5637,21 @@
     return (cfg.device_username && cfg.device_password) ? cfg : null;
   }
 
-  function hasSuccessfulUtilCache(utilKey, source = '', meta = null) {
+  function currentUtilMetricValue() {
+    return String(($('utilMetric')?.value || 'max')).trim().toLowerCase();
+  }
+
+  function hasMetricValuesForCache(hit, metric = '') {
+    if (!hit || hit.status !== 'ok') return false;
+    const tx = typeof hit.tx_pct === 'number';
+    const rx = typeof hit.rx_pct === 'number';
+    const m = String(metric || currentUtilMetricValue()).trim().toLowerCase();
+    if (m === 'tx') return tx;
+    if (m === 'rx') return rx;
+    return tx || rx;
+  }
+
+  function hasSuccessfulUtilCache(utilKey, source = '', meta = null, metric = '') {
     const k = String(utilKey || '').toLowerCase();
     if (!k) return false;
     const hit = utilByKey.get(k);
@@ -5526,7 +5665,7 @@
         if (String(hit?.time_till ?? '') !== String(meta.time_till ?? '')) return false;
       }
     }
-    return !!(hit && hit.status === 'ok' && typeof hit.used_pct === 'number');
+    return hasMetricValuesForCache(hit, metric);
   }
 
   async function queryCliUtilizationTargets(allTargets, opts = {}) {
@@ -5535,7 +5674,8 @@
     const failPrefix = String(opts.failPrefix || '刷新链路利用率失败').trim();
     const cacheSource = String(opts.cacheSource || '').trim().toLowerCase();
     const cacheMeta = opts.cacheMeta && typeof opts.cacheMeta === 'object' ? opts.cacheMeta : null;
-    const targets = allTargets.filter(t => !hasSuccessfulUtilCache(t.util_key, cacheSource, cacheMeta));
+    const metric = currentUtilMetricValue();
+    const targets = allTargets.filter(t => !hasSuccessfulUtilCache(t.util_key, cacheSource, cacheMeta, metric));
     const skippedCached = allTargets.length - targets.length;
     if (!targets.length) {
       applyUtilizationToEdges();
@@ -5555,7 +5695,6 @@
     $('utilResultHint').textContent = `${hintBase}...`;
     const workersRaw = parseInt(($('cliMaxWorkersModal')?.value || '4').trim(), 10);
     const maxWorkers = Number.isFinite(workersRaw) ? Math.min(16, Math.max(1, workersRaw)) : 4;
-    const metric = (($('utilMetric')?.value || 'tx').trim().toLowerCase());
     let runtimeCfg = opts.runtimeCfg || null;
     if (!runtimeCfg) {
       runtimeCfg = opts.promptCredentials === false
@@ -5653,7 +5792,7 @@
         setOK(okPrefix ? `${okPrefix}（新增成功 ${deltaOk}）` : `链路利用率刷新成功（新增成功 ${deltaOk}）`);
       }
       applyAdaptiveRenderMode();
-      const unresolvedTargets = allTargets.filter(t => !hasSuccessfulUtilCache(t.util_key, 'cli', { time_mode: 'current' }));
+      const unresolvedTargets = allTargets.filter(t => !hasSuccessfulUtilCache(t.util_key, 'cli', { time_mode: 'current' }, metric));
       return { data, okCount, noDataCount, failCount, skippedCached, unresolvedTargets, results };
     } catch (e) {
       const msg = String(e && e.message ? e.message : e);
@@ -5670,8 +5809,9 @@
 
   async function queryZabbixUtilizationTargets(allTargets, timeSel, opts = {}) {
     const useCache = timeSel.time_mode === 'current';
+    const metric = currentUtilMetricValue();
     const targets = useCache
-      ? allTargets.filter(t => !hasSuccessfulUtilCache(t.util_key, 'zabbix', { time_mode: 'current' }))
+      ? allTargets.filter(t => !hasSuccessfulUtilCache(t.util_key, 'zabbix', { time_mode: 'current' }, metric))
       : allTargets.slice();
     const skippedCached = allTargets.length - targets.length;
     if (!targets.length) {
@@ -5690,7 +5830,6 @@
     $('utilResultHint').textContent = timeSel.time_mode === 'current'
       ? `正在通过 Zabbix 增量查询 ${targets.length} 个 source 端口（跳过已缓存 ${skippedCached} 个）...`
       : `正在通过 Zabbix 查询 ${targets.length} 个 source 端口的时间段最大值...`;
-    const metric = (($('utilMetric')?.value || 'max').trim().toLowerCase());
     const zcfg = opts.zabbixConfig || readZabbixConfig();
     if (!zcfg.url || !zcfg.token) {
       if (btn) {
@@ -5739,7 +5878,7 @@
       const cacheMeta = timeSel.time_mode === 'current'
         ? { time_mode: 'current' }
         : { time_mode: timeSel.time_mode, time_from: timeSel.time_from, time_till: timeSel.time_till };
-      const unresolvedTargets = allTargets.filter(t => !hasSuccessfulUtilCache(t.util_key, 'zabbix', cacheMeta));
+      const unresolvedTargets = allTargets.filter(t => !hasSuccessfulUtilCache(t.util_key, 'zabbix', cacheMeta, metric));
       return { data, okCount, noDataCount, failCount, skippedCached, unresolvedTargets, results };
     } finally {
       if (btn) {
@@ -6195,6 +6334,7 @@
   if (!restoredPageSession) loadUtilCacheFromServer();
   initCollapsibleSections();
   updateUtilFilterUi();
+  updateUtilLegendHint();
 
   $('build').addEventListener('click', () => {
     commitKeywordHistories();
@@ -6478,7 +6618,10 @@
       $('utilResultHint').textContent = `Zabbix 链路利用率查询失败：${msg}`;
     }
   });
-  $('utilColorEnabled').addEventListener('change', () => applyUtilizationToEdges());
+  $('utilColorEnabled').addEventListener('change', () => {
+    applyUtilizationToEdges();
+    updateUtilLegendHint();
+  });
   $('utilLabelEnabled').addEventListener('change', () => {
     refreshEdgeLabelDisplay();
     applyAdaptiveRenderMode();
@@ -6494,8 +6637,9 @@
   $('utilMetric').addEventListener('change', () => {
     if (utilByKey.size) {
       applyUtilizationToEdges();
-      $('utilResultHint').textContent = '口径已切换：链路颜色和单值标签都会按当前 TX / RX / MAX 口径重新渲染；点击“CLI 链路利用率”仅会增量查询新链路。';
+      $('utilResultHint').textContent = '查询口径已切换：TX/RX/MIN/MAX 表示双向方向口径，不表示时间窗最小/最大；链路颜色和单值标签已按当前口径重绘。';
     }
+    updateUtilLegendHint();
   });
 
   $('layerTerms').addEventListener('keydown', (e) => {

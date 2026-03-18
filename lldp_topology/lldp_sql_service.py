@@ -2377,11 +2377,12 @@ def _zabbix_get_items_for_interface(
     return list(merged.values())
 
 
-def _zabbix_item_time_max(
+def _zabbix_item_time_agg(
     item: dict[str, Any],
     time_from: int,
     time_till: int,
     *,
+    agg: str = "max",
     require_positive: bool = False,
     url_override: str | None = None,
     token_override: str | None = None,
@@ -2390,12 +2391,16 @@ def _zabbix_item_time_max(
     itemid = str(item.get("itemid", "")).strip()
     if not itemid:
         return None
+    agg_l = (agg or "max").strip().lower()
+    if agg_l not in {"max", "min"}:
+        agg_l = "max"
     span = max(0, int(time_till) - int(time_from))
     if span >= 7200:
+        trend_field = "value_max" if agg_l == "max" else "value_min"
         rows = _zabbix_rpc(
             "trend.get",
             {
-                "output": ["value_max"],
+                "output": [trend_field],
                 "itemids": [itemid],
                 "time_from": int(time_from),
                 "time_till": int(time_till),
@@ -2407,12 +2412,13 @@ def _zabbix_item_time_max(
             token_override=token_override,
             verify_ssl_override=verify_ssl_override,
         ) or []
-        vals = [_parse_num(r.get("value_max")) for r in rows]
+        vals = [_parse_num(r.get(trend_field)) for r in rows]
         nums = [v for v in vals if v is not None]
         if require_positive:
             nums = [v for v in nums if v > 0]
         if nums:
-            return max(nums) * _normalize_units_multiplier(str(item.get("units", "")), str(item.get("key_", "")))
+            chosen = max(nums) if agg_l == "max" else min(nums)
+            return chosen * _normalize_units_multiplier(str(item.get("units", "")), str(item.get("key_", "")))
     history_type = int(_parse_num(item.get("value_type")) or 3)
     rows = _zabbix_rpc(
         "history.get",
@@ -2436,7 +2442,52 @@ def _zabbix_item_time_max(
         nums = [v for v in nums if v > 0]
     if not nums:
         return None
-    return max(nums) * _normalize_units_multiplier(str(item.get("units", "")), str(item.get("key_", "")))
+    chosen = max(nums) if agg_l == "max" else min(nums)
+    return chosen * _normalize_units_multiplier(str(item.get("units", "")), str(item.get("key_", "")))
+
+
+def _zabbix_item_time_max(
+    item: dict[str, Any],
+    time_from: int,
+    time_till: int,
+    *,
+    require_positive: bool = False,
+    url_override: str | None = None,
+    token_override: str | None = None,
+    verify_ssl_override: bool | None = None,
+) -> float | None:
+    return _zabbix_item_time_agg(
+        item,
+        time_from,
+        time_till,
+        agg="max",
+        require_positive=require_positive,
+        url_override=url_override,
+        token_override=token_override,
+        verify_ssl_override=verify_ssl_override,
+    )
+
+
+def _zabbix_item_time_min(
+    item: dict[str, Any],
+    time_from: int,
+    time_till: int,
+    *,
+    require_positive: bool = False,
+    url_override: str | None = None,
+    token_override: str | None = None,
+    verify_ssl_override: bool | None = None,
+) -> float | None:
+    return _zabbix_item_time_agg(
+        item,
+        time_from,
+        time_till,
+        agg="min",
+        require_positive=require_positive,
+        url_override=url_override,
+        token_override=token_override,
+        verify_ssl_override=verify_ssl_override,
+    )
 
 
 def _zabbix_speed_bps_with_fallback(
@@ -2462,7 +2513,7 @@ def _zabbix_speed_bps_with_fallback(
 
     now_ts = int(time.time())
     windows: list[tuple[int, int]] = []
-    if time_mode == "range_max" and isinstance(time_from, int) and isinstance(time_till, int) and time_till > time_from:
+    if time_mode in {"range_max", "range_min"} and isinstance(time_from, int) and isinstance(time_till, int) and time_till > time_from:
         windows.append((int(time_from), int(time_till)))
     for span in (86400, 604800, 2592000, 31536000):
         start = now_ts - span
@@ -2503,14 +2554,14 @@ def collect_zabbix_link_utilization(
     zabbix_verify_ssl: bool | None = None,
 ) -> dict[str, Any]:
     metric_l = (metric or "max").strip().lower()
-    if metric_l not in {"tx", "rx", "max"}:
+    if metric_l not in {"tx", "rx", "min", "max"}:
         metric_l = "max"
     mode = (time_mode or "current").strip().lower()
-    if mode not in {"current", "range_max"}:
+    if mode not in {"current", "range_max", "range_min"}:
         mode = "current"
-    if mode == "range_max":
+    if mode in {"range_max", "range_min"}:
         if not isinstance(time_from, int) or not isinstance(time_till, int):
-            raise RuntimeError("time_from and time_till are required for range_max mode")
+            raise RuntimeError("time_from and time_till are required for range mode")
         if time_till <= time_from:
             raise RuntimeError("time_till must be greater than time_from")
     total_start = time.perf_counter()
@@ -2537,6 +2588,7 @@ def collect_zabbix_link_utilization(
     queried_devices: list[str] = []
     item_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
     speed_cache: dict[tuple[str, str, int, int], float | None] = {}
+    bandwidth_cache = build_bandwidth_cache_index(read_link_util_cache_rows())
     for target in cleaned_targets:
         src_ip = str(target.source_device or "").strip()
         iface = str(target.source_interface or "").strip()
@@ -2577,43 +2629,72 @@ def collect_zabbix_link_utilization(
         tx_bps = (
             _zabbix_item_last_bps(tx_item)
             if mode == "current"
-            else _zabbix_item_time_max(
-                tx_item,
-                int(time_from),
-                int(time_till),
-                url_override=zabbix_url,
-                token_override=zabbix_api_token,
-                verify_ssl_override=zabbix_verify_ssl,
+            else (
+                _zabbix_item_time_min(
+                    tx_item,
+                    int(time_from),
+                    int(time_till),
+                    url_override=zabbix_url,
+                    token_override=zabbix_api_token,
+                    verify_ssl_override=zabbix_verify_ssl,
+                )
+                if mode == "range_min" else
+                _zabbix_item_time_max(
+                    tx_item,
+                    int(time_from),
+                    int(time_till),
+                    url_override=zabbix_url,
+                    token_override=zabbix_api_token,
+                    verify_ssl_override=zabbix_verify_ssl,
+                )
             )
         ) if tx_item else None
         rx_bps = (
             _zabbix_item_last_bps(rx_item)
             if mode == "current"
-            else _zabbix_item_time_max(
-                rx_item,
-                int(time_from),
-                int(time_till),
+            else (
+                _zabbix_item_time_min(
+                    rx_item,
+                    int(time_from),
+                    int(time_till),
+                    url_override=zabbix_url,
+                    token_override=zabbix_api_token,
+                    verify_ssl_override=zabbix_verify_ssl,
+                )
+                if mode == "range_min" else
+                _zabbix_item_time_max(
+                    rx_item,
+                    int(time_from),
+                    int(time_till),
+                    url_override=zabbix_url,
+                    token_override=zabbix_api_token,
+                    verify_ssl_override=zabbix_verify_ssl,
+                )
+            )
+        ) if rx_item else None
+        bw_bps = bandwidth_cache.get((src_ip, iface))
+        if not (isinstance(bw_bps, (int, float)) and bw_bps > 0):
+            bw_bps = _zabbix_speed_bps_with_fallback(
+                speed_item,
+                time_mode=mode,
+                time_from=int(time_from) if mode in {"range_max", "range_min"} and time_from is not None else None,
+                time_till=int(time_till) if mode in {"range_max", "range_min"} and time_till is not None else None,
+                cache=speed_cache,
                 url_override=zabbix_url,
                 token_override=zabbix_api_token,
                 verify_ssl_override=zabbix_verify_ssl,
             )
-        ) if rx_item else None
-        bw_bps = _zabbix_speed_bps_with_fallback(
-            speed_item,
-            time_mode=mode,
-            time_from=int(time_from) if mode == "range_max" and time_from is not None else None,
-            time_till=int(time_till) if mode == "range_max" and time_till is not None else None,
-            cache=speed_cache,
-            url_override=zabbix_url,
-            token_override=zabbix_api_token,
-            verify_ssl_override=zabbix_verify_ssl,
-        )
+            if isinstance(bw_bps, (int, float)) and bw_bps > 0:
+                bandwidth_cache[(src_ip, iface)] = float(bw_bps)
         tx_pct = (tx_bps / bw_bps * 100.0) if (tx_bps is not None and bw_bps and bw_bps > 0) else None
         rx_pct = (rx_bps / bw_bps * 100.0) if (rx_bps is not None and bw_bps and bw_bps > 0) else None
         if metric_l == "tx":
             used_pct = tx_pct
         elif metric_l == "rx":
             used_pct = rx_pct
+        elif metric_l == "min":
+            vals = [v for v in [tx_pct, rx_pct] if isinstance(v, (int, float))]
+            used_pct = min(vals) if vals else None
         else:
             vals = [v for v in [tx_pct, rx_pct] if isinstance(v, (int, float))]
             used_pct = max(vals) if vals else None
@@ -2630,8 +2711,8 @@ def collect_zabbix_link_utilization(
                 "util_key": util_key,
                 "data_source": "zabbix",
                 "time_mode": mode,
-                "time_from": int(time_from) if mode == "range_max" and time_from is not None else "",
-                "time_till": int(time_till) if mode == "range_max" and time_till is not None else "",
+                "time_from": int(time_from) if mode in {"range_max", "range_min"} and time_from is not None else "",
+                "time_till": int(time_till) if mode in {"range_max", "range_min"} and time_till is not None else "",
                 "source_device": src_ip,
                 "source_name": source_name,
                 "source_interface": iface,
@@ -2652,8 +2733,8 @@ def collect_zabbix_link_utilization(
         "queried_devices": sorted(set(queried_devices)),
         "total_elapsed_seconds": max(0.0, time.perf_counter() - total_start),
         "time_mode": mode,
-        "time_from": int(time_from) if mode == "range_max" and time_from is not None else None,
-        "time_till": int(time_till) if mode == "range_max" and time_till is not None else None,
+        "time_from": int(time_from) if mode in {"range_max", "range_min"} and time_from is not None else None,
+        "time_till": int(time_till) if mode in {"range_max", "range_min"} and time_till is not None else None,
     }
 
 
@@ -2762,6 +2843,18 @@ def merge_link_util_cache(results: list[dict[str, Any]]) -> int:
     except Exception:
         return 0
     return updates
+
+
+def build_bandwidth_cache_index(rows: list[dict[str, Any]]) -> dict[tuple[str, str], float]:
+    index: dict[tuple[str, str], float] = {}
+    for row in rows or []:
+        src = str(row.get("source_device", "")).strip()
+        iface = str(row.get("source_interface", "")).strip()
+        bw = row.get("bw_bps")
+        if not src or not iface or not isinstance(bw, (int, float)) or bw <= 0:
+            continue
+        index[(src, iface)] = float(bw)
+    return index
 
 
 def clear_link_util_cache() -> int:
@@ -2934,6 +3027,9 @@ def parse_interface_utilization(output: str, metric: str = "tx") -> dict[str, An
     m = (metric or "tx").lower()
     if m == "rx":
         used_pct = rx_pct
+    elif m == "min":
+        cands = [x for x in (tx_pct, rx_pct) if x is not None]
+        used_pct = min(cands) if cands else None
     elif m == "max":
         cands = [x for x in (tx_pct, rx_pct) if x is not None]
         used_pct = max(cands) if cands else None
@@ -4122,7 +4218,7 @@ def create_link_utilization_task(payload: LinkUtilRequest) -> dict[str, Any]:
     if not payload.targets:
         raise HTTPException(status_code=400, detail="targets is required")
     metric = (payload.metric or "tx").strip().lower()
-    if metric not in {"tx", "rx", "max"}:
+    if metric not in {"tx", "rx", "min", "max"}:
         payload.metric = "tx"
     try:
         task = _create_link_utilization_task(payload)
@@ -4172,7 +4268,7 @@ def query_link_utilization(payload: LinkUtilRequest) -> dict[str, Any]:
     if not payload.targets:
         raise HTTPException(status_code=400, detail="targets is required")
     metric = (payload.metric or "tx").strip().lower()
-    if metric not in {"tx", "rx", "max"}:
+    if metric not in {"tx", "rx", "min", "max"}:
         metric = "tx"
     try:
         meta = collect_link_utilization(
@@ -4237,10 +4333,10 @@ def query_zabbix_link_utilization(payload: ZabbixLinkUtilRequest) -> dict[str, A
     if not payload.targets:
         raise HTTPException(status_code=400, detail="targets is required")
     metric = (payload.metric or "max").strip().lower()
-    if metric not in {"tx", "rx", "max"}:
+    if metric not in {"tx", "rx", "min", "max"}:
         metric = "max"
     time_mode = (payload.time_mode or "current").strip().lower()
-    if time_mode not in {"current", "range_max"}:
+    if time_mode not in {"current", "range_max", "range_min"}:
         time_mode = "current"
     try:
         meta = collect_zabbix_link_utilization(
