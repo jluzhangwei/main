@@ -1714,6 +1714,23 @@
     return ips[0] || '';
   }
 
+  function findExistingNodeIdByIp(nodesMap, ip) {
+    const target = String(ip || '').trim();
+    if (!target || !(nodesMap instanceof Map) || !nodesMap.size) return '';
+    for (const [id, node] of nodesMap.entries()) {
+      const ips = mergeIpLists(node?.ips, node?.ip);
+      if (ips.includes(target)) return id;
+    }
+    return '';
+  }
+
+  function resolveNodeIdWithIpFallback(nodesMap, candidateId, ip) {
+    const id = String(candidateId || '').trim();
+    if (id && nodesMap instanceof Map && nodesMap.has(id)) return id;
+    const ipHit = findExistingNodeIdByIp(nodesMap, ip);
+    return ipHit || id;
+  }
+
   function splitUtilKey(utilKey) {
     const raw = String(utilKey || '').trim();
     if (!raw) return null;
@@ -2164,7 +2181,9 @@
         style: {
           'width': 2.6,
           'line-color': '#2563eb',
-          'target-arrow-color': '#2563eb'
+          'target-arrow-color': '#2563eb',
+          'z-index-compare': 'manual',
+          'z-index': 999
         }
       },
       { selector: 'edge.util-low', style: { 'line-color': '#16a34a', 'target-arrow-color': '#16a34a' } },
@@ -2204,6 +2223,10 @@
       { selector: '.filtered', style: { 'display': 'none' } },
       { selector: '.onlyHidden', style: { 'display': 'none' } },
       { selector: '.utilHidden', style: { 'display': 'none' } },
+      { selector: 'node:selected', style: {
+        'z-index-compare': 'manual',
+        'z-index': 999
+      } },
       { selector: ':selected', style: {
         'border-width': 3,
         'border-color': '#2563eb',
@@ -2386,36 +2409,40 @@
     for (const r of rows) {
       const rowCtx = resolveGraphRowContext(r, cols, strip);
       if (!rowCtx) continue;
-      const { lhRaw, rhRaw, li, ri, lh, rh, aIp, bIp, aId, bId, aEntityKey, bEntityKey, rowKey } = rowCtx;
+      const { lhRaw, rhRaw, li, ri, lh, rh, aIp, bIp, aId, bId, aEntityKey, bEntityKey } = rowCtx;
+
+      const aResolvedId = resolveNodeIdWithIpFallback(nodes, aId, aIp);
+      const bResolvedId = resolveNodeIdWithIpFallback(nodes, bId, bIp);
+      const rowKey = buildCanonicalEdgeRowKey(aResolvedId, bResolvedId, li, ri);
 
       const aRole = roleOf(lh);
       const bRole = roleOf(rh);
 
-      const aExisting = nodes.get(aId);
-      const bExisting = nodes.get(bId);
+      const aExisting = nodes.get(aResolvedId);
+      const bExisting = nodes.get(bResolvedId);
       const aLabel = choosePreferredLabel(aExisting?.label, lh, aIp);
       const bLabel = choosePreferredLabel(bExisting?.label, rh, bIp);
       const aIps = mergeIpLists(aExisting?.ips, aExisting?.ip, aIp);
       const bIps = mergeIpLists(bExisting?.ips, bExisting?.ip, bIp);
-      nodes.set(aId, { id: aId, label: aLabel, short: shortLabel(aLabel), role: aRole, rank: roleRank(aRole), ip: primaryIpFromList(aIps), ips: aIps, entityKey: aEntityKey });
-      nodes.set(bId, { id: bId, label: bLabel, short: shortLabel(bLabel), role: bRole, rank: roleRank(bRole), ip: primaryIpFromList(bIps), ips: bIps, entityKey: bEntityKey });
+      nodes.set(aResolvedId, { id: aResolvedId, label: aLabel, short: shortLabel(aLabel), role: aRole, rank: roleRank(aRole), ip: primaryIpFromList(aIps), ips: aIps, entityKey: aExisting?.entityKey || aEntityKey });
+      nodes.set(bResolvedId, { id: bResolvedId, label: bLabel, short: shortLabel(bLabel), role: bRole, rank: roleRank(bRole), ip: primaryIpFromList(bIps), ips: bIps, entityKey: bExisting?.entityKey || bEntityKey });
 
       const edgeLabel = `${li} ↔ ${ri}`.trim();
       const liNorm = String(li || '').trim().toLowerCase();
       const utilKey = (!liNorm || liNorm === 'n/a' || liNorm === 'na')
         ? ''
         : buildUtilKey(lhRaw || lh, li, aIp);
-      const k1 = `${aId}||${bId}||${edgeLabel}`;
-      const k2 = `${bId}||${aId}||${edgeLabel}`;
+      const k1 = `${aResolvedId}||${bResolvedId}||${edgeLabel}`;
+      const k2 = `${bResolvedId}||${aResolvedId}||${edgeLabel}`;
       rawEdgeCnt++;
 
       if (edgeSet.has(k1) || edgeSet.has(k2)) continue;
       edgeSet.add(k1);
 
-      const edgeId = rowKey ? `e_${fnv1a(rowKey)}` : `e_${fnv1a(`${aId}||${bId}||${edgeLabel}`)}`;
-      edges.push({ data: { id: edgeId, source: aId, target: bId, label: edgeLabel, labelShown: '', utilKey, utilKeys: utilKey ? [utilKey] : [], rowKeys: rowKey ? [rowKey] : [] } });
-      degreeMap.set(aId, (degreeMap.get(aId) || 0) + 1);
-      degreeMap.set(bId, (degreeMap.get(bId) || 0) + 1);
+      const edgeId = rowKey ? `e_${fnv1a(rowKey)}` : `e_${fnv1a(`${aResolvedId}||${bResolvedId}||${edgeLabel}`)}`;
+      edges.push({ data: { id: edgeId, source: aResolvedId, target: bResolvedId, label: edgeLabel, labelShown: '', utilKey, utilKeys: utilKey ? [utilKey] : [], rowKeys: rowKey ? [rowKey] : [] } });
+      degreeMap.set(aResolvedId, (degreeMap.get(aResolvedId) || 0) + 1);
+      degreeMap.set(bResolvedId, (degreeMap.get(bResolvedId) || 0) + 1);
     }
 
     const baseNodeIds = Array.from(nodes.keys());
@@ -4311,6 +4338,10 @@
   }
 
   function buildSessionSnapshot() {
+    const utilRows = Array.from(utilByKey.entries()).map(([key, value]) => ({
+      util_key: key,
+      ...(value && typeof value === 'object' ? value : {})
+    }));
     return {
       version: 1,
       exported_at: new Date().toISOString(),
@@ -4324,6 +4355,17 @@
         filterTerms: cloneMatchExpression(viewState.filterTerms),
         onlyMode: viewState.onlyMode || 'none',
         onlyTerms: cloneMatchExpression(viewState.onlyTerms),
+      },
+      util_state: {
+        rows: utilRows,
+        loaded_at: utilCacheLoadedAt || '',
+        metric: $('utilMetric')?.value || 'max',
+        color_enabled: !!$('utilColorEnabled')?.checked,
+        label_enabled: !!$('utilLabelEnabled')?.checked,
+        show_tx_rx: !!$('utilShowTxRx')?.checked,
+        show_bandwidth: !!$('utilShowBandwidth')?.checked,
+        filter_active: !!utilFilterState.active,
+        filter_threshold: Number.isFinite(utilFilterState.threshold) ? Number(utilFilterState.threshold) : null
       },
       ui: {
         filter: $('filter')?.value || '',
@@ -4419,6 +4461,26 @@
     viewState.filterTerms = cloneMatchExpression(snapshot?.view_state?.filterTerms || []);
     viewState.onlyMode = snapshot?.view_state?.onlyMode || 'none';
     viewState.onlyTerms = cloneMatchExpression(snapshot?.view_state?.onlyTerms || []);
+    const utilState = (snapshot?.util_state && typeof snapshot.util_state === 'object') ? snapshot.util_state : {};
+    const utilRows = Array.isArray(utilState.rows) ? utilState.rows : [];
+    const utilMap = new Map();
+    utilRows.forEach((item) => {
+      const key = String(item?.util_key || '').trim().toLowerCase();
+      if (!key) return;
+      utilMap.set(key, {
+        ...item,
+        data_source: String(item?.data_source || '').trim().toLowerCase(),
+        time_mode: String(item?.time_mode || '').trim().toLowerCase() || 'current',
+        time_from: item?.time_from ?? '',
+        time_till: item?.time_till ?? '',
+        tx_pct: (typeof item.tx_pct === 'number') ? item.tx_pct : (item.tx_pct === null || item.tx_pct === '' ? null : Number(item.tx_pct)),
+        rx_pct: (typeof item.rx_pct === 'number') ? item.rx_pct : (item.rx_pct === null || item.rx_pct === '' ? null : Number(item.rx_pct)),
+        used_pct: (typeof item.used_pct === 'number') ? item.used_pct : (item.used_pct === null || item.used_pct === '' ? null : Number(item.used_pct)),
+        bw_bps: (typeof item.bw_bps === 'number') ? item.bw_bps : (item.bw_bps === null || item.bw_bps === '' ? null : Number(item.bw_bps)),
+      });
+    });
+    utilByKey = utilMap;
+    utilCacheLoadedAt = String(utilState.loaded_at || '').trim();
 
     const ui = snapshot?.ui || {};
     if ($('filter') && ui.filter != null) $('filter').value = String(ui.filter);
@@ -4432,6 +4494,14 @@
     }
     if ($('edgeLabelMode') && ui.edgeLabelMode) $('edgeLabelMode').value = String(ui.edgeLabelMode);
     if ($('spacing') && ui.spacing != null) $('spacing').value = String(ui.spacing);
+    if ($('utilMetric') && utilState.metric) $('utilMetric').value = String(utilState.metric);
+    if ($('utilColorEnabled')) $('utilColorEnabled').checked = !!utilState.color_enabled;
+    if ($('utilLabelEnabled')) $('utilLabelEnabled').checked = (utilState.label_enabled !== false);
+    if ($('utilShowTxRx')) $('utilShowTxRx').checked = !!utilState.show_tx_rx;
+    if ($('utilShowBandwidth')) $('utilShowBandwidth').checked = !!utilState.show_bandwidth;
+    utilFilterState.active = !!utilState.filter_active;
+    utilFilterState.threshold = Number.isFinite(Number(utilState.filter_threshold)) ? Number(utilState.filter_threshold) : null;
+    updateUtilFilterUi();
     if ($('bizIsolationTerms') && ui.bizIsolationTerms != null) $('bizIsolationTerms').value = String(ui.bizIsolationTerms);
     if ($('nameClusterMode') && ui.nameClusterMode) $('nameClusterMode').value = String(ui.nameClusterMode);
     if ($('autoGroupMode') && ui.autoGroupMode) $('autoGroupMode').value = String(ui.autoGroupMode);
@@ -4706,6 +4776,23 @@
     const pos = capturePositions();
     const before = rawRows.length;
     const parsed = parseCSV(csvText);
+    if (opts.restoreDeletedFromQuery) {
+      const strip = $('stripDomain')?.value === 'yes';
+      const cols = {
+        colLH: $('colLocalHost')?.value || autoPickColumn(['localhostname','local_host','src','from']),
+        colRH: $('colRemoteHost')?.value || autoPickColumn(['remotehostname','remote_host','dst','to']),
+        colLI: $('colLocalIf')?.value || autoPickColumn(['localinterface','local_if','src_if','from_if']),
+        colRI: $('colRemoteIf')?.value || autoPickColumn(['remoteinterface','remote_if','dst_if','to_if'])
+      };
+      const releaseIds = new Set();
+      (parsed.rows || []).forEach((row) => {
+        const rowCtx = resolveGraphRowContext(row, cols, strip);
+        if (!rowCtx) return;
+        if (rowCtx.aId) releaseIds.add(String(rowCtx.aId));
+        if (rowCtx.bId) releaseIds.add(String(rowCtx.bId));
+      });
+      releaseNodesFromDeletedStack(releaseIds);
+    }
     const added = mergeParsed(parsed, `${sourceName}-append`);
     if (added) sourceRows.push(...parsed.rows);
 
@@ -4804,7 +4891,11 @@
       lastSqlDownloadUrl = data.download_url ? `${base}${data.download_url}` : '';
       const shownRows = Number(data.row_count || 0);
       if ($(hintId)) $(hintId).textContent = `SQL 返回 ${shownRows} 行，临时文件：${data.temp_file}${ctxAppendSingleHop ? '（右键单轮）' : ''}`;
-      const merged = applyQueryCsvText(csvText, { append: action === 'append', sourceName: 'sql' });
+      const merged = applyQueryCsvText(csvText, {
+        append: action === 'append',
+        sourceName: 'sql',
+        restoreDeletedFromQuery: action === 'append'
+      });
       if (action === 'append') {
         setStatus('SQL 数据已追加并生成拓扑');
         const hint = (shownRows > 0 && merged.addedRows === 0) ? '（结果已存在于当前图）' : '';
@@ -5542,6 +5633,7 @@
         utilByKey.set(key, r);
       }
       applyUtilizationToEdges();
+      schedulePersistCurrentPageSession(80);
       const results = Array.isArray(data.results) ? data.results : [];
       const okCount = results.filter(r => r && r.status === 'ok').length;
       const noDataCount = results.filter(r => r && r.status === 'no_data').length;
@@ -5632,6 +5724,7 @@
         utilByKey.set(key, r);
       }
       applyUtilizationToEdges();
+      schedulePersistCurrentPageSession(80);
       const results = Array.isArray(data.results) ? data.results : [];
       const okCount = results.filter(r => r && r.status === 'ok').length;
       const noDataCount = results.filter(r => r && r.status === 'no_data').length;
@@ -5989,7 +6082,11 @@
       $('cliResultHintModal').textContent = `CLI 返回 ${data.row_count || 0} 行，已查询设备 ${data.queried_count || 0} 台，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s`;
       let merged = { addedRows: 0, mergedRows: rawRows.length };
       if (data.csv_text) {
-        merged = applyQueryCsvText(data.csv_text, { append: action === 'append', sourceName: 'cli' });
+        merged = applyQueryCsvText(data.csv_text, {
+          append: action === 'append',
+          sourceName: 'cli',
+          restoreDeletedFromQuery: action === 'append'
+        });
       }
       if (action !== 'append' && addr) {
         primaryCliSource = addr;
@@ -6093,9 +6190,9 @@
   loadSqlPrefs();
   loadZbxPrefs();
   loadTopologyUiPrefs();
-  restoreCurrentPageSession();
+  const restoredPageSession = restoreCurrentPageSession();
   refreshKeywordHistories();
-  loadUtilCacheFromServer();
+  if (!restoredPageSession) loadUtilCacheFromServer();
   initCollapsibleSections();
   updateUtilFilterUi();
 
