@@ -79,8 +79,8 @@ SQL_QUERY_JOB_TTL_SEC = int(os.getenv("SQL_QUERY_JOB_TTL_SEC", "21600") or "2160
 CLI_QUERY_JOBS: dict[str, dict[str, Any]] = {}
 CLI_QUERY_JOB_LOCK = threading.Lock()
 CLI_QUERY_JOB_TTL_SEC = int(os.getenv("CLI_QUERY_JOB_TTL_SEC", "21600") or "21600")
-ZABBIX_URL_DEFAULT = "https://zbxdevice.nsoctools.insea.io/zabbix"
-ZABBIX_API_TOKEN_DEFAULT = "b00f27e1ae0bc322ecc8eebc904c21095ba32579c7def2c26025aaaa7f296dfb"
+ZABBIX_URL_DEFAULT = ""
+ZABBIX_API_TOKEN_DEFAULT = ""
 
 
 def load_dotenv_file(path: str) -> None:
@@ -106,6 +106,8 @@ def get_env(name: str, default: str = "") -> str:
 
 def zabbix_api_url(url_override: str | None = None) -> str:
     base = str(url_override or get_env("ZABBIX_URL", ZABBIX_URL_DEFAULT)).strip().rstrip("/")
+    if not base:
+        return ""
     if base.endswith("/api_jsonrpc.php"):
         return base
     return f"{base}/api_jsonrpc.php"
@@ -114,7 +116,7 @@ def zabbix_api_url(url_override: str | None = None) -> str:
 def zabbix_api_url_candidates(url_override: str | None = None) -> list[str]:
     raw = str(url_override or get_env("ZABBIX_URL", ZABBIX_URL_DEFAULT)).strip()
     if not raw:
-        return [zabbix_api_url(None)]
+        return []
     base = raw.rstrip("/")
     if base.endswith("/api_jsonrpc.php"):
         return [base]
@@ -1951,6 +1953,9 @@ def _zabbix_rpc(
     token_override: str | None = None,
     verify_ssl_override: bool | None = None,
 ) -> Any:
+    endpoints = zabbix_api_url_candidates(url_override)
+    if not endpoints:
+        raise RuntimeError("Missing ZABBIX_URL")
     token = zabbix_api_token(token_override)
     if not token:
         raise RuntimeError("Missing ZABBIX_API_TOKEN")
@@ -1959,7 +1964,7 @@ def _zabbix_rpc(
     ).encode("utf-8")
     ssl_ctx = ssl.create_default_context() if zabbix_verify_ssl(verify_ssl_override) else ssl._create_unverified_context()
     last_exc: Exception | None = None
-    for endpoint in zabbix_api_url_candidates(url_override):
+    for endpoint in endpoints:
         req = urllib.request.Request(
             endpoint,
             data=payload,
@@ -2018,22 +2023,117 @@ def _zabbix_item_last_bps(item: dict[str, Any]) -> float | None:
     return val * _normalize_units_multiplier(str(item.get("units", "")), str(item.get("key_", "")))
 
 
+def _expand_iface_aliases(iface: str) -> list[str]:
+    raw = str(iface or "").strip()
+    if not raw:
+        return []
+    aliases: list[str] = []
+
+    def add(val: str) -> None:
+        s = str(val or "").strip()
+        if s and s not in aliases:
+            aliases.append(s)
+
+    add(raw)
+    add(raw.replace(" ", ""))
+
+    prefix_rules = [
+        (r"^Eth(?=\d)", ["Ethernet"]),
+        (r"^Ethernet(?=\d)", ["Eth"]),
+        (r"^Gi(?=\d)", ["GigabitEthernet"]),
+        (r"^GigabitEthernet(?=\d)", ["Gi"]),
+        (r"^Fa(?=\d)", ["FastEthernet"]),
+        (r"^FastEthernet(?=\d)", ["Fa"]),
+        (r"^Te(?=\d)", ["TenGigE", "TenGigabitEthernet"]),
+        (r"^TenGigE(?=\d)", ["Te", "TenGigabitEthernet"]),
+        (r"^TenGigabitEthernet(?=\d)", ["Te", "TenGigE"]),
+        (r"^Hu(?=\d)", ["HundredGigE", "HundredGigabitEthernet"]),
+        (r"^HundredGigE(?=\d)", ["Hu", "HundredGigabitEthernet"]),
+        (r"^HundredGigabitEthernet(?=\d)", ["Hu", "HundredGigE"]),
+        (r"^BE(?=\d)", ["Bundle-Ether"]),
+        (r"^Bundle-Ether(?=\d)", ["BE"]),
+        (r"^Po(?=\d)", ["Port-Channel"]),
+        (r"^Port-Channel(?=\d)", ["Po"]),
+        (r"^Lo(?=\d)", ["Loopback"]),
+        (r"^Loopback(?=\d)", ["Lo"]),
+        (r"^MEth(?=\d)", ["MgmtEth", "ManagementEthernet"]),
+        (r"^MgmtEth(?=\d)", ["MEth", "ManagementEthernet"]),
+        (r"^ManagementEthernet(?=\d)", ["MEth", "MgmtEth"]),
+    ]
+    for pattern, repls in prefix_rules:
+        if re.search(pattern, raw, re.IGNORECASE):
+            suffix = re.sub(pattern, "", raw, count=1, flags=re.IGNORECASE)
+            for repl in repls:
+                add(f"{repl}{suffix}")
+    return aliases
+
+
+def _normalize_iface_name(iface: str) -> str:
+    raw = str(iface or "").strip()
+    if not raw:
+        return ""
+    s = raw.replace('"', "").replace("'", "").replace(" ", "")
+    s = re.sub(r"^Eth(?=\d)", "ethernet", s, flags=re.IGNORECASE)
+    s = re.sub(r"^Ethernet(?=\d)", "ethernet", s, flags=re.IGNORECASE)
+    s = re.sub(r"^Gi(?=\d)", "gigabitethernet", s, flags=re.IGNORECASE)
+    s = re.sub(r"^GigabitEthernet(?=\d)", "gigabitethernet", s, flags=re.IGNORECASE)
+    s = re.sub(r"^Fa(?=\d)", "fastethernet", s, flags=re.IGNORECASE)
+    s = re.sub(r"^FastEthernet(?=\d)", "fastethernet", s, flags=re.IGNORECASE)
+    s = re.sub(r"^Te(?=\d)", "tengige", s, flags=re.IGNORECASE)
+    s = re.sub(r"^TenGigE(?=\d)", "tengige", s, flags=re.IGNORECASE)
+    s = re.sub(r"^TenGigabitEthernet(?=\d)", "tengige", s, flags=re.IGNORECASE)
+    s = re.sub(r"^Hu(?=\d)", "hundredgige", s, flags=re.IGNORECASE)
+    s = re.sub(r"^HundredGigE(?=\d)", "hundredgige", s, flags=re.IGNORECASE)
+    s = re.sub(r"^HundredGigabitEthernet(?=\d)", "hundredgige", s, flags=re.IGNORECASE)
+    s = re.sub(r"^BE(?=\d)", "bundle-ether", s, flags=re.IGNORECASE)
+    s = re.sub(r"^Bundle-Ether(?=\d)", "bundle-ether", s, flags=re.IGNORECASE)
+    s = re.sub(r"^Po(?=\d)", "port-channel", s, flags=re.IGNORECASE)
+    s = re.sub(r"^Port-Channel(?=\d)", "port-channel", s, flags=re.IGNORECASE)
+    s = re.sub(r"^Lo(?=\d)", "loopback", s, flags=re.IGNORECASE)
+    s = re.sub(r"^Loopback(?=\d)", "loopback", s, flags=re.IGNORECASE)
+    s = re.sub(r"^MEth(?=\d)", "meth", s, flags=re.IGNORECASE)
+    s = re.sub(r"^MgmtEth(?=\d)", "meth", s, flags=re.IGNORECASE)
+    s = re.sub(r"^ManagementEthernet(?=\d)", "meth", s, flags=re.IGNORECASE)
+    return s.lower()
+
+
+def _extract_item_iface_tokens(item: dict[str, Any]) -> set[str]:
+    tokens: set[str] = set()
+    key = str(item.get("key_", "") or "")
+    name = str(item.get("name", "") or "")
+    for m in re.finditer(r"\[([^\]]+)\]", key):
+        inner = str(m.group(1) or "").split(",", 1)[0].strip().strip('"').strip("'")
+        norm = _normalize_iface_name(inner)
+        if norm:
+            tokens.add(norm)
+    for m in re.finditer(r"interface\s+([A-Za-z][A-Za-z0-9./:-]*)", name, re.IGNORECASE):
+        norm = _normalize_iface_name(m.group(1))
+        if norm:
+            tokens.add(norm)
+    return tokens
+
+
 def _zabbix_iface_match_score(item: dict[str, Any], iface: str) -> int:
-    iface_raw = str(iface or "").strip()
-    if not iface_raw:
+    aliases = _expand_iface_aliases(iface)
+    if not aliases:
         return -10
-    iface_l = iface_raw.lower()
+    norms = {_normalize_iface_name(x) for x in aliases if _normalize_iface_name(x)}
     name = str(item.get("name", "") or "").lower()
     key = str(item.get("key_", "") or "").lower()
     score = 0
-    if iface_l in key:
-        score += 40
-    if iface_l in name:
-        score += 30
-    if f"[{iface_l}]" in key:
-        score += 40
-    if f"interface {iface_l}" in name:
-        score += 20
+    item_tokens = _extract_item_iface_tokens(item)
+    if norms & item_tokens:
+        score += 120
+    for alias in aliases:
+        alias_l = alias.lower()
+        if alias_l in key:
+            score += 40
+        if alias_l in name:
+            score += 30
+        if f"[{alias_l}]" in key:
+            score += 40
+        if f"interface {alias_l}" in name:
+            score += 20
     return score
 
 
@@ -2068,6 +2168,88 @@ def _pick_best_zabbix_item(items: list[dict[str, Any]], iface: str, kind: str) -
         )
     )
     return candidates[0][1]
+
+
+def _zabbix_item_completeness_score(
+    tx_item: dict[str, Any] | None,
+    rx_item: dict[str, Any] | None,
+    speed_item: dict[str, Any] | None,
+) -> tuple[int, int]:
+    primary = 0
+    if speed_item:
+        primary += 4
+    if tx_item:
+        primary += 2
+    if rx_item:
+        primary += 2
+    secondary = 0
+    if tx_item and rx_item:
+        secondary += 2
+    if speed_item and (tx_item or rx_item):
+        secondary += 1
+    return primary, secondary
+
+
+def _pick_best_zabbix_host_for_target(
+    src_ip: str,
+    source_name: str,
+    iface: str,
+    *,
+    host_map_by_ip: dict[str, dict[str, str]],
+    host_map_by_name: dict[str, dict[str, str]],
+    item_cache: dict[tuple[str, str], list[dict[str, Any]]],
+    url_override: str | None = None,
+    token_override: str | None = None,
+    verify_ssl_override: bool | None = None,
+) -> tuple[dict[str, str] | None, list[dict[str, Any]], dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+    ip_host = host_map_by_ip.get(src_ip)
+    name_host = host_map_by_name.get(source_name.lower()) if source_name else None
+
+    candidates: list[tuple[str, dict[str, str], bool]] = []
+    seen_hostids: set[str] = set()
+    for host, prefer_ip in ((ip_host, True), (name_host, False)):
+        if not host:
+            continue
+        hostid = str(host.get("hostid", "")).strip()
+        if not hostid or hostid in seen_hostids:
+            continue
+        seen_hostids.add(hostid)
+        candidates.append((hostid, host, prefer_ip))
+
+    if not candidates:
+        return None, [], None, None, None
+
+    best: tuple[tuple[int, int, int, int, int], dict[str, str], list[dict[str, Any]], dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None] | None = None
+    iface_key = str(iface or "").strip().lower()
+    for hostid, host, prefer_ip in candidates:
+        cache_key = (hostid, iface_key)
+        items = item_cache.get(cache_key)
+        if items is None:
+            items = _zabbix_get_items_for_interface(
+                hostid,
+                iface,
+                url_override=url_override,
+                token_override=token_override,
+                verify_ssl_override=verify_ssl_override,
+            )
+            item_cache[cache_key] = items
+        tx_item = _pick_best_zabbix_item(items, iface, "tx")
+        rx_item = _pick_best_zabbix_item(items, iface, "rx")
+        speed_item = _pick_best_zabbix_item(items, iface, "speed")
+        score_a, score_b = _zabbix_item_completeness_score(tx_item, rx_item, speed_item)
+        sort_key = (
+            score_a,
+            score_b,
+            1 if prefer_ip else 0,
+            len(items),
+            1 if speed_item else 0,
+        )
+        if best is None or sort_key > best[0]:
+            best = (sort_key, host, items, tx_item, rx_item, speed_item)
+
+    if best is None:
+        return None, [], None, None, None
+    return best[1], best[2], best[3], best[4], best[5]
 
 
 def _zabbix_get_host_map_by_ip(
@@ -2172,20 +2354,27 @@ def _zabbix_get_items_for_interface(
     iface_raw = str(iface or "").strip()
     if not hostid or not iface_raw:
         return []
-    return _zabbix_rpc(
-        "item.get",
-        {
-            "output": ["itemid", "name", "key_", "units", "value_type", "lastvalue"],
-            "hostids": [str(hostid)],
-            "search": {"name": iface_raw, "key_": iface_raw},
-            "searchByAny": True,
-            "sortfield": ["name"],
-            "limit": 100,
-        },
-        url_override=url_override,
-        token_override=token_override,
-        verify_ssl_override=verify_ssl_override,
-    ) or []
+    merged: dict[str, dict[str, Any]] = {}
+    for alias in _expand_iface_aliases(iface_raw):
+        rows = _zabbix_rpc(
+            "item.get",
+            {
+                "output": ["itemid", "name", "key_", "units", "value_type", "lastvalue"],
+                "hostids": [str(hostid)],
+                "search": {"name": alias, "key_": alias},
+                "searchByAny": True,
+                "sortfield": ["name"],
+                "limit": 120,
+            },
+            url_override=url_override,
+            token_override=token_override,
+            verify_ssl_override=verify_ssl_override,
+        ) or []
+        for item in rows:
+            itemid = str(item.get("itemid", "")).strip()
+            if itemid:
+                merged[itemid] = item
+    return list(merged.values())
 
 
 def _zabbix_item_time_max(
@@ -2193,6 +2382,7 @@ def _zabbix_item_time_max(
     time_from: int,
     time_till: int,
     *,
+    require_positive: bool = False,
     url_override: str | None = None,
     token_override: str | None = None,
     verify_ssl_override: bool | None = None,
@@ -2219,6 +2409,8 @@ def _zabbix_item_time_max(
         ) or []
         vals = [_parse_num(r.get("value_max")) for r in rows]
         nums = [v for v in vals if v is not None]
+        if require_positive:
+            nums = [v for v in nums if v > 0]
         if nums:
             return max(nums) * _normalize_units_multiplier(str(item.get("units", "")), str(item.get("key_", "")))
     history_type = int(_parse_num(item.get("value_type")) or 3)
@@ -2240,9 +2432,63 @@ def _zabbix_item_time_max(
     ) or []
     vals = [_parse_num(r.get("value")) for r in rows]
     nums = [v for v in vals if v is not None]
+    if require_positive:
+        nums = [v for v in nums if v > 0]
     if not nums:
         return None
     return max(nums) * _normalize_units_multiplier(str(item.get("units", "")), str(item.get("key_", "")))
+
+
+def _zabbix_speed_bps_with_fallback(
+    item: dict[str, Any] | None,
+    *,
+    time_mode: str,
+    time_from: int | None = None,
+    time_till: int | None = None,
+    cache: dict[tuple[str, str, int, int], float | None] | None = None,
+    url_override: str | None = None,
+    token_override: str | None = None,
+    verify_ssl_override: bool | None = None,
+) -> float | None:
+    if not item:
+        return None
+    direct = _zabbix_item_last_bps(item)
+    if isinstance(direct, (int, float)) and direct > 0:
+        return float(direct)
+
+    itemid = str(item.get("itemid", "")).strip()
+    if not itemid:
+        return None
+
+    now_ts = int(time.time())
+    windows: list[tuple[int, int]] = []
+    if time_mode == "range_max" and isinstance(time_from, int) and isinstance(time_till, int) and time_till > time_from:
+        windows.append((int(time_from), int(time_till)))
+    for span in (86400, 604800, 2592000, 31536000):
+        start = now_ts - span
+        if not any(existing[0] == start and existing[1] == now_ts for existing in windows):
+            windows.append((start, now_ts))
+
+    for start, end in windows:
+        cache_key = (itemid, "speed", int(start), int(end))
+        cached = cache.get(cache_key) if cache is not None else None
+        if cache is not None and cache_key in cache:
+            val = cached
+        else:
+            val = _zabbix_item_time_max(
+                item,
+                int(start),
+                int(end),
+                require_positive=True,
+                url_override=url_override,
+                token_override=token_override,
+                verify_ssl_override=verify_ssl_override,
+            )
+            if cache is not None:
+                cache[cache_key] = val
+        if isinstance(val, (int, float)) and val > 0:
+            return float(val)
+    return None
 
 
 def collect_zabbix_link_utilization(
@@ -2289,14 +2535,24 @@ def collect_zabbix_link_utilization(
 
     results: list[dict[str, Any]] = []
     queried_devices: list[str] = []
+    item_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    speed_cache: dict[tuple[str, str, int, int], float | None] = {}
     for target in cleaned_targets:
         src_ip = str(target.source_device or "").strip()
         iface = str(target.source_interface or "").strip()
         util_key = str(target.util_key or "").strip()
         source_name = str(target.source_name or "").strip()
-        host = host_map.get(src_ip)
-        if not host and source_name:
-            host = host_map_by_name.get(source_name.lower())
+        host, items, tx_item, rx_item, speed_item = _pick_best_zabbix_host_for_target(
+            src_ip,
+            source_name,
+            iface,
+            host_map_by_ip=host_map,
+            host_map_by_name=host_map_by_name,
+            item_cache=item_cache,
+            url_override=zabbix_url,
+            token_override=zabbix_api_token,
+            verify_ssl_override=zabbix_verify_ssl,
+        )
         if not host:
             results.append(
                 {
@@ -2318,16 +2574,6 @@ def collect_zabbix_link_utilization(
             )
             continue
         queried_devices.append(src_ip)
-        items = _zabbix_get_items_for_interface(
-            host["hostid"],
-            iface,
-            url_override=zabbix_url,
-            token_override=zabbix_api_token,
-            verify_ssl_override=zabbix_verify_ssl,
-        )
-        tx_item = _pick_best_zabbix_item(items, iface, "tx")
-        rx_item = _pick_best_zabbix_item(items, iface, "rx")
-        speed_item = _pick_best_zabbix_item(items, iface, "speed")
         tx_bps = (
             _zabbix_item_last_bps(tx_item)
             if mode == "current"
@@ -2352,7 +2598,16 @@ def collect_zabbix_link_utilization(
                 verify_ssl_override=zabbix_verify_ssl,
             )
         ) if rx_item else None
-        bw_bps = _zabbix_item_last_bps(speed_item) if speed_item else None
+        bw_bps = _zabbix_speed_bps_with_fallback(
+            speed_item,
+            time_mode=mode,
+            time_from=int(time_from) if mode == "range_max" and time_from is not None else None,
+            time_till=int(time_till) if mode == "range_max" and time_till is not None else None,
+            cache=speed_cache,
+            url_override=zabbix_url,
+            token_override=zabbix_api_token,
+            verify_ssl_override=zabbix_verify_ssl,
+        )
         tx_pct = (tx_bps / bw_bps * 100.0) if (tx_bps is not None and bw_bps and bw_bps > 0) else None
         rx_pct = (rx_bps / bw_bps * 100.0) if (rx_bps is not None and bw_bps and bw_bps > 0) else None
         if metric_l == "tx":
