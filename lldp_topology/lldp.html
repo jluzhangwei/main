@@ -142,26 +142,32 @@
     #ctxMenu {
       position: fixed;
       z-index: 9999;
-      background: #0f172a;
-      color: #e5e7eb;
-      border: 1px solid #1f2937;
-      border-radius: 10px;
-      padding: 6px 0;
-      box-shadow: 0 12px 30px rgba(0,0,0,0.35);
-      min-width: 140px;
+      background: #ffffff;
+      color: #111827;
+      border: 1px solid #d8e0ea;
+      border-radius: 9px;
+      padding: 4px 0;
+      box-shadow: 0 10px 26px rgba(15, 23, 42, 0.16);
+      min-width: 0;
+      width: max-content;
+      max-width: 120px;
       display: none;
-      font-size: 13px;
+      font-size: 12px;
     }
     #ctxMenu button {
-      width: 100%;
+      width: auto;
+      min-width: 0;
+      display: block;
       text-align: left;
       background: none;
       border: none;
       color: inherit;
-      padding: 8px 12px;
+      padding: 6px 7px;
+      line-height: 1.2;
       cursor: pointer;
+      white-space: nowrap;
     }
-    #ctxMenu button:hover { background: #1f2937; }
+    #ctxMenu button:hover { background: #eff5ff; }
     .modal-backdrop {
       position: fixed;
       inset: 0;
