@@ -687,6 +687,8 @@ def run_lldp_commands(cli: SmcShellClient, timeout: int, vendor: str = "huawei")
         commands = [
             "dis lldp neighbor",
             "display lldp neighbor",
+            "dis lldp neighbor brief",
+            "display lldp neighbor brief",
         ]
     elif v == "cisco":
         commands = [
@@ -824,8 +826,14 @@ def parse_lldp_neighbors_huawei(output: str) -> list[dict[str, str]]:
     records: list[dict[str, str]] = []
     cur: dict[str, str] = {"local_if": "", "remote_host": "", "remote_ip": "", "remote_if": ""}
     wait_mgmt_value = False
+    brief_header_seen = False
+    brief_sep_seen = False
 
     block_re = re.compile(r"^([A-Za-z0-9/-]+)\s+has\s+\d+\s+neighbor\(s\)\s*:\s*$", re.I)
+    brief_row_re = re.compile(
+        r"^(?P<local>\S+)\s+(?P<remote_host>\S+)\s+(?P<remote_if>\S+)\s+(?P<expiry>\d+)\s*$",
+        re.I,
+    )
     rules: list[tuple[str, re.Pattern[str], bool]] = [
         ("local_if", re.compile(r"^(?:local\s+intf|local\s+port|local\s+interface|local\s+port\s+id|本地(?:接口|端口))\s*:\s*(.+)$", re.I), True),
         ("remote_host", re.compile(r"^(?:system\s+name|sysname|neighbor\s+name|neighbour\s+name|邻居(?:系统)?名称)\s*:\s*(.+)$", re.I), False),
@@ -849,6 +857,31 @@ def parse_lldp_neighbors_huawei(output: str) -> list[dict[str, str]]:
         records.append(rec)
 
     for line in lines:
+        low = line.lower()
+        if "local intf" in low and "neighbor dev" in low and "neighbor intf" in low:
+            brief_header_seen = True
+            brief_sep_seen = False
+            continue
+        if brief_header_seen and set(line) <= {"-"}:
+            brief_sep_seen = True
+            continue
+        if brief_header_seen and brief_sep_seen:
+            m_brief = brief_row_re.match(line)
+            if m_brief:
+                local_if = clean_value(m_brief.group("local"))
+                remote_host = clean_value(m_brief.group("remote_host"))
+                remote_if = clean_value(m_brief.group("remote_if"))
+                if remote_host and remote_host.lower() != "neighbor":
+                    records.append(
+                        {
+                            "local_if": local_if or "unknown",
+                            "remote_host": remote_host,
+                            "remote_ip": "",
+                            "remote_if": remote_if,
+                        }
+                    )
+                    continue
+
         m_block = block_re.search(line)
         if m_block:
             flush_current()
@@ -1232,8 +1265,9 @@ def collect_device_lldp_once(source: str, depth: int, cfg: CliRuntimeConfig) -> 
     transcript: list[str] = []
 
     def dbg(msg: str) -> None:
-        if len(transcript) < 600:
-            transcript.append(msg)
+        transcript.append(msg)
+        if len(transcript) > 1200:
+            del transcript[: len(transcript) - 1200]
 
     cli = SmcShellClient(
         SmcShellConfig(
