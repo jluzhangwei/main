@@ -333,6 +333,7 @@
         <div>节点数：<b id="nNodes">-</b></div>
         <div>边数(去重)：<b id="nEdges">-</b></div>
       </div>
+      <div class="save-state-note" id="workspaceSummary">当前工作集来源：未载入</div>
       <div class="ok" id="ok"></div>
       <div class="err" id="err"></div>
     </div>
@@ -610,7 +611,9 @@
   <button id="ctxRenameGroup">修改组名</button>
   <button id="ctxCopy">复制名称</button>
   <button id="ctxCopyIp">复制地址</button>
-  <button id="ctxUtil">链路利用率</button>
+  <button id="ctxCopyLink">复制链路</button>
+  <button id="ctxUtil">当前利用率</button>
+  <button id="ctxUtilRange">区间利用率</button>
   <button id="ctxAppendQuery">追加查询</button>
 </div>
 <div id="importModal" class="modal-backdrop">
@@ -867,6 +870,12 @@
 <script>
   let sourceRows = [];
   let rawRows = [];
+  let workspaceMeta = {
+    sources: [],
+    appendCount: 0,
+    lastAction: '',
+    currentRows: 0
+  };
   let headers = [];
   let cy = null;
   let deletedStack = [];
@@ -948,6 +957,7 @@
       import_input: '导入输入',
       append_input: '追加输入',
       import_hint: '导入输入会覆盖当前结果；追加输入会把新查询结果合并到当前图中，补充链路。',
+      workspace_summary_empty: '当前工作集来源：未载入',
       layout_mode_label: '布局模式',
       strip_domain_label: '去掉 hostname 域名后缀',
       node_label_label: '节点标签',
@@ -964,6 +974,7 @@
       auto_group_label: '自动合组',
       ctx_create_group: '设备合组',
       ctx_delete_link: '删除链路',
+      ctx_copy_link: '复制链路',
       ctx_group_expand: '合组展开',
       ctx_group_collapse: '收起合组',
       ctx_rename_group: '修改组名',
@@ -1019,7 +1030,8 @@
       btn_pick_csv: '选择 CSV 文件',
       btn_append_csv: '追加 CSV',
       btn_load_paste: '从粘贴内容载入',
-      ctx_util: '链路利用率',
+      ctx_util: '当前利用率',
+      ctx_util_range: '区间利用率',
       state_modal_title: '导入状态',
       state_modal_hint: '服务器会保留最近 15 个状态。',
       save_state_modal_title: '保存状态',
@@ -1057,6 +1069,7 @@
       import_input: 'Import Input',
       append_input: 'Append Input',
       import_hint: 'Import Input replaces current data; Append Input merges newly queried rows into current topology.',
+      workspace_summary_empty: 'Current Workspace: not loaded',
       layout_mode_label: 'Layout Mode',
       strip_domain_label: 'Strip hostname domain suffix',
       node_label_label: 'Node Labels',
@@ -1073,6 +1086,7 @@
       auto_group_label: 'Auto Grouping',
       ctx_create_group: 'Create Group',
       ctx_delete_link: 'Delete Link',
+      ctx_copy_link: 'Copy Link',
       ctx_group_expand: 'Expand Group',
       ctx_group_collapse: 'Collapse Group',
       ctx_rename_group: 'Rename Group',
@@ -1128,7 +1142,8 @@
       btn_pick_csv: 'Select CSV File',
       btn_append_csv: 'Append CSV',
       btn_load_paste: 'Load Pasted CSV',
-      ctx_util: 'Link Utilization',
+      ctx_util: 'Current Utilization',
+      ctx_util_range: 'Range Utilization',
       state_modal_title: 'Load State',
       state_modal_hint: 'The server keeps the latest 15 saved states.',
       save_state_modal_title: 'Save State',
@@ -1340,8 +1355,10 @@
     setText('appendCsvModal', 'btn_append_csv');
     setText('loadPasteModal', 'btn_load_paste');
     setText('ctxUtil', 'ctx_util');
+    setText('ctxUtilRange', 'ctx_util_range');
     setText('ctxCreateGroup', 'ctx_create_group');
     setText('ctxDeleteLink', 'ctx_delete_link');
+    setText('ctxCopyLink', 'ctx_copy_link');
     setText('ctxToggleGroup', 'ctx_group_expand');
     setText('ctxRenameGroup', 'ctx_rename_group');
     setText('stateModalTitle', 'state_modal_title');
@@ -1641,6 +1658,57 @@
     return '';
   }
 
+  function normalizeWorkspaceSourceName(source) {
+    const s = String(source || '').trim().toLowerCase();
+    if (!s) return '';
+    if (s === 'sql') return 'SQL';
+    if (s === 'cli') return 'CLI';
+    if (s === 'csv') return 'CSV';
+    if (s === 'paste') return '粘贴';
+    if (s === 'session') return '会话文件';
+    if (s === 'server_state') return '服务器状态';
+    if (s === 'page_session') return '页面会话';
+    return String(source || '').trim();
+  }
+
+  function updateWorkspaceSummary() {
+    const el = $('workspaceSummary');
+    if (!el) return;
+    const sources = Array.isArray(workspaceMeta.sources) ? workspaceMeta.sources.filter(Boolean) : [];
+    const parts = [];
+    parts.push(`当前工作集来源：${sources.length ? sources.join(' + ') : '未载入'}`);
+    if (workspaceMeta.appendCount > 0) parts.push(`追加 ${workspaceMeta.appendCount} 次`);
+    if (workspaceMeta.lastAction) parts.push(`最近操作：${workspaceMeta.lastAction}`);
+    if (Number.isFinite(workspaceMeta.currentRows) && workspaceMeta.currentRows > 0) parts.push(`当前 ${workspaceMeta.currentRows} 行`);
+    el.textContent = parts.join('，');
+  }
+
+  function setWorkspaceMetaImport(source, rows, actionText = '') {
+    workspaceMeta = {
+      sources: [normalizeWorkspaceSourceName(source)].filter(Boolean),
+      appendCount: 0,
+      lastAction: actionText || '导入',
+      currentRows: Number.isFinite(Number(rows)) ? Number(rows) : 0
+    };
+    updateWorkspaceSummary();
+  }
+
+  function markWorkspaceMetaAppend(source, added = 0, replaced = 0, currentRows = 0) {
+    const label = normalizeWorkspaceSourceName(source);
+    const nextSources = Array.isArray(workspaceMeta.sources) ? workspaceMeta.sources.slice() : [];
+    if (label && !nextSources.includes(label)) nextSources.push(label);
+    const detail = [];
+    if (Number(added) > 0) detail.push(`新增 ${Number(added)}`);
+    if (Number(replaced) > 0) detail.push(`覆盖 ${Number(replaced)}`);
+    workspaceMeta = {
+      sources: nextSources,
+      appendCount: Number(workspaceMeta.appendCount || 0) + 1,
+      lastAction: detail.length ? `追加（${detail.join(' / ')}）` : '追加',
+      currentRows: Number.isFinite(Number(currentRows)) ? Number(currentRows) : Number(workspaceMeta.currentRows || 0)
+    };
+    updateWorkspaceSummary();
+  }
+
   // ✅ 关键：hash id，避免 hostname 清洗后冲突导致节点叠在一起
   function fnv1a(str) {
     let h = 0x811c9dc5;
@@ -1654,7 +1722,25 @@
     return String(name || '').trim();
   }
   function normalizeUtilInterface(ifname) {
-    return String(ifname || '').trim().toLowerCase();
+    let s = String(ifname || '').trim().toLowerCase();
+    if (!s) return '';
+    s = s.replace(/\s+/g, '');
+    const repl = [
+      [/^ethernet/, 'eth'],
+      [/^gigabitethernet/, 'gi'],
+      [/^tengigabitethernet/, 'te'],
+      [/^tengige/, 'te'],
+      [/^hundredgigabitethernet/, 'hu'],
+      [/^hundredgige/, 'hu'],
+      [/^fortygigabitethernet/, 'fo'],
+      [/^bundle-ether/, 'be'],
+      [/^port-channel/, 'po'],
+      [/^loopback/, 'lo']
+    ];
+    repl.forEach(([pattern, replacement]) => {
+      s = s.replace(pattern, replacement);
+    });
+    return s;
   }
   function entityKeyFromName(name) {
     const s = normalizeEntityName(name);
@@ -1996,7 +2082,7 @@
     cy.center(); cy.zoom(1.05);
   }
 
-  function loadDataFromText(text) {
+  function loadDataFromText(text, opts = {}) {
     // 单文本导入（粘贴）会重置数据
     setErr(''); setOK('');
     setStatus('解析中...');
@@ -2010,10 +2096,13 @@
 
     $('nRows').textContent = rawRows.length;
     $('nCols').textContent = headers.length;
+    setWorkspaceMetaImport(opts.source || 'csv', rawRows.length, opts.actionText || '导入');
 
     if (!headers.length) {
       setStatus('解析失败：无表头');
       setErr('请确认导入的是 CSV/TSV，且第一行是列名。');
+      workspaceMeta.currentRows = 0;
+      updateWorkspaceSummary();
       return;
     }
 
@@ -2026,10 +2115,34 @@
     setOK(`已载入：${rawRows.length} 行，${headers.length} 列`);
   }
 
+  function buildAppendRowMergeKey(row) {
+    const lhRaw = hostValueFromRow(row, ['localhostname', 'local_host', 'src', 'from', '源设备名称']);
+    const rhRaw = hostValueFromRow(row, ['remotehostname', 'remote_host', 'dst', 'to', '目的设备名称']);
+    const li = hostValueFromRow(row, ['localinterface', 'local_if', 'src_if', 'from_if', '源设备端口']);
+    const ri = hostValueFromRow(row, ['remoteinterface', 'remote_if', 'dst_if', 'to_if', '目的设备端口']);
+    if (!lhRaw || !rhRaw) return '';
+    const sourceIp = rowValue(row, ['源设备IP', '源设备ip', 'ipaddr', 'sourceip']);
+    const remoteIp = rowValue(row, ['目的设备IP', '目的设备ip', 'remoteip']);
+    const aIp = isIpv4(sourceIp) ? sourceIp : (isIpv4(lhRaw) ? lhRaw : '');
+    const bIp = isIpv4(remoteIp) ? remoteIp : (isIpv4(rhRaw) ? rhRaw : '');
+    const aKey = inferEntityKey(lhRaw, aIp);
+    const bKey = inferEntityKey(rhRaw, bIp);
+    const aId = nodeIdFromEntityKey(aKey);
+    const bId = nodeIdFromEntityKey(bKey);
+    if (aId && bId) return buildCanonicalEdgeRowKey(aId, bId, li, ri);
+    const leftName = normalizeEntityName(lhRaw).toLowerCase();
+    const rightName = normalizeEntityName(rhRaw).toLowerCase();
+    const leftIf = normalizeUtilInterface(li) || 'n/a';
+    const rightIf = normalizeUtilInterface(ri) || 'n/a';
+    const a = `${leftName || String(lhRaw).trim().toLowerCase()}||${leftIf}`;
+    const b = `${rightName || String(rhRaw).trim().toLowerCase()}||${rightIf}`;
+    return a <= b ? `${a}<<<${b}` : `${b}<<<${a}`;
+  }
+
   function mergeParsed(parsed, sourceName) {
     if (!parsed.headers.length) {
       setErr(`文件 ${sourceName} 没有表头，已跳过`);
-      return 0;
+      return { added: 0, replaced: 0 };
     }
     if (!headers.length) {
       headers = parsed.headers;
@@ -2038,11 +2151,32 @@
       const incoming = parsed.headers.map(h => h.toLowerCase()).join(',');
       if (base !== incoming) {
         setErr(`文件 ${sourceName} 表头不一致，已跳过`);
-        return 0;
+        return { added: 0, replaced: 0 };
       }
     }
-    rawRows.push(...parsed.rows);
-    return parsed.rows.length;
+    if (!rawRows.length) {
+      rawRows.push(...parsed.rows);
+      return { added: parsed.rows.length, replaced: 0 };
+    }
+    const index = new Map();
+    rawRows.forEach((row, idx) => {
+      const key = buildAppendRowMergeKey(row);
+      if (key) index.set(key, idx);
+    });
+    let added = 0;
+    let replaced = 0;
+    parsed.rows.forEach((row) => {
+      const key = buildAppendRowMergeKey(row);
+      if (key && index.has(key)) {
+        rawRows[index.get(key)] = row;
+        replaced += 1;
+        return;
+      }
+      rawRows.push(row);
+      if (key) index.set(key, rawRows.length - 1);
+      added += 1;
+    });
+    return { added, replaced };
   }
 
   async function loadFiles(files) {
@@ -2063,6 +2197,7 @@
         if (added) used++;
       }
       sourceRows = rawRows.slice();
+      setWorkspaceMetaImport('csv', rawRows.length, '导入');
 
       $('nRows').textContent = rawRows.length;
       $('nCols').textContent = headers.length;
@@ -2092,15 +2227,20 @@
       setErr(''); setOK('');
       setStatus('追加中...');
       let used = 0;
+      let totalAdded = 0;
+      let totalReplaced = 0;
       for (const f of files) {
         const text = await f.text();
         const parsed = parseCSV(text);
-        const added = mergeParsed(parsed, f.name);
-        if (added) {
-          sourceRows.push(...parsed.rows);
+        const merged = mergeParsed(parsed, f.name);
+        if ((merged.added + merged.replaced) > 0) {
+          totalAdded += merged.added;
+          totalReplaced += merged.replaced;
           used++;
         }
       }
+      sourceRows = rawRows.slice();
+      markWorkspaceMetaAppend('csv', totalAdded, totalReplaced, rawRows.length);
       $('nRows').textContent = rawRows.length;
       $('nCols').textContent = headers.length;
       if (!headers.length) {
@@ -2113,7 +2253,7 @@
       fillSelect('colLocalIf', autoPickColumn(['localinterface','local_if','src_if','from_if']));
       fillSelect('colRemoteIf', autoPickColumn(['remoteinterface','remote_if','dst_if','to_if']));
       setStatus('追加完成');
-      setOK(`已追加 ${used} 个文件：总计 ${rawRows.length} 行`);
+      setOK(`已追加 ${used} 个文件：新增 ${totalAdded} 行，覆盖 ${totalReplaced} 行，当前总计 ${rawRows.length} 行`);
     } catch (e) {
       setStatus('追加失败');
       setErr(String(e && e.stack ? e.stack : e));
@@ -2253,6 +2393,7 @@
     });
     cy.on('free', 'node', () => {
       if (dragPerfMode) setDragPerfMode(false);
+      refreshEdgeLabelDisplay();
       schedulePersistCurrentPageSession(120);
     });
     cy.on('tap', (evt) => {
@@ -2275,6 +2416,7 @@
       scheduleZoomAwareNodeSizing();
     });
     cy.on('layoutstop', () => {
+      refreshEdgeLabelDisplay();
       schedulePersistCurrentPageSession(150);
     });
   }
@@ -2435,15 +2577,25 @@
       const utilKey = (!liNorm || liNorm === 'n/a' || liNorm === 'na')
         ? ''
         : buildUtilKey(lhRaw || lh, li, aIp);
-      const k1 = `${aResolvedId}||${bResolvedId}||${edgeLabel}`;
-      const k2 = `${bResolvedId}||${aResolvedId}||${edgeLabel}`;
+      const dedupeKey = rowKey || `${aResolvedId}||${bResolvedId}||${normalizeUtilInterface(li)}||${normalizeUtilInterface(ri)}`;
       rawEdgeCnt++;
 
-      if (edgeSet.has(k1) || edgeSet.has(k2)) continue;
-      edgeSet.add(k1);
+      if (edgeSet.has(dedupeKey)) continue;
+      edgeSet.add(dedupeKey);
 
       const edgeId = rowKey ? `e_${fnv1a(rowKey)}` : `e_${fnv1a(`${aResolvedId}||${bResolvedId}||${edgeLabel}`)}`;
-      edges.push({ data: { id: edgeId, source: aResolvedId, target: bResolvedId, label: edgeLabel, labelShown: '', utilKey, utilKeys: utilKey ? [utilKey] : [], rowKeys: rowKey ? [rowKey] : [] } });
+      edges.push({ data: {
+        id: edgeId,
+        source: aResolvedId,
+        target: bResolvedId,
+        label: edgeLabel,
+        labelShown: '',
+        utilKey,
+        utilKeys: utilKey ? [utilKey] : [],
+        rowKeys: rowKey ? [rowKey] : [],
+        sourcePort: String(li || '').trim(),
+        targetPort: String(ri || '').trim()
+      } });
       degreeMap.set(aResolvedId, (degreeMap.get(aResolvedId) || 0) + 1);
       degreeMap.set(bResolvedId, (degreeMap.get(bResolvedId) || 0) + 1);
     }
@@ -3760,7 +3912,18 @@
       const label = count > 1 ? `${count} 条链路` : (labels[0] || '');
       const utilKeys = Array.from(new Set(list.flatMap(x => Array.isArray(x.data.utilKeys) ? x.data.utilKeys : (x.data.utilKey ? [x.data.utilKey] : []))));
       const rowKeys = Array.from(new Set(list.flatMap(x => Array.isArray(x.data.rowKeys) ? x.data.rowKeys : [])));
-      merged.push({ data: { id: `m_${fnv1a(key)}`, source: a, target: b, label, labelShown: '', utilKeys, rowKeys } });
+      const first = list[0]?.data || {};
+      merged.push({ data: {
+        id: `m_${fnv1a(key)}`,
+        source: a,
+        target: b,
+        label,
+        labelShown: '',
+        utilKeys,
+        rowKeys,
+        sourcePort: count > 1 ? '' : String(first.sourcePort || '').trim(),
+        targetPort: count > 1 ? '' : String(first.targetPort || '').trim()
+      } });
     });
     return merged;
   }
@@ -3876,12 +4039,27 @@
     return changed;
   }
 
+  function formatEdgePortLabel(edge) {
+    if (!edge || typeof edge.data !== 'function') return '';
+    const sourcePort = String(edge.data('sourcePort') || '').trim();
+    const targetPort = String(edge.data('targetPort') || '').trim();
+    const fallback = String(edge.data('label') || '').trim();
+    if (!sourcePort && !targetPort) return fallback;
+    const { sourceIsLeft, sourceNode, targetNode } = edgeViewportOrder(edge);
+    if (!sourceNode || !sourceNode.length || !targetNode || !targetNode.length) {
+      return `${sourcePort || 'N/A'} ↔ ${targetPort || 'N/A'}`.trim();
+    }
+    const leftPort = sourceIsLeft ? sourcePort : targetPort;
+    const rightPort = sourceIsLeft ? targetPort : sourcePort;
+    return `${leftPort || 'N/A'} ↔ ${rightPort || 'N/A'}`.trim();
+  }
+
   function refreshEdgeLabelDisplay() {
     if (!cy) return;
     const edgeMode = $('edgeLabelMode')?.value || 'none';
     const showUtilLabel = !!$('utilLabelEnabled')?.checked;
     cy.edges().forEach((e) => {
-      const base = String(e.data('label') || '').trim();
+      const base = formatEdgePortLabel(e);
       const util = formatEdgeUtilText(e);
       let shown = '';
       if (edgeMode === 'both' && showUtilLabel) shown = [base, util].filter(Boolean).join(' | ');
@@ -4196,6 +4374,76 @@
     return index;
   }
 
+  function formatLinkCopyLine(sourceLabel, sourcePort, targetLabel, targetPort) {
+    const src = String(sourceLabel || '').trim();
+    const sp = String(sourcePort || '').trim();
+    const tgt = String(targetLabel || '').trim();
+    const tp = String(targetPort || '').trim();
+    return `${src}${sp ? ` ${sp}` : ''} -> ${tgt}${tp ? ` ${tp}` : ''}`.trim();
+  }
+
+  function edgeViewportOrder(edge) {
+    const sourceNode = edge?.source && edge.source();
+    const targetNode = edge?.target && edge.target();
+    if (!sourceNode || !sourceNode.length || !targetNode || !targetNode.length) {
+      return { sourceIsLeft: true, sourceNode, targetNode };
+    }
+    const sp = sourceNode.position();
+    const tp = targetNode.position();
+    const sourceIsLeft = Number(sp?.x || 0) < Number(tp?.x || 0)
+      || (Number(sp?.x || 0) === Number(tp?.x || 0) && Number(sp?.y || 0) <= Number(tp?.y || 0));
+    return { sourceIsLeft, sourceNode, targetNode };
+  }
+
+  function canonicalLinkCopyKey(sourceLabel, sourcePort, targetLabel, targetPort) {
+    const a = `${String(sourceLabel || '').trim().toLowerCase()}||${normalizeUtilInterface(sourcePort)}`;
+    const b = `${String(targetLabel || '').trim().toLowerCase()}||${normalizeUtilInterface(targetPort)}`;
+    return a <= b ? `${a}<<<${b}` : `${b}<<<${a}`;
+  }
+
+  function collectEdgeCopyLines(edge, rowIndex = null) {
+    if (!edge || typeof edge.isEdge !== 'function' || !edge.isEdge()) return [];
+    const lines = [];
+    const seenLines = new Set();
+    const seenCanonical = new Set();
+    const { sourceIsLeft } = edgeViewportOrder(edge);
+    const addLine = (rawSourceLabel, rawSourcePort, rawTargetLabel, rawTargetPort) => {
+      const sourceLabel = sourceIsLeft ? rawSourceLabel : rawTargetLabel;
+      const sourcePort = sourceIsLeft ? rawSourcePort : rawTargetPort;
+      const targetLabel = sourceIsLeft ? rawTargetLabel : rawSourceLabel;
+      const targetPort = sourceIsLeft ? rawTargetPort : rawSourcePort;
+      const canonical = canonicalLinkCopyKey(sourceLabel, sourcePort, targetLabel, targetPort);
+      if (canonical && seenCanonical.has(canonical)) return;
+      const line = formatLinkCopyLine(sourceLabel, sourcePort, targetLabel, targetPort);
+      if (!line || seenLines.has(line)) return;
+      if (canonical) seenCanonical.add(canonical);
+      seenLines.add(line);
+      lines.push(line);
+    };
+    const index = rowIndex || buildRowContextIndex();
+    const rowKeys = Array.isArray(edge.data('rowKeys')) ? edge.data('rowKeys') : [];
+    rowKeys.forEach((rowKey) => {
+      const matched = index.get(String(rowKey || '').trim()) || [];
+      matched.forEach((item) => {
+        addLine(
+          item.sourceLabel || String(edge.source()?.data('label') || edge.source()?.id() || '').trim(),
+          item.sourcePort || '',
+          item.targetLabel || String(edge.target()?.data('label') || edge.target()?.id() || '').trim(),
+          item.targetPort || ''
+        );
+      });
+    });
+    if (!lines.length) {
+      addLine(
+        String(edge.source()?.data('label') || edge.source()?.id() || '').trim(),
+        edge.data('sourcePort') || '',
+        String(edge.target()?.data('label') || edge.target()?.id() || '').trim(),
+        edge.data('targetPort') || ''
+      );
+    }
+    return lines;
+  }
+
   function exportLinkSummaryCsv() {
     if (!cy) {
       setErr('请先生成拓扑，再导出链路汇总');
@@ -4395,15 +4643,15 @@
     const isManualGroup = ctxGroupKind() === 'manual';
     const groupKey = ctxGroupKey();
     const canToggleGroup = !!groupKey;
-    const nodeBtnIds = ['ctxLock', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxAppendQuery'];
+    const nodeBtnIds = ['ctxLock', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery'];
     nodeBtnIds.forEach((id) => {
       const el = $(id);
       if (!el) return;
       if (isEdgeTarget) {
-        el.style.display = (id === 'ctxUtil') ? '' : 'none';
+        el.style.display = (id === 'ctxUtil' || id === 'ctxUtilRange') ? '' : 'none';
         return;
       }
-      if (isGroupNode && ['ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxAppendQuery'].includes(id)) {
+      if (isGroupNode && ['ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery'].includes(id)) {
         el.style.display = 'none';
         return;
       }
@@ -4414,6 +4662,7 @@
       $('ctxCreateGroup').style.display = (!isEdgeTarget && groupableNodes.length >= 2) ? '' : 'none';
     }
     if ($('ctxDeleteLink')) $('ctxDeleteLink').style.display = isEdgeTarget ? '' : 'none';
+    if ($('ctxCopyLink')) $('ctxCopyLink').style.display = isEdgeTarget ? '' : 'none';
     if ($('ctxToggleGroup')) {
       $('ctxToggleGroup').style.display = (!isEdgeTarget && canToggleGroup) ? '' : 'none';
       $('ctxToggleGroup').textContent = isGroupNode ? tr('ctx_group_expand') : tr('ctx_group_collapse');
@@ -4474,6 +4723,12 @@
       rows: rawRows.slice(),
       source_rows: sourceRows.slice(),
       working_rows: rawRows.slice(),
+      workspace_meta: {
+        sources: Array.isArray(workspaceMeta.sources) ? workspaceMeta.sources.slice() : [],
+        append_count: Number(workspaceMeta.appendCount || 0),
+        last_action: String(workspaceMeta.lastAction || ''),
+        current_rows: Number(workspaceMeta.currentRows || rawRows.length || 0)
+      },
       positions: capturePositions(),
       deleted_stack: deletedStack.map((x) => (Array.isArray(x) ? x.slice() : [])),
       view_state: {
@@ -4525,6 +4780,11 @@
     }
   }
 
+  function resetWorkspaceMeta() {
+    workspaceMeta = { sources: [], appendCount: 0, lastAction: '', currentRows: 0 };
+    updateWorkspaceSummary();
+  }
+
   function persistCurrentPageSession(force = false) {
     if (!force && !headers.length && !rawRows.length) return false;
     if (!headers.length || !rawRows.length) {
@@ -4558,7 +4818,7 @@
     if (!raw) return false;
     try {
       const snap = JSON.parse(raw);
-      applySessionSnapshot(snap);
+      applySessionSnapshot(snap, { source: 'page_session', actionText: '恢复' });
       setStatus('已恢复上次页面会话');
       setOK(`已自动恢复当前页面会话：${rawRows.length} 行，坐标和筛选已保留。`);
       setErr('');
@@ -4569,7 +4829,7 @@
     }
   }
 
-  function applySessionSnapshot(snapshot) {
+  function applySessionSnapshot(snapshot, opts = {}) {
     const hs = Array.isArray(snapshot?.headers) ? snapshot.headers : [];
     const srcRows = Array.isArray(snapshot?.source_rows) ? snapshot.source_rows : [];
     const workRows = Array.isArray(snapshot?.working_rows) ? snapshot.working_rows : [];
@@ -4581,6 +4841,17 @@
     headers = hs.slice();
     sourceRows = (srcRows.length ? srcRows : rs).slice();
     rawRows = rs.slice();
+    const savedWorkspaceMeta = (snapshot?.workspace_meta && typeof snapshot.workspace_meta === 'object') ? snapshot.workspace_meta : {};
+    const fallbackSource = normalizeWorkspaceSourceName(opts.source || '');
+    workspaceMeta = {
+      sources: Array.isArray(savedWorkspaceMeta.sources) && savedWorkspaceMeta.sources.length
+        ? savedWorkspaceMeta.sources.map((s) => normalizeWorkspaceSourceName(s)).filter(Boolean)
+        : (fallbackSource ? [fallbackSource] : []),
+      appendCount: Number(savedWorkspaceMeta.append_count || 0),
+      lastAction: String(savedWorkspaceMeta.last_action || opts.actionText || '恢复'),
+      currentRows: Number(savedWorkspaceMeta.current_rows || rs.length || 0)
+    };
+    updateWorkspaceSummary();
     deletedStack = (snapshot?.deleted_stack || []).map((x) => (Array.isArray(x) ? x.slice() : []));
     rebuildDeletedNodeIdsFromStack();
     viewState.filterTerms = cloneMatchExpression(snapshot?.view_state?.filterTerms || []);
@@ -4736,9 +5007,12 @@
     }
   }
 
-  function openZbxUtilModal() {
+  function openZbxUtilModal(opts = {}) {
     loadZbxPrefs();
-    $('zbxTimeMode').value = 'current';
+    const mode = String(opts.timeMode || 'current').trim();
+    scopedZbxTargets = Array.isArray(opts.targets) ? opts.targets.slice() : null;
+    scopedZbxScopeLabel = String(opts.scopeLabel || '').trim();
+    $('zbxTimeMode').value = (mode === 'range_min' || mode === 'range_max') ? mode : 'current';
     $('zbxTimeFromExpr').value = 'now-1h';
     $('zbxTimeTillExpr').value = 'now';
     refreshZbxRangeFields();
@@ -4746,6 +5020,8 @@
   }
 
   function closeZbxUtilModal() {
+    scopedZbxTargets = null;
+    scopedZbxScopeLabel = '';
     $('zbxUtilModal').style.display = 'none';
   }
 
@@ -4840,7 +5116,7 @@
     if (!resp.ok || data?.ok !== true) {
       throw new Error(data?.detail || `HTTP ${resp.status}`);
     }
-    applySessionSnapshot(data.snapshot || {});
+    applySessionSnapshot(data.snapshot || {}, { source: 'server_state', actionText: '恢复' });
     return data;
   }
 
@@ -4882,6 +5158,8 @@
   const ZBX_TOKEN_SESSION_KEY = 'lldp_zabbix_token_session_v1';
   const SQL_PREF_KEY = 'lldp_sql_prefs_v1';
   const PAGE_SESSION_KEY = 'lldp_page_session_snapshot_v1';
+  let scopedZbxTargets = null;
+  let scopedZbxScopeLabel = '';
   let pageSessionPersistTimer = 0;
   function apiBaseUrl() {
     // If opened as file://, use local service endpoint explicitly.
@@ -4893,9 +5171,9 @@
     const append = !!opts.append;
     const sourceName = opts.sourceName || 'query';
     if (!append) {
-      loadDataFromText(csvText);
+      loadDataFromText(csvText, { source: sourceName || 'csv', actionText: '导入' });
       if (rawRows.length) buildGraph();
-      return { mergedRows: rawRows.length, addedRows: rawRows.length };
+      return { mergedRows: rawRows.length, addedRows: rawRows.length, replacedRows: 0, deltaRows: rawRows.length };
     }
 
     const pos = capturePositions();
@@ -4918,15 +5196,16 @@
       });
       releaseNodesFromDeletedStack(releaseIds);
     }
-    const added = mergeParsed(parsed, `${sourceName}-append`);
-    if (added) sourceRows.push(...parsed.rows);
+    const merged = mergeParsed(parsed, `${sourceName}-append`);
+    if ((merged.added + merged.replaced) > 0) sourceRows = rawRows.slice();
+    markWorkspaceMetaAppend(sourceName || 'csv', merged.added, merged.replaced, rawRows.length);
 
     $('nRows').textContent = rawRows.length;
     $('nCols').textContent = headers.length;
     if (!headers.length) {
       setStatus('追加失败：无表头');
       setErr('返回内容未检测到有效表头，无法追加。');
-      return { mergedRows: 0, addedRows: 0 };
+      return { mergedRows: 0, addedRows: 0, replacedRows: 0, deltaRows: 0 };
     }
 
     fillSelect('colLocalHost', autoPickColumn(['localhostname','local_host','src','from']));
@@ -4935,7 +5214,12 @@
     fillSelect('colRemoteIf', autoPickColumn(['remoteinterface','remote_if','dst_if','to_if']));
 
     if (rawRows.length) buildGraph(pos);
-    return { mergedRows: rawRows.length, addedRows: Math.max(0, rawRows.length - before) };
+    return {
+      mergedRows: rawRows.length,
+      addedRows: merged.added,
+      replacedRows: merged.replaced,
+      deltaRows: Math.max(0, rawRows.length - before)
+    };
   }
 
   async function runSqlGenerateAndBuild(startHostnameInputId = 'sqlStartHostnameModal', hintId = 'sqlResultHintModal', action = 'import', opts = {}) {
@@ -5023,8 +5307,8 @@
       });
       if (action === 'append') {
         setStatus('SQL 数据已追加并生成拓扑');
-        const hint = (shownRows > 0 && merged.addedRows === 0) ? '（结果已存在于当前图）' : '';
-        setOK(`已按 ${startHostname} 追加查询，SQL 返回 ${shownRows} 行，新增 ${merged.addedRows} 行${hint}，当前总计 ${merged.mergedRows} 行。`);
+        const hint = (shownRows > 0 && merged.addedRows === 0 && merged.replacedRows === 0) ? '（结果已存在于当前图）' : '';
+        setOK(`已按 ${startHostname} 追加查询，SQL 返回 ${shownRows} 行，新增 ${merged.addedRows} 行，覆盖 ${merged.replacedRows || 0} 行${hint}，当前总计 ${merged.mergedRows} 行。`);
       } else {
         setStatus('SQL 数据已载入并生成拓扑');
         setOK(`已按 ${startHostname} 生成拓扑，结果 ${data.row_count} 行。`);
@@ -5035,6 +5319,7 @@
         shownRows,
         mergedRows: Number(merged?.mergedRows || 0),
         addedRows: Number(merged?.addedRows || 0),
+        replacedRows: Number(merged?.replacedRows || 0),
         tempFile: String(data.temp_file || '')
       };
     } catch (e) {
@@ -5869,9 +6154,13 @@
       const noDataCount = results.filter(r => r && r.status === 'no_data').length;
       const failCount = results.filter(r => r && r.status === 'failed').length;
       const secs = Number(data.total_elapsed_seconds || 0).toFixed(1);
+      const noHistoryCount = results.filter((r) => {
+        const err = String(r?.error || '').toLowerCase();
+        return err.includes('history not found in selected time window');
+      }).length;
       $('utilResultHint').textContent = timeSel.time_mode === 'current'
         ? `Zabbix 利用率已增量更新：本次查询 ${targets.length}（跳过已缓存 ${skippedCached}），查询设备 ${(data.queried_devices || []).length}，耗时 ${secs}s，口径 ${metric.toUpperCase()}，模式 当前值，本次成功 ${okCount}，无数据 ${noDataCount}，失败 ${failCount}，缓存更新 ${Number(data.cache_updates || 0)}，缓存总计 ${Number(data.cache_total || 0)}`
-        : `Zabbix 利用率已更新：本次查询 ${targets.length}，查询设备 ${(data.queried_devices || []).length}，耗时 ${secs}s，口径 ${metric.toUpperCase()}，模式 ${timeSel.hint}，本次成功 ${okCount}，无数据 ${noDataCount}，失败 ${failCount}`;
+        : `Zabbix 利用率已更新：本次查询 ${targets.length}，查询设备 ${(data.queried_devices || []).length}，耗时 ${secs}s，口径 ${metric.toUpperCase()}，模式 ${timeSel.hint}，本次成功 ${okCount}，无数据 ${noDataCount}，失败 ${failCount}${noHistoryCount > 0 ? `，其中 ${noHistoryCount} 条在该时间窗内无历史数据（可能受 Zabbix 保留周期影响）` : ''}`;
       if (okCount > 0 && !opts.silentSuccess) {
         setOK(`Zabbix 链路利用率刷新成功（${timeSel.hint}，成功 ${okCount}）`);
       }
@@ -6219,7 +6508,7 @@
         deviceNameToIpMap.set(stripAfterDot(n), p);
       });
       $('cliResultHintModal').textContent = `CLI 返回 ${data.row_count || 0} 行，已查询设备 ${data.queried_count || 0} 台，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s`;
-      let merged = { addedRows: 0, mergedRows: rawRows.length };
+      let merged = { addedRows: 0, replacedRows: 0, mergedRows: rawRows.length };
       if (data.csv_text) {
         merged = applyQueryCsvText(data.csv_text, {
           append: action === 'append',
@@ -6247,12 +6536,12 @@
       const vendors = data.detected_vendors ? Object.values(data.detected_vendors).join(', ') : 'unknown';
       if (wasCancelled) {
         if (action === 'append') {
-          setOK(`已取消 CLI 追加采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s，新增 ${merged.addedRows} 行，当前总计 ${merged.mergedRows} 行。自动识别厂商：${vendors}`);
+          setOK(`已取消 CLI 追加采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s，新增 ${merged.addedRows} 行，覆盖 ${merged.replacedRows || 0} 行，当前总计 ${merged.mergedRows} 行。自动识别厂商：${vendors}`);
         } else {
           setOK(`已取消 CLI 递归采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s，已保留 ${data.row_count || 0} 行部分结果。自动识别厂商：${vendors}`);
         }
       } else if (action === 'append') {
-        setOK(`已完成 CLI 追加采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s，新增 ${merged.addedRows} 行，当前总计 ${merged.mergedRows} 行。自动识别厂商：${vendors}`);
+        setOK(`已完成 CLI 追加采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s，新增 ${merged.addedRows} 行，覆盖 ${merged.replacedRows || 0} 行，当前总计 ${merged.mergedRows} 行。自动识别厂商：${vendors}`);
       } else {
         setOK(`已完成 CLI 递归采集：起始设备 ${addr}，递归 ${maxDepth} 层，并发 ${workersShown}${only172Text}，总用时 ${elapsedSec}s，结果 ${data.row_count || 0} 行。自动识别厂商：${vendors}`);
       }
@@ -6262,6 +6551,7 @@
         rowCount: Number(data.row_count || 0),
         mergedRows: Number(merged?.mergedRows || 0),
         addedRows: Number(merged?.addedRows || 0),
+        replacedRows: Number(merged?.replacedRows || 0),
         cancelled: !!wasCancelled
       };
     } catch (e) {
@@ -6330,6 +6620,7 @@
   loadZbxPrefs();
   loadTopologyUiPrefs();
   const restoredPageSession = restoreCurrentPageSession();
+  if (!restoredPageSession) resetWorkspaceMeta();
   refreshKeywordHistories();
   if (!restoredPageSession) loadUtilCacheFromServer();
   initCollapsibleSections();
@@ -6509,7 +6800,7 @@
     try {
       const text = await f.text();
       const obj = JSON.parse(text);
-      applySessionSnapshot(obj);
+      applySessionSnapshot(obj, { source: 'session', actionText: '恢复' });
       setStatus('会话已导入并恢复拓扑');
       setOK(`会话导入成功：${rawRows.length} 行，坐标已恢复。`);
       setErr('');
@@ -6600,7 +6891,9 @@
       setErr(`Zabbix 时间范围无效：${String(err && err.message ? err.message : err)}`);
       return;
     }
-    const allTargets = buildUtilTargetsFromRows();
+    const allTargets = Array.isArray(scopedZbxTargets) && scopedZbxTargets.length
+      ? scopedZbxTargets.slice()
+      : buildUtilTargetsFromRows();
     if (!allTargets.length) {
       setErr('未找到可查询的 source 设备端口');
       return;
@@ -6608,8 +6901,12 @@
     try {
       await queryZabbixUtilizationTargets(allTargets, timeSel, {
         buttonId: 'refreshUtilizationZbx',
-        zabbixConfig: readZabbixConfig()
+        zabbixConfig: readZabbixConfig(),
+        silentSuccess: !scopedZbxScopeLabel
       });
+      if (scopedZbxScopeLabel) {
+        setOK(`区间利用率已更新（${scopedZbxScopeLabel}，${timeSel.hint}）`);
+      }
       applyAdaptiveRenderMode();
       closeZbxUtilModal();
     } catch (e) {
@@ -6861,6 +7158,40 @@
     hideCtx();
   });
 
+  $('ctxCopyLink').addEventListener('click', async () => {
+    const edges = ctxEdges();
+    if (!edges.length) return hideCtx();
+    const rowIndex = buildRowContextIndex();
+    const lines = [];
+    const seen = new Set();
+    edges.forEach((edge) => {
+      collectEdgeCopyLines(edge, rowIndex).forEach((line) => {
+        if (seen.has(line)) return;
+        seen.add(line);
+        lines.push(line);
+      });
+    });
+    if (!lines.length) {
+      setErr('当前链路未找到可复制的链路信息');
+      return hideCtx();
+    }
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'));
+      setOK(`已复制 ${lines.length} 条链路信息`);
+    } catch (_) {
+      setErr('复制失败，可能浏览器不支持或权限受限');
+    }
+    hideCtx();
+  });
+
+  function buildSelectionScopeLabel(nodes, edges) {
+    const names = (nodes || []).map((n) => String(n.data('label') || n.id())).filter(Boolean);
+    const edgeCount = edges?.length || 0;
+    return names.length
+      ? (names.length > 1 ? `${names[0]} 等${names.length}台` : names[0])
+      : (edgeCount > 1 ? `已选 ${edgeCount} 条链路` : '当前链路');
+  }
+
   $('ctxUtil').addEventListener('click', async () => {
     const nodes = ctxNodes();
     const edges = ctxEdges();
@@ -6875,11 +7206,7 @@
       setErr('当前选择未找到可查询的 source 设备端口');
       return;
     }
-    const names = nodes.map((n) => String(n.data('label') || n.id())).filter(Boolean);
-    const edgeCount = edges.length || 0;
-    const scopeLabel = names.length
-      ? (names.length > 1 ? `${names[0]} 等${names.length}台` : names[0])
-      : (edgeCount > 1 ? `已选 ${edgeCount} 条链路` : '当前链路');
+    const scopeLabel = buildSelectionScopeLabel(nodes, edges);
     try {
       await refreshPreferredLinkUtilization({
         targets: allTargets,
@@ -6890,6 +7217,27 @@
     } catch (e) {
       setErr(`右键链路利用率查询失败：${String(e && e.message ? e.message : e)}`);
     }
+  });
+
+  $('ctxUtilRange').addEventListener('click', () => {
+    const nodes = ctxNodes();
+    const edges = ctxEdges();
+    hideCtx();
+    if (!nodes.length && !edges.length) return;
+    if (!cy || !rawRows.length) {
+      setErr('请先生成拓扑，再查询区间利用率');
+      return;
+    }
+    const allTargets = buildUtilTargetsForSelection(nodes, edges);
+    if (!allTargets.length) {
+      setErr('当前选择未找到可查询的 source 设备端口');
+      return;
+    }
+    openZbxUtilModal({
+      timeMode: 'range_max',
+      targets: allTargets,
+      scopeLabel: buildSelectionScopeLabel(nodes, edges)
+    });
   });
 
   function collectNodeIpsFromRows(node) {
@@ -6986,23 +7334,25 @@
         setErr('当前选中节点没有可用于 SQL 查询的设备名称。');
         return;
       }
-      const beforeRows = rawRows.length;
       let okCount = 0;
       let failCount = 0;
+      let addedRows = 0;
+      let replacedRows = 0;
       for (let i = 0; i < targets.length; i++) {
         const item = targets[i];
         try {
           ctxAppendSingleHop = true;
           $('sqlStartHostnameModal').value = item.target;
           setOK(`正在以 SQL 方式追加查询：${item.target}${targets.length > 1 ? `（${i + 1}/${targets.length}）` : ''}`);
-          await runSqlGenerateAndBuild('sqlStartHostnameModal', 'sqlResultHintModal', 'append', { maxDepth: 1 });
+          const result = await runSqlGenerateAndBuild('sqlStartHostnameModal', 'sqlResultHintModal', 'append', { maxDepth: 1 });
+          addedRows += Number(result?.addedRows || 0);
+          replacedRows += Number(result?.replacedRows || 0);
           okCount += 1;
         } catch (_) {
           failCount += 1;
         }
       }
-      const addedRows = Math.max(0, rawRows.length - beforeRows);
-      setOK(`已完成 SQL 批量追加：选中 ${targets.length} 台，成功 ${okCount} 台，失败 ${failCount} 台，新增 ${addedRows} 行，当前总计 ${rawRows.length} 行。`);
+      setOK(`已完成 SQL 批量追加：选中 ${targets.length} 台，成功 ${okCount} 台，失败 ${failCount} 台，新增 ${addedRows} 行，覆盖 ${replacedRows} 行，当前总计 ${rawRows.length} 行。`);
       return;
     }
 
@@ -7020,23 +7370,25 @@
       setErr('当前选中节点没有可用于 CLI 查询的设备地址/名称。');
       return;
     }
-    const beforeRows = rawRows.length;
     let okCount = 0;
     let failCount = 0;
+    let addedRows = 0;
+    let replacedRows = 0;
     for (let i = 0; i < targets.length; i++) {
       const item = targets[i];
       try {
         ctxAppendSingleHop = true;
         $('cliDeviceAddrModal').value = item.target;
         setOK(`正在以 CLI 方式追加查询：${item.target}${item.target !== item.label ? `（节点：${item.label}）` : ''}${targets.length > 1 ? `（${i + 1}/${targets.length}）` : ''}`);
-        await runCliGenerateAndBuild({ addr: item.target, action: 'append' });
+        const result = await runCliGenerateAndBuild({ addr: item.target, action: 'append' });
+        addedRows += Number(result?.addedRows || 0);
+        replacedRows += Number(result?.replacedRows || 0);
         okCount += 1;
       } catch (_) {
         failCount += 1;
       }
     }
-    const addedRows = Math.max(0, rawRows.length - beforeRows);
-    setOK(`已完成 CLI 批量追加：选中 ${targets.length} 台，成功 ${okCount} 台，失败 ${failCount} 台，新增 ${addedRows} 行，当前总计 ${rawRows.length} 行。`);
+    setOK(`已完成 CLI 批量追加：选中 ${targets.length} 台，成功 ${okCount} 台，失败 ${failCount} 台，新增 ${addedRows} 行，覆盖 ${replacedRows} 行，当前总计 ${rawRows.length} 行。`);
   });
 
   $('nodeLabelMode').addEventListener('change', (e) => {

@@ -2740,6 +2740,11 @@ def collect_zabbix_link_utilization(
             err_parts.append("rx item not found")
         if not speed_item:
             err_parts.append("speed item not found")
+        if mode in {"range_max", "range_min"}:
+            if tx_item and tx_bps is None:
+                err_parts.append("tx history not found in selected time window")
+            if rx_item and rx_bps is None:
+                err_parts.append("rx history not found in selected time window")
         status = "ok" if (isinstance(used_pct, (int, float)) or isinstance(tx_pct, (int, float)) or isinstance(rx_pct, (int, float))) else "no_data"
         results.append(
             {
