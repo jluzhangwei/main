@@ -13,6 +13,9 @@ client = TestClient(app)
 
 class ScriptedDiagnoser:
     enabled = True
+    api_key = "scripted-test-key"
+    base_url = "https://api.deepseek.com"
+    model = "deepseek-chat"
 
     async def propose_next_step(
         self,
@@ -57,6 +60,22 @@ class ScriptedDiagnoser:
             confidence=0.5,
             evidence_refs=[],
         )
+
+    def configure(self, *, api_key=None, base_url=None, model=None):
+        if api_key is not None:
+            self.api_key = api_key
+            self.enabled = bool(api_key)
+        if base_url:
+            self.base_url = base_url
+        if model:
+            self.model = model
+
+    def status(self):
+        return {
+            "enabled": bool(self.api_key),
+            "base_url": self.base_url,
+            "model": self.model,
+        }
 
 
 @pytest.fixture(autouse=True)
@@ -140,3 +159,21 @@ def test_full_auto_session_executes_without_confirmation():
     statuses = {command["status"] for command in data["commands"]}
     assert statuses == {"succeeded"}
     assert len(data["evidences"]) >= 3
+
+
+def test_llm_config_endpoint_enables_and_disables_runtime_key():
+    status_before = client.get("/v1/llm/status")
+    assert status_before.status_code == 200
+    assert status_before.json()["enabled"] is True
+
+    enable = client.post("/v1/llm/config", json={"api_key": "sk-test-runtime"})
+    assert enable.status_code == 200
+    assert enable.json()["enabled"] is True
+
+    status_after = client.get("/v1/llm/status")
+    assert status_after.status_code == 200
+    assert status_after.json()["enabled"] is True
+
+    disable = client.post("/v1/llm/config", json={"api_key": ""})
+    assert disable.status_code == 200
+    assert disable.json()["enabled"] is False

@@ -1,4 +1,4 @@
-import type { AutomationLevel, EventPayload, SessionResponse, Timeline } from '../types'
+import type { AutomationLevel, EventPayload, LLMStatus, SessionResponse, Timeline } from '../types'
 
 const headers = {
   'Content-Type': 'application/json',
@@ -124,4 +124,24 @@ export async function exportMarkdown(sessionId: string): Promise<string> {
 
   const data = await res.json()
   return data.content as string
+}
+
+export async function getLlmStatus(): Promise<LLMStatus> {
+  const res = await fetch('/v1/llm/status')
+  if (!res.ok) {
+    throw new Error('Failed to load LLM status')
+  }
+  return res.json()
+}
+
+export async function configureLlm(apiKey: string): Promise<LLMStatus> {
+  const res = await fetch('/v1/llm/config', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ api_key: apiKey }),
+  })
+  if (!res.ok) {
+    throw new Error('Failed to configure LLM')
+  }
+  return res.json()
 }

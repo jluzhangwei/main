@@ -8,6 +8,8 @@ from fastapi.responses import StreamingResponse
 from app.models.schemas import (
     ConfirmCommandRequest,
     ExportRequest,
+    LLMConfigRequest,
+    LLMConfigResponse,
     MessageCreateRequest,
     SessionCreateRequest,
     SessionResponse,
@@ -59,6 +61,23 @@ async def post_message(session_id: str, req: MessageCreateRequest):
 
     generator = orchestrator.stream_message(session_id, req.content)
     return StreamingResponse(generator, media_type="text/event-stream")
+
+
+@router.get("/llm/status", response_model=LLMConfigResponse)
+async def get_llm_status() -> LLMConfigResponse:
+    status = orchestrator.deepseek_diagnoser.status()
+    return LLMConfigResponse(**status)
+
+
+@router.post("/llm/config", response_model=LLMConfigResponse)
+async def configure_llm(req: LLMConfigRequest) -> LLMConfigResponse:
+    orchestrator.deepseek_diagnoser.configure(
+        api_key=req.api_key,
+        base_url=req.base_url,
+        model=req.model,
+    )
+    status = orchestrator.deepseek_diagnoser.status()
+    return LLMConfigResponse(**status)
 
 
 @router.post("/sessions/{session_id}/commands/{command_id}/confirm")

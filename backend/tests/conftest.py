@@ -13,5 +13,6 @@ def reset_global_store():
     routes.store.evidences.clear()
     routes.store.summary.clear()
     routes.store.ai_context.clear()
+    routes.orchestrator.deepseek_diagnoser.configure(api_key="")
     routes.orchestrator.allow_simulation = True
     yield

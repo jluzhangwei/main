@@ -178,3 +178,15 @@ class ExportResponse(BaseModel):
 class EventEnvelope(BaseModel):
     event: str
     payload: dict[str, Any]
+
+
+class LLMConfigRequest(BaseModel):
+    api_key: str
+    base_url: Optional[str] = None
+    model: Optional[str] = None
+
+
+class LLMConfigResponse(BaseModel):
+    enabled: bool
+    base_url: str
+    model: str

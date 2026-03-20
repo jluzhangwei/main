@@ -21,6 +21,27 @@ class DeepSeekDiagnoser:
     def enabled(self) -> bool:
         return bool(self.api_key)
 
+    def configure(
+        self,
+        *,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> None:
+        if api_key is not None:
+            self.api_key = api_key.strip()
+        if base_url:
+            self.base_url = base_url.strip().rstrip("/")
+        if model:
+            self.model = model.strip()
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "base_url": self.base_url,
+            "model": self.model,
+        }
+
     async def diagnose(
         self,
         session: Session,

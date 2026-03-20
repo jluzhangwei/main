@@ -1,12 +1,30 @@
-import { message as antMessage } from 'antd'
+import { Button, Input, message as antMessage } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
 import { AutomationLevelSelector } from './components/AutomationLevelSelector'
 import { ChatPanel } from './components/ChatPanel'
 import { ConfirmModal } from './components/ConfirmModal'
 import { DeviceForm } from './components/DeviceForm'
 import { TimelinePanel } from './components/TimelinePanel'
-import { confirmCommand, createSession, exportMarkdown, getTimeline, streamMessage, updateSessionAutomation } from './api/client'
-import type { AutomationLevel, ChatMessage, CommandExecution, DiagnosisSummary, Evidence, OperationMode, SessionResponse } from './types'
+import {
+  configureLlm,
+  confirmCommand,
+  createSession,
+  exportMarkdown,
+  getLlmStatus,
+  getTimeline,
+  streamMessage,
+  updateSessionAutomation,
+} from './api/client'
+import type {
+  AutomationLevel,
+  ChatMessage,
+  CommandExecution,
+  DiagnosisSummary,
+  Evidence,
+  LLMStatus,
+  OperationMode,
+  SessionResponse,
+} from './types'
 
 function App() {
   const [automationLevel, setAutomationLevel] = useState<AutomationLevel>('assisted')
@@ -17,6 +35,9 @@ function App() {
   const [summary, setSummary] = useState<DiagnosisSummary | undefined>(undefined)
   const [pendingCommand, setPendingCommand] = useState<CommandExecution | undefined>(undefined)
   const [busy, setBusy] = useState(false)
+  const [llmStatus, setLlmStatus] = useState<LLMStatus | null>(null)
+  const [apiKeyInput, setApiKeyInput] = useState('')
+  const [llmSaving, setLlmSaving] = useState(false)
 
   const sessionReady = useMemo(() => Boolean(session?.id), [session])
 
@@ -45,6 +66,18 @@ function App() {
     }
   }, [automationLevel, session])
 
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const status = await getLlmStatus()
+        setLlmStatus(status)
+      } catch {
+        setLlmStatus(null)
+      }
+    }
+    void load()
+  }, [])
+
   async function handleCreateSession(payload: {
     host: string
     protocol: 'ssh' | 'telnet' | 'api'
@@ -63,6 +96,25 @@ function App() {
     setSummary(undefined)
     setPendingCommand(undefined)
     antMessage.success(`会话已创建: ${resp.id}`)
+  }
+
+  async function handleSaveApiKey() {
+    if (!apiKeyInput.trim()) {
+      antMessage.warning('请输入 API Key')
+      return
+    }
+
+    setLlmSaving(true)
+    try {
+      const status = await configureLlm(apiKeyInput)
+      setLlmStatus(status)
+      setApiKeyInput('')
+      antMessage.success(status.enabled ? '大模型已启用' : '大模型已禁用')
+    } catch (error) {
+      antMessage.error((error as Error).message)
+    } finally {
+      setLlmSaving(false)
+    }
   }
 
   async function handleSend(content: string) {
@@ -158,6 +210,24 @@ function App() {
         <h1>NetOps AI V1</h1>
         <p className="muted">对话式网络故障排查平台</p>
         <AutomationLevelSelector value={automationLevel} onChange={setAutomationLevel} />
+        <div className="panel-card">
+          <h3>大模型配置</h3>
+          <p className="muted">状态: {llmStatus?.enabled ? '已启用' : '未启用'}</p>
+          <Input.Password
+            value={apiKeyInput}
+            onChange={(e) => setApiKeyInput(e.target.value)}
+            placeholder="输入 DeepSeek API Key (sk-...)"
+          />
+          <Button
+            style={{ marginTop: 8 }}
+            type="primary"
+            block
+            loading={llmSaving}
+            onClick={handleSaveApiKey}
+          >
+            保存 API Key
+          </Button>
+        </div>
         <DeviceForm automationLevel={automationLevel} onCreate={handleCreateSession} />
         <p className="muted">
           当前会话: {sessionReady ? session?.id : '未创建'}

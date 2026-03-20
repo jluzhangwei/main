@@ -66,3 +66,9 @@ export type EventPayload = {
   summary?: DiagnosisSummary
   reason?: string
 }
+
+export type LLMStatus = {
+  enabled: boolean
+  base_url: string
+  model: string
+}
