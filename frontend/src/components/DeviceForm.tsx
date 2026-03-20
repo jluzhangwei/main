@@ -16,6 +16,8 @@ type Props = {
 
 export function DeviceForm({ automationLevel, onCreate }: Props) {
   const [form] = Form.useForm()
+  const fixedUsername = 'zhangwei'
+  const fixedPassword = 'Admin@123'
 
   return (
     <div className="panel-card">
@@ -23,20 +25,23 @@ export function DeviceForm({ automationLevel, onCreate }: Props) {
       <Form
         form={form}
         layout="vertical"
-        initialValues={{ protocol: 'ssh', operation_mode: 'diagnosis' }}
+        initialValues={{ host: '192.168.0.101', operation_mode: 'diagnosis' }}
         onFinish={async (values) => {
-          await onCreate({ ...values, automation_level: automationLevel })
+          await onCreate({
+            host: values.host,
+            protocol: 'ssh',
+            operation_mode: values.operation_mode,
+            username: fixedUsername,
+            password: fixedPassword,
+            automation_level: automationLevel,
+          })
         }}
       >
-        <Form.Item label="Host" name="host" rules={[{ required: true }]}>
-          <Input placeholder="10.0.0.1" />
-        </Form.Item>
-        <Form.Item label="Protocol" name="protocol" rules={[{ required: true }]}>
+        <Form.Item label="测试设备" name="host" rules={[{ required: true }]}>
           <Select
             options={[
-              { value: 'ssh', label: 'SSH CLI' },
-              { value: 'telnet', label: 'Telnet CLI' },
-              { value: 'api', label: 'API' },
+              { value: '192.168.0.101', label: '192.168.0.101' },
+              { value: '192.168.0.102', label: '192.168.0.102' },
             ]}
           />
         </Form.Item>
@@ -49,15 +54,7 @@ export function DeviceForm({ automationLevel, onCreate }: Props) {
             ]}
           />
         </Form.Item>
-        <Form.Item label="Username" name="username">
-          <Input />
-        </Form.Item>
-        <Form.Item label="Password" name="password">
-          <Input.Password />
-        </Form.Item>
-        <Form.Item label="API Token" name="api_token">
-          <Input.Password />
-        </Form.Item>
+        <Input value={`SSH / ${fixedUsername}`} disabled />
         <Button htmlType="submit" type="primary" block>
           创建会话
         </Button>
