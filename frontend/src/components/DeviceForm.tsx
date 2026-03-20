@@ -6,7 +6,6 @@ type Props = {
   onCreate: (payload: {
     host: string
     protocol: 'ssh' | 'telnet' | 'api'
-    vendor: string
     username?: string
     password?: string
     api_token?: string
@@ -23,7 +22,7 @@ export function DeviceForm({ automationLevel, onCreate }: Props) {
       <Form
         form={form}
         layout="vertical"
-        initialValues={{ protocol: 'ssh', vendor: 'huawei' }}
+        initialValues={{ protocol: 'ssh' }}
         onFinish={async (values) => {
           await onCreate({ ...values, automation_level: automationLevel })
         }}
@@ -37,15 +36,6 @@ export function DeviceForm({ automationLevel, onCreate }: Props) {
               { value: 'ssh', label: 'SSH CLI' },
               { value: 'telnet', label: 'Telnet CLI' },
               { value: 'api', label: 'API' },
-            ]}
-          />
-        </Form.Item>
-        <Form.Item label="Vendor" name="vendor" rules={[{ required: true }]}>
-          <Select
-            options={[
-              { value: 'cisco_like', label: 'Cisco-like CLI' },
-              { value: 'huawei', label: 'Huawei CLI' },
-              { value: 'huawei_like', label: 'Huawei-like API' },
             ]}
           />
         </Form.Item>

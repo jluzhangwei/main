@@ -48,7 +48,6 @@ function App() {
   async function handleCreateSession(payload: {
     host: string
     protocol: 'ssh' | 'telnet' | 'api'
-    vendor: string
     username?: string
     password?: string
     api_token?: string
