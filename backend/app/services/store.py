@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 from app.models.schemas import (
     AutomationLevel,
     CommandExecution,
+    DeviceProtocol,
     Evidence,
     IncidentSummary,
     Message,
@@ -30,7 +31,9 @@ class InMemoryStore:
         self.ai_context: Dict[str, List[dict[str, str]]] = defaultdict(list)
 
     def create_session(self, req: SessionCreateRequest) -> Session:
-        session = Session(device=req.device, automation_level=req.automation_level, issue_scope=req.issue_scope)
+        device = req.device.model_copy(deep=True)
+        device.device_type = self._normalize_device_type(device.vendor, device.protocol, device.device_type)
+        session = Session(device=device, automation_level=req.automation_level, issue_scope=req.issue_scope)
         self.sessions[session.id] = session
         self.ai_context[session.id] = []
         return session
@@ -101,3 +104,18 @@ class InMemoryStore:
 
     def reset_ai_context(self, session_id: str) -> None:
         self.ai_context[session_id] = []
+
+    def _normalize_device_type(self, vendor: str, protocol: DeviceProtocol, current: str) -> str:
+        if protocol == DeviceProtocol.api:
+            return current
+
+        normalized_vendor = (vendor or "").strip().lower()
+        normalized_current = (current or "").strip().lower()
+
+        if "huawei" in normalized_vendor and normalized_current in {"", "cisco_ios"}:
+            return "huawei"
+        if "arista" in normalized_vendor and normalized_current in {"", "cisco_ios"}:
+            return "arista_eos"
+        if "cisco" in normalized_vendor and not normalized_current:
+            return "cisco_ios"
+        return current

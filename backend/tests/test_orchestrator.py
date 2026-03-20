@@ -165,3 +165,14 @@ async def test_connection_failure_replaces_previous_summary(monkeypatch):
     assert summary is not None
     assert summary.root_cause != "old result"
     assert "设备连接或执行失败" in summary.root_cause
+
+
+def test_huawei_vendor_defaults_to_huawei_device_type():
+    store = InMemoryStore()
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(host="10.0.0.9", protocol=DeviceProtocol.ssh, vendor="huawei"),
+            automation_level=AutomationLevel.assisted,
+        )
+    )
+    assert session.device.device_type == "huawei"
