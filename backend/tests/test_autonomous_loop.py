@@ -70,6 +70,37 @@ class FakeAutonomousDiagnoserWithStringRefs(FakeAutonomousDiagnoser):
         }
 
 
+class CaptureContextDiagnoser:
+    enabled = True
+
+    def __init__(self):
+        self.captured_history: list[dict[str, str]] = []
+
+    async def propose_next_step(
+        self,
+        *,
+        session,
+        user_problem: str,
+        commands,
+        evidences,
+        iteration: int,
+        max_iterations: int,
+        conversation_history=None,
+    ):
+        self.captured_history = list(conversation_history or [])
+        return {
+            "decision": "final",
+            "root_cause": "test",
+            "impact_scope": "test",
+            "recommendation": "test",
+            "confidence": 0.5,
+            "evidence_refs": [],
+        }
+
+    async def diagnose(self, session, commands, evidences):
+        return None
+
+
 @pytest.mark.asyncio
 async def test_autonomous_loop_bootstrap_then_ai_command_then_final_summary():
     store = InMemoryStore()
@@ -208,3 +239,33 @@ async def test_ai_context_does_not_leak_between_sessions():
     context_2 = "\n".join(item["content"] for item in store.list_ai_context(s2.id))
     assert "第一个会话的问题" in context_1
     assert "第一个会话的问题" not in context_2
+
+
+@pytest.mark.asyncio
+async def test_ai_context_redacts_credentials_before_sending_to_llm():
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    capture = CaptureContextDiagnoser()
+    orchestrator.deepseek_diagnoser = capture
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(
+                host="192.168.0.88",
+                protocol=DeviceProtocol.ssh,
+                vendor="huawei",
+                username="zhangwei",
+                password="Huawei@123",
+                device_type="huawei",
+            ),
+            automation_level=AutomationLevel.assisted,
+        )
+    )
+
+    async for _ in orchestrator.stream_message(session.id, "设备账号 zhangwei 密码 Huawei@123，帮我看版本"):
+        pass
+
+    joined = "\n".join(item.get("content", "") for item in capture.captured_history)
+    assert "Huawei@123" not in joined
+    assert "zhangwei" not in joined
+    assert "[REDACTED]" in joined

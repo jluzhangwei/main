@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import AsyncIterator
 
 from app.models.schemas import (
@@ -266,12 +267,13 @@ class ConversationOrchestrator:
         )
 
     def _append_user_problem_to_ai_context(self, session_id: str, vendor: str, protocol: str, user_content: str) -> None:
+        sanitized_content = self._sanitize_for_llm(user_content)
         header = (
             f"会话ID: {session_id}\n"
             f"当前设备厂商: {vendor}\n"
             f"接入协议: {protocol}\n"
             "请只基于当前会话上下文继续诊断，禁止引用或臆测其他会话。\n"
-            f"用户问题: {user_content}"
+            f"用户问题: {sanitized_content}"
         )
         self.store.append_ai_context(session_id, "user", header)
 
@@ -284,10 +286,31 @@ class ConversationOrchestrator:
             f"- status: {command.status.value}\n"
         )
         if command.error:
-            text += f"- error: {command.error[:1200]}\n"
+            text += f"- error: {self._sanitize_for_llm(command.error)[:1200]}\n"
         if command.output:
-            text += f"- output:\n{command.output[:2500]}"
+            text += f"- output:\n{self._sanitize_for_llm(command.output)[:2500]}"
         self.store.append_ai_context(session_id, "user", text)
+
+    def _sanitize_for_llm(self, text: str) -> str:
+        if not text:
+            return text
+
+        sanitized = text
+        patterns = [
+            (
+                re.compile(
+                    r"(?i)\b(username|user|account|login|password|passwd|pwd|token|api[_-]?key|secret)\b\s*[:=：]?\s*([^\s,;，。]+)"
+                ),
+                r"\1 [REDACTED]",
+            ),
+            (
+                re.compile(r"(账号|用户名|密码|口令|令牌|密钥)\s*[:：]?\s*([^\s,;，。]+)", re.IGNORECASE),
+                r"\1 [REDACTED]",
+            ),
+        ]
+        for pattern, replacement in patterns:
+            sanitized = pattern.sub(replacement, sanitized)
+        return sanitized
 
     async def confirm_command(self, session_id: str, command_id: str, request: ConfirmCommandRequest) -> ConfirmCommandResponse:
         session = self.store.get_session(session_id)
