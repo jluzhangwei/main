@@ -70,6 +70,33 @@ class FakeAutonomousDiagnoserWithStringRefs(FakeAutonomousDiagnoser):
         }
 
 
+class FakeQueryDiagnoser:
+    enabled = True
+
+    async def propose_next_step(
+        self,
+        *,
+        session,
+        user_problem: str,
+        commands,
+        evidences,
+        iteration: int,
+        max_iterations: int,
+        conversation_history=None,
+    ):
+        return {
+            "decision": "final",
+            "mode": "query",
+            "query_result": "设备版本为 VRP V8R11，型号 NE40E。",
+            "follow_up_action": "如需详细版本信息，可继续查询补丁与启动文件。",
+            "confidence": 0.96,
+            "evidence_refs": [],
+        }
+
+    async def diagnose(self, session, commands, evidences):
+        return None
+
+
 class CaptureContextDiagnoser:
     enabled = True
 
@@ -269,3 +296,36 @@ async def test_ai_context_redacts_credentials_before_sending_to_llm():
     assert "Huawei@123" not in joined
     assert "zhangwei" not in joined
     assert "[REDACTED]" in joined
+
+
+@pytest.mark.asyncio
+async def test_query_task_outputs_query_summary_and_message():
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    orchestrator.deepseek_diagnoser = FakeQueryDiagnoser()
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(
+                host="192.168.0.88",
+                protocol=DeviceProtocol.ssh,
+                vendor="huawei",
+                username="zhangwei",
+                password="test-password",
+                device_type="huawei",
+            ),
+            automation_level=AutomationLevel.assisted,
+        )
+    )
+
+    async for _ in orchestrator.stream_message(session.id, "帮我检查版本"):
+        pass
+
+    summary = store.get_summary(session.id)
+    assert summary is not None
+    assert summary.mode == "query"
+    assert "VRP" in (summary.query_result or "")
+
+    messages = store.list_messages(session.id)
+    assert messages[-1].role == "assistant"
+    assert messages[-1].content.startswith("查询完成。结果:")

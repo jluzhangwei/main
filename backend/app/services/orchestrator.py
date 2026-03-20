@@ -69,11 +69,7 @@ class ConversationOrchestrator:
             assistant_message = Message(
                 session_id=session_id,
                 role="assistant",
-                content=(
-                    f"诊断完成。根因判断: {summary.root_cause}。"
-                    f"影响范围: {summary.impact_scope}。"
-                    f"建议: {summary.recommendation}"
-                ),
+                content=self._render_final_message(summary),
             )
             self.store.add_message(assistant_message)
 
@@ -87,11 +83,7 @@ class ConversationOrchestrator:
             assistant_message = Message(
                 session_id=session_id,
                 role="assistant",
-                content=(
-                    f"诊断中断。根因判断: {summary.root_cause}。"
-                    f"影响范围: {summary.impact_scope}。"
-                    f"建议: {summary.recommendation}"
-                ),
+                content=self._render_final_message(summary, interrupted=True),
             )
             self.store.add_message(assistant_message)
             yield self._sse(
@@ -234,10 +226,28 @@ class ConversationOrchestrator:
         return False
 
     def _summary_from_plan(self, session_id: str, plan: dict) -> IncidentSummary | None:
+        mode = str(plan.get("mode") or plan.get("task_type") or "diagnosis").strip().lower()
+        if mode not in {"diagnosis", "query", "unavailable", "error"}:
+            mode = "diagnosis"
+
+        query_result = str(plan.get("query_result") or plan.get("answer") or plan.get("result") or "").strip()
+        follow_up_action = str(plan.get("follow_up_action") or plan.get("recommendation") or "").strip()
+
         root_cause = str(plan.get("root_cause", "")).strip()
         impact_scope = str(plan.get("impact_scope", "")).strip()
         recommendation = str(plan.get("recommendation", "")).strip()
-        if not root_cause or not impact_scope or not recommendation:
+
+        if mode == "query":
+            if not query_result:
+                query_result = root_cause or impact_scope or recommendation
+            if not query_result:
+                return None
+            if not follow_up_action:
+                follow_up_action = "如需进一步排障，请继续给出现象。"
+            root_cause = query_result
+            impact_scope = impact_scope or "信息查询任务"
+            recommendation = follow_up_action
+        elif not root_cause or not impact_scope or not recommendation:
             return None
 
         confidence = None
@@ -259,9 +269,12 @@ class ConversationOrchestrator:
 
         return IncidentSummary(
             session_id=session_id,
+            mode=mode,
             root_cause=root_cause,
             impact_scope=impact_scope,
             recommendation=recommendation,
+            query_result=query_result or None,
+            follow_up_action=follow_up_action or None,
             confidence=confidence,
             evidence_refs=evidence_refs,
         )
@@ -395,6 +408,8 @@ class ConversationOrchestrator:
         final_prompt = (
             "请基于当前会话已有证据直接给出最终结论。"
             "只允许输出decision=final，不要再输出run_command。"
+            "如果用户是信息查询任务，请返回mode=query和query_result；"
+            "如果是故障诊断任务，请返回mode=diagnosis和根因/影响/建议。"
         )
         ai_context.append({"role": "user", "content": final_prompt})
         plan = await self.deepseek_diagnoser.propose_next_step(
@@ -415,6 +430,7 @@ class ConversationOrchestrator:
     def _build_llm_unavailable_summary(self, session_id: str) -> IncidentSummary:
         return IncidentSummary(
             session_id=session_id,
+            mode="unavailable",
             root_cause="LLM 服务不可用，无法生成有效根因诊断。",
             impact_scope="无法评估。",
             recommendation="请检查模型 API 可用性与密钥配置后重试。",
@@ -425,6 +441,7 @@ class ConversationOrchestrator:
         compact = reason.replace("\n", " ")
         return IncidentSummary(
             session_id=session_id,
+            mode="error",
             root_cause=f"设备连接或执行失败：{compact[:240]}",
             impact_scope="无法获取有效设备证据，诊断未完成。",
             recommendation="请检查 SSH 可达性、账号权限、设备会话模式与命令回显后重试。",
@@ -433,10 +450,20 @@ class ConversationOrchestrator:
     def _build_no_conclusion_summary(self, session_id: str) -> IncidentSummary:
         return IncidentSummary(
             session_id=session_id,
+            mode="error",
             root_cause="模型未返回可用最终结论。",
             impact_scope="无法形成完整诊断闭环。",
             recommendation="请重试一次，或补充更具体的问题描述后继续同会话诊断。",
         )
+
+    def _render_final_message(self, summary: IncidentSummary, interrupted: bool = False) -> str:
+        if summary.mode == "query":
+            result = summary.query_result or summary.root_cause
+            follow = summary.follow_up_action or summary.recommendation
+            return f"查询完成。结果: {result}。后续: {follow}"
+        if interrupted:
+            return f"诊断中断。根因判断: {summary.root_cause}。影响范围: {summary.impact_scope}。建议: {summary.recommendation}"
+        return f"诊断完成。根因判断: {summary.root_cause}。影响范围: {summary.impact_scope}。建议: {summary.recommendation}"
 
     def _sse(self, event: str, payload: dict) -> str:
         envelope = EventEnvelope(event=event, payload=payload)

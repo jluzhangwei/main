@@ -16,6 +16,7 @@ const riskColor: Record<string, string> = {
 }
 
 export function TimelinePanel({ commands, evidences, summary, onRefresh, onExport }: Props) {
+  const isQuerySummary = summary?.mode === 'query'
   return (
     <div className="timeline-area">
       <div className="timeline-actions">
@@ -23,22 +24,37 @@ export function TimelinePanel({ commands, evidences, summary, onRefresh, onExpor
         <Button onClick={onExport}>导出 Markdown</Button>
       </div>
 
-      <h3>最终诊断</h3>
+      <h3>最终结果</h3>
       <div className="summary-card">
         {summary ? (
           <>
-            <div className="summary-row">
-              <span className="summary-label">根因</span>
-              <strong>{summary.root_cause}</strong>
-            </div>
-            <div className="summary-row">
-              <span className="summary-label">影响范围</span>
-              <span>{summary.impact_scope}</span>
-            </div>
-            <div className="summary-row">
-              <span className="summary-label">建议动作</span>
-              <span>{summary.recommendation}</span>
-            </div>
+            {isQuerySummary ? (
+              <>
+                <div className="summary-row">
+                  <span className="summary-label">查询结果</span>
+                  <strong>{summary.query_result || summary.root_cause}</strong>
+                </div>
+                <div className="summary-row">
+                  <span className="summary-label">后续动作</span>
+                  <span>{summary.follow_up_action || summary.recommendation}</span>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="summary-row">
+                  <span className="summary-label">根因</span>
+                  <strong>{summary.root_cause}</strong>
+                </div>
+                <div className="summary-row">
+                  <span className="summary-label">影响范围</span>
+                  <span>{summary.impact_scope}</span>
+                </div>
+                <div className="summary-row">
+                  <span className="summary-label">建议动作</span>
+                  <span>{summary.recommendation}</span>
+                </div>
+              </>
+            )}
             {typeof summary.confidence === 'number' && (
               <div className="summary-row">
                 <span className="summary-label">置信度</span>
@@ -57,7 +73,7 @@ export function TimelinePanel({ commands, evidences, summary, onRefresh, onExpor
             )}
           </>
         ) : (
-          <div className="muted">暂无最终诊断，请先执行对话排障。</div>
+          <div className="muted">暂无最终结果，请先执行对话。</div>
         )}
       </div>
 

@@ -38,9 +38,12 @@ export type Evidence = {
 }
 
 export type DiagnosisSummary = {
+  mode?: 'diagnosis' | 'query' | 'unavailable' | 'error'
   root_cause: string
   impact_scope: string
   recommendation: string
+  query_result?: string
+  follow_up_action?: string
   confidence?: number
   evidence_refs?: Array<Record<string, unknown>>
 }

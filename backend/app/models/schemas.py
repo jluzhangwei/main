@@ -127,9 +127,12 @@ class Evidence(BaseModel):
 class IncidentSummary(BaseModel):
     id: str = Field(default_factory=make_id)
     session_id: str
+    mode: Literal["diagnosis", "query", "unavailable", "error"] = "diagnosis"
     root_cause: str
     impact_scope: str
     recommendation: str
+    query_result: Optional[str] = None
+    follow_up_action: Optional[str] = None
     confidence: Optional[float] = None
     evidence_refs: list[dict[str, Any]] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=now_utc)

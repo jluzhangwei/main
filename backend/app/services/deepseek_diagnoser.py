@@ -81,10 +81,11 @@ class DeepSeekDiagnoser:
                     "你无法访问其他会话，禁止引用其他会话的信息。"
                     "你的任务是决定下一步动作。"
                     "只输出JSON对象。"
-                    "字段: decision, title, command, reason, root_cause, impact_scope, recommendation, confidence, evidence_refs。"
+                    "字段: decision, title, command, reason, mode, query_result, follow_up_action, root_cause, impact_scope, recommendation, confidence, evidence_refs。"
                     "decision只能是run_command或final。"
                     "run_command时必须给出command。"
-                    "final时必须给出root_cause, impact_scope, recommendation。"
+                    "final时如果是查询任务，mode=query且必须给出query_result，可选follow_up_action；"
+                    "final时如果是诊断任务，mode=diagnosis且必须给出root_cause, impact_scope, recommendation。"
                     "confidence是0到1。evidence_refs是数组，quote应来自会话中的证据输出。"
                 ),
                 messages=conversation_history,
@@ -137,10 +138,11 @@ class DeepSeekDiagnoser:
                 "任务是基于用户问题和已有证据，决定下一步动作。"
                 "你可以自由决定诊断路径，不使用固定剧本。"
                 "只输出JSON对象。"
-                "字段: decision, title, command, reason, root_cause, impact_scope, recommendation, confidence, evidence_refs。"
+                "字段: decision, title, command, reason, mode, query_result, follow_up_action, root_cause, impact_scope, recommendation, confidence, evidence_refs。"
                 "decision只能是run_command或final。"
                 "当decision为run_command时，必须给出command；优先只读排查命令。"
-                "当decision为final时，必须给出root_cause, impact_scope, recommendation。"
+                "当decision为final时，如果是查询任务，mode=query且必须给出query_result；"
+                "当decision为final时，如果是诊断任务，mode=diagnosis且必须给出root_cause, impact_scope, recommendation。"
                 "confidence是0到1。evidence_refs是数组，且quote必须来自已有证据原文。"
             ),
             user_payload=payload,

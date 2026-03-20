@@ -27,15 +27,21 @@ def export_timeline_markdown(timeline: TimelineResponse) -> ExportResponse:
         lines.append(f"- {evidence.category}: {evidence.conclusion}")
 
     if timeline.summary:
+        section_title = "## Query Summary" if timeline.summary.mode == "query" else "## Incident Summary"
         lines.extend(
             [
                 "",
-                "## Incident Summary",
+                section_title,
                 f"- Root Cause: {timeline.summary.root_cause}",
                 f"- Impact: {timeline.summary.impact_scope}",
                 f"- Recommendation: {timeline.summary.recommendation}",
             ]
         )
+        lines.append(f"- Mode: {timeline.summary.mode}")
+        if timeline.summary.query_result:
+            lines.append(f"- Query Result: {timeline.summary.query_result}")
+        if timeline.summary.follow_up_action:
+            lines.append(f"- Follow-up Action: {timeline.summary.follow_up_action}")
         if timeline.summary.confidence is not None:
             lines.append(f"- Confidence: {timeline.summary.confidence:.2f}")
         if timeline.summary.evidence_refs:
