@@ -7,6 +7,7 @@ const headers = {
 export async function createSession(input: {
   host: string
   protocol: 'ssh' | 'telnet' | 'api'
+  operation_mode: 'diagnosis' | 'query' | 'config'
   username?: string
   password?: string
   api_token?: string
@@ -23,6 +24,7 @@ export async function createSession(input: {
         password: input.password,
         api_token: input.api_token,
       },
+      operation_mode: input.operation_mode,
       automation_level: input.automation_level,
     }),
   })

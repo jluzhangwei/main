@@ -27,7 +27,11 @@ def export_timeline_markdown(timeline: TimelineResponse) -> ExportResponse:
         lines.append(f"- {evidence.category}: {evidence.conclusion}")
 
     if timeline.summary:
-        section_title = "## Query Summary" if timeline.summary.mode == "query" else "## Incident Summary"
+        section_title = "## Incident Summary"
+        if timeline.summary.mode == "query":
+            section_title = "## Query Summary"
+        if timeline.summary.mode == "config":
+            section_title = "## Config Summary"
         lines.extend(
             [
                 "",

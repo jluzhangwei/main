@@ -31,6 +31,7 @@ async def create_session(req: SessionCreateRequest) -> SessionResponse:
     return SessionResponse(
         id=session.id,
         automation_level=session.automation_level,
+        operation_mode=session.operation_mode,
         status=session.status,
         created_at=session.created_at,
     )
@@ -45,6 +46,7 @@ async def update_session(session_id: str, req: SessionUpdateRequest) -> SessionR
     return SessionResponse(
         id=session.id,
         automation_level=session.automation_level,
+        operation_mode=session.operation_mode,
         status=session.status,
         created_at=session.created_at,
     )

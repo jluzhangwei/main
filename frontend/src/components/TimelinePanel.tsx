@@ -17,6 +17,8 @@ const riskColor: Record<string, string> = {
 
 export function TimelinePanel({ commands, evidences, summary, onRefresh, onExport }: Props) {
   const isQuerySummary = summary?.mode === 'query'
+  const isConfigSummary = summary?.mode === 'config'
+  const isActionSummary = isQuerySummary || isConfigSummary
   return (
     <div className="timeline-area">
       <div className="timeline-actions">
@@ -28,10 +30,10 @@ export function TimelinePanel({ commands, evidences, summary, onRefresh, onExpor
       <div className="summary-card">
         {summary ? (
           <>
-            {isQuerySummary ? (
+            {isActionSummary ? (
               <>
                 <div className="summary-row">
-                  <span className="summary-label">查询结果</span>
+                  <span className="summary-label">{isConfigSummary ? '配置结果' : '查询结果'}</span>
                   <strong>{summary.query_result || summary.root_cause}</strong>
                 </div>
                 <div className="summary-row">

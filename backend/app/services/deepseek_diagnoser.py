@@ -85,6 +85,7 @@ class DeepSeekDiagnoser:
                     "decision只能是run_command或final。"
                     "run_command时必须给出command。"
                     "final时如果是查询任务，mode=query且必须给出query_result，可选follow_up_action；"
+                    "final时如果是配置任务，mode=config且必须给出query_result，可选follow_up_action；"
                     "final时如果是诊断任务，mode=diagnosis且必须给出root_cause, impact_scope, recommendation。"
                     "confidence是0到1。evidence_refs是数组，quote应来自会话中的证据输出。"
                 ),
@@ -142,6 +143,7 @@ class DeepSeekDiagnoser:
                 "decision只能是run_command或final。"
                 "当decision为run_command时，必须给出command；优先只读排查命令。"
                 "当decision为final时，如果是查询任务，mode=query且必须给出query_result；"
+                "当decision为final时，如果是配置任务，mode=config且必须给出query_result；"
                 "当decision为final时，如果是诊断任务，mode=diagnosis且必须给出root_cause, impact_scope, recommendation。"
                 "confidence是0到1。evidence_refs是数组，且quote必须来自已有证据原文。"
             ),

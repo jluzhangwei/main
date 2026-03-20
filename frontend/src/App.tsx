@@ -6,7 +6,7 @@ import { ConfirmModal } from './components/ConfirmModal'
 import { DeviceForm } from './components/DeviceForm'
 import { TimelinePanel } from './components/TimelinePanel'
 import { confirmCommand, createSession, exportMarkdown, getTimeline, streamMessage, updateSessionAutomation } from './api/client'
-import type { AutomationLevel, ChatMessage, CommandExecution, DiagnosisSummary, Evidence, SessionResponse } from './types'
+import type { AutomationLevel, ChatMessage, CommandExecution, DiagnosisSummary, Evidence, OperationMode, SessionResponse } from './types'
 
 function App() {
   const [automationLevel, setAutomationLevel] = useState<AutomationLevel>('assisted')
@@ -48,6 +48,7 @@ function App() {
   async function handleCreateSession(payload: {
     host: string
     protocol: 'ssh' | 'telnet' | 'api'
+    operation_mode: OperationMode
     username?: string
     password?: string
     api_token?: string
@@ -161,6 +162,7 @@ function App() {
         <p className="muted">
           当前会话: {sessionReady ? session?.id : '未创建'}
         </p>
+        {sessionReady && <p className="muted">当前模式: {session?.operation_mode}</p>}
       </aside>
 
       <main className="center-panel">

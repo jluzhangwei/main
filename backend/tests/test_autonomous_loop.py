@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.models.schemas import AutomationLevel, DeviceProtocol, DeviceTarget, SessionCreateRequest
+from app.models.schemas import AutomationLevel, DeviceProtocol, DeviceTarget, OperationMode, SessionCreateRequest
 from app.services.orchestrator import ConversationOrchestrator
 from app.services.store import InMemoryStore
 
@@ -97,6 +97,34 @@ class FakeQueryDiagnoser:
         return None
 
 
+class FakeMisclassifiedQueryDiagnoser:
+    enabled = True
+
+    async def propose_next_step(
+        self,
+        *,
+        session,
+        user_problem: str,
+        commands,
+        evidences,
+        iteration: int,
+        max_iterations: int,
+        conversation_history=None,
+    ):
+        return {
+            "decision": "final",
+            "mode": "diagnosis",
+            "root_cause": "OSPF 邻居状态正常，Eth1/0/1 与 192.168.0.84 Full。",
+            "impact_scope": "无异常影响。",
+            "recommendation": "如需继续请查询 OSPF 路由明细。",
+            "confidence": 0.95,
+            "evidence_refs": [],
+        }
+
+    async def diagnose(self, session, commands, evidences):
+        return None
+
+
 class CaptureContextDiagnoser:
     enabled = True
 
@@ -144,6 +172,7 @@ async def test_autonomous_loop_bootstrap_then_ai_command_then_final_summary():
                 password="test-password",
                 device_type="huawei",
             ),
+            operation_mode=OperationMode.query,
             automation_level=AutomationLevel.assisted,
         )
     )
@@ -180,6 +209,7 @@ async def test_autonomous_loop_accepts_string_evidence_refs_from_llm():
                 password="test-password",
                 device_type="huawei",
             ),
+            operation_mode=OperationMode.query,
             automation_level=AutomationLevel.assisted,
         )
     )
@@ -209,6 +239,7 @@ async def test_ai_context_is_persisted_and_appended_in_same_session():
                 password="test-password",
                 device_type="huawei",
             ),
+            operation_mode=OperationMode.query,
             automation_level=AutomationLevel.assisted,
         )
     )
@@ -240,6 +271,7 @@ async def test_ai_context_does_not_leak_between_sessions():
                 password="test-password",
                 device_type="huawei",
             ),
+            operation_mode=OperationMode.query,
             automation_level=AutomationLevel.assisted,
         )
     )
@@ -314,6 +346,7 @@ async def test_query_task_outputs_query_summary_and_message():
                 password="test-password",
                 device_type="huawei",
             ),
+            operation_mode=OperationMode.query,
             automation_level=AutomationLevel.assisted,
         )
     )
@@ -328,4 +361,37 @@ async def test_query_task_outputs_query_summary_and_message():
 
     messages = store.list_messages(session.id)
     assert messages[-1].role == "assistant"
+    assert messages[-1].content.startswith("查询完成。结果:")
+
+
+@pytest.mark.asyncio
+async def test_query_intent_is_forced_to_query_mode_even_if_llm_returns_diagnosis_shape():
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    orchestrator.deepseek_diagnoser = FakeMisclassifiedQueryDiagnoser()
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(
+                host="192.168.0.88",
+                protocol=DeviceProtocol.ssh,
+                vendor="huawei",
+                username="zhangwei",
+                password="test-password",
+                device_type="huawei",
+            ),
+            operation_mode=OperationMode.query,
+            automation_level=AutomationLevel.assisted,
+        )
+    )
+
+    async for _ in orchestrator.stream_message(session.id, "查询一下 ospf peer状态"):
+        pass
+
+    summary = store.get_summary(session.id)
+    assert summary is not None
+    assert summary.mode == "query"
+    assert "OSPF" in (summary.query_result or "")
+
+    messages = store.list_messages(session.id)
     assert messages[-1].content.startswith("查询完成。结果:")

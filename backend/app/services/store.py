@@ -33,7 +33,12 @@ class InMemoryStore:
     def create_session(self, req: SessionCreateRequest) -> Session:
         device = req.device.model_copy(deep=True)
         device.device_type = self._normalize_device_type(device.vendor, device.protocol, device.device_type)
-        session = Session(device=device, automation_level=req.automation_level, issue_scope=req.issue_scope)
+        session = Session(
+            device=device,
+            automation_level=req.automation_level,
+            operation_mode=req.operation_mode,
+            issue_scope=req.issue_scope,
+        )
         self.sessions[session.id] = session
         self.ai_context[session.id] = []
         return session

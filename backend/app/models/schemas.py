@@ -49,6 +49,12 @@ class AutomationLevel(str, Enum):
     full_auto = "full_auto"
 
 
+class OperationMode(str, Enum):
+    diagnosis = "diagnosis"
+    query = "query"
+    config = "config"
+
+
 class DeviceTarget(BaseModel):
     host: str
     port: int = 22
@@ -63,6 +69,7 @@ class DeviceTarget(BaseModel):
 class SessionCreateRequest(BaseModel):
     device: DeviceTarget
     automation_level: AutomationLevel = AutomationLevel.assisted
+    operation_mode: OperationMode = OperationMode.diagnosis
     issue_scope: list[str] = Field(default_factory=lambda: ["connectivity", "interface", "routing"])
 
 
@@ -74,6 +81,7 @@ class Session(BaseModel):
     id: str = Field(default_factory=make_id)
     device: DeviceTarget
     automation_level: AutomationLevel = AutomationLevel.assisted
+    operation_mode: OperationMode = OperationMode.diagnosis
     issue_scope: list[str] = Field(default_factory=list)
     status: SessionStatus = SessionStatus.open
     created_at: datetime = Field(default_factory=now_utc)
@@ -82,6 +90,7 @@ class Session(BaseModel):
 class SessionResponse(BaseModel):
     id: str
     automation_level: AutomationLevel
+    operation_mode: OperationMode
     status: SessionStatus
     created_at: datetime
 
@@ -127,7 +136,7 @@ class Evidence(BaseModel):
 class IncidentSummary(BaseModel):
     id: str = Field(default_factory=make_id)
     session_id: str
-    mode: Literal["diagnosis", "query", "unavailable", "error"] = "diagnosis"
+    mode: Literal["diagnosis", "query", "config", "unavailable", "error"] = "diagnosis"
     root_cause: str
     impact_scope: str
     recommendation: str

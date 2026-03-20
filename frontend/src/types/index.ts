@@ -1,10 +1,12 @@
 export type DeviceProtocol = 'ssh' | 'telnet' | 'api'
 
 export type AutomationLevel = 'read_only' | 'assisted' | 'full_auto'
+export type OperationMode = 'diagnosis' | 'query' | 'config'
 
 export type SessionResponse = {
   id: string
   automation_level: AutomationLevel
+  operation_mode: OperationMode
   status: string
   created_at: string
 }
@@ -38,7 +40,7 @@ export type Evidence = {
 }
 
 export type DiagnosisSummary = {
-  mode?: 'diagnosis' | 'query' | 'unavailable' | 'error'
+  mode?: 'diagnosis' | 'query' | 'config' | 'unavailable' | 'error'
   root_cause: string
   impact_scope: string
   recommendation: string
