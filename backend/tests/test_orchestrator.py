@@ -5,6 +5,7 @@ from app.models.schemas import (
     CommandStatus,
     DeviceProtocol,
     DeviceTarget,
+    IncidentSummary,
     SessionCreateRequest,
 )
 from app.services.orchestrator import ConversationOrchestrator
@@ -42,6 +43,17 @@ class ScriptedDiagnoser:
         }
 
     async def diagnose(self, session, commands, evidences):
+        return None
+
+
+class ConnectFailAdapter:
+    async def connect(self):
+        raise RuntimeError("connection reset by peer")
+
+    async def run_command(self, command: str):
+        return ""
+
+    async def close(self):
         return None
 
 
@@ -90,3 +102,66 @@ async def test_when_llm_unavailable_returns_unavailable_summary():
     assert summary is not None
     assert "LLM 服务不可用" in summary.root_cause
     assert any("final_summary" in event for event in events)
+
+
+@pytest.mark.asyncio
+async def test_connection_failure_generates_final_summary_instead_of_stream_crash(monkeypatch):
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store, allow_simulation=False)
+    orchestrator.deepseek_diagnoser = ScriptedDiagnoser()
+
+    monkeypatch.setattr(
+        "app.services.orchestrator.build_adapter",
+        lambda session, allow_simulation=True: ConnectFailAdapter(),
+    )
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(host="10.0.0.1", protocol=DeviceProtocol.ssh, vendor="huawei"),
+            automation_level=AutomationLevel.assisted,
+        )
+    )
+
+    events = []
+    async for event in orchestrator.stream_message(session.id, "帮我看看设备版本"):
+        events.append(event)
+
+    summary = store.get_summary(session.id)
+    assert summary is not None
+    assert "设备连接或执行失败" in summary.root_cause
+    assert any("command_completed" in event for event in events)
+    assert any("final_summary" in event for event in events)
+
+
+@pytest.mark.asyncio
+async def test_connection_failure_replaces_previous_summary(monkeypatch):
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store, allow_simulation=False)
+    orchestrator.deepseek_diagnoser = ScriptedDiagnoser()
+    monkeypatch.setattr(
+        "app.services.orchestrator.build_adapter",
+        lambda session, allow_simulation=True: ConnectFailAdapter(),
+    )
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(host="10.0.0.2", protocol=DeviceProtocol.ssh, vendor="huawei"),
+            automation_level=AutomationLevel.assisted,
+        )
+    )
+    store.set_summary(
+        IncidentSummary(
+            session_id=session.id,
+            root_cause="old result",
+            impact_scope="old scope",
+            recommendation="old advice",
+        )
+    )
+
+    async for _ in orchestrator.stream_message(session.id, "帮我看看设备版本"):
+        pass
+
+    summary = store.get_summary(session.id)
+    assert summary is not None
+    assert summary.root_cause != "old result"
+    assert "设备连接或执行失败" in summary.root_cause

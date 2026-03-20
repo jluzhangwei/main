@@ -13,4 +13,5 @@ def reset_global_store():
     routes.store.evidences.clear()
     routes.store.summary.clear()
     routes.store.ai_context.clear()
+    routes.orchestrator.allow_simulation = True
     yield

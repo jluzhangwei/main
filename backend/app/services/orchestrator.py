@@ -30,47 +30,73 @@ class ConversationOrchestrator:
         self.max_autonomous_steps = int(os.getenv("AUTONOMOUS_MAX_STEPS", "8"))
 
     async def stream_message(self, session_id: str, user_content: str) -> AsyncIterator[str]:
-        session = self.store.get_session(session_id)
+        try:
+            session = self.store.get_session(session_id)
+            self.store.clear_summary(session_id)
+            if not self.store.list_commands(session_id):
+                self.store.reset_ai_context(session_id)
 
-        user_message = Message(session_id=session_id, role="user", content=user_content)
-        self.store.add_message(user_message)
-        yield self._sse("message_ack", {"message": user_message.model_dump(mode="json")})
+            user_message = Message(session_id=session_id, role="user", content=user_content)
+            self.store.add_message(user_message)
+            yield self._sse("message_ack", {"message": user_message.model_dump(mode="json")})
 
-        if not self.deepseek_diagnoser.enabled:
-            summary = self._build_llm_unavailable_summary(session_id)
+            if not self.deepseek_diagnoser.enabled:
+                summary = self._build_llm_unavailable_summary(session_id)
+                self.store.set_summary(summary)
+                assistant_message = Message(
+                    session_id=session_id,
+                    role="assistant",
+                    content="当前 LLM 服务不可用，无法执行有效诊断。请恢复模型服务后重试。",
+                )
+                self.store.add_message(assistant_message)
+                yield self._sse(
+                    "final_summary",
+                    {"message": assistant_message.model_dump(mode="json"), "summary": summary.model_dump(mode="json")},
+                )
+                return
+
+            async for event in self._run_autonomous_loop(session_id, user_content):
+                yield event
+
+            summary = self.store.get_summary(session_id)
+            if summary is None:
+                summary = await self._request_final_from_context(session_id)
+                if summary is None:
+                    summary = self._build_no_conclusion_summary(session_id)
+                self.store.set_summary(summary)
+
+            assistant_message = Message(
+                session_id=session_id,
+                role="assistant",
+                content=(
+                    f"诊断完成。根因判断: {summary.root_cause}。"
+                    f"影响范围: {summary.impact_scope}。"
+                    f"建议: {summary.recommendation}"
+                ),
+            )
+            self.store.add_message(assistant_message)
+
+            yield self._sse(
+                "final_summary",
+                {"message": assistant_message.model_dump(mode="json"), "summary": summary.model_dump(mode="json")},
+            )
+        except Exception as exc:  # pragma: no cover - defensive stream guard
+            summary = self._build_execution_failure_summary(session_id, str(exc))
             self.store.set_summary(summary)
             assistant_message = Message(
                 session_id=session_id,
                 role="assistant",
-                content="当前 LLM 服务不可用，无法执行有效诊断。请恢复模型服务后重试。",
+                content=(
+                    f"诊断中断。根因判断: {summary.root_cause}。"
+                    f"影响范围: {summary.impact_scope}。"
+                    f"建议: {summary.recommendation}"
+                ),
             )
             self.store.add_message(assistant_message)
             yield self._sse(
                 "final_summary",
                 {"message": assistant_message.model_dump(mode="json"), "summary": summary.model_dump(mode="json")},
             )
-            return
-
-        async for event in self._run_autonomous_loop(session_id, user_content):
-            yield event
-
-        summary = self.store.get_summary(session_id)
-        if summary is None:
-            summary = await self._build_summary(session_id)
-            self.store.set_summary(summary)
-
-        assistant_message = Message(
-            session_id=session_id,
-            role="assistant",
-            content=(
-                f"诊断完成。根因判断: {summary.root_cause}。"
-                f"影响范围: {summary.impact_scope}。"
-                f"建议: {summary.recommendation}"
-            ),
-        )
-        self.store.add_message(assistant_message)
-
-        yield self._sse("final_summary", {"message": assistant_message.model_dump(mode="json"), "summary": summary.model_dump(mode="json")})
 
     async def _run_autonomous_loop(self, session_id: str, user_content: str) -> AsyncIterator[str]:
         session = self.store.get_session(session_id)
@@ -92,6 +118,9 @@ class ConversationOrchestrator:
             async for event in self._execute_with_policy(session, bootstrap):
                 yield event
             self._append_command_result_to_ai_context(session_id, bootstrap)
+            if bootstrap.status == CommandStatus.failed:
+                self.store.set_summary(self._build_execution_failure_summary(session_id, bootstrap.error or "设备执行失败"))
+                return
             step_no = 1
 
         for iteration in range(1, self.max_autonomous_steps + 1):
@@ -144,6 +173,9 @@ class ConversationOrchestrator:
                     blocked_or_pending = True
                 yield event
             self._append_command_result_to_ai_context(session_id, command)
+            if command.status == CommandStatus.failed:
+                self.store.set_summary(self._build_execution_failure_summary(session_id, command.error or "设备执行失败"))
+                break
             if blocked_or_pending:
                 break
 
@@ -173,9 +205,18 @@ class ConversationOrchestrator:
 
         self.store.add_command(command)
         adapter = build_adapter(session, allow_simulation=self.allow_simulation)
-        await adapter.connect()
-        await self._execute_and_record(adapter, command)
-        await adapter.close()
+        try:
+            await adapter.connect()
+            await self._execute_and_record(adapter, command)
+        except Exception as exc:
+            command.status = CommandStatus.failed
+            command.error = str(exc)
+            self.store.update_command(command)
+        finally:
+            try:
+                await adapter.close()
+            except Exception:
+                pass
         yield self._sse("command_completed", {"command": command.model_dump(mode="json")})
 
     def _bootstrap_command_for_vendor(self, vendor: str) -> str:
@@ -226,9 +267,10 @@ class ConversationOrchestrator:
 
     def _append_user_problem_to_ai_context(self, session_id: str, vendor: str, protocol: str, user_content: str) -> None:
         header = (
+            f"会话ID: {session_id}\n"
             f"当前设备厂商: {vendor}\n"
             f"接入协议: {protocol}\n"
-            "请基于当前会话上下文继续诊断。\n"
+            "请只基于当前会话上下文继续诊断，禁止引用或臆测其他会话。\n"
             f"用户问题: {user_content}"
         )
         self.store.append_ai_context(session_id, "user", header)
@@ -269,15 +311,29 @@ class ConversationOrchestrator:
             )
 
         adapter = build_adapter(session, allow_simulation=self.allow_simulation)
-        await adapter.connect()
-        await self._execute_and_record(adapter, command)
-        await adapter.close()
-        self.store.set_summary(await self._build_summary(session_id))
+        try:
+            await adapter.connect()
+            await self._execute_and_record(adapter, command)
+        except Exception as exc:
+            command.status = CommandStatus.failed
+            command.error = str(exc)
+            self.store.update_command(command)
+        finally:
+            try:
+                await adapter.close()
+            except Exception:
+                pass
+
+        if command.status == CommandStatus.failed:
+            self.store.set_summary(self._build_execution_failure_summary(session_id, command.error or "设备执行失败"))
+        else:
+            summary = await self._request_final_from_context(session_id)
+            self.store.set_summary(summary or self._build_no_conclusion_summary(session_id))
 
         return ConfirmCommandResponse(
             command_id=command.id,
             status=command.status,
-            message="Command approved and executed.",
+            message="Command approved and executed." if command.status == CommandStatus.succeeded else "Command execution failed.",
         )
 
     async def _execute_and_record(self, adapter, command: CommandExecution) -> None:
@@ -307,20 +363,31 @@ class ConversationOrchestrator:
             command.error = str(exc)
             self.store.update_command(command)
 
-    async def _build_summary(self, session_id: str) -> IncidentSummary:
+    async def _request_final_from_context(self, session_id: str) -> IncidentSummary | None:
         session = self.store.get_session(session_id)
-        evidences = self.store.list_evidence(session_id)
-        commands = self.store.list_commands(session_id)
+        ai_context = list(self.store.list_ai_context(session_id))
+        if not ai_context:
+            return None
 
-        llm_summary = await self.deepseek_diagnoser.diagnose(
-            session=session,
-            commands=commands,
-            evidences=evidences,
+        final_prompt = (
+            "请基于当前会话已有证据直接给出最终结论。"
+            "只允许输出decision=final，不要再输出run_command。"
         )
-        if llm_summary:
-            return llm_summary
-
-        return self._build_llm_unavailable_summary(session_id)
+        ai_context.append({"role": "user", "content": final_prompt})
+        plan = await self.deepseek_diagnoser.propose_next_step(
+            session=session,
+            user_problem="",
+            commands=self.store.list_commands(session_id),
+            evidences=self.store.list_evidence(session_id),
+            iteration=self.max_autonomous_steps + 1,
+            max_iterations=self.max_autonomous_steps,
+            conversation_history=ai_context,
+        )
+        if not plan:
+            return None
+        if str(plan.get("decision", "")).strip().lower() != "final":
+            return None
+        return self._summary_from_plan(session_id, plan)
 
     def _build_llm_unavailable_summary(self, session_id: str) -> IncidentSummary:
         return IncidentSummary(
@@ -328,6 +395,24 @@ class ConversationOrchestrator:
             root_cause="LLM 服务不可用，无法生成有效根因诊断。",
             impact_scope="无法评估。",
             recommendation="请检查模型 API 可用性与密钥配置后重试。",
+        )
+
+    def _build_execution_failure_summary(self, session_id: str, error: str) -> IncidentSummary:
+        reason = (error or "设备连接或命令执行失败").strip()
+        compact = reason.replace("\n", " ")
+        return IncidentSummary(
+            session_id=session_id,
+            root_cause=f"设备连接或执行失败：{compact[:240]}",
+            impact_scope="无法获取有效设备证据，诊断未完成。",
+            recommendation="请检查 SSH 可达性、账号权限、设备会话模式与命令回显后重试。",
+        )
+
+    def _build_no_conclusion_summary(self, session_id: str) -> IncidentSummary:
+        return IncidentSummary(
+            session_id=session_id,
+            root_cause="模型未返回可用最终结论。",
+            impact_scope="无法形成完整诊断闭环。",
+            recommendation="请重试一次，或补充更具体的问题描述后继续同会话诊断。",
         )
 
     def _sse(self, event: str, payload: dict) -> str:

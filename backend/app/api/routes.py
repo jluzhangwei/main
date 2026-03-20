@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -17,7 +19,10 @@ from app.services.store import InMemoryStore
 
 router = APIRouter(prefix="/v1", tags=["netops"])
 store = InMemoryStore()
-orchestrator = ConversationOrchestrator(store)
+orchestrator = ConversationOrchestrator(
+    store,
+    allow_simulation=os.getenv("NETOPS_ALLOW_SIMULATION_FALLBACK", "0").strip().lower() in {"1", "true", "yes"},
+)
 
 
 @router.post("/sessions", response_model=SessionResponse)

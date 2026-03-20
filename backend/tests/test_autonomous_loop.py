@@ -164,3 +164,47 @@ async def test_ai_context_is_persisted_and_appended_in_same_session():
     second_len = len(store.list_ai_context(session.id))
 
     assert second_len > first_len
+
+
+@pytest.mark.asyncio
+async def test_ai_context_does_not_leak_between_sessions():
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    orchestrator.deepseek_diagnoser = FakeAutonomousDiagnoser()
+
+    s1 = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(
+                host="192.168.0.88",
+                protocol=DeviceProtocol.ssh,
+                vendor="huawei",
+                username="zhangwei",
+                password="test-password",
+                device_type="huawei",
+            ),
+            automation_level=AutomationLevel.assisted,
+        )
+    )
+    async for _ in orchestrator.stream_message(s1.id, "第一个会话的问题"):
+        pass
+
+    s2 = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(
+                host="192.168.0.99",
+                protocol=DeviceProtocol.ssh,
+                vendor="huawei",
+                username="zhangwei",
+                password="test-password",
+                device_type="huawei",
+            ),
+            automation_level=AutomationLevel.assisted,
+        )
+    )
+    async for _ in orchestrator.stream_message(s2.id, "第二个会话的问题"):
+        pass
+
+    context_1 = "\n".join(item["content"] for item in store.list_ai_context(s1.id))
+    context_2 = "\n".join(item["content"] for item in store.list_ai_context(s2.id))
+    assert "第一个会话的问题" in context_1
+    assert "第一个会话的问题" not in context_2

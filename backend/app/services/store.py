@@ -81,6 +81,9 @@ class InMemoryStore:
     def get_summary(self, session_id: str) -> Optional[IncidentSummary]:
         return self.summary.get(session_id)
 
+    def clear_summary(self, session_id: str) -> None:
+        self.summary.pop(session_id, None)
+
     def get_timeline(self, session_id: str) -> TimelineResponse:
         return TimelineResponse(
             session=self.get_session(session_id),
@@ -95,3 +98,6 @@ class InMemoryStore:
 
     def list_ai_context(self, session_id: str) -> list[dict[str, str]]:
         return self.ai_context[session_id]
+
+    def reset_ai_context(self, session_id: str) -> None:
+        self.ai_context[session_id] = []

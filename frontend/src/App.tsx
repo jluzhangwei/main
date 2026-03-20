@@ -71,9 +71,10 @@ function App() {
       return
     }
 
+    const activeSessionId = session.id
     setBusy(true)
     try {
-      await streamMessage(session.id, content, (event, payload) => {
+      await streamMessage(activeSessionId, content, (event, payload) => {
         if (event === 'message_ack' && payload.message) {
           setMessages((prev) => [...prev, payload.message as ChatMessage])
         }
@@ -99,18 +100,24 @@ function App() {
           setSummary(payload.summary)
         }
       })
-
-      await refreshTimeline()
     } catch (error) {
       antMessage.error((error as Error).message)
     } finally {
+      try {
+        if (session?.id === activeSessionId) {
+          await refreshTimeline(activeSessionId)
+        }
+      } catch {
+        antMessage.warning('时间线刷新失败，请手动刷新')
+      }
       setBusy(false)
     }
   }
 
-  async function refreshTimeline() {
-    if (!session?.id) return
-    const data = await getTimeline(session.id)
+  async function refreshTimeline(targetSessionId?: string) {
+    const sid = targetSessionId ?? session?.id
+    if (!sid) return
+    const data = await getTimeline(sid)
     setMessages(data.messages)
     setCommands(data.commands)
     setEvidences(data.evidences)

@@ -78,6 +78,7 @@ class DeepSeekDiagnoser:
                 system_prompt=(
                     "你是网络故障诊断代理。"
                     "你正在同一会话内连续对话，必须结合已有上下文。"
+                    "你无法访问其他会话，禁止引用其他会话的信息。"
                     "你的任务是决定下一步动作。"
                     "只输出JSON对象。"
                     "字段: decision, title, command, reason, root_cause, impact_scope, recommendation, confidence, evidence_refs。"
