@@ -156,6 +156,40 @@ class CaptureContextDiagnoser:
         return None
 
 
+class FakeRepeatCommandDiagnoser:
+    enabled = True
+
+    async def propose_next_step(
+        self,
+        *,
+        session,
+        user_problem: str,
+        commands,
+        evidences,
+        iteration: int,
+        max_iterations: int,
+        conversation_history=None,
+    ):
+        if iteration == 1:
+            return {
+                "decision": "run_command",
+                "title": "端口状态复核",
+                "command": "show interfaces description",
+                "reason": "确认当前状态",
+            }
+        return {
+            "decision": "final",
+            "mode": "query",
+            "query_result": "检查完成",
+            "follow_up_action": "done",
+            "confidence": 0.9,
+            "evidence_refs": [],
+        }
+
+    async def diagnose(self, session, commands, evidences):
+        return None
+
+
 @pytest.mark.asyncio
 async def test_autonomous_loop_bootstrap_then_ai_command_then_final_summary():
     store = InMemoryStore()
@@ -395,3 +429,71 @@ async def test_query_intent_is_forced_to_query_mode_even_if_llm_returns_diagnosi
 
     messages = store.list_messages(session.id)
     assert messages[-1].content.startswith("查询完成。结果:")
+
+
+@pytest.mark.asyncio
+async def test_recheck_request_reexecutes_previous_command_once():
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    orchestrator.deepseek_diagnoser = FakeRepeatCommandDiagnoser()
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(
+                host="192.168.0.88",
+                protocol=DeviceProtocol.ssh,
+                vendor="huawei",
+                username="zhangwei",
+                password="test-password",
+                device_type="huawei",
+            ),
+            operation_mode=OperationMode.query,
+            automation_level=AutomationLevel.assisted,
+        )
+    )
+
+    async for _ in orchestrator.stream_message(session.id, "检查up的端口"):
+        pass
+    first_count = len(store.list_commands(session.id))
+    assert first_count == 2
+
+    async for _ in orchestrator.stream_message(session.id, "再检查一次"):
+        pass
+    second_count = len(store.list_commands(session.id))
+
+    assert second_count == first_count + 1
+    assert store.list_commands(session.id)[-1].command == "show interfaces description"
+
+
+@pytest.mark.asyncio
+async def test_normal_followup_also_reexecutes_duplicate_command():
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    orchestrator.deepseek_diagnoser = FakeRepeatCommandDiagnoser()
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(
+                host="192.168.0.88",
+                protocol=DeviceProtocol.ssh,
+                vendor="huawei",
+                username="zhangwei",
+                password="test-password",
+                device_type="huawei",
+            ),
+            operation_mode=OperationMode.query,
+            automation_level=AutomationLevel.assisted,
+        )
+    )
+
+    async for _ in orchestrator.stream_message(session.id, "检查up的端口"):
+        pass
+    first_count = len(store.list_commands(session.id))
+    assert first_count == 2
+
+    async for _ in orchestrator.stream_message(session.id, "继续"):
+        pass
+    second_count = len(store.list_commands(session.id))
+
+    assert second_count == first_count + 1
+    assert store.list_commands(session.id)[-1].command == "show interfaces description"

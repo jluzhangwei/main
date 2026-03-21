@@ -156,9 +156,6 @@ class ConversationOrchestrator:
             if not next_command:
                 break
 
-            if self._looks_duplicate_command(next_command, commands):
-                continue
-
             step_no += 1
             title = str(plan.get("title", "")).strip() or f"AI诊断步骤{step_no}"
             decision = self.risk_engine.decide(next_command, session.automation_level)
@@ -229,13 +226,6 @@ class ConversationOrchestrator:
         if "huawei" in normalized:
             return "display version"
         return "show version"
-
-    def _looks_duplicate_command(self, command: str, existing: list[CommandExecution]) -> bool:
-        normalized = command.strip().lower()
-        for item in existing[-3:]:
-            if item.command.strip().lower() == normalized:
-                return True
-        return False
 
     def _summary_from_plan(
         self,
