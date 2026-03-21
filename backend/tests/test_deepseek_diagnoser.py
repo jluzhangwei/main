@@ -146,3 +146,20 @@ def test_llm_config_migrates_from_legacy_temp_file(tmp_path, monkeypatch):
     assert diagnoser.config_path == home_dir / ".netops-ai-v1" / "llm_config.json"
     assert diagnoser.config_path.exists() is True
     assert legacy_path.exists() is False
+
+
+def test_llm_batch_execution_flag_can_be_configured_and_persisted(tmp_path, monkeypatch):
+    config_path = tmp_path / "llm_runtime.json"
+    monkeypatch.setenv("NETOPS_LLM_CONFIG_PATH", str(config_path))
+
+    diagnoser = DeepSeekDiagnoser()
+    diagnoser.configure(api_key="sk-persisted", batch_execution_enabled=False)
+
+    status = diagnoser.status()
+    assert status["batch_execution_enabled"] is False
+    assert config_path.exists()
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["batch_execution_enabled"] is False
+
+    reloaded = DeepSeekDiagnoser()
+    assert reloaded.batch_execution_enabled is False

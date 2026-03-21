@@ -1,5 +1,6 @@
-from app.models.schemas import CommandPolicy
+from app.models.schemas import CommandPolicy, CommandPolicyUpdateRequest
 from app.services.command_policy import CommandPolicyEngine, default_command_policy
+from app.services.store import InMemoryStore
 
 
 def test_default_command_policy_includes_existing_block_and_execute_rules():
@@ -7,7 +8,7 @@ def test_default_command_policy_includes_existing_block_and_execute_rules():
 
     assert "reload" in [item.lower() for item in policy.blocked_patterns]
     assert "show " in [item.lower() for item in policy.executable_patterns]
-    assert "configure terminal" in [item.lower() for item in policy.executable_patterns]
+    assert "configure terminal" not in [item.lower() for item in policy.executable_patterns]
 
 
 def test_unknown_command_requires_confirmation():
@@ -42,3 +43,25 @@ def test_legality_precheck_can_be_disabled():
     decision = engine.evaluate("show version && reload", policy)
 
     assert decision.result == "allowed"
+
+
+def test_command_policy_persists_after_update(tmp_path, monkeypatch):
+    policy_path = tmp_path / "command_policy.json"
+    monkeypatch.setenv("NETOPS_COMMAND_POLICY_PATH", str(policy_path))
+
+    store = InMemoryStore()
+    updated = store.update_command_policy(
+        CommandPolicyUpdateRequest(
+            blocked_patterns=["reload", "factory-reset"],
+            executable_patterns=["show ", "display ", "custom-allow"],
+            legality_check_enabled=False,
+        )
+    )
+
+    assert policy_path.exists() is True
+    assert "custom-allow" in [item.lower() for item in updated.executable_patterns]
+
+    reloaded = InMemoryStore()
+    current = reloaded.get_command_policy()
+    assert "custom-allow" in [item.lower() for item in current.executable_patterns]
+    assert current.legality_check_enabled is False

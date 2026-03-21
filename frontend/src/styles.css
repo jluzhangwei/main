@@ -596,6 +596,13 @@ h6 {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.composer-inline-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .composer-inline-label {

@@ -14,6 +14,7 @@ export type SessionResponse = {
 export type SessionListItem = {
   id: string
   host: string
+  device_name?: string
   protocol: DeviceProtocol
   automation_level: AutomationLevel
   operation_mode: OperationMode
@@ -80,6 +81,7 @@ export type Timeline = {
     created_at: string
     device: {
       host: string
+      name?: string
       protocol: DeviceProtocol
     }
   }
@@ -100,12 +102,21 @@ export type LLMStatus = {
   enabled: boolean
   base_url: string
   model: string
+  active_model?: string
+  failover_enabled?: boolean
+  batch_execution_enabled?: boolean
+  model_candidates?: string[]
+  last_error?: string
+  last_error_code?: string
+  unavailable_reason?: string
+  last_failover_at?: string
 }
 
 export type LLMPromptPolicy = {
   enabled: boolean
   base_url: string
   model: string
+  batch_execution_enabled?: boolean
   prompts: Record<string, string>
 }
 

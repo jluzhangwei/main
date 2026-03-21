@@ -57,6 +57,7 @@ class OperationMode(str, Enum):
 
 class DeviceTarget(BaseModel):
     host: str
+    name: Optional[str] = None
     port: int = 22
     vendor: str = "unknown"
     protocol: DeviceProtocol = DeviceProtocol.ssh
@@ -98,6 +99,7 @@ class SessionResponse(BaseModel):
 class SessionListItem(BaseModel):
     id: str
     host: str
+    device_name: Optional[str] = None
     protocol: DeviceProtocol
     automation_level: AutomationLevel
     operation_mode: OperationMode
@@ -219,18 +221,30 @@ class LLMConfigRequest(BaseModel):
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     model: Optional[str] = None
+    failover_enabled: Optional[bool] = None
+    model_candidates: Optional[list[str]] = None
+    batch_execution_enabled: Optional[bool] = None
 
 
 class LLMConfigResponse(BaseModel):
     enabled: bool
     base_url: str
     model: str
+    active_model: Optional[str] = None
+    failover_enabled: bool = True
+    batch_execution_enabled: bool = True
+    model_candidates: list[str] = Field(default_factory=list)
+    last_error: Optional[str] = None
+    last_error_code: Optional[str] = None
+    unavailable_reason: Optional[str] = None
+    last_failover_at: Optional[datetime] = None
 
 
 class LLMPromptPolicyResponse(BaseModel):
     enabled: bool
     base_url: str
     model: str
+    batch_execution_enabled: bool = True
     prompts: dict[str, str] = Field(default_factory=dict)
 
 

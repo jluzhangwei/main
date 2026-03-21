@@ -14,6 +14,8 @@ def parse_command_output(command: str, output: str) -> tuple[str, dict[str, Any]
             f"Command execution failed: {cli_error}",
         )
 
+    if "version" in cmd:
+        return _parse_version(output)
     if "running-config interface" in cmd or "current-configuration interface" in cmd:
         return _parse_interface_config(command, output)
     if "interface" in cmd:
@@ -27,6 +29,25 @@ def parse_command_output(command: str, output: str) -> tuple[str, dict[str, Any]
         "generic",
         {"raw": output.strip()[:2000]},
         "Command executed. Review raw output for details.",
+    )
+
+
+def _parse_version(output: str) -> tuple[str, dict[str, Any], str]:
+    device_name = _extract_device_name_from_version(output)
+    parsed: dict[str, Any] = {
+        "device_name": device_name,
+        "raw": output.strip()[:2000],
+    }
+    if device_name:
+        return (
+            "version",
+            parsed,
+            f"Detected device name from version output: {device_name}",
+        )
+    return (
+        "version",
+        parsed,
+        "Version information collected; device name not detected from current output.",
     )
 
 
@@ -213,3 +234,32 @@ def _extract_cli_error(output: str) -> str | None:
         if "error:" in line.lower() or "invalid input" in line.lower() or "unknown command" in line.lower():
             return line.strip()
     return "CLI command parsing failed"
+
+
+def _extract_device_name_from_version(output: str) -> str | None:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+
+    # Prompt-style name, e.g. <NE40E-1> or [R1]
+    for line in lines:
+        match = re.match(r"^[<\[]([A-Za-z0-9._-]{1,64})[>\]]$", line)
+        if match:
+            return match.group(1)
+
+    # Typical hostname line: "R1 uptime is ..."
+    for line in lines:
+        match = re.match(r"^([A-Za-z0-9._-]{1,64})\s+(?:system\s+)?uptime\s+is\b", line, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+
+    # Explicit naming fields
+    patterns = [
+        r"(?i)\bhostname\s*[:=]\s*([A-Za-z0-9._-]{1,64})\b",
+        r"(?i)\bsysname\s*[:=]\s*([A-Za-z0-9._-]{1,64})\b",
+        r"(?i)\bsystem\s+name\s*[:=]\s*([A-Za-z0-9._-]{1,64})\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, output)
+        if match:
+            return match.group(1)
+
+    return None

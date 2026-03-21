@@ -2,6 +2,7 @@ import pytest
 
 from app.models.schemas import (
     AutomationLevel,
+    CommandPolicyUpdateRequest,
     CommandStatus,
     ConfirmCommandRequest,
     DeviceProtocol,
@@ -186,10 +187,22 @@ class _StatefulPendingConfirmDiagnoser:
 
 
 @pytest.mark.asyncio
-async def test_assisted_mode_keeps_high_risk_pending_confirmation():
+async def test_assisted_mode_executes_whitelisted_high_risk_without_confirmation():
     store = InMemoryStore()
     orchestrator = ConversationOrchestrator(store)
     orchestrator.deepseek_diagnoser = ScriptedDiagnoser()
+    store.update_command_policy(
+        CommandPolicyUpdateRequest(
+            executable_patterns=[
+                "show ",
+                "display ",
+                "enable",
+                "configure terminal",
+                "interface ",
+                "shutdown",
+            ],
+        )
+    )
 
     session = store.create_session(
         SessionCreateRequest(
@@ -203,8 +216,8 @@ async def test_assisted_mode_keeps_high_risk_pending_confirmation():
         events.append(event)
 
     commands = store.list_commands(session.id)
-    assert any(command.status == CommandStatus.pending_confirm for command in commands)
-    assert any("command_pending_confirmation" in event for event in events)
+    assert all(command.status == CommandStatus.succeeded for command in commands)
+    assert all("command_pending_confirmation" not in event for event in events)
 
 
 @pytest.mark.asyncio
@@ -319,7 +332,7 @@ def test_default_vendor_and_device_type_are_neutral_for_autodetect():
 
 
 @pytest.mark.asyncio
-async def test_unknown_command_requires_confirmation_even_in_full_auto_mode():
+async def test_unknown_command_executes_without_confirmation_in_full_auto_mode():
     store = InMemoryStore()
     orchestrator = ConversationOrchestrator(store)
     orchestrator.deepseek_diagnoser = UnknownCommandDiagnoser()
@@ -336,8 +349,8 @@ async def test_unknown_command_requires_confirmation_even_in_full_auto_mode():
         events.append(event)
 
     commands = store.list_commands(session.id)
-    assert any(command.status == CommandStatus.pending_confirm for command in commands)
-    assert any("command_pending_confirmation" in event for event in events)
+    assert any(command.command == "totally-unknown-command" and command.status == CommandStatus.succeeded for command in commands)
+    assert all("command_pending_confirmation" not in event for event in events)
 
 
 @pytest.mark.asyncio
@@ -392,6 +405,11 @@ async def test_confirm_command_uses_same_adapter_context_after_enable(monkeypatc
         SessionCreateRequest(
             device=DeviceTarget(host="10.0.0.12", protocol=DeviceProtocol.ssh),
             automation_level=AutomationLevel.assisted,
+        )
+    )
+    store.update_command_policy(
+        CommandPolicyUpdateRequest(
+            executable_patterns=["show ", "display ", "enable"],
         )
     )
 

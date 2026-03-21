@@ -4,7 +4,9 @@ import pytest
 
 from app.models.schemas import (
     AutomationLevel,
+    CommandPolicyUpdateRequest,
     CommandStatus,
+    ConfirmCommandRequest,
     DeviceProtocol,
     DeviceTarget,
     OperationMode,
@@ -299,6 +301,45 @@ class BatchWithPendingDiagnoser:
             "confidence": 0.5,
             "evidence_refs": [],
         }
+
+    async def diagnose(self, session, commands, evidences):
+        return None
+
+
+class BatchMixedConfirmDiagnoser:
+    enabled = True
+
+    async def propose_next_step(
+        self,
+        *,
+        session,
+        user_problem: str,
+        commands,
+        evidences,
+        iteration: int,
+        max_iterations: int,
+        conversation_history=None,
+    ):
+        if any(str(getattr(item, "command", "")).strip().lower() == "totally-unknown-command" for item in commands):
+            return {
+                "decision": "final",
+                "mode": "query",
+                "query_result": "done",
+                "follow_up_action": "done",
+                "confidence": 0.7,
+                "evidence_refs": [],
+            }
+        if iteration == 1:
+            return {
+                "decision": "run_command",
+                "title": "批量混合命令",
+                "commands": [
+                    "show ip interface brief",
+                    "totally-unknown-command",
+                    "show ip route",
+                ],
+            }
+        return None
 
     async def diagnose(self, session, commands, evidences):
         return None
@@ -658,9 +699,10 @@ async def test_failed_command_result_is_fed_back_to_ai_and_loop_continues(monkey
         pass
 
     commands = store.list_commands(session.id)
-    assert len(commands) == 2
-    assert commands[1].status == CommandStatus.failed
-    assert "simulated command failure" in (commands[1].error or "")
+    assert len(commands) == 4
+    assert commands[0].status == CommandStatus.succeeded
+    assert all(item.status == CommandStatus.failed for item in commands[1:])
+    assert all("simulated command failure" in (item.error or "") for item in commands[1:])
 
     summary = store.get_summary(session.id)
     assert summary is not None
@@ -701,7 +743,7 @@ async def test_batch_commands_from_single_ai_step_are_executed_in_order():
 
 
 @pytest.mark.asyncio
-async def test_batch_stops_and_waits_for_confirmation_when_one_command_is_high_risk():
+async def test_batch_executes_without_confirmation_when_commands_are_whitelisted():
     store = InMemoryStore()
     orchestrator = ConversationOrchestrator(store)
     orchestrator.deepseek_diagnoser = BatchWithPendingDiagnoser()
@@ -720,6 +762,16 @@ async def test_batch_stops_and_waits_for_confirmation_when_one_command_is_high_r
             automation_level=AutomationLevel.assisted,
         )
     )
+    store.update_command_policy(
+        CommandPolicyUpdateRequest(
+            executable_patterns=[
+                "show ",
+                "display ",
+                "enable",
+                "configure terminal",
+            ]
+        )
+    )
 
     events = []
     async for event in orchestrator.stream_message(session.id, "执行批量命令"):
@@ -730,8 +782,45 @@ async def test_batch_stops_and_waits_for_confirmation_when_one_command_is_high_r
     assert commands[1].command == "show ip interface brief"
     assert commands[1].status == CommandStatus.succeeded
     assert commands[2].command == "configure terminal"
-    assert commands[2].status == CommandStatus.pending_confirm
+    assert commands[2].status == CommandStatus.succeeded
     assert commands[3].command == "show ip route"
-    assert commands[3].status == CommandStatus.pending_confirm
+    assert commands[3].status == CommandStatus.succeeded
     assert commands[2].batch_id == commands[3].batch_id
-    assert any("command_pending_confirmation" in event for event in events)
+    assert all("command_pending_confirmation" not in event for event in events)
+
+
+@pytest.mark.asyncio
+async def test_batch_with_mixed_rules_requires_single_confirmation_then_executes_all():
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    orchestrator.deepseek_diagnoser = BatchMixedConfirmDiagnoser()
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(
+                host="192.168.0.88",
+                protocol=DeviceProtocol.ssh,
+                vendor="huawei",
+                username="zhangwei",
+                password="test-password",
+                device_type="huawei",
+            ),
+            operation_mode=OperationMode.config,
+            automation_level=AutomationLevel.assisted,
+        )
+    )
+
+    async for _ in orchestrator.stream_message(session.id, "执行批量命令"):
+        pass
+
+    commands = store.list_commands(session.id)
+    assert len(commands) == 4
+    assert commands[0].status == CommandStatus.succeeded
+    assert all(item.status == CommandStatus.pending_confirm for item in commands[1:])
+    assert len({item.batch_id for item in commands[1:]}) == 1
+
+    approved = await orchestrator.confirm_command(session.id, commands[1].id, ConfirmCommandRequest(approved=True))
+    assert approved.status == CommandStatus.succeeded
+
+    commands_after = store.list_commands(session.id)
+    assert all(item.status == CommandStatus.succeeded for item in commands_after[1:])

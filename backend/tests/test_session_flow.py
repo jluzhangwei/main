@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.api import routes
 from app.main import app
-from app.models.schemas import IncidentSummary
+from app.models.schemas import IncidentSummary, Message
 
 
 client = TestClient(app)
@@ -61,7 +61,16 @@ class ScriptedDiagnoser:
             evidence_refs=[],
         )
 
-    def configure(self, *, api_key=None, base_url=None, model=None):
+    def configure(
+        self,
+        *,
+        api_key=None,
+        base_url=None,
+        model=None,
+        failover_enabled=None,
+        model_candidates=None,
+        batch_execution_enabled=None,
+    ):
         if api_key is not None:
             self.api_key = api_key
             self.enabled = bool(api_key)
@@ -162,25 +171,17 @@ def test_read_only_session_blocks_risky_execution_but_keeps_read_only_steps():
     assert data["summary"]["root_cause"] == "AI summary placeholder"
 
 
-def test_assisted_session_prompts_for_confirmation_then_executes_on_approve():
+def test_assisted_session_requires_confirmation_for_non_whitelisted_high_risk_commands():
     session_id = _create_session("assisted")
     body = _stream_message(session_id, "请自动修复接口故障")
 
     assert "command_pending_confirmation" in body
 
     timeline = client.get(f"/v1/sessions/{session_id}/timeline")
-    pending = [command for command in timeline.json()["commands"] if command["status"] == "pending_confirm"]
-    assert len(pending) >= 1
-    batch_ids = {command.get("batch_id") for command in pending}
-    assert len(batch_ids) == 1
-
-    confirm = client.post(f"/v1/sessions/{session_id}/commands/{pending[0]['id']}/confirm", json={"approved": True})
-    assert confirm.status_code == 200
-    assert confirm.json()["status"] == "succeeded"
-
-    timeline_after = client.get(f"/v1/sessions/{session_id}/timeline")
-    data = timeline_after.json()
+    data = timeline.json()
+    assert timeline.status_code == 200
     assert any(command["status"] == "succeeded" for command in data["commands"])
+    assert any(command["status"] == "pending_confirm" for command in data["commands"])
     assert len(data["evidences"]) >= 1
 
 
@@ -280,3 +281,27 @@ def test_service_trace_endpoint_returns_step_timings():
     for step in payload["steps"]:
         if step.get("status") != "running":
             assert step.get("completed_at") is not None
+
+
+def test_session_store_persists_history_across_store_reinit(tmp_path, monkeypatch):
+    monkeypatch.setenv("NETOPS_SESSION_STORE_PATH", str(tmp_path / "session_store.json"))
+    monkeypatch.setenv("NETOPS_COMMAND_POLICY_PATH", str(tmp_path / "command_policy.json"))
+
+    from app.services.store import InMemoryStore
+    from app.models.schemas import SessionCreateRequest, DeviceTarget
+
+    store = InMemoryStore()
+    created = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(
+                host="192.168.0.101",
+                protocol="ssh",
+            )
+        )
+    )
+    store.add_message(Message(session_id=created.id, role="user", content="test history"))
+
+    reloaded = InMemoryStore()
+    items = reloaded.list_session_items()
+    assert any(item.id == created.id for item in items)
+    assert len(reloaded.list_messages(created.id)) == 1

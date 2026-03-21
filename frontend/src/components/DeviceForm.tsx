@@ -25,7 +25,7 @@ export function DeviceForm({ automationLevel, onCreate }: Props) {
       <Form
         form={form}
         layout="vertical"
-        initialValues={{ host: '192.168.0.101', operation_mode: 'diagnosis' }}
+        initialValues={{ host: '192.168.0.102', operation_mode: 'diagnosis' }}
         onFinish={async (values) => {
           await onCreate({
             host: values.host,
@@ -37,13 +37,8 @@ export function DeviceForm({ automationLevel, onCreate }: Props) {
           })
         }}
       >
-        <Form.Item label="测试设备" name="host" rules={[{ required: true }]}>
-          <Select
-            options={[
-              { value: '192.168.0.101', label: '192.168.0.101' },
-              { value: '192.168.0.102', label: '192.168.0.102' },
-            ]}
-          />
+        <Form.Item label="设备地址" name="host" rules={[{ required: true }]}>
+          <Input placeholder="192.168.0.102" />
         </Form.Item>
         <Form.Item label="Mode" name="operation_mode" rules={[{ required: true }]}>
           <Select

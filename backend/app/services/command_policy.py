@@ -21,16 +21,14 @@ def default_command_policy() -> CommandPolicy:
         dict.fromkeys(
             [
                 *risk.readonly_prefixes,
-                *risk.high_risk_patterns,
-                *risk.medium_risk_patterns,
-                "system-view",
-                "undo shutdown",
                 "enable",
                 "return",
                 "exit",
+                "end",
             ]
         )
     )
+    # Keep default allow-list conservative: high-risk config commands are opt-in.
     blocked_patterns = list(dict.fromkeys([*risk.hard_block_patterns]))
     return CommandPolicy(
         blocked_patterns=blocked_patterns,

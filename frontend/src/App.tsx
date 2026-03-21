@@ -117,6 +117,8 @@ function App() {
   const [llmPromptPolicy, setLlmPromptPolicy] = useState<LLMPromptPolicy | null>(null)
   const [apiKeyInput, setApiKeyInput] = useState('')
   const [llmModelInput, setLlmModelInput] = useState('deepseek-chat')
+  const [llmFailoverEnabled, setLlmFailoverEnabled] = useState(true)
+  const [llmBatchExecutionEnabled, setLlmBatchExecutionEnabled] = useState(true)
   const [llmSaving, setLlmSaving] = useState(false)
   const [commandPolicy, setCommandPolicy] = useState<CommandPolicy | null>(null)
   const [blockedRules, setBlockedRules] = useState<string[]>([])
@@ -134,7 +136,7 @@ function App() {
 
   const [activePage, setActivePage] = useState<PageId>('workbench')
   const [statusCollapsed, setStatusCollapsed] = useState(false)
-  const [rightPanelWidth, setRightPanelWidth] = useState(560)
+  const [rightPanelWidth, setRightPanelWidth] = useState(getDefaultWorkbenchRightWidth)
   const [resizing, setResizing] = useState(false)
   const [directionInput, setDirectionInput] = useState('')
   const [draftInput, setDraftInput] = useState('')
@@ -247,6 +249,8 @@ function App() {
       }
       if (typeof parsed.rightPanelWidth === 'number' && Number.isFinite(parsed.rightPanelWidth)) {
         setRightPanelWidth(Math.min(1400, Math.max(300, parsed.rightPanelWidth)))
+      } else {
+        setRightPanelWidth(getDefaultWorkbenchRightWidth())
       }
       if (typeof parsed.statusCollapsed === 'boolean') {
         setStatusCollapsed(parsed.statusCollapsed)
@@ -402,6 +406,12 @@ function App() {
         if (status.model) {
           setLlmModelInput(status.model)
         }
+        if (typeof status.failover_enabled === 'boolean') {
+          setLlmFailoverEnabled(status.failover_enabled)
+        }
+        if (typeof status.batch_execution_enabled === 'boolean') {
+          setLlmBatchExecutionEnabled(status.batch_execution_enabled)
+        }
       } catch {
         setLlmStatus(null)
       }
@@ -462,7 +472,7 @@ function App() {
       setEvidences(data.evidences)
       setSummary(data.summary)
       setSessionDeviceAddress(data.session.device?.host || '')
-      setSessionDeviceName(buildDeviceName(data.session.device?.host || ''))
+      setSessionDeviceName(formatDeviceName(data.session.device?.name))
       await refreshServiceTrace(sessionId)
       if (!silent) {
         antMessage.success(`已恢复会话 ${sessionId.slice(0, 8)}...`)
@@ -495,7 +505,7 @@ function App() {
       setSummary(undefined)
       setTraceSteps([])
       setSessionDeviceAddress(payload.host)
-      setSessionDeviceName(buildDeviceName(payload.host))
+      setSessionDeviceName('-')
       setDraftInput('')
       await refreshSessionHistory()
       antMessage.success(`会话已创建: ${resp.id}`)
@@ -516,8 +526,17 @@ function App() {
       const status = await configureLlm({
         apiKey: apiKeyInput,
         model: llmModelInput,
+        failoverEnabled: llmFailoverEnabled,
+        batchExecutionEnabled: llmBatchExecutionEnabled,
+        modelCandidates: resolveModelCandidates(llmModelInput, llmStatus?.model_candidates),
       })
       setLlmStatus(status)
+      if (typeof status.failover_enabled === 'boolean') {
+        setLlmFailoverEnabled(status.failover_enabled)
+      }
+      if (typeof status.batch_execution_enabled === 'boolean') {
+        setLlmBatchExecutionEnabled(status.batch_execution_enabled)
+      }
       await refreshPromptPolicy()
       setApiKeyInput('')
       antMessage.success(status.enabled ? '大模型已启用，Key 已保存到服务器' : '大模型已禁用')
@@ -538,6 +557,12 @@ function App() {
     try {
       const status = await configureLlm({ model: nextModel })
       setLlmStatus(status)
+      if (typeof status.failover_enabled === 'boolean') {
+        setLlmFailoverEnabled(status.failover_enabled)
+      }
+      if (typeof status.batch_execution_enabled === 'boolean') {
+        setLlmBatchExecutionEnabled(status.batch_execution_enabled)
+      }
       await refreshPromptPolicy()
       antMessage.success(`模型已切换为 ${status.model}`)
     } catch (error) {
@@ -553,11 +578,60 @@ function App() {
     try {
       const status = await deleteLlmConfig()
       setLlmStatus(status)
+      if (typeof status.failover_enabled === 'boolean') {
+        setLlmFailoverEnabled(status.failover_enabled)
+      }
+      if (typeof status.batch_execution_enabled === 'boolean') {
+        setLlmBatchExecutionEnabled(status.batch_execution_enabled)
+      }
       await refreshPromptPolicy()
       setApiKeyInput('')
       antMessage.success('已删除服务器保存的 Key')
     } catch (error) {
       antMessage.error((error as Error).message)
+    } finally {
+      setLlmSaving(false)
+    }
+  }
+
+  async function handleToggleFailover(enabled: boolean) {
+    setLlmFailoverEnabled(enabled)
+    setLlmSaving(true)
+    try {
+      const status = await configureLlm({
+        failoverEnabled: enabled,
+        modelCandidates: resolveModelCandidates(llmModelInput, llmStatus?.model_candidates),
+      })
+      setLlmStatus(status)
+      if (typeof status.failover_enabled === 'boolean') {
+        setLlmFailoverEnabled(status.failover_enabled)
+      }
+      antMessage.success(`自动模型切换已${enabled ? '开启' : '关闭'}`)
+    } catch (error) {
+      antMessage.error((error as Error).message)
+      setLlmFailoverEnabled((prev) => !prev)
+    } finally {
+      setLlmSaving(false)
+    }
+  }
+
+  async function handleToggleBatchExecution(enabled: boolean) {
+    setLlmBatchExecutionEnabled(enabled)
+    setLlmSaving(true)
+    try {
+      const status = await configureLlm({
+        batchExecutionEnabled: enabled,
+        modelCandidates: resolveModelCandidates(llmModelInput, llmStatus?.model_candidates),
+      })
+      setLlmStatus(status)
+      if (typeof status.batch_execution_enabled === 'boolean') {
+        setLlmBatchExecutionEnabled(status.batch_execution_enabled)
+      }
+      antMessage.success(`批量执行提示已${enabled ? '开启' : '关闭'}`)
+      await refreshPromptPolicy()
+    } catch (error) {
+      antMessage.error((error as Error).message)
+      setLlmBatchExecutionEnabled((prev) => !prev)
     } finally {
       setLlmSaving(false)
     }
@@ -779,7 +853,7 @@ function App() {
       created_at: data.session.created_at,
     })
     setSessionDeviceAddress(data.session.device?.host || sessionDeviceAddress)
-    setSessionDeviceName(buildDeviceName(data.session.device?.host || sessionDeviceAddress))
+    setSessionDeviceName(formatDeviceName(data.session.device?.name))
     setMessages(data.messages)
     setCommands(data.commands)
     setEvidences(data.evidences)
@@ -935,7 +1009,7 @@ function App() {
                     <div className="live-meta-item">
                       <span>设备</span>
                       <strong>
-                        地址 {sessionDeviceAddress || '-'} 设备名称 {sessionDeviceName || '-'}
+                        地址 {sessionDeviceAddress || '-'} 设备名称 {formatDeviceName(sessionDeviceName)}
                       </strong>
                     </div>
                     <div className="live-meta-item">
@@ -1047,6 +1121,15 @@ function App() {
                           className="composer-model-select"
                           disabled={llmSaving}
                         />
+                        <div className="composer-inline-toggle">
+                          <span className="composer-inline-label">批量执行</span>
+                          <Switch
+                            size="small"
+                            checked={llmBatchExecutionEnabled}
+                            onChange={(checked) => void handleToggleBatchExecution(checked)}
+                            disabled={llmSaving}
+                          />
+                        </div>
                       </div>
                       <div className="composer-actions">
                         <Button
@@ -1153,7 +1236,7 @@ function App() {
                   <div>
                     <h3>命令执行控制中心</h3>
                     <p className="muted">
-                      判定顺序：阻断规则 → 放行规则 → 未命中需确认。页面支持长期维护（搜索、排序、编辑、导入导出）。
+                      判定顺序：阻断规则/硬阻断 → 模式基线（只读直接拒绝非只读；全自动放行非硬阻断）→ 放行规则覆盖（半自动可放行高风险）→ 其余命令进入人工确认。高风险按风险词表判定（如 configure/interface/shutdown/save/commit）。
                     </p>
                   </div>
                   <div className="policy-switch">
@@ -1371,6 +1454,7 @@ function App() {
                     >
                       <div className="session-history-main">
                         <strong>{item.host}</strong>
+                        <span>设备名称: {formatDeviceName(item.device_name)}</span>
                         <span>{item.operation_mode} / {automationLabel(item.automation_level)}</span>
                       </div>
                       <div className="session-history-meta">
@@ -1385,6 +1469,7 @@ function App() {
                 <h3>当前会话快照</h3>
                 <div className="kv"><span>会话</span><strong>{session?.id || '-'}</strong></div>
                 <div className="kv"><span>设备</span><strong>{sessionDeviceAddress || '-'}</strong></div>
+                <div className="kv"><span>设备名称</span><strong>{formatDeviceName(sessionDeviceName)}</strong></div>
                 <div className="kv"><span>模式</span><strong>{session?.operation_mode || '-'}</strong></div>
                 <div className="kv"><span>消息数</span><strong>{messages.length}</strong></div>
                 <div className="kv"><span>命令数</span><strong>{commands.length}</strong></div>
@@ -1498,6 +1583,24 @@ function App() {
                 <h3>AI 设置</h3>
                 <p className="muted">模型配置统一放到此页，工作台保持诊断专注。</p>
                 <div className="kv"><span>状态</span><strong>{llmStatus?.enabled ? '已启用' : '未启用'}</strong></div>
+                <div className="kv"><span>主模型</span><strong>{llmStatus?.model || '-'}</strong></div>
+                <div className="kv"><span>当前生效模型</span><strong>{llmStatus?.active_model || llmStatus?.model || '-'}</strong></div>
+                <div className="kv"><span>自动切换</span><strong>{llmFailoverEnabled ? '开启' : '关闭'}</strong></div>
+                <div className="kv"><span>批量执行提示</span><strong>{llmBatchExecutionEnabled ? '开启' : '关闭'}</strong></div>
+                <div className="policy-switch" style={{ marginTop: 8 }}>
+                  <Switch checked={llmFailoverEnabled} onChange={(checked) => void handleToggleFailover(checked)} disabled={llmSaving} />
+                  <span className="muted">模型异常时自动切到下一个候选模型</span>
+                </div>
+                <div className="policy-switch" style={{ marginTop: 8 }}>
+                  <Switch checked={llmBatchExecutionEnabled} onChange={(checked) => void handleToggleBatchExecution(checked)} disabled={llmSaving} />
+                  <span className="muted">通过提示词要求 AI 优先输出批量命令组</span>
+                </div>
+                <div className="kv"><span>不可用原因</span><strong>{formatLlmUnavailableReason(llmStatus?.unavailable_reason)}</strong></div>
+                {llmStatus?.last_error && (
+                  <div className="danger-command" style={{ marginTop: 8 }}>
+                    {llmStatus.last_error}
+                  </div>
+                )}
                 <Input.Password
                   value={apiKeyInput}
                   onChange={(event) => setApiKeyInput(event.target.value)}
@@ -1586,6 +1689,35 @@ function formatPromptKey(key: string): string {
     summary_rewrite: '诊断改写提示词',
   }
   return map[key] || key
+}
+
+function formatLlmUnavailableReason(reason?: string): string {
+  if (!reason) return '-'
+  if (reason === 'api_key_missing') return '未配置 API Key'
+  if (reason === 'connectivity_error') return '模型服务联机失败'
+  if (reason === 'auth_error') return 'API Key 无效或无权限'
+  if (reason === 'rate_limit') return '请求频率受限'
+  if (reason === 'provider_unavailable') return '模型服务暂不可用'
+  if (reason === 'provider_http_error') return '模型服务返回异常状态'
+  return reason
+}
+
+function resolveModelCandidates(currentModel: string, existing?: string[]): string[] {
+  const preferred = (currentModel || '').trim()
+  const seed = Array.isArray(existing) && existing.length > 0
+    ? existing
+    : ['deepseek-chat', 'deepseek-reasoner']
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const item of [preferred, ...seed]) {
+    const text = String(item || '').trim()
+    if (!text) continue
+    const key = text.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(text)
+  }
+  return out
 }
 
 function renderSummaryBrief(summary: DiagnosisSummary): string {
@@ -1736,15 +1868,18 @@ function parseSortTime(value: string | undefined, fallback: number): number {
   return ts
 }
 
-function buildDeviceName(host: string): string {
-  const value = (host || '').trim()
-  if (!value) return '-'
-  const parts = value.split('.')
-  const last = parts[parts.length - 1]
-  if (/^\d+$/.test(last)) {
-    return `Device-${last}`
+function getDefaultWorkbenchRightWidth(): number {
+  if (typeof window === 'undefined') {
+    return 560
   }
-  return value
+  const reserved = 96
+  const half = Math.floor((window.innerWidth - reserved) / 2)
+  return Math.min(1400, Math.max(300, half))
+}
+
+function formatDeviceName(value: string | null | undefined): string {
+  const normalized = String(value ?? '').trim()
+  return normalized || '-'
 }
 
 function normalizeRule(value: string): string {

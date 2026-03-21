@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import os
 import re
@@ -73,6 +74,19 @@ class DeepSeekDiagnoser:
         self.api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
         self.base_url = self.default_base_url
         self.model = self.default_model
+        self.failover_enabled = os.getenv("NETOPS_MODEL_FAILOVER_ENABLED", "1").strip().lower() in {"1", "true", "yes"}
+        self.batch_execution_enabled = (
+            os.getenv("NETOPS_BATCH_EXECUTION_ENABLED", "1").strip().lower() in {"1", "true", "yes"}
+        )
+        self.model_candidates = self._normalize_model_candidates(
+            (os.getenv("DEEPSEEK_MODEL_CANDIDATES", "deepseek-chat,deepseek-reasoner")).split(",")
+        )
+        if self.model:
+            self.model_candidates = self._normalize_model_candidates([self.model, *self.model_candidates])
+        self.active_model: Optional[str] = self.model
+        self.last_error: Optional[str] = None
+        self.last_error_code: Optional[str] = None
+        self.last_failover_at: Optional[datetime] = None
         self.timeout = float(os.getenv("DEEPSEEK_TIMEOUT", "30"))
         env_config_path = (os.getenv("NETOPS_LLM_CONFIG_PATH") or "").strip()
         self.config_path = Path(env_config_path).expanduser() if env_config_path else self._default_config_path()
@@ -89,6 +103,9 @@ class DeepSeekDiagnoser:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
+        failover_enabled: Optional[bool] = None,
+        model_candidates: Optional[list[str]] = None,
+        batch_execution_enabled: Optional[bool] = None,
     ) -> None:
         if api_key is not None:
             self.api_key = api_key.strip()
@@ -96,12 +113,26 @@ class DeepSeekDiagnoser:
             self.base_url = base_url.strip().rstrip("/")
         if model:
             self.model = model.strip()
+        if failover_enabled is not None:
+            self.failover_enabled = bool(failover_enabled)
+        if batch_execution_enabled is not None:
+            self.batch_execution_enabled = bool(batch_execution_enabled)
+        if model_candidates is not None:
+            self.model_candidates = self._normalize_model_candidates(model_candidates)
+        self.model_candidates = self._normalize_model_candidates([self.model, *self.model_candidates])
+        self.active_model = self.model
+        self.last_error = None
+        self.last_error_code = None
         self._save_config()
 
     def delete_saved_config(self) -> None:
         self.api_key = ""
         self.base_url = self.default_base_url
         self.model = self.default_model
+        self.active_model = self.default_model
+        self.last_error = None
+        self.last_error_code = None
+        self.last_failover_at = None
         try:
             if self.config_path.exists():
                 self.config_path.unlink()
@@ -113,6 +144,14 @@ class DeepSeekDiagnoser:
             "enabled": self.enabled,
             "base_url": self.base_url,
             "model": self.model,
+            "active_model": self.active_model or self.model,
+            "failover_enabled": self.failover_enabled,
+            "batch_execution_enabled": self.batch_execution_enabled,
+            "model_candidates": list(self.model_candidates),
+            "last_error": self.last_error,
+            "last_error_code": self.last_error_code,
+            "unavailable_reason": self._unavailable_reason(),
+            "last_failover_at": self.last_failover_at,
         }
 
     def prompt_strategy(self) -> dict[str, Any]:
@@ -120,9 +159,15 @@ class DeepSeekDiagnoser:
             "enabled": self.enabled,
             "base_url": self.base_url,
             "model": self.model,
+            "active_model": self.active_model or self.model,
+            "failover_enabled": self.failover_enabled,
+            "batch_execution_enabled": self.batch_execution_enabled,
+            "model_candidates": list(self.model_candidates),
+            "last_error": self.last_error,
+            "last_error_code": self.last_error_code,
             "prompts": {
-                "next_step_history": NEXT_STEP_SYSTEM_PROMPT_WITH_HISTORY,
-                "next_step_default": NEXT_STEP_SYSTEM_PROMPT,
+                "next_step_history": self._next_step_prompt(with_history=True),
+                "next_step_default": self._next_step_prompt(with_history=False),
                 "summary_primary": PRIMARY_SUMMARY_SYSTEM_PROMPT,
                 "summary_review": REVIEW_SYSTEM_PROMPT,
                 "summary_rewrite": REWRITE_SYSTEM_PROMPT,
@@ -152,6 +197,9 @@ class DeepSeekDiagnoser:
             "api_key": self.api_key,
             "base_url": self.base_url,
             "model": self.model,
+            "failover_enabled": self.failover_enabled,
+            "batch_execution_enabled": self.batch_execution_enabled,
+            "model_candidates": list(self.model_candidates),
         }
         try:
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -185,12 +233,23 @@ class DeepSeekDiagnoser:
         api_key = str(data.get("api_key", "")).strip()
         base_url = str(data.get("base_url", "")).strip().rstrip("/")
         model = str(data.get("model", "")).strip()
+        failover_enabled = data.get("failover_enabled")
+        batch_execution_enabled = data.get("batch_execution_enabled")
+        candidates = data.get("model_candidates")
         if api_key:
             self.api_key = api_key
         if base_url:
             self.base_url = base_url
         if model:
             self.model = model
+        if isinstance(failover_enabled, bool):
+            self.failover_enabled = failover_enabled
+        if isinstance(batch_execution_enabled, bool):
+            self.batch_execution_enabled = batch_execution_enabled
+        if isinstance(candidates, list):
+            self.model_candidates = self._normalize_model_candidates([str(item) for item in candidates])
+        self.model_candidates = self._normalize_model_candidates([self.model, *self.model_candidates])
+        self.active_model = self.model
 
     async def diagnose(
         self,
@@ -246,7 +305,7 @@ class DeepSeekDiagnoser:
 
         if conversation_history:
             content = await self._chat_completion_messages(
-                system_prompt=NEXT_STEP_SYSTEM_PROMPT_WITH_HISTORY,
+                system_prompt=self._next_step_prompt(with_history=True),
                 messages=conversation_history,
             )
             if not content:
@@ -292,7 +351,7 @@ class DeepSeekDiagnoser:
         }
 
         content = await self._chat_completion(
-            system_prompt=NEXT_STEP_SYSTEM_PROMPT,
+            system_prompt=self._next_step_prompt(with_history=False),
             user_payload=payload,
         )
         if not content:
@@ -305,7 +364,6 @@ class DeepSeekDiagnoser:
         if decision not in {"run_command", "final"}:
             return None
         parsed["decision"] = decision
-
         return parsed
 
     def _build_payload(
@@ -461,6 +519,48 @@ class DeepSeekDiagnoser:
         return self._extract_content(data)
 
     async def _post_json(self, request_body: dict[str, Any]) -> Optional[dict[str, Any]]:
+        requested = str(request_body.get("model") or self.model).strip() or self.default_model
+        models = self._candidate_model_order(requested)
+        if not self.failover_enabled and models:
+            models = [models[0]]
+
+        first_model = models[0] if models else requested
+        first_error: Optional[str] = None
+        first_error_code: Optional[str] = None
+        for idx, model in enumerate(models):
+            body = dict(request_body)
+            body["model"] = model
+            data, error, error_code = await self._post_json_once(body)
+            if data is not None:
+                self.active_model = model
+                if idx > 0:
+                    self.last_failover_at = datetime.now(timezone.utc)
+                    self.last_error = (
+                        f"Model failover: {first_model} -> {model}. "
+                        f"Root error: {(first_error or error or 'unknown')[:260]}"
+                    )
+                    self.last_error_code = first_error_code or error_code or "model_failover"
+                    # Keep system stable after successful failover.
+                    self.model = model
+                    self.model_candidates = self._normalize_model_candidates([self.model, *self.model_candidates])
+                    self._save_config()
+                else:
+                    self.last_error = None
+                    self.last_error_code = None
+                return data
+            if idx == 0:
+                first_error = error
+                first_error_code = error_code
+
+        self.active_model = first_model
+        self.last_error = (first_error or "LLM request failed")[:300]
+        self.last_error_code = first_error_code or "llm_request_failed"
+        return None
+
+    async def _post_json_once(
+        self, request_body: dict[str, Any]
+    ) -> tuple[Optional[dict[str, Any]], Optional[str], Optional[str]]:
+        model = str(request_body.get("model") or "").strip()
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 resp = await client.post(
@@ -471,13 +571,58 @@ class DeepSeekDiagnoser:
                     },
                     json=request_body,
                 )
-                resp.raise_for_status()
+                if resp.status_code >= 400:
+                    snippet = (resp.text or "").strip().replace("\n", " ")
+                    code = "provider_http_error"
+                    if resp.status_code in {401, 403}:
+                        code = "auth_error"
+                    elif resp.status_code == 429:
+                        code = "rate_limit"
+                    elif resp.status_code >= 500:
+                        code = "provider_unavailable"
+                    return None, f"[{model}] HTTP {resp.status_code}: {snippet[:220]}", code
                 data = resp.json()
                 if isinstance(data, dict):
-                    return data
-        except Exception:
-            return None
+                    return data, None, None
+                return None, f"[{model}] invalid response payload", "invalid_payload"
+        except Exception as exc:
+            return None, f"[{model}] {str(exc)[:220]}", "connectivity_error"
+
+    def _normalize_model_candidates(self, values: list[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            text = str(value).strip()
+            if not text:
+                continue
+            lowered = text.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            out.append(text)
+        return out
+
+    def _candidate_model_order(self, preferred: str) -> list[str]:
+        fallback_defaults = ["deepseek-chat", "deepseek-reasoner"]
+        return self._normalize_model_candidates([preferred, *self.model_candidates, *fallback_defaults])
+
+    def _unavailable_reason(self) -> Optional[str]:
+        if not self.enabled:
+            return "api_key_missing"
+        if self.last_error_code:
+            return self.last_error_code
         return None
+
+    def _next_step_prompt(self, *, with_history: bool) -> str:
+        base = NEXT_STEP_SYSTEM_PROMPT_WITH_HISTORY if with_history else NEXT_STEP_SYSTEM_PROMPT
+        if not self.batch_execution_enabled:
+            return base
+        return (
+            f"{base}"
+            "优先使用批量命令计划。"
+            "若任务涉及多步命令（尤其配置任务），请优先返回commands数组，一次给出完整命令组，而不是多轮单条命令。"
+            "若会话模式是config且需要变更配置，请优先返回commands数组。"
+        )
 
     def _extract_content(self, data: dict[str, Any]) -> str:
         try:

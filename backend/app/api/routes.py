@@ -100,6 +100,9 @@ async def configure_llm(req: LLMConfigRequest) -> LLMConfigResponse:
         api_key=req.api_key,
         base_url=req.base_url,
         model=req.model,
+        failover_enabled=req.failover_enabled,
+        model_candidates=req.model_candidates,
+        batch_execution_enabled=req.batch_execution_enabled,
     )
     status = orchestrator.deepseek_diagnoser.status()
     return LLMConfigResponse(**status)

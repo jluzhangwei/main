@@ -165,6 +165,9 @@ export async function configureLlm(input: {
   apiKey?: string
   model?: string
   baseUrl?: string
+  failoverEnabled?: boolean
+  batchExecutionEnabled?: boolean
+  modelCandidates?: string[]
 }): Promise<LLMStatus> {
   const res = await fetch('/v1/llm/config', {
     method: 'POST',
@@ -173,6 +176,9 @@ export async function configureLlm(input: {
       api_key: input.apiKey,
       model: input.model,
       base_url: input.baseUrl,
+      failover_enabled: input.failoverEnabled,
+      batch_execution_enabled: input.batchExecutionEnabled,
+      model_candidates: input.modelCandidates,
     }),
   })
   if (!res.ok) {

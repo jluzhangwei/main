@@ -7,7 +7,9 @@ import time
 from typing import AsyncIterator, Literal
 
 from app.models.schemas import (
+    AutomationLevel,
     CommandExecution,
+    CommandPolicy,
     CommandStatus,
     ConfirmCommandRequest,
     ConfirmCommandResponse,
@@ -15,6 +17,7 @@ from app.models.schemas import (
     EventEnvelope,
     IncidentSummary,
     Message,
+    RiskLevel,
     ServiceTraceStep,
     make_id,
     now_utc,
@@ -208,59 +211,47 @@ class ConversationOrchestrator:
             if not plan_commands:
                 break
 
-            blocked_or_pending = False
-            failed_in_batch = False
-            pending_batch_mode = False
             plan_batch_id = make_id() if len(plan_commands) > 1 else None
             plan_batch_total = len(plan_commands)
-
+            batch_commands: list[CommandExecution] = []
             for index, (title, next_command) in enumerate(plan_commands, start=1):
                 step_no += 1
                 decision = self.risk_engine.decide(next_command, session.automation_level)
-                command = CommandExecution(
-                    session_id=session_id,
-                    step_no=step_no,
-                    title=title,
-                    command=next_command,
-                    adapter_type=session.device.protocol,
-                    risk_level=decision.risk_level,
-                    requires_confirmation=decision.requires_confirmation,
-                    status=CommandStatus.queued,
-                    batch_id=plan_batch_id,
-                    batch_index=index if plan_batch_id else None,
-                    batch_total=plan_batch_total if plan_batch_id else None,
+                batch_commands.append(
+                    CommandExecution(
+                        session_id=session_id,
+                        step_no=step_no,
+                        title=title,
+                        command=next_command,
+                        adapter_type=session.device.protocol,
+                        risk_level=decision.risk_level,
+                        requires_confirmation=decision.requires_confirmation,
+                        status=CommandStatus.queued,
+                        batch_id=plan_batch_id,
+                        batch_index=index if plan_batch_id else None,
+                        batch_total=plan_batch_total if plan_batch_id else None,
+                    )
                 )
-                if pending_batch_mode:
-                    reason = "批量命令等待统一确认"
-                    yield self._mark_pending_confirmation(command, reason)
-                    blocked_or_pending = True
-                else:
-                    async for event in self._execute_with_policy(
-                        session,
-                        command,
-                    ):
-                        if "command_blocked" in event:
-                            blocked_or_pending = True
-                        if "command_pending_confirmation" in event:
-                            blocked_or_pending = True
-                        yield event
+
+            blocked_or_pending = False
+            if len(batch_commands) > 1:
+                async for event in self._execute_batch_with_policy(session, batch_commands):
+                    if "command_blocked" in event or "command_pending_confirmation" in event:
+                        blocked_or_pending = True
+                    yield event
+            else:
+                async for event in self._execute_with_policy(session, batch_commands[0]):
+                    if "command_blocked" in event or "command_pending_confirmation" in event:
+                        blocked_or_pending = True
+                    yield event
+
+            for command in batch_commands:
                 self._append_command_result_to_ai_context(session_id, command)
-                if command.status == CommandStatus.failed:
-                    # Keep autonomous loop alive: feed execution failure back to AI so it can self-correct
-                    # with a new command in the same session.
-                    failed_in_batch = True
-                    break
-                if command.status == CommandStatus.blocked:
-                    break
-                if command.status == CommandStatus.pending_confirm:
-                    pending_batch_mode = True
-                    continue
-                if blocked_or_pending:
-                    break
 
             if blocked_or_pending:
                 break
-            if failed_in_batch:
+            if any(command.status == CommandStatus.failed for command in batch_commands):
+                # Keep autonomous loop alive: feed execution failure back to AI so it can self-correct.
                 continue
 
     async def _execute_with_policy(
@@ -276,47 +267,29 @@ class ConversationOrchestrator:
             detail=command.command[:260],
         )
         policy = self.store.get_command_policy()
-        policy_decision = self.command_policy_engine.evaluate(command.command, policy)
-        command.risk_level = self.risk_engine.classify(command.command)
+        decision = self._decide_execution_action(session, command.command, policy)
+        command.risk_level = decision["risk_level"]
+        command.requires_confirmation = decision["action"] == "confirm"
 
-        if policy_decision.result == "blocked":
+        if decision["action"] == "blocked":
             command.status = CommandStatus.blocked
-            command.error = policy_decision.reason
+            command.error = decision["reason"]
             self.store.add_command(command)
             command.completed_at = now_utc()
             command.duration_ms = 0
-            self._trace_finish(execution_trace, status="blocked", detail=policy_decision.reason)
+            self._trace_finish(execution_trace, status="blocked", detail=decision["reason"])
             yield self._sse(
                 "command_blocked",
                 {
                     "command": command.model_dump(mode="json"),
-                    "reason": policy_decision.reason,
+                    "reason": decision["reason"],
                 },
             )
             return
 
-        if policy_decision.result == "needs_confirmation":
-            self._trace_finish(execution_trace, status="pending_confirm", detail=policy_decision.reason)
-            yield self._mark_pending_confirmation(command, policy_decision.reason)
-            return
-
-        decision = self.risk_engine.decide(command.command, session.automation_level)
-        command.risk_level = decision.risk_level
-        command.requires_confirmation = decision.requires_confirmation
-
-        if not decision.allowed:
-            command.status = CommandStatus.blocked
-            command.error = decision.reason
-            self.store.add_command(command)
-            command.completed_at = now_utc()
-            command.duration_ms = 0
-            self._trace_finish(execution_trace, status="blocked", detail=decision.reason)
-            yield self._sse("command_blocked", {"command": command.model_dump(mode="json")})
-            return
-
-        if decision.requires_confirmation:
-            self._trace_finish(execution_trace, status="pending_confirm", detail=decision.reason or "等待人工确认")
-            yield self._mark_pending_confirmation(command, decision.reason or "等待人工确认")
+        if decision["action"] == "confirm":
+            self._trace_finish(execution_trace, status="pending_confirm", detail=decision["reason"])
+            yield self._mark_pending_confirmation(command, decision["reason"])
             return
 
         self.store.add_command(command)
@@ -341,6 +314,171 @@ class ConversationOrchestrator:
             self._trace_finish(execution_trace, status="failed", detail=str(exc)[:300])
             await self._drop_session_adapter(session.id)
         yield self._sse("command_completed", {"command": command.model_dump(mode="json")})
+
+    async def _execute_batch_with_policy(
+        self,
+        session,
+        commands: list[CommandExecution],
+    ) -> AsyncIterator[str]:
+        if not commands:
+            return
+
+        execution_trace = self._trace_start(
+            session_id=commands[0].session_id,
+            step_type="command_execution",
+            title=f"执行批量命令 ({len(commands)} 条)",
+            detail=" ; ".join(command.command for command in commands)[:260],
+        )
+
+        policy = self.store.get_command_policy()
+        blocked_reasons: dict[str, str] = {}
+        requires_batch_confirmation = False
+        confirm_reason = ""
+
+        for command in commands:
+            decision = self._decide_execution_action(session, command.command, policy)
+            command.risk_level = decision["risk_level"]
+            command.requires_confirmation = decision["action"] == "confirm"
+
+            if decision["action"] == "blocked":
+                blocked_reasons[command.id] = decision["reason"]
+                continue
+            if decision["action"] == "confirm":
+                requires_batch_confirmation = True
+                if not confirm_reason:
+                    confirm_reason = decision["reason"]
+
+        if blocked_reasons:
+            first_blocked = next((item for item in commands if item.id in blocked_reasons), commands[0])
+            batch_reason = (
+                f"Batch blocked because command is blocked: {first_blocked.command[:120]}"
+            )
+            for command in commands:
+                command.status = CommandStatus.blocked
+                command.error = blocked_reasons.get(command.id, batch_reason)
+                command.completed_at = now_utc()
+                command.duration_ms = 0
+                self.store.add_command(command)
+                yield self._sse(
+                    "command_blocked",
+                    {
+                        "command": command.model_dump(mode="json"),
+                        "reason": command.error,
+                    },
+                )
+            self._trace_finish(execution_trace, status="blocked", detail=batch_reason[:300])
+            return
+
+        if requires_batch_confirmation:
+            reason = confirm_reason or "批量命令包含未命中可执行规则的命令，请确认后整批执行。"
+            self._trace_finish(execution_trace, status="pending_confirm", detail=reason[:300])
+            for idx, command in enumerate(commands):
+                pending_reason = reason if idx == 0 else "批量命令等待统一确认"
+                yield self._mark_pending_confirmation(command, pending_reason)
+            return
+
+        for command in commands:
+            self.store.add_command(command)
+
+        try:
+            adapter = await self._get_session_adapter(session)
+            await self._execute_batch_and_record(adapter, commands)
+        except Exception as exc:
+            failed_at = now_utc()
+            for command in commands:
+                command.status = CommandStatus.failed
+                command.error = str(exc)
+                command.completed_at = failed_at
+                if command.started_at:
+                    command.duration_ms = max(0, int((failed_at - command.started_at).total_seconds() * 1000))
+                self.store.update_command(command)
+            self._trace_finish(execution_trace, status="failed", detail=str(exc)[:300])
+            await self._drop_session_adapter(session.id)
+        else:
+            first_error = next((command.error for command in commands if command.status == CommandStatus.failed), "")
+            if first_error:
+                self._trace_finish(execution_trace, status="failed", detail=first_error[:300])
+            else:
+                output_brief = next((command.output for command in commands if command.output), "")
+                self._trace_finish(execution_trace, status="succeeded", detail=(output_brief or "")[:300])
+
+        for command in commands:
+            yield self._sse("command_completed", {"command": command.model_dump(mode="json")})
+
+    def _decide_execution_action(self, session, command_text: str, policy: CommandPolicy) -> dict[str, object]:
+        policy_decision = self.command_policy_engine.evaluate(command_text, policy)
+        risk_decision = self.risk_engine.decide(command_text, session.automation_level)
+        risk_level = risk_decision.risk_level
+
+        # 1) Explicit block-rules always win.
+        if policy_decision.result == "blocked":
+            return {"action": "blocked", "reason": policy_decision.reason, "risk_level": risk_level}
+
+        # 2) Mode/risk baseline gate (includes hard-block and read-only baseline).
+        if not risk_decision.allowed:
+            return {"action": "blocked", "reason": risk_decision.reason, "risk_level": risk_level}
+
+        # 3) Full-auto executes all non-hard-block commands.
+        if session.automation_level == AutomationLevel.full_auto:
+            return {"action": "allow", "reason": "Full-auto executes non-hard-block commands.", "risk_level": risk_level}
+
+        # 4) Explicit executable rules can bypass assisted-mode high-risk confirmation.
+        if policy_decision.result == "allowed":
+            return {"action": "allow", "reason": policy_decision.reason, "risk_level": risk_level}
+
+        # 5) In assisted mode, non-whitelisted high-risk commands need confirmation.
+        if session.automation_level == AutomationLevel.assisted and risk_level == RiskLevel.high:
+            return {"action": "confirm", "reason": "半自动模式下高风险命令需要人工确认。", "risk_level": risk_level}
+
+        # 6) Any unmatched command in non-full-auto mode requires operator confirmation.
+        if policy_decision.result == "needs_confirmation":
+            return {"action": "confirm", "reason": policy_decision.reason, "risk_level": risk_level}
+
+        return {"action": "allow", "reason": "Command allowed.", "risk_level": risk_level}
+
+    async def _execute_batch_and_record(self, adapter, commands: list[CommandExecution]) -> None:
+        started = now_utc()
+        for command in commands:
+            command.status = CommandStatus.running
+            command.started_at = started
+            command.completed_at = None
+            command.duration_ms = None
+            self.store.update_command(command)
+
+        merged_command = " ; ".join(command.command for command in commands)
+        try:
+            output = await adapter.run_command(merged_command)
+            completed = now_utc()
+            duration_ms = max(0, int((completed - started).total_seconds() * 1000))
+            for command in commands:
+                category, parsed_data, conclusion = parse_command_output(command.command, output)
+                parsed_device_name = str(parsed_data.get("device_name") or "").strip() if isinstance(parsed_data, dict) else ""
+                if parsed_device_name:
+                    self.store.update_session_device_name(command.session_id, parsed_device_name)
+                command.output = output
+                command.status = CommandStatus.succeeded
+                command.completed_at = completed
+                command.duration_ms = duration_ms
+                self.store.update_command(command)
+
+                evidence = Evidence(
+                    session_id=command.session_id,
+                    command_id=command.id,
+                    category=category,
+                    raw_output=output,
+                    parsed_data=parsed_data,
+                    conclusion=conclusion,
+                )
+                self.store.add_evidence(evidence)
+        except Exception as exc:  # pragma: no cover
+            completed = now_utc()
+            duration_ms = max(0, int((completed - started).total_seconds() * 1000))
+            for command in commands:
+                command.status = CommandStatus.failed
+                command.error = str(exc)
+                command.completed_at = completed
+                command.duration_ms = duration_ms
+                self.store.update_command(command)
 
     def _bootstrap_command_for_vendor(self, vendor: str) -> str:
         normalized = (vendor or "").strip().lower()
@@ -569,10 +707,10 @@ class ConversationOrchestrator:
                 key=lambda item: (item.batch_index or item.step_no, item.step_no),
             )
 
-        for target in pending_targets:
-            await self._execute_confirmed_command(session_id, session, target)
-            if target.status == CommandStatus.failed:
-                break
+        if len(pending_targets) > 1:
+            await self._execute_confirmed_batch(session_id, session, pending_targets)
+        else:
+            await self._execute_confirmed_command(session_id, session, pending_targets[0])
 
         failed = next((item for item in pending_targets if item.status == CommandStatus.failed), None)
         if failed:
@@ -615,6 +753,9 @@ class ConversationOrchestrator:
         try:
             output = await adapter.run_command(command.command)
             category, parsed_data, conclusion = parse_command_output(command.command, output)
+            parsed_device_name = str(parsed_data.get("device_name") or "").strip() if isinstance(parsed_data, dict) else ""
+            if parsed_device_name:
+                self.store.update_session_device_name(command.session_id, parsed_device_name)
             command.output = output
             # Keep transport/execution semantics simple: command is successful if SSH/API execution returned.
             # Whether CLI syntax is semantically correct is left for the LLM to judge from raw output.
@@ -775,6 +916,46 @@ class ConversationOrchestrator:
                 "reason": reason,
             },
         )
+
+    async def _execute_confirmed_batch(self, session_id: str, session, commands: list[CommandExecution]) -> None:
+        confirm_trace = None
+        try:
+            adapter = await self._get_session_adapter(session)
+            confirm_trace = self._trace_start(
+                session_id=session_id,
+                step_type="command_confirm_execution",
+                title=f"执行确认批次命令 ({len(commands)} 条)",
+                detail=" ; ".join(command.command for command in commands)[:260],
+            )
+            await self._execute_batch_and_record(adapter, commands)
+            first_error = next((command.error for command in commands if command.status == CommandStatus.failed), "")
+            if first_error:
+                self._trace_finish(confirm_trace, status="failed", detail=first_error[:300])
+            else:
+                first_output = next((command.output for command in commands if command.output), "")
+                self._trace_finish(confirm_trace, status="succeeded", detail=(first_output or "")[:300])
+            for command in commands:
+                self._append_command_result_to_ai_context(session_id, command)
+        except Exception as exc:
+            failed_at = now_utc()
+            for command in commands:
+                command.status = CommandStatus.failed
+                command.error = str(exc)
+                command.completed_at = failed_at
+                if command.started_at:
+                    command.duration_ms = max(
+                        0,
+                        int((command.completed_at - command.started_at).total_seconds() * 1000),
+                    )
+                self.store.update_command(command)
+            if confirm_trace is None:
+                confirm_trace = self._trace_start(
+                    session_id=session_id,
+                    step_type="command_confirm_execution",
+                    title=f"执行确认批次命令 ({len(commands)} 条)",
+                )
+            self._trace_finish(confirm_trace, status="failed", detail=str(exc)[:300])
+            await self._drop_session_adapter(session.id)
 
     async def _execute_confirmed_command(self, session_id: str, session, command: CommandExecution) -> None:
         confirm_trace = None

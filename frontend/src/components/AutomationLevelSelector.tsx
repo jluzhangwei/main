@@ -22,7 +22,7 @@ export function AutomationLevelSelector({ value, onChange }: Props) {
         ]}
       />
       <p className="muted">
-        只读: 只允许 show/ping；半自动: 高风险命令需确认；全自动: 自动执行全部非硬阻断命令。
+        高风险由系统风险词表判定（如 configure terminal/interface/shutdown/no shutdown/save/commit 等）。半自动下未命中放行规则的高风险命令需确认；全自动自动执行非硬阻断命令。
       </p>
     </div>
   )
