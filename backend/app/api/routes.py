@@ -6,14 +6,19 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.models.schemas import (
+    CommandPolicy,
+    CommandPolicyUpdateRequest,
     ConfirmCommandRequest,
     ExportRequest,
     LLMConfigRequest,
     LLMConfigResponse,
+    LLMPromptPolicyResponse,
     MessageCreateRequest,
     SessionCreateRequest,
+    SessionListItem,
     SessionResponse,
     SessionUpdateRequest,
+    ServiceTraceResponse,
 )
 from app.services.exporter import export_timeline_markdown
 from app.services.orchestrator import ConversationOrchestrator
@@ -37,6 +42,11 @@ async def create_session(req: SessionCreateRequest) -> SessionResponse:
         status=session.status,
         created_at=session.created_at,
     )
+
+
+@router.get("/sessions", response_model=list[SessionListItem])
+async def list_sessions() -> list[SessionListItem]:
+    return store.list_session_items()
 
 
 @router.patch("/sessions/{session_id}", response_model=SessionResponse)
@@ -63,6 +73,21 @@ async def post_message(session_id: str, req: MessageCreateRequest):
     return StreamingResponse(generator, media_type="text/event-stream")
 
 
+@router.get("/command-policy", response_model=CommandPolicy)
+async def get_command_policy() -> CommandPolicy:
+    return store.get_command_policy()
+
+
+@router.put("/command-policy", response_model=CommandPolicy)
+async def update_command_policy(req: CommandPolicyUpdateRequest) -> CommandPolicy:
+    return store.update_command_policy(req)
+
+
+@router.post("/command-policy/reset", response_model=CommandPolicy)
+async def reset_command_policy() -> CommandPolicy:
+    return store.reset_command_policy()
+
+
 @router.get("/llm/status", response_model=LLMConfigResponse)
 async def get_llm_status() -> LLMConfigResponse:
     status = orchestrator.deepseek_diagnoser.status()
@@ -78,6 +103,19 @@ async def configure_llm(req: LLMConfigRequest) -> LLMConfigResponse:
     )
     status = orchestrator.deepseek_diagnoser.status()
     return LLMConfigResponse(**status)
+
+
+@router.delete("/llm/config", response_model=LLMConfigResponse)
+async def delete_llm_config() -> LLMConfigResponse:
+    orchestrator.deepseek_diagnoser.delete_saved_config()
+    status = orchestrator.deepseek_diagnoser.status()
+    return LLMConfigResponse(**status)
+
+
+@router.get("/llm/prompt-policy", response_model=LLMPromptPolicyResponse)
+async def get_llm_prompt_policy() -> LLMPromptPolicyResponse:
+    payload = orchestrator.deepseek_diagnoser.prompt_strategy()
+    return LLMPromptPolicyResponse(**payload)
 
 
 @router.post("/sessions/{session_id}/commands/{command_id}/confirm")
@@ -98,6 +136,13 @@ async def get_timeline(session_id: str):
     if session_id not in store.sessions:
         raise HTTPException(status_code=404, detail="Session not found")
     return store.get_timeline(session_id)
+
+
+@router.get("/sessions/{session_id}/trace", response_model=ServiceTraceResponse)
+async def get_service_trace(session_id: str) -> ServiceTraceResponse:
+    if session_id not in store.sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return store.get_service_trace(session_id)
 
 
 @router.post("/sessions/{session_id}/export")

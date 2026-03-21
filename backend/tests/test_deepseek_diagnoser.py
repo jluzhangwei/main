@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import pytest
 
 from app.models.schemas import CommandExecution, CommandStatus, DeviceProtocol, DeviceTarget, Evidence, RiskLevel, Session
@@ -87,3 +88,61 @@ async def test_diagnose_rewrite_path():
     assert summary is not None
     assert "shutdown" in summary.root_cause.lower()
     assert summary.confidence == 0.9
+
+
+def test_llm_config_is_persisted_and_loaded_from_server_temp_file(tmp_path, monkeypatch):
+    config_path = tmp_path / "llm_runtime.json"
+    monkeypatch.setenv("NETOPS_LLM_CONFIG_PATH", str(config_path))
+
+    diagnoser = DeepSeekDiagnoser()
+    diagnoser.configure(api_key="sk-persisted", base_url="https://api.deepseek.com", model="deepseek-chat")
+
+    assert config_path.exists()
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["api_key"] == "sk-persisted"
+
+    reloaded = DeepSeekDiagnoser()
+    assert reloaded.enabled is True
+    assert reloaded.api_key == "sk-persisted"
+
+
+def test_delete_saved_llm_config_removes_temp_file(tmp_path, monkeypatch):
+    config_path = tmp_path / "llm_runtime.json"
+    monkeypatch.setenv("NETOPS_LLM_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+    diagnoser = DeepSeekDiagnoser()
+    diagnoser.configure(api_key="sk-persisted")
+    assert config_path.exists()
+
+    diagnoser.delete_saved_config()
+
+    assert diagnoser.enabled is False
+    assert diagnoser.api_key == ""
+    assert config_path.exists() is False
+
+
+def test_llm_config_migrates_from_legacy_temp_file(tmp_path, monkeypatch):
+    home_dir = tmp_path / "home"
+    legacy_tmp = tmp_path / "legacy_tmp"
+    home_dir.mkdir(parents=True, exist_ok=True)
+    legacy_tmp.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.delenv("NETOPS_LLM_CONFIG_PATH", raising=False)
+    monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setattr("app.services.deepseek_diagnoser.tempfile.gettempdir", lambda: str(legacy_tmp))
+
+    legacy_path = legacy_tmp / "netops_ai_v1_llm_config.json"
+    legacy_path.write_text(
+        json.dumps({"api_key": "sk-legacy", "base_url": "https://api.deepseek.com", "model": "deepseek-chat"}),
+        encoding="utf-8",
+    )
+
+    diagnoser = DeepSeekDiagnoser()
+
+    assert diagnoser.enabled is True
+    assert diagnoser.api_key == "sk-legacy"
+    assert diagnoser.config_path == home_dir / ".netops-ai-v1" / "llm_config.json"
+    assert diagnoser.config_path.exists() is True
+    assert legacy_path.exists() is False

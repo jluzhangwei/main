@@ -1,49 +1,107 @@
-import { Button, Input, message as antMessage } from 'antd'
-import { useEffect, useMemo, useState } from 'react'
+import { Button, Input, Select, Switch, message as antMessage } from 'antd'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { UIEvent } from 'react'
 import { AutomationLevelSelector } from './components/AutomationLevelSelector'
-import { ConfirmModal } from './components/ConfirmModal'
 import { DeviceForm } from './components/DeviceForm'
 import {
   configureLlm,
   confirmCommand,
   createSession,
+  deleteLlmConfig,
   exportMarkdown,
+  getCommandPolicy,
+  getLlmPromptPolicy,
   getLlmStatus,
+  getServiceTrace,
   getTimeline,
+  listSessions,
+  resetCommandPolicy,
   streamMessage,
+  updateCommandPolicy,
   updateSessionAutomation,
 } from './api/client'
 import type {
   AutomationLevel,
   ChatMessage,
+  CommandPolicy,
   CommandExecution,
   DiagnosisSummary,
   Evidence,
+  LLMPromptPolicy,
   LLMStatus,
   OperationMode,
+  ServiceTraceStep,
+  SessionListItem,
   SessionResponse,
 } from './types'
 
-type PageId = 'workbench' | 'control' | 'sessions' | 'learning' | 'lab' | 'ai_settings'
+type PageId =
+  | 'workbench'
+  | 'control'
+  | 'command_policy'
+  | 'sessions'
+  | 'service_trace'
+  | 'learning'
+  | 'lab'
+  | 'ai_settings'
 
 type PersistedUiState = {
   activePage?: PageId
   rightPanelWidth?: number
   statusCollapsed?: boolean
   directionInput?: string
+  currentSessionId?: string
 }
 
 const UI_STATE_KEY = 'netops_ui_prefs_v1'
 const NAV_ITEMS: Array<{ id: PageId; title: string }> = [
   { id: 'workbench', title: '诊断工作台' },
   { id: 'control', title: '连接控制' },
+  { id: 'command_policy', title: '命令执行控制' },
   { id: 'sessions', title: '会话历史' },
+  { id: 'service_trace', title: '服务追踪' },
   { id: 'learning', title: '知识学习' },
   { id: 'lab', title: 'Lab 对抗' },
   { id: 'ai_settings', title: 'AI 设置' },
 ]
 
-const FLOW_STEPS = ['Create', 'Baseline', 'Plan', 'Approve', 'Execute', 'Analyze', 'Conclude'] as const
+const MODEL_OPTIONS = [
+  { value: 'deepseek-chat', label: 'DeepSeek Chat' },
+  { value: 'deepseek-reasoner', label: 'DeepSeek Reasoner' },
+  { value: 'gpt-5.3-codex', label: 'GPT-5.3-Codex' },
+  { value: 'gpt-5.4', label: 'GPT-5.4' },
+]
+
+type ActivityCard =
+  | {
+      key: string
+      kind: 'message'
+      createdAt: string
+      label: string
+      title: string
+      preview: string
+      message: ChatMessage
+    }
+  | {
+      key: string
+      kind: 'command'
+      createdAt: string
+      label: string
+      title: string
+      preview: string
+      status: string
+      riskLevel: string
+      command: CommandExecution
+    }
+  | {
+      key: string
+      kind: 'summary'
+      createdAt: string
+      label: string
+      title: string
+      preview: string
+      summary: DiagnosisSummary
+    }
 
 function App() {
   const [automationLevel, setAutomationLevel] = useState<AutomationLevel>('assisted')
@@ -52,31 +110,132 @@ function App() {
   const [commands, setCommands] = useState<CommandExecution[]>([])
   const [evidences, setEvidences] = useState<Evidence[]>([])
   const [summary, setSummary] = useState<DiagnosisSummary | undefined>(undefined)
-  const [pendingCommand, setPendingCommand] = useState<CommandExecution | undefined>(undefined)
   const [busy, setBusy] = useState(false)
+  const [confirmingCommandId, setConfirmingCommandId] = useState<string | undefined>(undefined)
 
   const [llmStatus, setLlmStatus] = useState<LLMStatus | null>(null)
+  const [llmPromptPolicy, setLlmPromptPolicy] = useState<LLMPromptPolicy | null>(null)
   const [apiKeyInput, setApiKeyInput] = useState('')
+  const [llmModelInput, setLlmModelInput] = useState('deepseek-chat')
   const [llmSaving, setLlmSaving] = useState(false)
+  const [commandPolicy, setCommandPolicy] = useState<CommandPolicy | null>(null)
+  const [blockedRules, setBlockedRules] = useState<string[]>([])
+  const [executableRules, setExecutableRules] = useState<string[]>([])
+  const [blockedSearch, setBlockedSearch] = useState('')
+  const [executableSearch, setExecutableSearch] = useState('')
+  const [newBlockedRule, setNewBlockedRule] = useState('')
+  const [newExecutableRule, setNewExecutableRule] = useState('')
+  const [legalityCheckEnabled, setLegalityCheckEnabled] = useState(true)
+  const [policySaving, setPolicySaving] = useState(false)
+  const [editingRule, setEditingRule] = useState<
+    { kind: 'blocked' | 'executable'; index: number; value: string } | undefined
+  >(undefined)
+  const policyImportInputRef = useRef<HTMLInputElement | null>(null)
 
   const [activePage, setActivePage] = useState<PageId>('workbench')
   const [statusCollapsed, setStatusCollapsed] = useState(false)
-  const [rightPanelWidth, setRightPanelWidth] = useState(404)
+  const [rightPanelWidth, setRightPanelWidth] = useState(560)
   const [resizing, setResizing] = useState(false)
   const [directionInput, setDirectionInput] = useState('')
   const [draftInput, setDraftInput] = useState('')
+  const [sessionDeviceAddress, setSessionDeviceAddress] = useState('')
+  const [sessionDeviceName, setSessionDeviceName] = useState('')
+  const [sessionHistory, setSessionHistory] = useState<SessionListItem[]>([])
+  const [sessionsLoading, setSessionsLoading] = useState(false)
+  const [initialSessionId, setInitialSessionId] = useState<string | undefined>(undefined)
+  const [bootstrapped, setBootstrapped] = useState(false)
   const [selectedCommandId, setSelectedCommandId] = useState<string | undefined>(undefined)
+  const [selectedActivityKey, setSelectedActivityKey] = useState<string | undefined>(undefined)
+  const [traceSteps, setTraceSteps] = useState<ServiceTraceStep[]>([])
+  const [traceLoading, setTraceLoading] = useState(false)
+  const [autoScrollEnabled, setAutoScrollEnabled] = useState(true)
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
+  const chatLogRef = useRef<HTMLElement | null>(null)
+  const [commandAutoScrollEnabled, setCommandAutoScrollEnabled] = useState(true)
+  const [showCommandScrollToBottom, setShowCommandScrollToBottom] = useState(false)
+  const commandListRef = useRef<HTMLDivElement | null>(null)
 
   const sessionReady = useMemo(() => Boolean(session?.id), [session])
-  const flowIndex = useMemo(
-    () => currentFlowIndex(sessionReady, commands.length, pendingCommand, summary),
-    [sessionReady, commands.length, pendingCommand, summary],
-  )
+  const activityCards = useMemo(() => buildActivityCards(messages, commands, summary), [messages, commands, summary])
 
   const selectedCommand = useMemo(() => {
     if (!selectedCommandId) return commands[commands.length - 1]
     return commands.find((item) => item.id === selectedCommandId) || commands[commands.length - 1]
   }, [commands, selectedCommandId])
+  const pendingCommand = useMemo(
+    () => [...commands].reverse().find((item) => item.status === 'pending_confirm'),
+    [commands],
+  )
+  const runningCommand = useMemo(
+    () => [...commands].reverse().find((item) => item.status === 'running'),
+    [commands],
+  )
+  const latestUserRequirement = useMemo(() => {
+    const draft = draftInput.trim()
+    if (draft) return draft
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]
+      if (message.role === 'user' && message.content.trim()) {
+        return message.content.trim()
+      }
+    }
+    return '-'
+  }, [draftInput, messages])
+  const currentExecutionStatus = useMemo(() => {
+    if (pendingCommand) {
+      return `待确认: ${pendingCommand.command}`
+    }
+    if (runningCommand) {
+      return `执行中: ${runningCommand.command}`
+    }
+    if (busy) {
+      return commands.length > 0 ? `处理中: ${commands[commands.length - 1].title}` : 'AI 正在规划下一步'
+    }
+    if (summary) {
+      return `已完成: ${summary.query_result || summary.root_cause}`
+    }
+    if (sessionReady) {
+      return '待发送'
+    }
+    return '未创建会话'
+  }, [pendingCommand, runningCommand, busy, commands, summary, sessionReady])
+  const traceStats = useMemo(() => buildTraceStats(traceSteps), [traceSteps])
+
+  const selectedActivity = useMemo(() => {
+    if (activityCards.length === 0) return undefined
+    if (!selectedActivityKey) return activityCards[activityCards.length - 1]
+    return activityCards.find((item) => item.key === selectedActivityKey) || activityCards[activityCards.length - 1]
+  }, [activityCards, selectedActivityKey])
+
+  const selectedDetailTitle = useMemo(() => {
+    if (!selectedActivity) return '分析显示区'
+    if (selectedActivity.kind === 'command') return `步骤 #${selectedActivity.command.step_no} 详情`
+    if (selectedActivity.kind === 'message') return `${selectedActivity.label} 消息详情`
+    return '最终诊断详情'
+  }, [selectedActivity])
+
+  const selectedDetailBody = useMemo(() => {
+    if (selectedActivity) return renderActivityDetail(selectedActivity)
+    if (summary) return renderSummaryBrief(summary)
+    return '等待 AI 诊断输出...'
+  }, [selectedActivity, summary])
+
+  const blockedRuleRows = useMemo(
+    () => buildRuleRows(blockedRules, blockedSearch),
+    [blockedRules, blockedSearch],
+  )
+  const executableRuleRows = useMemo(
+    () => buildRuleRows(executableRules, executableSearch),
+    [executableRules, executableSearch],
+  )
+  const policyDirty = useMemo(() => {
+    if (!commandPolicy) return false
+    return (
+      legalityCheckEnabled !== commandPolicy.legality_check_enabled ||
+      !sameRules(blockedRules, commandPolicy.blocked_patterns) ||
+      !sameRules(executableRules, commandPolicy.executable_patterns)
+    )
+  }, [commandPolicy, legalityCheckEnabled, blockedRules, executableRules])
 
   useEffect(() => {
     try {
@@ -87,13 +246,16 @@ function App() {
         setActivePage(parsed.activePage)
       }
       if (typeof parsed.rightPanelWidth === 'number' && Number.isFinite(parsed.rightPanelWidth)) {
-        setRightPanelWidth(Math.min(760, Math.max(340, parsed.rightPanelWidth)))
+        setRightPanelWidth(Math.min(1400, Math.max(300, parsed.rightPanelWidth)))
       }
       if (typeof parsed.statusCollapsed === 'boolean') {
         setStatusCollapsed(parsed.statusCollapsed)
       }
       if (typeof parsed.directionInput === 'string') {
         setDirectionInput(parsed.directionInput)
+      }
+      if (typeof parsed.currentSessionId === 'string' && parsed.currentSessionId.trim()) {
+        setInitialSessionId(parsed.currentSessionId.trim())
       }
     } catch {
       // ignore local storage parse errors
@@ -106,9 +268,10 @@ function App() {
       rightPanelWidth,
       statusCollapsed,
       directionInput,
+      currentSessionId: session?.id,
     }
     localStorage.setItem(UI_STATE_KEY, JSON.stringify(payload))
-  }, [activePage, rightPanelWidth, statusCollapsed, directionInput])
+  }, [activePage, rightPanelWidth, statusCollapsed, directionInput, session?.id])
 
   useEffect(() => {
     if (commands.length === 0) {
@@ -119,11 +282,37 @@ function App() {
   }, [commands])
 
   useEffect(() => {
+    if (activityCards.length === 0) {
+      setSelectedActivityKey(undefined)
+      return
+    }
+    if (!selectedActivityKey || !activityCards.some((item) => item.key === selectedActivityKey)) {
+      setSelectedActivityKey(activityCards[activityCards.length - 1].key)
+    }
+  }, [activityCards, selectedActivityKey])
+
+  useEffect(() => {
+    if (!autoScrollEnabled) return
+    const target = chatLogRef.current
+    if (!target) return
+    target.scrollTo({ top: target.scrollHeight, behavior: 'auto' })
+    setShowScrollToBottom(false)
+  }, [activityCards, autoScrollEnabled])
+
+  useEffect(() => {
+    if (!commandAutoScrollEnabled) return
+    const target = commandListRef.current
+    if (!target) return
+    target.scrollTo({ top: target.scrollHeight, behavior: 'auto' })
+    setShowCommandScrollToBottom(false)
+  }, [commands, commandAutoScrollEnabled])
+
+  useEffect(() => {
     if (!resizing) return
 
     const onMove = (event: MouseEvent) => {
-      const min = 340
-      const max = Math.max(440, Math.min(760, window.innerWidth - 430))
+      const min = 300
+      const max = Math.max(620, Math.min(1400, window.innerWidth - 220))
       const next = Math.max(min, Math.min(max, window.innerWidth - event.clientX - 12))
       setRightPanelWidth(next)
     }
@@ -137,6 +326,39 @@ function App() {
       window.removeEventListener('mouseup', onUp)
     }
   }, [resizing])
+
+  useEffect(() => {
+    if (activePage !== 'service_trace') return
+    if (!session?.id) return
+    void refreshServiceTrace(session.id)
+  }, [activePage, session?.id])
+
+  useEffect(() => {
+    if (!bootstrapped) return
+    if (!initialSessionId) return
+    let canceled = false
+    const restore = async () => {
+      const ok = await hydrateSessionById(initialSessionId, true)
+      if (canceled) return
+      if (!ok) {
+        try {
+          const raw = localStorage.getItem(UI_STATE_KEY)
+          if (raw) {
+            const parsed = JSON.parse(raw) as PersistedUiState
+            delete parsed.currentSessionId
+            localStorage.setItem(UI_STATE_KEY, JSON.stringify(parsed))
+          }
+        } catch {
+          // ignore
+        }
+      }
+      setInitialSessionId(undefined)
+    }
+    void restore()
+    return () => {
+      canceled = true
+    }
+  }, [bootstrapped, initialSessionId])
 
   useEffect(() => {
     if (!session?.id) return
@@ -164,16 +386,95 @@ function App() {
   }, [automationLevel, session])
 
   useEffect(() => {
+    const loadPromptPolicy = async () => {
+      try {
+        const promptPolicy = await getLlmPromptPolicy()
+        setLlmPromptPolicy(promptPolicy)
+      } catch {
+        setLlmPromptPolicy(null)
+      }
+    }
+
     const load = async () => {
       try {
         const status = await getLlmStatus()
         setLlmStatus(status)
+        if (status.model) {
+          setLlmModelInput(status.model)
+        }
       } catch {
         setLlmStatus(null)
       }
+
+      await loadPromptPolicy()
+
+      try {
+        const policy = await getCommandPolicy()
+        setCommandPolicy(policy)
+        setBlockedRules(normalizeRules(policy.blocked_patterns))
+        setExecutableRules(normalizeRules(policy.executable_patterns))
+        setLegalityCheckEnabled(policy.legality_check_enabled)
+      } catch {
+        setCommandPolicy(null)
+      }
+
+      await refreshSessionHistory()
+      setBootstrapped(true)
     }
     void load()
   }, [])
+
+  async function refreshPromptPolicy() {
+    try {
+      const promptPolicy = await getLlmPromptPolicy()
+      setLlmPromptPolicy(promptPolicy)
+    } catch {
+      setLlmPromptPolicy(null)
+    }
+  }
+
+  async function refreshSessionHistory() {
+    setSessionsLoading(true)
+    try {
+      const items = await listSessions()
+      setSessionHistory(items)
+    } catch {
+      setSessionHistory([])
+    } finally {
+      setSessionsLoading(false)
+    }
+  }
+
+  async function hydrateSessionById(sessionId: string, silent = false) {
+    try {
+      const data = await getTimeline(sessionId)
+      const restoredSession: SessionResponse = {
+        id: data.session.id,
+        automation_level: data.session.automation_level,
+        operation_mode: data.session.operation_mode,
+        status: data.session.status,
+        created_at: data.session.created_at,
+      }
+      setSession(restoredSession)
+      setAutomationLevel(restoredSession.automation_level)
+      setMessages(data.messages)
+      setCommands(data.commands)
+      setEvidences(data.evidences)
+      setSummary(data.summary)
+      setSessionDeviceAddress(data.session.device?.host || '')
+      setSessionDeviceName(buildDeviceName(data.session.device?.host || ''))
+      await refreshServiceTrace(sessionId)
+      if (!silent) {
+        antMessage.success(`已恢复会话 ${sessionId.slice(0, 8)}...`)
+      }
+      return true
+    } catch {
+      if (!silent) {
+        antMessage.error('恢复会话失败')
+      }
+      return false
+    }
+  }
 
   async function handleCreateSession(payload: {
     host: string
@@ -184,17 +485,24 @@ function App() {
     api_token?: string
     automation_level: AutomationLevel
   }) {
-    const resp = await createSession(payload)
-    setSession(resp)
-    setAutomationLevel(resp.automation_level)
-    setMessages([])
-    setCommands([])
-    setEvidences([])
-    setSummary(undefined)
-    setPendingCommand(undefined)
-    setDraftInput('')
-    antMessage.success(`会话已创建: ${resp.id}`)
-    setActivePage('workbench')
+    try {
+      const resp = await createSession(payload)
+      setSession(resp)
+      setAutomationLevel(resp.automation_level)
+      setMessages([])
+      setCommands([])
+      setEvidences([])
+      setSummary(undefined)
+      setTraceSteps([])
+      setSessionDeviceAddress(payload.host)
+      setSessionDeviceName(buildDeviceName(payload.host))
+      setDraftInput('')
+      await refreshSessionHistory()
+      antMessage.success(`会话已创建: ${resp.id}`)
+      setActivePage('workbench')
+    } catch (error) {
+      antMessage.error((error as Error).message || '创建会话失败，请检查后端服务状态')
+    }
   }
 
   async function handleSaveApiKey() {
@@ -205,15 +513,190 @@ function App() {
 
     setLlmSaving(true)
     try {
-      const status = await configureLlm(apiKeyInput)
+      const status = await configureLlm({
+        apiKey: apiKeyInput,
+        model: llmModelInput,
+      })
       setLlmStatus(status)
+      await refreshPromptPolicy()
       setApiKeyInput('')
-      antMessage.success(status.enabled ? '大模型已启用' : '大模型已禁用')
+      antMessage.success(status.enabled ? '大模型已启用，Key 已保存到服务器' : '大模型已禁用')
     } catch (error) {
       antMessage.error((error as Error).message)
     } finally {
       setLlmSaving(false)
     }
+  }
+
+  async function handleModelChange(nextModel: string) {
+    if (!nextModel.trim()) {
+      antMessage.warning('请选择模型')
+      return
+    }
+    setLlmModelInput(nextModel)
+    setLlmSaving(true)
+    try {
+      const status = await configureLlm({ model: nextModel })
+      setLlmStatus(status)
+      await refreshPromptPolicy()
+      antMessage.success(`模型已切换为 ${status.model}`)
+    } catch (error) {
+      antMessage.error((error as Error).message)
+    } finally {
+      setLlmSaving(false)
+    }
+  }
+
+  async function handleDeleteApiKey() {
+    if (!window.confirm('确认删除服务器已保存的 API Key 吗？')) return
+    setLlmSaving(true)
+    try {
+      const status = await deleteLlmConfig()
+      setLlmStatus(status)
+      await refreshPromptPolicy()
+      setApiKeyInput('')
+      antMessage.success('已删除服务器保存的 Key')
+    } catch (error) {
+      antMessage.error((error as Error).message)
+    } finally {
+      setLlmSaving(false)
+    }
+  }
+
+  async function handleSaveCommandPolicy() {
+    setPolicySaving(true)
+    try {
+      const updated = await updateCommandPolicy({
+        blocked_patterns: blockedRules,
+        executable_patterns: executableRules,
+        legality_check_enabled: legalityCheckEnabled,
+      })
+      setCommandPolicy(updated)
+      setBlockedRules(normalizeRules(updated.blocked_patterns))
+      setExecutableRules(normalizeRules(updated.executable_patterns))
+      setLegalityCheckEnabled(updated.legality_check_enabled)
+      antMessage.success('命令执行控制规则已更新')
+    } catch (error) {
+      antMessage.error((error as Error).message)
+    } finally {
+      setPolicySaving(false)
+    }
+  }
+
+  async function handleResetCommandPolicy() {
+    setPolicySaving(true)
+    try {
+      const updated = await resetCommandPolicy()
+      setCommandPolicy(updated)
+      setBlockedRules(normalizeRules(updated.blocked_patterns))
+      setExecutableRules(normalizeRules(updated.executable_patterns))
+      setLegalityCheckEnabled(updated.legality_check_enabled)
+      setEditingRule(undefined)
+      antMessage.success('已恢复默认规则')
+    } catch (error) {
+      antMessage.error((error as Error).message)
+    } finally {
+      setPolicySaving(false)
+    }
+  }
+
+  function handleExportCommandPolicy() {
+    const payload = {
+      blocked_patterns: blockedRules,
+      executable_patterns: executableRules,
+      legality_check_enabled: legalityCheckEnabled,
+    }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'command-policy.json'
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function handleImportCommandPolicy(file?: File) {
+    if (!file) return
+    try {
+      const text = await file.text()
+      const parsed = JSON.parse(text) as Partial<CommandPolicy>
+      const updated = await updateCommandPolicy({
+        blocked_patterns: Array.isArray(parsed.blocked_patterns) ? parsed.blocked_patterns : blockedRules,
+        executable_patterns: Array.isArray(parsed.executable_patterns)
+          ? parsed.executable_patterns
+          : executableRules,
+        legality_check_enabled:
+          typeof parsed.legality_check_enabled === 'boolean' ? parsed.legality_check_enabled : legalityCheckEnabled,
+      })
+      setCommandPolicy(updated)
+      setBlockedRules(normalizeRules(updated.blocked_patterns))
+      setExecutableRules(normalizeRules(updated.executable_patterns))
+      setLegalityCheckEnabled(updated.legality_check_enabled)
+      setEditingRule(undefined)
+      antMessage.success('规则导入成功')
+    } catch {
+      antMessage.error('导入失败，请检查 JSON 格式')
+    } finally {
+      if (policyImportInputRef.current) {
+        policyImportInputRef.current.value = ''
+      }
+    }
+  }
+
+  function appendRule(kind: 'blocked' | 'executable') {
+    const raw = kind === 'blocked' ? newBlockedRule : newExecutableRule
+    const normalized = normalizeRule(raw)
+    if (!normalized) {
+      antMessage.warning('规则不能为空')
+      return
+    }
+    if (kind === 'blocked') {
+      setBlockedRules((prev) => appendRuleUnique(prev, normalized))
+      setNewBlockedRule('')
+      return
+    }
+    setExecutableRules((prev) => appendRuleUnique(prev, normalized))
+    setNewExecutableRule('')
+  }
+
+  function removeRule(kind: 'blocked' | 'executable', index: number) {
+    if (kind === 'blocked') {
+      setBlockedRules((prev) => prev.filter((_, idx) => idx !== index))
+      return
+    }
+    setExecutableRules((prev) => prev.filter((_, idx) => idx !== index))
+  }
+
+  function moveRule(kind: 'blocked' | 'executable', index: number, direction: -1 | 1) {
+    if (kind === 'blocked') {
+      setBlockedRules((prev) => moveRuleItem(prev, index, direction))
+      return
+    }
+    setExecutableRules((prev) => moveRuleItem(prev, index, direction))
+  }
+
+  function startEditRule(kind: 'blocked' | 'executable', index: number, value: string) {
+    setEditingRule({ kind, index, value })
+  }
+
+  function cancelEditRule() {
+    setEditingRule(undefined)
+  }
+
+  function saveEditRule() {
+    if (!editingRule) return
+    const normalized = normalizeRule(editingRule.value)
+    if (!normalized) {
+      antMessage.warning('规则不能为空')
+      return
+    }
+
+    if (editingRule.kind === 'blocked') {
+      setBlockedRules((prev) => replaceRuleAt(prev, editingRule.index, normalized))
+    } else {
+      setExecutableRules((prev) => replaceRuleAt(prev, editingRule.index, normalized))
+    }
+    setEditingRule(undefined)
   }
 
   async function handleSend(content: string) {
@@ -227,28 +710,37 @@ function App() {
     try {
       await streamMessage(activeSessionId, content, (event, payload) => {
         if (event === 'message_ack' && payload.message) {
-          setMessages((prev) => [...prev, payload.message as ChatMessage])
+          const msg = payload.message as ChatMessage
+          setMessages((prev) => [...prev, msg])
+          setSelectedActivityKey(`msg:${msg.id}`)
         }
 
         if (event === 'command_completed' && payload.command) {
-          setCommands((prev) => upsertCommand(prev, payload.command as CommandExecution))
+          const cmd = payload.command as CommandExecution
+          setCommands((prev) => upsertCommand(prev, cmd))
+          setSelectedActivityKey(`cmd:${cmd.id}`)
         }
 
         if (event === 'command_blocked' && payload.command) {
-          setCommands((prev) => upsertCommand(prev, payload.command as CommandExecution))
+          const cmd = payload.command as CommandExecution
+          setCommands((prev) => upsertCommand(prev, cmd))
+          setSelectedActivityKey(`cmd:${cmd.id}`)
         }
 
         if (event === 'command_pending_confirmation' && payload.command) {
           const command = payload.command as CommandExecution
           setCommands((prev) => upsertCommand(prev, command))
-          setPendingCommand(command)
+          setSelectedActivityKey(`cmd:${command.id}`)
         }
 
         if (event === 'final_summary' && payload.message) {
-          setMessages((prev) => [...prev, payload.message as ChatMessage])
+          const msg = payload.message as ChatMessage
+          setMessages((prev) => [...prev, msg])
+          setSelectedActivityKey(`msg:${msg.id}`)
         }
         if (event === 'final_summary' && payload.summary) {
           setSummary(payload.summary)
+          setSelectedActivityKey('summary:latest')
         }
       })
     } catch (error) {
@@ -256,10 +748,10 @@ function App() {
     } finally {
       try {
         if (session?.id === activeSessionId) {
-          await refreshTimeline(activeSessionId)
+          await Promise.all([refreshTimeline(activeSessionId), refreshServiceTrace(activeSessionId)])
         }
       } catch {
-        antMessage.warning('时间线刷新失败，请手动刷新')
+        antMessage.warning('时间线/追踪刷新失败，请手动刷新')
       }
       setBusy(false)
     }
@@ -270,9 +762,7 @@ function App() {
       antMessage.warning('请输入问题描述')
       return
     }
-    const messageContent = directionInput.trim()
-      ? `${draftInput.trim()}\n方向: ${directionInput.trim()}`
-      : draftInput.trim()
+    const messageContent = draftInput.trim()
     setDraftInput('')
     await handleSend(messageContent)
   }
@@ -281,10 +771,31 @@ function App() {
     const sid = targetSessionId ?? session?.id
     if (!sid) return
     const data = await getTimeline(sid)
+    setSession({
+      id: data.session.id,
+      automation_level: data.session.automation_level,
+      operation_mode: data.session.operation_mode,
+      status: data.session.status,
+      created_at: data.session.created_at,
+    })
+    setSessionDeviceAddress(data.session.device?.host || sessionDeviceAddress)
+    setSessionDeviceName(buildDeviceName(data.session.device?.host || sessionDeviceAddress))
     setMessages(data.messages)
     setCommands(data.commands)
     setEvidences(data.evidences)
     setSummary(data.summary)
+  }
+
+  async function refreshServiceTrace(targetSessionId?: string) {
+    const sid = targetSessionId ?? session?.id
+    if (!sid) return
+    setTraceLoading(true)
+    try {
+      const data = await getServiceTrace(sid)
+      setTraceSteps(data.steps || [])
+    } finally {
+      setTraceLoading(false)
+    }
   }
 
   async function handleExport() {
@@ -299,20 +810,74 @@ function App() {
     URL.revokeObjectURL(url)
   }
 
-  async function handleApprove() {
-    if (!session?.id || !pendingCommand) return
-    await confirmCommand(session.id, pendingCommand.id, true)
-    setPendingCommand(undefined)
-    await refreshTimeline()
-    antMessage.success('已执行高风险命令')
+  async function handleConfirmCommandInline(commandId: string, approved: boolean) {
+    if (!session?.id) return
+    setConfirmingCommandId(commandId)
+    try {
+      await confirmCommand(session.id, commandId, approved)
+      await Promise.all([refreshTimeline(), refreshServiceTrace()])
+      if (approved) {
+        antMessage.success('已执行高风险命令')
+      } else {
+        antMessage.info('已拒绝高风险命令')
+      }
+    } catch (error) {
+      antMessage.error((error as Error).message || '确认命令失败')
+    } finally {
+      setConfirmingCommandId(undefined)
+    }
   }
 
-  async function handleReject() {
-    if (!session?.id || !pendingCommand) return
-    await confirmCommand(session.id, pendingCommand.id, false)
-    setPendingCommand(undefined)
-    await refreshTimeline()
-    antMessage.info('已拒绝高风险命令')
+  function isNearBottom(target: HTMLElement): boolean {
+    return target.scrollHeight - target.scrollTop - target.clientHeight <= 24
+  }
+
+  function handleChatScroll(event: UIEvent<HTMLElement>) {
+    const target = event.currentTarget
+    const nearBottom = isNearBottom(target)
+    if (nearBottom) {
+      if (!autoScrollEnabled) {
+        setAutoScrollEnabled(true)
+      }
+      setShowScrollToBottom(false)
+      return
+    }
+    if (autoScrollEnabled) {
+      setAutoScrollEnabled(false)
+    }
+    setShowScrollToBottom(true)
+  }
+
+  function handleResumeAutoScroll() {
+    const target = chatLogRef.current
+    if (!target) return
+    setAutoScrollEnabled(true)
+    setShowScrollToBottom(false)
+    target.scrollTo({ top: target.scrollHeight, behavior: 'smooth' })
+  }
+
+  function handleCommandListScroll(event: UIEvent<HTMLDivElement>) {
+    const target = event.currentTarget
+    const nearBottom = isNearBottom(target)
+    if (nearBottom) {
+      if (!commandAutoScrollEnabled) {
+        setCommandAutoScrollEnabled(true)
+      }
+      setShowCommandScrollToBottom(false)
+      return
+    }
+    if (commandAutoScrollEnabled) {
+      setCommandAutoScrollEnabled(false)
+    }
+    setShowCommandScrollToBottom(true)
+  }
+
+  function handleResumeCommandAutoScroll() {
+    const target = commandListRef.current
+    if (!target) return
+    setCommandAutoScrollEnabled(true)
+    setShowCommandScrollToBottom(false)
+    target.scrollTo({ top: target.scrollHeight, behavior: 'smooth' })
   }
 
   return (
@@ -331,17 +896,6 @@ function App() {
           <span className="status-chip">Session {sessionReady ? 'READY' : 'IDLE'}</span>
         </div>
       </header>
-
-      <div className="sub-bar">
-        <div className="flow-strip">
-          {FLOW_STEPS.map((step, idx) => (
-            <div key={step} className={`flow-step ${idx < flowIndex ? 'done' : idx === flowIndex ? 'active' : ''}`}>
-              <span className="flow-index">{idx + 1}</span>
-              <span>{step}</span>
-            </div>
-          ))}
-        </div>
-      </div>
 
       <div className="shell-body">
         <nav className="icon-rail" aria-label="Pages">
@@ -377,82 +931,133 @@ function App() {
                       <Button size="small" shape="circle" onClick={() => void refreshTimeline()} disabled={!sessionReady}>↻</Button>
                     </div>
                   </div>
-                  <div className="intent-row">
-                    <div className="intent-field">
-                      <label>问题</label>
-                      <Input
-                        size="small"
-                        value={draftInput}
-                        onChange={(event) => setDraftInput(event.target.value)}
-                        placeholder="例如：检查 up 的端口"
-                        disabled={!sessionReady || busy}
-                      />
+                  <div className="live-meta-row">
+                    <div className="live-meta-item">
+                      <span>设备</span>
+                      <strong>
+                        地址 {sessionDeviceAddress || '-'} 设备名称 {sessionDeviceName || '-'}
+                      </strong>
                     </div>
-                    <div className="intent-field">
-                      <label>方向</label>
-                      <Input
-                        size="small"
-                        value={directionInput}
-                        onChange={(event) => setDirectionInput(event.target.value)}
-                        placeholder="例如：优先接口状态与错误计数"
-                      />
+                    <div className="live-meta-item">
+                      <span>需求</span>
+                      <strong>{truncateText(latestUserRequirement, 120)}</strong>
+                    </div>
+                    <div className="live-meta-item">
+                      <span>状态</span>
+                      <strong>{truncateText(currentExecutionStatus, 140)}</strong>
                     </div>
                   </div>
-                  <div className="status-strip-head">
-                    <strong>实时状态（可折叠）</strong>
-                    <Button size="small" onClick={() => setStatusCollapsed((prev) => !prev)}>
-                      {statusCollapsed ? '展开' : '折叠'}
-                    </Button>
-                  </div>
-                  {!statusCollapsed && (
-                    <div className="status-grid">
-                      <div className="status-item">
-                        <span>当前状态</span>
-                        <strong>{busy ? '执行中' : pendingCommand ? '等待确认' : summary ? '本轮完成' : '待执行'}</strong>
-                      </div>
-                      <div className="status-item">
-                        <span>下一步动作</span>
-                        <strong>{pendingCommand ? '人工确认高风险命令' : busy ? '执行下一条命令' : sessionReady ? '发送问题继续诊断' : '前往连接控制创建会话'}</strong>
-                      </div>
-                      <div className="status-item">
-                        <span>结果摘要</span>
-                        <strong>{summary ? summary.query_result || summary.root_cause : '等待 AI 诊断结果'}</strong>
-                      </div>
-                    </div>
-                  )}
                 </section>
 
-                <section className="chat-log panel-card">
-                  {messages.length === 0 && (
+                <section className="chat-log panel-card" ref={chatLogRef} onScroll={handleChatScroll}>
+                  {activityCards.length === 0 && (
                     <div className="chat-empty">请先到“连接控制”创建会话，然后回到工作台发起诊断。</div>
                   )}
-                  {messages.map((msg) => (
-                    <article key={msg.id} className={`chat-bubble chat-${msg.role}`}>
-                      <div className="chat-head">
-                        <strong>{msg.role === 'assistant' ? 'AI' : msg.role === 'user' ? '你' : '系统'}</strong>
-                        <span>{formatTime(msg.created_at)}</span>
-                      </div>
-                      <div className="chat-body">{msg.content}</div>
-                    </article>
-                  ))}
+                  <div className="activity-stream">
+                    {activityCards.map((item) => (
+                      <article
+                        key={item.key}
+                        className={`activity-card ${item.kind} ${selectedActivity?.key === item.key ? 'active' : ''}`}
+                        onClick={() => {
+                          setSelectedActivityKey(item.key)
+                          if (item.kind === 'command') setSelectedCommandId(item.command.id)
+                        }}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault()
+                            setSelectedActivityKey(item.key)
+                            if (item.kind === 'command') setSelectedCommandId(item.command.id)
+                          }
+                        }}
+                      >
+                        <div className="activity-meta">
+                          <span className={`activity-kind ${item.kind}`}>{item.label}</span>
+                          <span className="activity-time">{formatTime(item.createdAt)}</span>
+                        </div>
+                        <div className="activity-title">{item.title}</div>
+                        {item.kind === 'command' && (
+                          <div className="activity-tags">
+                            <span className={`cmd-status ${statusClass(item.status)}`}>{item.status}</span>
+                            <span className="risk-tag">{item.riskLevel}</span>
+                          </div>
+                        )}
+                        <div className="activity-preview">{item.preview}</div>
+                        {item.kind === 'command' && item.command.status === 'pending_confirm' && (
+                          <div className="inline-confirm-strip" onClick={(event) => event.stopPropagation()}>
+                            <div className="inline-confirm-text">
+                              该命令待人工确认后执行: <code>{item.command.command}</code>
+                            </div>
+                            <div className="inline-confirm-actions">
+                              <Button
+                                size="small"
+                                type="primary"
+                                loading={confirmingCommandId === item.command.id}
+                                onClick={() => void handleConfirmCommandInline(item.command.id, true)}
+                              >
+                                确认执行
+                              </Button>
+                              <Button
+                                size="small"
+                                danger
+                                disabled={confirmingCommandId === item.command.id}
+                                onClick={() => void handleConfirmCommandInline(item.command.id, false)}
+                              >
+                                拒绝
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                      </article>
+                    ))}
+                  </div>
+                  {showScrollToBottom && (
+                    <button
+                      type="button"
+                      className="scroll-bottom-btn"
+                      onClick={handleResumeAutoScroll}
+                      title="滚动到底部并继续自动滚动"
+                      aria-label="滚动到底部并继续自动滚动"
+                    >
+                      <span className="scroll-bottom-line" />
+                      <span className="scroll-bottom-arrow">↓</span>
+                    </button>
+                  )}
                 </section>
 
                 <section className="composer panel-card compact-row">
-                  <Input.TextArea
-                    value={draftInput}
-                    onChange={(event) => setDraftInput(event.target.value)}
-                    rows={3}
-                    disabled={!sessionReady || busy}
-                    placeholder="示例：检查 up 的端口，并确认是否存在异常 flap"
-                  />
-                  <div className="composer-actions">
-                    <Button
-                      type="primary"
-                      onClick={() => void handleSendComposer()}
-                      disabled={!sessionReady || busy || !draftInput.trim()}
-                    >
-                      发送
-                    </Button>
+                  <div className="composer-shell">
+                    <Input.TextArea
+                      value={draftInput}
+                      onChange={(event) => setDraftInput(event.target.value)}
+                      rows={4}
+                      disabled={!sessionReady || busy}
+                      className="composer-textarea"
+                      placeholder="请输入你的问题或变更要求，例如：检查 Et2 状态并给出下一步"
+                    />
+                    <div className="composer-footer">
+                      <div className="composer-inline-controls">
+                        <span className="composer-inline-label">模型</span>
+                        <Select
+                          size="small"
+                          value={llmModelInput}
+                          options={MODEL_OPTIONS}
+                          onChange={(value) => void handleModelChange(value)}
+                          className="composer-model-select"
+                          disabled={llmSaving}
+                        />
+                      </div>
+                      <div className="composer-actions">
+                        <Button
+                          type="primary"
+                          onClick={() => void handleSendComposer()}
+                          disabled={!sessionReady || busy || !draftInput.trim()}
+                        >
+                          发送
+                        </Button>
+                      </div>
+                    </div>
                   </div>
                 </section>
               </div>
@@ -465,10 +1070,10 @@ function App() {
                     <h3>显示工作区</h3>
                     <Button size="small" disabled>自动</Button>
                   </div>
-                  <div className="summary-title">已选会话 / 分析详情</div>
-                  <div className="summary-title">分析显示区</div>
-                  <div className="analysis-result-box">
-                    {summary ? renderSummaryBrief(summary) : '等待 AI 诊断输出...'}
+                  <div className="summary-title">已选卡片 / 详情</div>
+                  <div className="summary-title">{selectedDetailTitle}</div>
+                  <div className="analysis-result-box detail-panel">
+                    <pre className="detail-pre">{selectedDetailBody}</pre>
                   </div>
                 </section>
 
@@ -477,23 +1082,37 @@ function App() {
                   <div className="terminal-grid">
                     <div>
                       <div className="summary-title">命令列表</div>
-                      <div className="command-list mini">
+                      <div className="command-list mini" ref={commandListRef} onScroll={handleCommandListScroll}>
                         {commands.length === 0 && <div className="muted">-</div>}
                         {commands.map((item) => (
                           <button
                             type="button"
                             key={item.id}
-                            className={`command-row ${selectedCommand?.id === item.id ? 'active' : ''}`}
+                            className={`command-row compact ${selectedCommand?.id === item.id ? 'active' : ''}`}
                             onClick={() => setSelectedCommandId(item.id)}
                           >
-                            <div className="command-row-main">
-                              <span className="command-step">#{item.step_no}</span>
-                              <span className="command-title">{item.title}</span>
-                              <span className={`cmd-status ${statusClass(item.status)}`}>{item.status}</span>
+                            <div className="command-row-grid">
+                              <div className="command-meta-inline">
+                                <span className="command-step">#{item.step_no}</span>
+                                <span className="command-title">{item.title}</span>
+                                <span className={`cmd-status ${statusClass(item.status)}`}>{item.status}</span>
+                              </div>
+                              <code className="command-inline-code">{item.command}</code>
                             </div>
-                            <code>{item.command}</code>
                           </button>
                         ))}
+                        {showCommandScrollToBottom && (
+                          <button
+                            type="button"
+                            className="scroll-bottom-btn command-scroll-btn"
+                            onClick={handleResumeCommandAutoScroll}
+                            title="滚动到底部并继续自动滚动"
+                            aria-label="滚动到底部并继续自动滚动"
+                          >
+                            <span className="scroll-bottom-line" />
+                            <span className="scroll-bottom-arrow">↓</span>
+                          </button>
+                        )}
                       </div>
                     </div>
                     <div>
@@ -527,12 +1146,246 @@ function App() {
             </div>
           )}
 
-          {activePage === 'sessions' && (
+          {activePage === 'command_policy' && (
             <div className="page-grid">
+              <div className="panel-card policy-overview">
+                <div className="policy-overview-head">
+                  <div>
+                    <h3>命令执行控制中心</h3>
+                    <p className="muted">
+                      判定顺序：阻断规则 → 放行规则 → 未命中需确认。页面支持长期维护（搜索、排序、编辑、导入导出）。
+                    </p>
+                  </div>
+                  <div className="policy-switch">
+                    <Switch checked={legalityCheckEnabled} onChange={setLegalityCheckEnabled} />
+                    <span className="muted">启用可选合法性 pre-check</span>
+                  </div>
+                </div>
+                <div className="policy-stats">
+                  <div className="policy-stat-card">
+                    <span className="muted">阻断规则</span>
+                    <strong>{blockedRules.length}</strong>
+                  </div>
+                  <div className="policy-stat-card">
+                    <span className="muted">放行规则</span>
+                    <strong>{executableRules.length}</strong>
+                  </div>
+                  <div className="policy-stat-card">
+                    <span className="muted">规则状态</span>
+                    <strong>{policyDirty ? '待保存' : '已同步'}</strong>
+                  </div>
+                </div>
+                <div className="policy-actions">
+                  <Button loading={policySaving} type="primary" onClick={() => void handleSaveCommandPolicy()}>
+                    保存规则
+                  </Button>
+                  <Button loading={policySaving} onClick={() => void handleResetCommandPolicy()}>
+                    恢复默认
+                  </Button>
+                  <Button onClick={handleExportCommandPolicy}>导出 JSON</Button>
+                  <Button onClick={() => policyImportInputRef.current?.click()}>导入 JSON</Button>
+                  <input
+                    ref={policyImportInputRef}
+                    type="file"
+                    accept="application/json,.json"
+                    style={{ display: 'none' }}
+                    onChange={(event) => void handleImportCommandPolicy(event.target.files?.[0])}
+                  />
+                </div>
+              </div>
+
+              <div className="page-grid two-col">
+                <div className="panel-card policy-list-card">
+                  <div className="policy-list-head">
+                    <h3>阻断规则（不可执行）</h3>
+                    <Input
+                      size="small"
+                      value={blockedSearch}
+                      onChange={(event) => setBlockedSearch(event.target.value)}
+                      placeholder="搜索阻断规则"
+                    />
+                  </div>
+                  <div className="policy-add-row">
+                    <Input
+                      size="small"
+                      value={newBlockedRule}
+                      onChange={(event) => setNewBlockedRule(event.target.value)}
+                      placeholder="输入新规则，例如 reload"
+                      onPressEnter={() => appendRule('blocked')}
+                    />
+                    <Button size="small" onClick={() => appendRule('blocked')}>追加</Button>
+                  </div>
+                  <div className="policy-rule-table">
+                    <div className="policy-rule-row policy-rule-head">
+                      <span>#</span>
+                      <span>规则</span>
+                      <span>操作</span>
+                    </div>
+                    {blockedRuleRows.length === 0 && <div className="policy-empty muted">暂无匹配规则</div>}
+                    {blockedRuleRows.map((row, idx) => {
+                      const isEditing = editingRule?.kind === 'blocked' && editingRule.index === row.index
+                      return (
+                        <div key={`blocked-${row.index}-${row.value}`} className="policy-rule-row">
+                          <span>{row.index + 1}</span>
+                          {isEditing ? (
+                            <Input
+                              size="small"
+                              value={editingRule.value}
+                              onChange={(event) =>
+                                setEditingRule((prev) =>
+                                  prev ? { ...prev, value: event.target.value } : prev,
+                                )
+                              }
+                              onPressEnter={saveEditRule}
+                            />
+                          ) : (
+                            <code>{row.value}</code>
+                          )}
+                          <div className="policy-row-actions">
+                            {isEditing ? (
+                              <>
+                                <Button size="small" type="primary" onClick={saveEditRule}>保存</Button>
+                                <Button size="small" onClick={cancelEditRule}>取消</Button>
+                              </>
+                            ) : (
+                              <>
+                                <Button size="small" onClick={() => startEditRule('blocked', row.index, row.value)}>编辑</Button>
+                                <Button size="small" onClick={() => moveRule('blocked', row.index, -1)} disabled={row.index === 0}>上移</Button>
+                                <Button size="small" onClick={() => moveRule('blocked', row.index, 1)} disabled={row.index === blockedRules.length - 1}>下移</Button>
+                                <Button size="small" danger onClick={() => removeRule('blocked', row.index)}>删除</Button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <details className="policy-bulk-editor">
+                    <summary>批量编辑（每行一条）</summary>
+                    <Input.TextArea
+                      value={blockedRules.join('\n')}
+                      rows={7}
+                      onChange={(event) => setBlockedRules(normalizeRules(event.target.value.split('\n')))}
+                    />
+                  </details>
+                </div>
+
+                <div className="panel-card policy-list-card">
+                  <div className="policy-list-head">
+                    <h3>放行规则（可执行）</h3>
+                    <Input
+                      size="small"
+                      value={executableSearch}
+                      onChange={(event) => setExecutableSearch(event.target.value)}
+                      placeholder="搜索放行规则"
+                    />
+                  </div>
+                  <div className="policy-add-row">
+                    <Input
+                      size="small"
+                      value={newExecutableRule}
+                      onChange={(event) => setNewExecutableRule(event.target.value)}
+                      placeholder="输入新规则，例如 show "
+                      onPressEnter={() => appendRule('executable')}
+                    />
+                    <Button size="small" onClick={() => appendRule('executable')}>追加</Button>
+                  </div>
+                  <div className="policy-rule-table">
+                    <div className="policy-rule-row policy-rule-head">
+                      <span>#</span>
+                      <span>规则</span>
+                      <span>操作</span>
+                    </div>
+                    {executableRuleRows.length === 0 && <div className="policy-empty muted">暂无匹配规则</div>}
+                    {executableRuleRows.map((row) => {
+                      const isEditing = editingRule?.kind === 'executable' && editingRule.index === row.index
+                      return (
+                        <div key={`executable-${row.index}-${row.value}`} className="policy-rule-row">
+                          <span>{row.index + 1}</span>
+                          {isEditing ? (
+                            <Input
+                              size="small"
+                              value={editingRule.value}
+                              onChange={(event) =>
+                                setEditingRule((prev) =>
+                                  prev ? { ...prev, value: event.target.value } : prev,
+                                )
+                              }
+                              onPressEnter={saveEditRule}
+                            />
+                          ) : (
+                            <code>{row.value}</code>
+                          )}
+                          <div className="policy-row-actions">
+                            {isEditing ? (
+                              <>
+                                <Button size="small" type="primary" onClick={saveEditRule}>保存</Button>
+                                <Button size="small" onClick={cancelEditRule}>取消</Button>
+                              </>
+                            ) : (
+                              <>
+                                <Button size="small" onClick={() => startEditRule('executable', row.index, row.value)}>编辑</Button>
+                                <Button size="small" onClick={() => moveRule('executable', row.index, -1)} disabled={row.index === 0}>上移</Button>
+                                <Button size="small" onClick={() => moveRule('executable', row.index, 1)} disabled={row.index === executableRules.length - 1}>下移</Button>
+                                <Button size="small" danger onClick={() => removeRule('executable', row.index)}>删除</Button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <details className="policy-bulk-editor">
+                    <summary>批量编辑（每行一条）</summary>
+                    <Input.TextArea
+                      value={executableRules.join('\n')}
+                      rows={7}
+                      onChange={(event) => setExecutableRules(normalizeRules(event.target.value.split('\n')))}
+                    />
+                  </details>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activePage === 'sessions' && (
+            <div className="page-grid two-col">
               <div className="panel-card">
-                <h3>会话视图</h3>
-                <p className="muted">沿用 netdiag 逻辑，后续将扩展多会话列表、筛选和回放。当前展示当前会话快照。</p>
+                <div className="trace-head">
+                  <div>
+                    <h3>历史会话</h3>
+                    <p className="muted">刷新页面后可从此列表恢复任意会话。</p>
+                  </div>
+                  <Button size="small" onClick={() => void refreshSessionHistory()} disabled={sessionsLoading}>
+                    {sessionsLoading ? '刷新中...' : '刷新'}
+                  </Button>
+                </div>
+                <div className="session-history-list">
+                  {sessionHistory.length === 0 && <div className="muted">暂无会话</div>}
+                  {sessionHistory.map((item) => (
+                    <button
+                      type="button"
+                      key={item.id}
+                      className={`session-history-item ${session?.id === item.id ? 'active' : ''}`}
+                      onClick={() => void hydrateSessionById(item.id)}
+                    >
+                      <div className="session-history-main">
+                        <strong>{item.host}</strong>
+                        <span>{item.operation_mode} / {automationLabel(item.automation_level)}</span>
+                      </div>
+                      <div className="session-history-meta">
+                        <span>{item.id.slice(0, 8)}...</span>
+                        <span>{formatTime(item.created_at)}</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="panel-card">
+                <h3>当前会话快照</h3>
                 <div className="kv"><span>会话</span><strong>{session?.id || '-'}</strong></div>
+                <div className="kv"><span>设备</span><strong>{sessionDeviceAddress || '-'}</strong></div>
+                <div className="kv"><span>模式</span><strong>{session?.operation_mode || '-'}</strong></div>
                 <div className="kv"><span>消息数</span><strong>{messages.length}</strong></div>
                 <div className="kv"><span>命令数</span><strong>{commands.length}</strong></div>
                 <div className="kv"><span>证据数</span><strong>{evidences.length}</strong></div>
@@ -540,9 +1393,82 @@ function App() {
             </div>
           )}
 
+          {activePage === 'service_trace' && (
+            <div className="page-grid">
+              <div className="panel-card">
+                <div className="trace-head">
+                  <div>
+                    <h3>服务追踪</h3>
+                    <p className="muted">按步骤展示执行开始/结束时间和耗时，便于定位慢步骤。</p>
+                  </div>
+                  <Button size="small" onClick={() => void refreshServiceTrace()} disabled={!sessionReady || traceLoading}>
+                    {traceLoading ? '刷新中...' : '刷新'}
+                  </Button>
+                </div>
+                <div className="trace-stats">
+                  <div className="trace-stat-card">
+                    <span className="muted">步骤总数</span>
+                    <strong>{traceStats.totalSteps}</strong>
+                  </div>
+                  <div className="trace-stat-card">
+                    <span className="muted">总耗时</span>
+                    <strong>{formatDuration(traceStats.totalDurationMs)}</strong>
+                  </div>
+                  <div className="trace-stat-card">
+                    <span className="muted">最慢步骤</span>
+                    <strong>{traceStats.slowestTitle || '-'}</strong>
+                    <span className="muted">{traceStats.slowestDurationMs !== undefined ? formatDuration(traceStats.slowestDurationMs) : '-'}</span>
+                  </div>
+                  <div className="trace-stat-card">
+                    <span className="muted">当前会话</span>
+                    <strong>{session?.id ? `${session.id.slice(0, 8)}...` : '-'}</strong>
+                  </div>
+                </div>
+              </div>
+
+              <div className="panel-card trace-list-card">
+                <div className="trace-row trace-row-head">
+                  <span>#</span>
+                  <span>步骤</span>
+                  <span>状态</span>
+                  <span>开始</span>
+                  <span>结束</span>
+                  <span>耗时</span>
+                </div>
+                <div className="trace-list-scroll">
+                  {traceSteps.length === 0 && <div className="trace-empty muted">暂无追踪数据。先创建会话并执行一次对话。</div>}
+                  {traceSteps.map((step) => {
+                    const width = traceStats.maxDurationMs > 0 && step.duration_ms !== undefined
+                      ? Math.max(4, Math.round((step.duration_ms / traceStats.maxDurationMs) * 100))
+                      : 0
+                    return (
+                      <div key={step.id} className="trace-row trace-row-item">
+                        <span>{step.seq_no}</span>
+                        <div className="trace-step-cell">
+                          <div className="trace-step-title">{step.title}</div>
+                          <div className="trace-step-meta">{traceTypeLabel(step.step_type)}</div>
+                          {step.detail && <div className="trace-step-detail">{step.detail}</div>}
+                          {width > 0 && (
+                            <div className="trace-bar-wrap">
+                              <div className="trace-bar" style={{ width: `${width}%` }} />
+                            </div>
+                          )}
+                        </div>
+                        <span className={`trace-status ${traceStatusClass(step.status)}`}>{step.status}</span>
+                        <span>{formatTime(step.started_at)}</span>
+                        <span>{step.completed_at ? formatTime(step.completed_at) : '-'}</span>
+                        <span>{step.duration_ms !== undefined ? formatDuration(step.duration_ms) : '-'}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
           {activePage === 'learning' && (
             <div className="page-grid two-col">
-              <div className="panel-card placeholder-card">
+              <div className="panel-card">
                 <h3>学习库（预留）</h3>
                 <p className="muted">对齐 netdiag 的规则库 / 案例库 / 知识沉淀，当前留空待开发。</p>
               </div>
@@ -567,7 +1493,7 @@ function App() {
           )}
 
           {activePage === 'ai_settings' && (
-            <div className="page-grid two-col">
+            <div className="page-grid ai-settings-layout">
               <div className="panel-card">
                 <h3>AI 设置</h3>
                 <p className="muted">模型配置统一放到此页，工作台保持诊断专注。</p>
@@ -577,20 +1503,44 @@ function App() {
                   onChange={(event) => setApiKeyInput(event.target.value)}
                   placeholder="输入 DeepSeek API Key (sk-...)"
                 />
-                <Button style={{ marginTop: 8 }} type="primary" loading={llmSaving} onClick={() => void handleSaveApiKey()}>
-                  保存 API Key
-                </Button>
+                <Select
+                  style={{ marginTop: 8 }}
+                  value={llmModelInput}
+                  options={MODEL_OPTIONS}
+                  onChange={(value) => void handleModelChange(value)}
+                  disabled={llmSaving}
+                />
+                <div className="ai-setting-actions">
+                  <Button type="primary" loading={llmSaving} onClick={() => void handleSaveApiKey()}>
+                    保存 API Key
+                  </Button>
+                  <Button danger disabled={llmSaving} onClick={() => void handleDeleteApiKey()}>
+                    删除已保存 Key
+                  </Button>
+                </div>
               </div>
               <div className="panel-card placeholder-card">
-                <h3>提示词与策略（预留）</h3>
-                <p className="muted">后续可按 netdiag 风格补充系统提示词、任务提示词、模型路由策略。</p>
+                <h3>提示词与策略</h3>
+                <p className="muted">展示系统当前提供给 AI 的提示词模板（只读）。</p>
+                <div className="kv"><span>模型</span><strong>{llmPromptPolicy?.model || llmStatus?.model || '-'}</strong></div>
+                <div className="kv"><span>Base URL</span><strong>{llmPromptPolicy?.base_url || llmStatus?.base_url || '-'}</strong></div>
+                <div className="prompt-policy-list">
+                  {llmPromptPolicy && Object.keys(llmPromptPolicy.prompts || {}).length > 0 ? (
+                    Object.entries(llmPromptPolicy.prompts).map(([key, value]) => (
+                      <details key={key} className="prompt-policy-item">
+                        <summary>{formatPromptKey(key)}</summary>
+                        <pre>{value}</pre>
+                      </details>
+                    ))
+                  ) : (
+                    <p className="muted">当前系统未返回可展示的提示词模板。</p>
+                  )}
+                </div>
               </div>
             </div>
           )}
         </section>
       </div>
-
-      <ConfirmModal command={pendingCommand} onApprove={handleApprove} onReject={handleReject} />
     </div>
   )
 }
@@ -612,19 +1562,6 @@ function automationLabel(level: AutomationLevel): string {
   return '全自动'
 }
 
-function currentFlowIndex(
-  sessionReady: boolean,
-  commandCount: number,
-  pendingCommand: CommandExecution | undefined,
-  summary: DiagnosisSummary | undefined,
-): number {
-  if (!sessionReady) return 0
-  if (summary) return 6
-  if (pendingCommand) return 3
-  if (commandCount === 0) return 1
-  return 4
-}
-
 function formatTime(ts: string): string {
   try {
     return new Date(ts).toLocaleTimeString('zh-CN', { hour12: false })
@@ -640,6 +1577,17 @@ function statusClass(status: string): string {
   return 'idle'
 }
 
+function formatPromptKey(key: string): string {
+  const map: Record<string, string> = {
+    next_step_history: '多轮对话决策提示词',
+    next_step_default: '默认决策提示词',
+    summary_primary: '诊断总结提示词',
+    summary_review: '诊断审稿提示词',
+    summary_rewrite: '诊断改写提示词',
+  }
+  return map[key] || key
+}
+
 function renderSummaryBrief(summary: DiagnosisSummary): string {
   if (summary.mode === 'query' || summary.mode === 'config') {
     return summary.query_result || summary.root_cause
@@ -647,10 +1595,273 @@ function renderSummaryBrief(summary: DiagnosisSummary): string {
   return [summary.root_cause, summary.impact_scope, summary.recommendation].filter(Boolean).join(' | ')
 }
 
+function buildActivityCards(
+  messages: ChatMessage[],
+  commands: CommandExecution[],
+  summary?: DiagnosisSummary,
+): ActivityCard[] {
+  const cards: Array<ActivityCard & { sortAt: number; sortIdx: number }> = []
+
+  for (let index = 0; index < messages.length; index += 1) {
+    const msg = messages[index]
+    cards.push({
+      key: `msg:${msg.id}`,
+      kind: 'message',
+      createdAt: msg.created_at,
+      label: messageRoleLabel(msg.role),
+      title: messageTitle(msg),
+      preview: truncateText(msg.content, 170),
+      message: msg,
+      sortAt: parseSortTime(msg.created_at, index),
+      sortIdx: index,
+    })
+  }
+
+  for (let index = 0; index < commands.length; index += 1) {
+    const cmd = commands[index]
+    const createdAt = cmd.created_at || ''
+    cards.push({
+      key: `cmd:${cmd.id}`,
+      kind: 'command',
+      createdAt,
+      label: '执行',
+      title: `步骤 ${cmd.step_no}: ${cmd.title}`,
+      preview: summarizeCommandCard(cmd),
+      status: cmd.status,
+      riskLevel: riskLabel(cmd.risk_level),
+      command: cmd,
+      sortAt: parseSortTime(createdAt, messages.length + index),
+      sortIdx: messages.length + index,
+    })
+  }
+
+  if (summary) {
+    const createdAt = summary.created_at || ''
+    cards.push({
+      key: 'summary:latest',
+      kind: 'summary',
+      createdAt,
+      label: '结论',
+      title: summary.mode === 'query' || summary.mode === 'config' ? '查询结果' : '最终诊断',
+      preview: truncateText(renderSummaryBrief(summary), 170),
+      summary,
+      sortAt: parseSortTime(createdAt, messages.length + commands.length + 1),
+      sortIdx: messages.length + commands.length + 1,
+    })
+  }
+
+  return cards
+    .sort((a, b) => {
+      if (a.sortAt === b.sortAt) return a.sortIdx - b.sortIdx
+      return a.sortAt - b.sortAt
+    })
+    .map(({ sortAt: _, sortIdx: __, ...rest }) => rest)
+}
+
+function renderActivityDetail(activity: ActivityCard): string {
+  if (activity.kind === 'message') {
+    return activity.message.content
+  }
+
+  if (activity.kind === 'command') {
+    const cmd = activity.command
+    const output = (cmd.output || '').trim()
+    const error = (cmd.error || '').trim()
+    return [
+      `标题: ${cmd.title}`,
+      `状态: ${cmd.status}`,
+      `风险: ${riskLabel(cmd.risk_level)}`,
+      `命令: ${cmd.command}`,
+      output ? `输出:\n${output}` : '',
+      error ? `错误:\n${error}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n')
+  }
+
+  const summary = activity.summary
+  if (summary.mode === 'query' || summary.mode === 'config') {
+    return [
+      `模式: ${summary.mode}`,
+      `结果: ${summary.query_result || summary.root_cause}`,
+      summary.follow_up_action ? `建议: ${summary.follow_up_action}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n')
+  }
+  return [
+    `根因: ${summary.root_cause}`,
+    `影响范围: ${summary.impact_scope}`,
+    `建议动作: ${summary.recommendation}`,
+    summary.confidence !== undefined ? `置信度: ${Math.round(summary.confidence * 100)}%` : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+}
+
+function messageRoleLabel(role: ChatMessage['role']): string {
+  if (role === 'assistant') return 'AI'
+  if (role === 'user') return '你'
+  return '系统'
+}
+
+function messageTitle(msg: ChatMessage): string {
+  if (msg.role === 'assistant') return 'AI 响应'
+  if (msg.role === 'user') return '用户输入'
+  return '系统事件'
+}
+
+function summarizeCommandCard(command: CommandExecution): string {
+  const headline = command.command
+  const result = truncateText(command.output || command.error || '', 80)
+  if (result) return `${headline}\n${result}`
+  return headline
+}
+
+function truncateText(value: string, limit: number): string {
+  if (value.length <= limit) return value
+  return `${value.slice(0, limit)}...`
+}
+
+function riskLabel(level: CommandExecution['risk_level']): string {
+  if (level === 'high') return '高风险'
+  if (level === 'medium') return '中风险'
+  return '低风险'
+}
+
+function parseSortTime(value: string | undefined, fallback: number): number {
+  if (!value) return Number.MAX_SAFE_INTEGER - 1000 + fallback
+  const ts = Date.parse(value)
+  if (Number.isNaN(ts)) return Number.MAX_SAFE_INTEGER - 1000 + fallback
+  return ts
+}
+
+function buildDeviceName(host: string): string {
+  const value = (host || '').trim()
+  if (!value) return '-'
+  const parts = value.split('.')
+  const last = parts[parts.length - 1]
+  if (/^\d+$/.test(last)) {
+    return `Device-${last}`
+  }
+  return value
+}
+
+function normalizeRule(value: string): string {
+  return String(value ?? '').trim()
+}
+
+function normalizeRules(values: string[]): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const item of values) {
+    const normalized = normalizeRule(item)
+    if (!normalized) continue
+    const key = normalized.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(normalized)
+  }
+  return out
+}
+
+function appendRuleUnique(values: string[], rule: string): string[] {
+  return normalizeRules([...values, rule])
+}
+
+function replaceRuleAt(values: string[], index: number, nextValue: string): string[] {
+  if (index < 0 || index >= values.length) return values
+  const updated = [...values]
+  updated[index] = normalizeRule(nextValue)
+  return normalizeRules(updated)
+}
+
+function moveRuleItem(values: string[], index: number, direction: -1 | 1): string[] {
+  const nextIndex = index + direction
+  if (index < 0 || index >= values.length) return values
+  if (nextIndex < 0 || nextIndex >= values.length) return values
+  const clone = [...values]
+  const [item] = clone.splice(index, 1)
+  clone.splice(nextIndex, 0, item)
+  return clone
+}
+
+function buildRuleRows(values: string[], keyword: string): Array<{ index: number; value: string }> {
+  const normalizedKeyword = keyword.trim().toLowerCase()
+  return values
+    .map((value, index) => ({ index, value }))
+    .filter((row) => !normalizedKeyword || row.value.toLowerCase().includes(normalizedKeyword))
+}
+
+function sameRules(left: string[], right: string[]): boolean {
+  const a = normalizeRules(left)
+  const b = normalizeRules(right)
+  if (a.length !== b.length) return false
+  for (let idx = 0; idx < a.length; idx += 1) {
+    if (a[idx].toLowerCase() !== b[idx].toLowerCase()) return false
+  }
+  return true
+}
+
+function buildTraceStats(steps: ServiceTraceStep[]): {
+  totalSteps: number
+  totalDurationMs: number
+  maxDurationMs: number
+  slowestTitle: string
+  slowestDurationMs: number | undefined
+} {
+  let total = 0
+  let maxDuration = 0
+  let slowestTitle = ''
+  let slowestDuration: number | undefined
+  for (const step of steps) {
+    if (typeof step.duration_ms !== 'number') continue
+    total += Math.max(0, step.duration_ms)
+    if (step.duration_ms >= maxDuration) {
+      maxDuration = step.duration_ms
+      slowestDuration = step.duration_ms
+      slowestTitle = step.title
+    }
+  }
+  return {
+    totalSteps: steps.length,
+    totalDurationMs: total,
+    maxDurationMs: maxDuration,
+    slowestTitle,
+    slowestDurationMs: slowestDuration,
+  }
+}
+
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '-'
+  if (ms < 1000) return `${ms} ms`
+  return `${(ms / 1000).toFixed(2)} s`
+}
+
+function traceTypeLabel(stepType: string): string {
+  if (stepType === 'user_input') return '用户请求'
+  if (stepType === 'llm_plan') return 'LLM 规划'
+  if (stepType === 'llm_final') return 'LLM 总结'
+  if (stepType === 'llm_status') return 'LLM 可用性'
+  if (stepType === 'command_execution') return '命令执行'
+  if (stepType === 'command_confirm_execution') return '确认后执行'
+  if (stepType === 'orchestrator_error') return '流程异常'
+  return stepType
+}
+
+function traceStatusClass(status: string): string {
+  if (status === 'succeeded') return 'ok'
+  if (status === 'failed' || status === 'blocked' || status === 'rejected') return 'err'
+  if (status === 'pending_confirm' || status === 'running') return 'warn'
+  return 'idle'
+}
+
 function renderNavIcon(page: PageId): string {
   if (page === 'workbench') return '◫'
   if (page === 'control') return '⌘'
+  if (page === 'command_policy') return '☑'
   if (page === 'sessions') return '☷'
+  if (page === 'service_trace') return '⏱'
   if (page === 'learning') return '⌬'
   if (page === 'lab') return '△'
   return '◎'

@@ -58,12 +58,12 @@ class OperationMode(str, Enum):
 class DeviceTarget(BaseModel):
     host: str
     port: int = 22
-    vendor: str = "cisco_like"
+    vendor: str = "unknown"
     protocol: DeviceProtocol = DeviceProtocol.ssh
     username: Optional[str] = None
     password: Optional[str] = None
     api_token: Optional[str] = None
-    device_type: str = "cisco_ios"
+    device_type: str = "autodetect"
 
 
 class SessionCreateRequest(BaseModel):
@@ -95,6 +95,16 @@ class SessionResponse(BaseModel):
     created_at: datetime
 
 
+class SessionListItem(BaseModel):
+    id: str
+    host: str
+    protocol: DeviceProtocol
+    automation_level: AutomationLevel
+    operation_mode: OperationMode
+    status: SessionStatus
+    created_at: datetime
+
+
 class MessageCreateRequest(BaseModel):
     content: str
 
@@ -119,7 +129,13 @@ class CommandExecution(BaseModel):
     requires_confirmation: bool = False
     output: Optional[str] = None
     error: Optional[str] = None
+    batch_id: Optional[str] = None
+    batch_index: Optional[int] = None
+    batch_total: Optional[int] = None
     created_at: datetime = Field(default_factory=now_utc)
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    duration_ms: Optional[int] = None
 
 
 class Evidence(BaseModel):
@@ -165,6 +181,25 @@ class TimelineResponse(BaseModel):
     summary: Optional[IncidentSummary] = None
 
 
+class ServiceTraceStep(BaseModel):
+    id: str = Field(default_factory=make_id)
+    session_id: str
+    seq_no: int
+    step_type: str
+    title: str
+    status: str = "running"
+    started_at: datetime = Field(default_factory=now_utc)
+    completed_at: Optional[datetime] = None
+    duration_ms: Optional[int] = None
+    command_id: Optional[str] = None
+    detail: Optional[str] = None
+
+
+class ServiceTraceResponse(BaseModel):
+    session_id: str
+    steps: list[ServiceTraceStep] = Field(default_factory=list)
+
+
 class ExportRequest(BaseModel):
     format: Literal["markdown", "pdf"] = "markdown"
 
@@ -181,7 +216,7 @@ class EventEnvelope(BaseModel):
 
 
 class LLMConfigRequest(BaseModel):
-    api_key: str
+    api_key: Optional[str] = None
     base_url: Optional[str] = None
     model: Optional[str] = None
 
@@ -190,3 +225,22 @@ class LLMConfigResponse(BaseModel):
     enabled: bool
     base_url: str
     model: str
+
+
+class LLMPromptPolicyResponse(BaseModel):
+    enabled: bool
+    base_url: str
+    model: str
+    prompts: dict[str, str] = Field(default_factory=dict)
+
+
+class CommandPolicy(BaseModel):
+    blocked_patterns: list[str] = Field(default_factory=list)
+    executable_patterns: list[str] = Field(default_factory=list)
+    legality_check_enabled: bool = True
+
+
+class CommandPolicyUpdateRequest(BaseModel):
+    blocked_patterns: Optional[list[str]] = None
+    executable_patterns: Optional[list[str]] = None
+    legality_check_enabled: Optional[bool] = None

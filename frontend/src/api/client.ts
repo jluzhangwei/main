@@ -1,4 +1,15 @@
-import type { AutomationLevel, EventPayload, LLMStatus, SessionResponse, Timeline } from '../types'
+import type {
+  AutomationLevel,
+  CommandPolicy,
+  CommandPolicyUpdateRequest,
+  EventPayload,
+  LLMPromptPolicy,
+  LLMStatus,
+  ServiceTrace,
+  SessionListItem,
+  SessionResponse,
+  Timeline,
+} from '../types'
 
 const headers = {
   'Content-Type': 'application/json',
@@ -33,6 +44,14 @@ export async function createSession(input: {
     throw new Error('Failed to create session')
   }
 
+  return res.json()
+}
+
+export async function listSessions(): Promise<SessionListItem[]> {
+  const res = await fetch('/v1/sessions')
+  if (!res.ok) {
+    throw new Error('Failed to load sessions')
+  }
   return res.json()
 }
 
@@ -111,6 +130,14 @@ export async function getTimeline(sessionId: string): Promise<Timeline> {
   return res.json()
 }
 
+export async function getServiceTrace(sessionId: string): Promise<ServiceTrace> {
+  const res = await fetch(`/v1/sessions/${sessionId}/trace`)
+  if (!res.ok) {
+    throw new Error('Failed to load service trace')
+  }
+  return res.json()
+}
+
 export async function exportMarkdown(sessionId: string): Promise<string> {
   const res = await fetch(`/v1/sessions/${sessionId}/export`, {
     method: 'POST',
@@ -134,14 +161,71 @@ export async function getLlmStatus(): Promise<LLMStatus> {
   return res.json()
 }
 
-export async function configureLlm(apiKey: string): Promise<LLMStatus> {
+export async function configureLlm(input: {
+  apiKey?: string
+  model?: string
+  baseUrl?: string
+}): Promise<LLMStatus> {
   const res = await fetch('/v1/llm/config', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ api_key: apiKey }),
+    body: JSON.stringify({
+      api_key: input.apiKey,
+      model: input.model,
+      base_url: input.baseUrl,
+    }),
   })
   if (!res.ok) {
     throw new Error('Failed to configure LLM')
+  }
+  return res.json()
+}
+
+export async function deleteLlmConfig(): Promise<LLMStatus> {
+  const res = await fetch('/v1/llm/config', {
+    method: 'DELETE',
+  })
+  if (!res.ok) {
+    throw new Error('Failed to delete LLM config')
+  }
+  return res.json()
+}
+
+export async function getLlmPromptPolicy(): Promise<LLMPromptPolicy> {
+  const res = await fetch('/v1/llm/prompt-policy')
+  if (!res.ok) {
+    throw new Error('Failed to load LLM prompt policy')
+  }
+  return res.json()
+}
+
+export async function getCommandPolicy(): Promise<CommandPolicy> {
+  const res = await fetch('/v1/command-policy')
+  if (!res.ok) {
+    throw new Error('Failed to load command policy')
+  }
+  return res.json()
+}
+
+export async function updateCommandPolicy(payload: CommandPolicyUpdateRequest): Promise<CommandPolicy> {
+  const res = await fetch('/v1/command-policy', {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    throw new Error('Failed to update command policy')
+  }
+  return res.json()
+}
+
+export async function resetCommandPolicy(): Promise<CommandPolicy> {
+  const res = await fetch('/v1/command-policy/reset', {
+    method: 'POST',
+    headers,
+  })
+  if (!res.ok) {
+    throw new Error('Failed to reset command policy')
   }
   return res.json()
 }

@@ -9,10 +9,10 @@ type Props = {
 
 export function ConfirmModal({ command, onApprove, onReject }: Props) {
   return (
-    <Modal open={Boolean(command)} title="高风险命令确认" footer={null} closable={false}>
+    <Modal open={Boolean(command)} title="命令执行确认" footer={null} closable={false}>
       {command ? (
         <div>
-          <p>该命令被识别为高风险，执行前请确认。</p>
+          <p>该命令需要人工确认后才会执行（可能是高风险或未命中可执行规则）。</p>
           <Tag color="red">{command.risk_level}</Tag>
           <pre className="danger-command">{command.command}</pre>
           <div className="modal-actions">

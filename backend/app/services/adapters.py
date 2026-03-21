@@ -38,27 +38,52 @@ class SSHAdapter(DeviceAdapter):
         self.connection_error: Optional[Exception] = None
 
     async def connect(self) -> None:
-        if ConnectHandler and self.session.device.username and self.session.device.password:
-            for _ in range(2):
-                try:
-                    self.conn = await asyncio.to_thread(
-                        ConnectHandler,
-                        device_type=self._resolve_device_type(),
-                        host=self.session.device.host,
-                        username=self.session.device.username,
-                        password=self.session.device.password,
-                        port=self.session.device.port,
-                        timeout=10,
-                        conn_timeout=15,
-                        auth_timeout=15,
-                        banner_timeout=20,
-                    )
-                    self.connection_error = None
+        if self.conn:
+            try:
+                alive = await asyncio.to_thread(self.conn.is_alive)
+                if isinstance(alive, dict):
+                    if bool(alive.get("is_alive")):
+                        return
+                elif bool(alive):
                     return
-                except Exception as exc:
-                    self.conn = None
-                    self.connection_error = exc
-                    await asyncio.sleep(0.5)
+            except Exception:
+                self.conn = None
+
+        if ConnectHandler and self.session.device.username and self.session.device.password:
+            candidates = self._candidate_device_types()
+            for candidate in candidates:
+                for _ in range(2):
+                    try:
+                        self.conn = await asyncio.to_thread(
+                            ConnectHandler,
+                            device_type=candidate,
+                            host=self.session.device.host,
+                            username=self.session.device.username,
+                            password=self.session.device.password,
+                            port=self.session.device.port,
+                            timeout=10,
+                            conn_timeout=15,
+                            auth_timeout=15,
+                            banner_timeout=20,
+                        )
+                        if not await self._probe_device_identity(candidate):
+                            try:
+                                await asyncio.to_thread(self.conn.disconnect)
+                            except Exception:
+                                pass
+                            self.conn = None
+                            self.connection_error = RuntimeError(f"device type probe mismatch: {candidate}")
+                            continue
+                        self.connection_error = None
+                        self.session.device.device_type = candidate
+                        self._refresh_vendor_hint_from_device_type(candidate)
+                        return
+                    except Exception as exc:
+                        self.conn = None
+                        self.connection_error = exc
+                        if self._is_auth_error(exc):
+                            break
+                        await asyncio.sleep(0.25)
 
             if not self.allow_simulation:
                 raise self.connection_error
@@ -68,11 +93,40 @@ class SSHAdapter(DeviceAdapter):
     async def run_command(self, command: str) -> str:
         translated = self._translate_command(command)
         translated = self._normalize_interface_tokens(translated)
+        normalized_translated = translated.strip().lower()
+        command_parts = self._split_commands(translated)
         workflow_commands = self._extract_config_workflow(translated)
+
+        if self.conn and normalized_translated == "enable":
+            try:
+                output = await asyncio.to_thread(self.conn.enable)
+                if isinstance(output, str) and output.strip():
+                    return output
+                return "Entered privileged mode."
+            except Exception as exc:
+                if self._is_prompt_detection_error(exc):
+                    try:
+                        output = await asyncio.to_thread(self.conn.send_command_timing, "enable", read_timeout=30)
+                        if isinstance(output, str) and output.strip():
+                            return output
+                        return "Entered privileged mode."
+                    except Exception:
+                        pass
+                if self.allow_simulation:
+                    return "Entered privileged mode."
+                raise
 
         if self.conn and workflow_commands:
             try:
                 return await asyncio.to_thread(self.conn.send_config_set, workflow_commands)
+            except Exception as exc:
+                if self.allow_simulation:
+                    return _simulate_cli_output(command)
+                raise
+
+        if self.conn and len(command_parts) == 1 and self._looks_like_config_command(command_parts[0]):
+            try:
+                return await asyncio.to_thread(self.conn.send_command_timing, translated, read_timeout=30)
             except Exception as exc:
                 if self.allow_simulation:
                     return _simulate_cli_output(command)
@@ -108,6 +162,8 @@ class SSHAdapter(DeviceAdapter):
                 await asyncio.to_thread(self.conn.disconnect)
             except Exception:
                 pass
+            finally:
+                self.conn = None
 
     def _resolve_device_type(self) -> str:
         if self.session.device.protocol != DeviceProtocol.telnet:
@@ -124,6 +180,78 @@ class SSHAdapter(DeviceAdapter):
             "arista_eos": "arista_eos_telnet",
         }
         return telnet_map.get(base, f"{base}_telnet")
+
+    def _candidate_device_types(self) -> list[str]:
+        if self.session.device.protocol == DeviceProtocol.telnet:
+            return [self._resolve_device_type()]
+
+        vendor = (self.session.device.vendor or "").strip().lower()
+        current = (self.session.device.device_type or "").strip().lower()
+        candidates: list[str] = []
+
+        if current and current not in {"autodetect", "auto", "unknown"}:
+            candidates.append(current)
+        if "huawei" in vendor:
+            candidates.append("huawei")
+        if "arista" in vendor:
+            candidates.append("arista_eos")
+        if "cisco" in vendor:
+            candidates.extend(["cisco_ios", "cisco_xe"])
+
+        candidates.extend(["cisco_ios", "arista_eos", "cisco_xe", "huawei"])
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in candidates:
+            normalized = item.strip().lower()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(normalized)
+        return deduped
+
+    def _refresh_vendor_hint_from_device_type(self, device_type: str) -> None:
+        normalized = (device_type or "").strip().lower()
+        if normalized == "huawei":
+            self.session.device.vendor = "huawei"
+        elif normalized == "arista_eos":
+            self.session.device.vendor = "arista"
+        elif normalized in {"cisco_ios", "cisco_xe"}:
+            self.session.device.vendor = "cisco_like"
+
+    def _is_auth_error(self, exc: Exception) -> bool:
+        lowered = str(exc).lower()
+        return any(
+            token in lowered
+            for token in [
+                "authentication failed",
+                "permission denied",
+                "auth failed",
+                "login invalid",
+            ]
+        )
+
+    async def _probe_device_identity(self, device_type: str) -> bool:
+        if not self.conn:
+            return False
+
+        probe = "display version" if device_type == "huawei" else "show version"
+        try:
+            output = await asyncio.to_thread(self.conn.send_command, probe)
+        except Exception as exc:
+            return not self._is_prompt_detection_error(exc)
+
+        if self._looks_like_cli_error(output):
+            return False
+
+        lowered = output.lower()
+        if device_type == "huawei":
+            return any(token in lowered for token in ("huawei", "versatile routing platform", "vrp"))
+        if device_type == "arista_eos":
+            return "arista" in lowered or "eos" in lowered
+        if device_type in {"cisco_ios", "cisco_xe"}:
+            return "cisco" in lowered
+        return True
 
     def _translate_command(self, command: str) -> str:
         vendor = self.session.device.vendor.strip().lower()
@@ -160,14 +288,14 @@ class SSHAdapter(DeviceAdapter):
 
     def _extract_config_workflow(self, command: str) -> list[str]:
         parts = self._split_commands(command)
-        if not parts:
+        if len(parts) <= 1:
             return []
 
         if not any(self._looks_like_config_command(part) for part in parts):
             return []
 
         workflow = [part for part in parts if not self._is_mode_wrapper(part)]
-        return workflow or parts
+        return workflow
 
     def _looks_like_config_command(self, command: str) -> bool:
         normalized = command.strip().lower()

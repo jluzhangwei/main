@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from app.models.schemas import AutomationLevel, DeviceProtocol, DeviceTarget, OperationMode, SessionCreateRequest
+from app.models.schemas import (
+    AutomationLevel,
+    CommandStatus,
+    DeviceProtocol,
+    DeviceTarget,
+    OperationMode,
+    SessionCreateRequest,
+)
 from app.services.orchestrator import ConversationOrchestrator
 from app.services.store import InMemoryStore
 
@@ -183,6 +190,113 @@ class FakeRepeatCommandDiagnoser:
             "query_result": "检查完成",
             "follow_up_action": "done",
             "confidence": 0.9,
+            "evidence_refs": [],
+        }
+
+    async def diagnose(self, session, commands, evidences):
+        return None
+
+
+class FailThenFinalizeDiagnoser:
+    enabled = True
+
+    async def propose_next_step(
+        self,
+        *,
+        session,
+        user_problem: str,
+        commands,
+        evidences,
+        iteration: int,
+        max_iterations: int,
+        conversation_history=None,
+    ):
+        if iteration == 1:
+            return {
+                "decision": "run_command",
+                "title": "尝试执行配置命令",
+                "command": "configure terminal ; interface Gi0/0/1 ; shutdown",
+                "reason": "验证失败后自我修正",
+            }
+        return {
+            "decision": "final",
+            "mode": "config",
+            "query_result": "第一次命令执行失败，AI已基于错误回显完成自我判断。",
+            "follow_up_action": "建议重新生成命令链后再次执行。",
+            "confidence": 0.71,
+            "evidence_refs": [],
+        }
+
+    async def diagnose(self, session, commands, evidences):
+        return None
+
+
+class BatchCommandDiagnoser:
+    enabled = True
+
+    async def propose_next_step(
+        self,
+        *,
+        session,
+        user_problem: str,
+        commands,
+        evidences,
+        iteration: int,
+        max_iterations: int,
+        conversation_history=None,
+    ):
+        if iteration == 1:
+            return {
+                "decision": "run_command",
+                "title": "批量采集",
+                "commands": [
+                    {"title": "接口摘要", "command": "show ip interface brief"},
+                    "show ip route",
+                ],
+            }
+        return {
+            "decision": "final",
+            "mode": "query",
+            "query_result": "批量执行完成",
+            "follow_up_action": "done",
+            "confidence": 0.8,
+            "evidence_refs": [],
+        }
+
+    async def diagnose(self, session, commands, evidences):
+        return None
+
+
+class BatchWithPendingDiagnoser:
+    enabled = True
+
+    async def propose_next_step(
+        self,
+        *,
+        session,
+        user_problem: str,
+        commands,
+        evidences,
+        iteration: int,
+        max_iterations: int,
+        conversation_history=None,
+    ):
+        if iteration == 1:
+            return {
+                "decision": "run_command",
+                "title": "批量执行",
+                "commands": [
+                    "show ip interface brief",
+                    "configure terminal",
+                    "show ip route",
+                ],
+            }
+        return {
+            "decision": "final",
+            "mode": "query",
+            "query_result": "should not reach this in assisted flow",
+            "follow_up_action": "done",
+            "confidence": 0.5,
             "evidence_refs": [],
         }
 
@@ -497,3 +611,127 @@ async def test_normal_followup_also_reexecutes_duplicate_command():
 
     assert second_count == first_count + 1
     assert store.list_commands(session.id)[-1].command == "show interfaces description"
+
+
+@pytest.mark.asyncio
+async def test_failed_command_result_is_fed_back_to_ai_and_loop_continues(monkeypatch):
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store, allow_simulation=False)
+    orchestrator.deepseek_diagnoser = FailThenFinalizeDiagnoser()
+
+    call_counter = {"n": 0}
+
+    class _Adapter:
+        async def connect(self):
+            return None
+
+        async def run_command(self, command: str):
+            call_counter["n"] += 1
+            if call_counter["n"] == 1:
+                return "Huawei Versatile Routing Platform Software\nVRP (R) software, Version 8.180"
+            raise RuntimeError("simulated command failure")
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(
+        "app.services.orchestrator.build_adapter",
+        lambda session, allow_simulation=True: _Adapter(),
+    )
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(
+                host="192.168.0.88",
+                protocol=DeviceProtocol.ssh,
+                vendor="huawei",
+                username="zhangwei",
+                password="test-password",
+                device_type="huawei",
+            ),
+            operation_mode=OperationMode.config,
+            automation_level=AutomationLevel.full_auto,
+        )
+    )
+
+    async for _ in orchestrator.stream_message(session.id, "执行端口配置"):
+        pass
+
+    commands = store.list_commands(session.id)
+    assert len(commands) == 2
+    assert commands[1].status == CommandStatus.failed
+    assert "simulated command failure" in (commands[1].error or "")
+
+    summary = store.get_summary(session.id)
+    assert summary is not None
+    assert summary.mode == "config"
+    assert "AI已基于错误回显完成自我判断" in (summary.query_result or "")
+
+
+@pytest.mark.asyncio
+async def test_batch_commands_from_single_ai_step_are_executed_in_order():
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    orchestrator.deepseek_diagnoser = BatchCommandDiagnoser()
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(
+                host="192.168.0.88",
+                protocol=DeviceProtocol.ssh,
+                vendor="huawei",
+                username="zhangwei",
+                password="test-password",
+                device_type="huawei",
+            ),
+            operation_mode=OperationMode.query,
+            automation_level=AutomationLevel.full_auto,
+        )
+    )
+
+    async for _ in orchestrator.stream_message(session.id, "批量采集一下"):
+        pass
+
+    commands = store.list_commands(session.id)
+    assert len(commands) == 3
+    assert commands[0].command == "display version"
+    assert commands[1].command == "show ip interface brief"
+    assert commands[2].command == "show ip route"
+    assert all(cmd.status == CommandStatus.succeeded for cmd in commands)
+
+
+@pytest.mark.asyncio
+async def test_batch_stops_and_waits_for_confirmation_when_one_command_is_high_risk():
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    orchestrator.deepseek_diagnoser = BatchWithPendingDiagnoser()
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(
+                host="192.168.0.88",
+                protocol=DeviceProtocol.ssh,
+                vendor="huawei",
+                username="zhangwei",
+                password="test-password",
+                device_type="huawei",
+            ),
+            operation_mode=OperationMode.config,
+            automation_level=AutomationLevel.assisted,
+        )
+    )
+
+    events = []
+    async for event in orchestrator.stream_message(session.id, "执行批量命令"):
+        events.append(event)
+
+    commands = store.list_commands(session.id)
+    assert len(commands) == 4
+    assert commands[1].command == "show ip interface brief"
+    assert commands[1].status == CommandStatus.succeeded
+    assert commands[2].command == "configure terminal"
+    assert commands[2].status == CommandStatus.pending_confirm
+    assert commands[3].command == "show ip route"
+    assert commands[3].status == CommandStatus.pending_confirm
+    assert commands[2].batch_id == commands[3].batch_id
+    assert any("command_pending_confirmation" in event for event in events)

@@ -11,6 +11,16 @@ export type SessionResponse = {
   created_at: string
 }
 
+export type SessionListItem = {
+  id: string
+  host: string
+  protocol: DeviceProtocol
+  automation_level: AutomationLevel
+  operation_mode: OperationMode
+  status: string
+  created_at: string
+}
+
 export type ChatMessage = {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -29,14 +39,24 @@ export type CommandExecution = {
   requires_confirmation: boolean
   output?: string
   error?: string
+  batch_id?: string
+  batch_index?: number
+  batch_total?: number
+  created_at?: string
+  started_at?: string
+  completed_at?: string
+  duration_ms?: number
 }
 
 export type Evidence = {
   id: string
+  session_id?: string
+  command_id?: string
   category: string
   conclusion: string
   raw_output: string
   parsed_data: Record<string, unknown>
+  created_at?: string
 }
 
 export type DiagnosisSummary = {
@@ -48,11 +68,20 @@ export type DiagnosisSummary = {
   follow_up_action?: string
   confidence?: number
   evidence_refs?: Array<Record<string, unknown>>
+  created_at?: string
 }
 
 export type Timeline = {
   session: {
     id: string
+    automation_level: AutomationLevel
+    operation_mode: OperationMode
+    status: string
+    created_at: string
+    device: {
+      host: string
+      protocol: DeviceProtocol
+    }
   }
   messages: ChatMessage[]
   commands: CommandExecution[]
@@ -71,4 +100,42 @@ export type LLMStatus = {
   enabled: boolean
   base_url: string
   model: string
+}
+
+export type LLMPromptPolicy = {
+  enabled: boolean
+  base_url: string
+  model: string
+  prompts: Record<string, string>
+}
+
+export type CommandPolicy = {
+  blocked_patterns: string[]
+  executable_patterns: string[]
+  legality_check_enabled: boolean
+}
+
+export type CommandPolicyUpdateRequest = {
+  blocked_patterns?: string[]
+  executable_patterns?: string[]
+  legality_check_enabled?: boolean
+}
+
+export type ServiceTraceStep = {
+  id: string
+  session_id: string
+  seq_no: number
+  step_type: string
+  title: string
+  status: string
+  started_at: string
+  completed_at?: string
+  duration_ms?: number
+  command_id?: string
+  detail?: string
+}
+
+export type ServiceTrace = {
+  session_id: string
+  steps: ServiceTraceStep[]
 }

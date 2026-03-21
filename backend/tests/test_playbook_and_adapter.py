@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.models.schemas import DeviceProtocol, DeviceTarget, Session
 from app.services.adapters import SSHAdapter
 from app.services.playbook import build_playbook, extract_interface_target, infer_intents
@@ -60,6 +62,16 @@ def test_huawei_config_workflow_strips_mode_wrapper_before_send_config_set():
         "interface GigabitEthernet0/0/1",
         "undo shutdown",
     ]
+
+
+def test_config_wrapper_only_command_is_not_treated_as_config_set_workflow():
+    session = Session(
+        device=DeviceTarget(host="192.168.0.88", protocol=DeviceProtocol.ssh, vendor="cisco_like", device_type="cisco_ios"),
+    )
+    adapter = SSHAdapter(session)
+    workflow = adapter._extract_config_workflow("configure terminal")
+
+    assert workflow == []
 
 
 def test_chinese_port_keyword_is_recognized_as_interface_intent():
@@ -133,6 +145,176 @@ def test_retry_candidates_include_huawei_interface_family_variants():
     lowered = [item.lower() for item in candidates]
     assert any("display interface ethernet1/0/6" in item for item in lowered)
     assert any("display interface ge1/0/6" in item for item in lowered)
+
+
+class _FakeConfigConn:
+    def __init__(self, *, enabled: bool) -> None:
+        self.enabled = enabled
+        self.enable_calls = 0
+        self.last_config_set: list[str] = []
+
+    def check_enable_mode(self) -> bool:
+        return self.enabled
+
+    def enable(self) -> str:
+        self.enable_calls += 1
+        self.enabled = True
+        return "enabled"
+
+    def send_config_set(self, commands: list[str]) -> str:
+        self.last_config_set = list(commands)
+        return "ok"
+
+    def send_command_timing(self, command: str, read_timeout: int = 30) -> str:
+        return f"timing:{command}"
+
+
+@pytest.mark.asyncio
+async def test_enable_command_uses_connection_enable_api():
+    session = Session(
+        device=DeviceTarget(host="192.168.0.101", protocol=DeviceProtocol.ssh, vendor="cisco_like", device_type="cisco_ios"),
+    )
+    adapter = SSHAdapter(session)
+    fake = _FakeConfigConn(enabled=False)
+    adapter.conn = fake
+
+    output = await adapter.run_command("enable")
+
+    assert output == "enabled"
+    assert fake.enable_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_config_workflow_does_not_force_enable_implicitly():
+    session = Session(
+        device=DeviceTarget(host="192.168.0.101", protocol=DeviceProtocol.ssh, vendor="cisco_like", device_type="cisco_ios"),
+    )
+    adapter = SSHAdapter(session)
+    fake = _FakeConfigConn(enabled=False)
+    adapter.conn = fake
+
+    output = await adapter.run_command("configure terminal ; interface GigabitEthernet1/0/6 ; no shutdown")
+
+    assert output == "ok"
+    assert fake.enable_calls == 0
+    assert fake.last_config_set == ["interface GigabitEthernet1/0/6", "no shutdown"]
+
+
+@pytest.mark.asyncio
+async def test_single_config_command_uses_timing_not_send_config_set():
+    session = Session(
+        device=DeviceTarget(host="192.168.0.101", protocol=DeviceProtocol.ssh, vendor="cisco_like", device_type="cisco_ios"),
+    )
+    adapter = SSHAdapter(session)
+    fake = _FakeConfigConn(enabled=True)
+    adapter.conn = fake
+
+    output = await adapter.run_command("interface GigabitEthernet1/0/6")
+
+    assert output == "timing:interface GigabitEthernet1/0/6"
+    assert fake.last_config_set == []
+
+
+class _FakeEnablePromptConn(_FakeConfigConn):
+    def __init__(self):
+        super().__init__(enabled=False)
+        self.timing_calls = 0
+
+    def enable(self) -> str:
+        raise RuntimeError("Pattern not detected: 'Arista\\\\-EOS\\\\-1.*' in output.")
+
+    def send_command_timing(self, command: str, read_timeout: int = 30) -> str:
+        self.timing_calls += 1
+        self.enabled = True
+        return "enable\nArista-EOS-1#"
+
+
+@pytest.mark.asyncio
+async def test_enable_falls_back_to_timing_mode_when_prompt_detection_fails():
+    session = Session(
+        device=DeviceTarget(host="192.168.0.101", protocol=DeviceProtocol.ssh, vendor="cisco_like", device_type="cisco_ios"),
+    )
+    adapter = SSHAdapter(session, allow_simulation=False)
+    fake = _FakeEnablePromptConn()
+    adapter.conn = fake
+
+    output = await adapter.run_command("enable")
+
+    assert "Arista-EOS-1#" in output
+    assert fake.timing_calls == 1
+
+
+class _FakeAliveConn:
+    def is_alive(self):
+        return {"is_alive": True}
+
+    def disconnect(self):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_connect_reuses_existing_alive_connection(monkeypatch):
+    session = Session(
+        device=DeviceTarget(host="192.168.0.101", protocol=DeviceProtocol.ssh, vendor="cisco_like", device_type="cisco_ios"),
+    )
+    adapter = SSHAdapter(session)
+    adapter.conn = _FakeAliveConn()
+
+    monkeypatch.setattr("app.services.adapters.ConnectHandler", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("should not create")))
+
+    await adapter.connect()
+
+    assert adapter.conn is not None
+
+
+class _FakeConnectedDevice:
+    def __init__(self, device_type: str):
+        self.device_type = device_type
+
+    def is_alive(self):
+        return {"is_alive": True}
+
+    def send_command(self, command: str):
+        if self.device_type == "huawei":
+            return "Huawei Versatile Routing Platform Software\nVRP (R) software, Version 8.180"
+        if self.device_type == "arista_eos":
+            return "Arista vEOS-lab"
+        return "Cisco IOS XE Software"
+
+    def disconnect(self):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_connect_can_fallback_to_huawei_when_initial_device_type_mismatches(monkeypatch):
+    session = Session(
+        device=DeviceTarget(
+            host="192.168.0.88",
+            protocol=DeviceProtocol.ssh,
+            vendor="unknown",
+            device_type="cisco_ios",
+            username="tester",
+            password="tester",
+        ),
+    )
+    adapter = SSHAdapter(session, allow_simulation=False)
+    attempts: list[str] = []
+
+    def _fake_connect_handler(**kwargs):
+        attempts.append(kwargs.get("device_type", ""))
+        if kwargs.get("device_type") != "huawei":
+            raise RuntimeError("Pattern not detected: '[>#]' in output.")
+        return _FakeConnectedDevice(kwargs.get("device_type", ""))
+
+    monkeypatch.setattr("app.services.adapters.ConnectHandler", _fake_connect_handler)
+
+    await adapter.connect()
+
+    assert adapter.conn is not None
+    assert "cisco_ios" in attempts
+    assert "huawei" in attempts
+    assert adapter.session.device.device_type == "huawei"
+    assert adapter.session.device.vendor == "huawei"
 
 
 def split_config_command(command: str) -> list[str]:
