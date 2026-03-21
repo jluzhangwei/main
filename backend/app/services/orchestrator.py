@@ -320,6 +320,21 @@ class ConversationOrchestrator:
                 summary = self._summary_from_plan(session_id, plan, preferred_mode=preferred_mode)
                 if summary:
                     self.store.set_summary(summary)
+                    self._trace_decision(
+                        session_id=session_id,
+                        step_type="llm_final",
+                        title="LLM 输出最终总结",
+                        detail=f"mode={summary.mode}; confidence={summary.confidence}",
+                        status="succeeded",
+                    )
+                else:
+                    self._trace_decision(
+                        session_id=session_id,
+                        step_type="llm_final",
+                        title="LLM 输出最终总结",
+                        detail="LLM返回decision=final，但内容不完整，未生成有效总结。",
+                        status="failed",
+                    )
                 break
 
             plan_commands = self._extract_plan_commands(plan, next_step_no=step_no + 1)

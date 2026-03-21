@@ -58,6 +58,7 @@ type PersistedUiState = {
   statusCollapsed?: boolean
   directionInput?: string
   currentSessionId?: string
+  traceListExpanded?: boolean
 }
 
 const UI_STATE_KEY = 'netops_ui_prefs_v1'
@@ -197,6 +198,7 @@ function App() {
   const [traceSteps, setTraceSteps] = useState<ServiceTraceStep[]>([])
   const [traceLoading, setTraceLoading] = useState(false)
   const [selectedTraceStepId, setSelectedTraceStepId] = useState<string | undefined>(undefined)
+  const [traceListExpanded, setTraceListExpanded] = useState(false)
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const chatLogRef = useRef<HTMLElement | null>(null)
@@ -408,6 +410,9 @@ function App() {
       if (typeof parsed.currentSessionId === 'string' && parsed.currentSessionId.trim()) {
         setInitialSessionId(parsed.currentSessionId.trim())
       }
+      if (typeof parsed.traceListExpanded === 'boolean') {
+        setTraceListExpanded(parsed.traceListExpanded)
+      }
     } catch {
       // ignore local storage parse errors
     }
@@ -421,9 +426,10 @@ function App() {
       statusCollapsed,
       directionInput,
       currentSessionId: session?.id,
+      traceListExpanded,
     }
     localStorage.setItem(UI_STATE_KEY, JSON.stringify(payload))
-  }, [activePage, rightPanelWidth, terminalSplitRatio, statusCollapsed, directionInput, session?.id])
+  }, [activePage, rightPanelWidth, terminalSplitRatio, statusCollapsed, directionInput, session?.id, traceListExpanded])
 
   useEffect(() => {
     if (commands.length === 0) {
@@ -2158,7 +2164,7 @@ function App() {
           )}
 
           {activePage === 'service_trace' && (
-            <div className="page-grid">
+            <div className="page-grid service-trace-layout">
               <div className="panel-card">
                 <div className="trace-head">
                   <div>
@@ -2241,53 +2247,66 @@ function App() {
                 )}
               </div>
 
-              <div className="panel-card trace-list-card">
-                <div className="trace-row trace-row-head">
-                  <span>#</span>
-                  <span>步骤</span>
-                  <span>状态</span>
-                  <span>开始</span>
-                  <span>结束</span>
-                  <span>耗时</span>
-                </div>
-                <div className="trace-list-scroll">
-                  {traceSteps.length === 0 && <div className="trace-empty muted">暂无追踪数据。先创建会话并执行一次对话。</div>}
-                  {traceSteps.map((step) => {
-                    const width = traceStats.maxDurationMs > 0 && step.duration_ms !== undefined
-                      ? Math.max(4, Math.round((step.duration_ms / traceStats.maxDurationMs) * 100))
-                      : 0
-                    return (
-                      <div
-                        key={step.id}
-                        className={`trace-row trace-row-item ${selectedTraceStep?.id === step.id ? 'active' : ''}`}
-                        onClick={() => setSelectedTraceStepId(step.id)}
-                        role="button"
-                        tabIndex={0}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter' || event.key === ' ') {
-                            event.preventDefault()
-                            setSelectedTraceStepId(step.id)
-                          }
-                        }}
-                      >
-                        <span>{step.seq_no}</span>
-                        <div className="trace-step-cell">
-                          <div className="trace-step-title">{step.title}</div>
-                          <div className="trace-step-meta">{traceTypeLabel(step.step_type)}</div>
-                          {step.detail && <div className="trace-step-detail">{step.detail}</div>}
-                          {width > 0 && (
-                            <div className="trace-bar-wrap">
-                              <div className="trace-bar" style={{ width: `${width}%` }} />
-                            </div>
-                          )}
+              <div className={`panel-card trace-bottom-drawer ${traceListExpanded ? 'expanded' : 'collapsed'}`}>
+                <button
+                  type="button"
+                  className="trace-drawer-toggle"
+                  onClick={() => setTraceListExpanded((prev) => !prev)}
+                >
+                  <div className="trace-drawer-toggle-main">
+                    <strong>步骤明细</strong>
+                    <span>{traceSteps.length} 条</span>
+                  </div>
+                  <span className="trace-drawer-arrow">{traceListExpanded ? '▾' : '▴'}</span>
+                </button>
+                <div className="trace-drawer-panel">
+                  <div className="trace-row trace-row-head">
+                    <span>#</span>
+                    <span>步骤</span>
+                    <span>状态</span>
+                    <span>开始</span>
+                    <span>结束</span>
+                    <span>耗时</span>
+                  </div>
+                  <div className="trace-list-scroll">
+                    {traceSteps.length === 0 && <div className="trace-empty muted">暂无追踪数据。先创建会话并执行一次对话。</div>}
+                    {traceSteps.map((step) => {
+                      const width = traceStats.maxDurationMs > 0 && step.duration_ms !== undefined
+                        ? Math.max(4, Math.round((step.duration_ms / traceStats.maxDurationMs) * 100))
+                        : 0
+                      return (
+                        <div
+                          key={step.id}
+                          className={`trace-row trace-row-item ${selectedTraceStep?.id === step.id ? 'active' : ''}`}
+                          onClick={() => setSelectedTraceStepId(step.id)}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                              setSelectedTraceStepId(step.id)
+                            }
+                          }}
+                        >
+                          <span>{step.seq_no}</span>
+                          <div className="trace-step-cell">
+                            <div className="trace-step-title">{step.title}</div>
+                            <div className="trace-step-meta">{traceTypeLabel(step.step_type)}</div>
+                            {step.detail && <div className="trace-step-detail">{step.detail}</div>}
+                            {width > 0 && (
+                              <div className="trace-bar-wrap">
+                                <div className="trace-bar" style={{ width: `${width}%` }} />
+                              </div>
+                            )}
+                          </div>
+                          <span className={`trace-status ${traceStatusClass(step.status)}`}>{step.status}</span>
+                          <span>{formatTime(step.started_at)}</span>
+                          <span>{step.completed_at ? formatTime(step.completed_at) : '-'}</span>
+                          <span>{step.duration_ms !== undefined ? formatDuration(step.duration_ms) : '-'}</span>
                         </div>
-                        <span className={`trace-status ${traceStatusClass(step.status)}`}>{step.status}</span>
-                        <span>{formatTime(step.started_at)}</span>
-                        <span>{step.completed_at ? formatTime(step.completed_at) : '-'}</span>
-                        <span>{step.duration_ms !== undefined ? formatDuration(step.duration_ms) : '-'}</span>
-                      </div>
-                    )
-                  })}
+                      )
+                    })}
+                  </div>
                 </div>
               </div>
             </div>

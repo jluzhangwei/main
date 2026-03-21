@@ -1002,6 +1002,10 @@ h6 {
   grid-template-columns: 320px minmax(0, 1fr);
 }
 
+.service-trace-layout {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
 .placeholder-card {
   border-style: dashed;
 }
@@ -1274,6 +1278,74 @@ h6 {
   gap: 8px;
 }
 
+.trace-bottom-drawer {
+  min-height: 0;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.trace-drawer-toggle {
+  width: 100%;
+  border: none;
+  border-top: 1px solid var(--line);
+  background: #f7f9fc;
+  color: var(--text);
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.trace-drawer-toggle:hover {
+  background: #eff4fb;
+}
+
+.trace-drawer-toggle-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.trace-drawer-toggle-main strong {
+  font-size: 12px;
+}
+
+.trace-drawer-toggle-main span {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.trace-drawer-arrow {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.trace-drawer-panel {
+  display: none;
+  min-height: 0;
+}
+
+.trace-bottom-drawer.expanded .trace-drawer-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  max-height: 34vh;
+}
+
+.trace-bottom-drawer.expanded .trace-row-head {
+  margin: 8px 8px 0;
+}
+
+.trace-bottom-drawer.expanded .trace-list-scroll {
+  margin: 8px;
+  margin-top: 6px;
+  max-height: none;
+}
+
 .trace-list-scroll {
   min-height: 0;
   max-height: 60vh;
@@ -1391,12 +1463,17 @@ h6 {
 .flow-board {
   display: grid;
   gap: 10px;
+  min-height: 0;
 }
 
 .flow-lanes {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
+  max-height: 52vh;
+  min-height: 180px;
+  overflow: auto;
+  padding-right: 4px;
 }
 
 .flow-lane {
@@ -1740,6 +1817,10 @@ h6 {
 
   .trace-row {
     grid-template-columns: 42px minmax(0, 1fr);
+  }
+
+  .trace-bottom-drawer.expanded .trace-drawer-panel {
+    max-height: 42vh;
   }
 
   .flow-lanes {
