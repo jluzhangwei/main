@@ -188,6 +188,10 @@ function App() {
 
   const sessionReady = useMemo(() => Boolean(session?.id), [session])
   const commandDisplayRows = useMemo(() => groupCommandsForDisplay(commands), [commands])
+  const commandListRows = useMemo(
+    () => [...commands].sort((a, b) => a.step_no - b.step_no),
+    [commands],
+  )
   const activityCards = useMemo(() => buildActivityCards(messages, commands, summary), [messages, commands, summary])
 
   const selectedCommand = useMemo(() => {
@@ -233,6 +237,18 @@ function App() {
         ),
     [commands, pendingBatchMetaByCommandId],
   )
+  const pendingConfirmMeta = useMemo(() => {
+    if (!pendingCommand) return undefined
+    const meta = pendingBatchMetaByCommandId.get(pendingCommand.id)
+    const total = meta?.total || 1
+    const commandList = meta?.commands || [pendingCommand]
+    return {
+      commandId: pendingCommand.id,
+      total,
+      commands: commandList,
+      isBatch: total > 1,
+    }
+  }, [pendingCommand, pendingBatchMetaByCommandId])
   const runningCommand = useMemo(
     () => [...commands].reverse().find((item) => item.status === 'running'),
     [commands],
@@ -267,6 +283,7 @@ function App() {
     return '未创建会话'
   }, [pendingCommand, runningCommand, busy, commands, summary, sessionReady])
   const traceStats = useMemo(() => buildTraceStats(traceSteps), [traceSteps])
+  const llmControlsLocked = useMemo(() => busy || Boolean(confirmingCommandId), [busy, confirmingCommandId])
 
   const selectedActivity = useMemo(() => {
     if (activityCards.length === 0) return undefined
@@ -669,6 +686,10 @@ function App() {
   }
 
   async function handleModelChange(nextModel: string) {
+    if (llmControlsLocked) {
+      antMessage.info('命令执行中，暂不可切换模型')
+      return
+    }
     if (!nextModel.trim()) {
       antMessage.warning('请选择模型')
       return
@@ -737,6 +758,10 @@ function App() {
   }
 
   async function handleToggleBatchExecution(enabled: boolean) {
+    if (llmControlsLocked) {
+      antMessage.info('命令执行中，暂不可修改批量执行模式')
+      return
+    }
     setLlmBatchExecutionEnabled(enabled)
     setLlmSaving(true)
     try {
@@ -1105,6 +1130,25 @@ function App() {
     }
   }
 
+  async function handleContinueFromCard() {
+    if (!session?.id || busy) return
+    await handleSend('请继续执行下一步，不要结束。基于当前会话继续诊断/查询/配置，必要时输出待执行命令组。')
+  }
+
+  function shouldShowContinueAction(summaryData: DiagnosisSummary): boolean {
+    if (!summaryData) return false
+    if (summaryData.mode === 'error' || summaryData.mode === 'unavailable') return true
+    if (summaryData.mode === 'config') {
+      const actionText = `${summaryData.query_result || ''} ${summaryData.follow_up_action || ''} ${summaryData.recommendation || ''}`
+      if (/(建议|执行|修复|打开|关闭|变更|应用|需要)/.test(actionText) && !/(已完成|已执行|无需|不需要)/.test(actionText)) {
+        return true
+      }
+    }
+    if (typeof summaryData.confidence === 'number' && summaryData.confidence < 0.65) return true
+    const mergedText = `${summaryData.root_cause || ''} ${summaryData.impact_scope || ''} ${summaryData.recommendation || ''}`
+    return /(不确定|未完成|无法|失败|重试)/.test(mergedText)
+  }
+
   function isNearBottom(target: HTMLElement): boolean {
     return target.scrollHeight - target.scrollTop - target.clientHeight <= 24
   }
@@ -1208,6 +1252,33 @@ function App() {
                       <Button size="small" shape="circle" onClick={() => void refreshTimeline()} disabled={!sessionReady}>↻</Button>
                     </div>
                   </div>
+                  {pendingConfirmMeta && (
+                    <div className="pending-confirm-toolbar">
+                      <span className="pending-confirm-label">
+                        {pendingConfirmMeta.isBatch
+                          ? `待确认命令组（${pendingConfirmMeta.total} 条）`
+                          : '待确认命令'}
+                      </span>
+                      <div className="pending-confirm-actions">
+                        <Button
+                          size="small"
+                          type="primary"
+                          loading={confirmingCommandId === pendingConfirmMeta.commandId}
+                          onClick={() => void handleConfirmCommandInline(pendingConfirmMeta.commandId, true)}
+                        >
+                          {pendingConfirmMeta.isBatch ? '确认整批执行' : '确认执行'}
+                        </Button>
+                        <Button
+                          size="small"
+                          danger
+                          disabled={confirmingCommandId === pendingConfirmMeta.commandId}
+                          onClick={() => void handleConfirmCommandInline(pendingConfirmMeta.commandId, false)}
+                        >
+                          {pendingConfirmMeta.isBatch ? '拒绝整批' : '拒绝'}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                   <div className="live-meta-row">
                     <div className="live-meta-item">
                       <span>设备</span>
@@ -1261,12 +1332,7 @@ function App() {
                           </div>
                         )}
                         <div className="activity-preview">{item.preview}</div>
-                        {item.kind === 'command'
-                          && item.command.status === 'pending_confirm'
-                          && (
-                            !item.command.batch_id
-                            || pendingBatchMetaByCommandId.get(item.command.id)?.isLeader
-                          ) && (
+                        {item.kind === 'command' && item.command.status === 'pending_confirm' && (
                           <div className="inline-confirm-strip" onClick={(event) => event.stopPropagation()}>
                             {item.command.batch_id
                               && (pendingBatchMetaByCommandId.get(item.command.id)?.total || 0) > 1 ? (
@@ -1289,18 +1355,47 @@ function App() {
                               <Button
                                 size="small"
                                 type="primary"
-                                loading={confirmingCommandId === item.command.id}
-                                onClick={() => void handleConfirmCommandInline(item.command.id, true)}
+                                loading={confirmingCommandId === (pendingBatchMetaByCommandId.get(item.command.id)?.commands?.[0]?.id || item.command.id)}
+                                onClick={() => void handleConfirmCommandInline(
+                                  pendingBatchMetaByCommandId.get(item.command.id)?.commands?.[0]?.id || item.command.id,
+                                  true,
+                                )}
                               >
                                 {(pendingBatchMetaByCommandId.get(item.command.id)?.total || 0) > 1 ? '确认整批执行' : '确认执行'}
                               </Button>
                               <Button
                                 size="small"
                                 danger
-                                disabled={confirmingCommandId === item.command.id}
-                                onClick={() => void handleConfirmCommandInline(item.command.id, false)}
+                                disabled={confirmingCommandId === (pendingBatchMetaByCommandId.get(item.command.id)?.commands?.[0]?.id || item.command.id)}
+                                onClick={() => void handleConfirmCommandInline(
+                                  pendingBatchMetaByCommandId.get(item.command.id)?.commands?.[0]?.id || item.command.id,
+                                  false,
+                                )}
                               >
                                 {(pendingBatchMetaByCommandId.get(item.command.id)?.total || 0) > 1 ? '拒绝整批' : '拒绝'}
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                        {item.kind === 'summary' && shouldShowContinueAction(item.summary) && (
+                          <div className="summary-action-strip" onClick={(event) => event.stopPropagation()}>
+                            <div className="summary-action-text">已生成阶段结论。是否继续执行下一步？</div>
+                            <div className="summary-action-buttons">
+                              <Button
+                                size="small"
+                                type="primary"
+                                loading={busy}
+                                disabled={!sessionReady || busy}
+                                onClick={() => void handleContinueFromCard()}
+                              >
+                                继续执行
+                              </Button>
+                              <Button
+                                size="small"
+                                disabled={busy}
+                                onClick={() => antMessage.info('已保持当前结论')}
+                              >
+                                暂不继续
                               </Button>
                             </div>
                           </div>
@@ -1341,7 +1436,7 @@ function App() {
                           options={MODEL_OPTIONS}
                           onChange={(value) => void handleModelChange(value)}
                           className="composer-model-select"
-                          disabled={llmSaving}
+                          disabled={llmSaving || llmControlsLocked}
                         />
                         <div className="composer-inline-toggle">
                           <span className="composer-inline-label">批量执行</span>
@@ -1349,7 +1444,7 @@ function App() {
                             size="small"
                             checked={llmBatchExecutionEnabled}
                             onChange={(checked) => void handleToggleBatchExecution(checked)}
-                            disabled={llmSaving}
+                            disabled={llmSaving || llmControlsLocked}
                           />
                         </div>
                       </div>
@@ -1384,6 +1479,38 @@ function App() {
 
                 <section className="right-bottom panel-card">
                   <h3>设备终端回显</h3>
+                  {pendingConfirmMeta && (
+                    <div className="terminal-confirm-strip">
+                      <div className="terminal-confirm-title">
+                        {pendingConfirmMeta.isBatch
+                          ? `待确认命令组（${pendingConfirmMeta.total} 条）`
+                          : '待确认命令'}
+                      </div>
+                      <div className="terminal-confirm-list">
+                        {pendingConfirmMeta.commands.map((item) => (
+                          <code key={item.id}>{item.command}</code>
+                        ))}
+                      </div>
+                      <div className="terminal-confirm-actions">
+                        <Button
+                          size="small"
+                          type="primary"
+                          loading={confirmingCommandId === pendingConfirmMeta.commandId}
+                          onClick={() => void handleConfirmCommandInline(pendingConfirmMeta.commandId, true)}
+                        >
+                          {pendingConfirmMeta.isBatch ? '确认整批执行' : '确认执行'}
+                        </Button>
+                        <Button
+                          size="small"
+                          danger
+                          disabled={confirmingCommandId === pendingConfirmMeta.commandId}
+                          onClick={() => void handleConfirmCommandInline(pendingConfirmMeta.commandId, false)}
+                        >
+                          {pendingConfirmMeta.isBatch ? '拒绝整批' : '拒绝'}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                   <div
                     className="terminal-grid"
                     ref={terminalGridRef}
@@ -1394,21 +1521,21 @@ function App() {
                     <div className="terminal-pane">
                       <div className="summary-title">命令列表</div>
                       <div className="command-list mini" ref={commandListRef} onScroll={handleCommandListScroll}>
-                        {commandDisplayRows.length === 0 && <div className="muted">-</div>}
-                        {commandDisplayRows.map((row) => (
+                        {commandListRows.length === 0 && <div className="muted">-</div>}
+                        {commandListRows.map((item) => (
                           <button
                             type="button"
-                            key={row.key}
-                            className={`command-row compact ${selectedCommandRow?.key === row.key ? 'active' : ''}`}
-                            onClick={() => setSelectedCommandId(row.primary.id)}
+                            key={item.id}
+                            className={`command-row compact ${selectedCommand?.id === item.id ? 'active' : ''}`}
+                            onClick={() => setSelectedCommandId(item.id)}
                           >
                             <div className="command-row-grid">
                               <div className="command-meta-inline">
-                                <span className="command-step">#{row.stepLabel}</span>
-                                <span className="command-title">{row.title}</span>
-                                <span className={`cmd-status ${statusClass(row.status)}`}>{row.status}</span>
+                                <span className="command-step">#{item.step_no}</span>
+                                <span className="command-title">{item.title}</span>
+                                <span className={`cmd-status ${statusClass(item.status)}`}>{item.status}</span>
                               </div>
-                              <code className="command-inline-code">{row.commandText}</code>
+                              <code className="command-inline-code" title={item.command}>{item.command}</code>
                             </div>
                           </button>
                         ))}
@@ -1438,9 +1565,7 @@ function App() {
                     <div className="terminal-pane">
                       <div className="summary-title">执行结果</div>
                       <div className="terminal-box">
-                        {selectedCommandRow
-                          ? renderCommandRowOutput(selectedCommandRow)
-                          : (selectedCommand?.output || selectedCommand?.error || '-')}
+                        {selectedCommand ? renderCommandOutputBody(selectedCommand) : '-'}
                       </div>
                     </div>
                   </div>
@@ -1989,7 +2114,11 @@ function App() {
                   <span className="muted">模型异常时自动切到下一个候选模型</span>
                 </div>
                 <div className="policy-switch" style={{ marginTop: 8 }}>
-                  <Switch checked={llmBatchExecutionEnabled} onChange={(checked) => void handleToggleBatchExecution(checked)} disabled={llmSaving} />
+                  <Switch
+                    checked={llmBatchExecutionEnabled}
+                    onChange={(checked) => void handleToggleBatchExecution(checked)}
+                    disabled={llmSaving || llmControlsLocked}
+                  />
                   <span className="muted">通过提示词要求 AI 优先输出批量命令组</span>
                 </div>
                 <div className="kv"><span>不可用原因</span><strong>{formatLlmUnavailableReason(llmStatus?.unavailable_reason)}</strong></div>
@@ -2008,7 +2137,7 @@ function App() {
                   value={llmModelInput}
                   options={MODEL_OPTIONS}
                   onChange={(value) => void handleModelChange(value)}
-                  disabled={llmSaving}
+                  disabled={llmSaving || llmControlsLocked}
                 />
                 <div className="ai-setting-actions">
                   <Button type="primary" loading={llmSaving} onClick={() => void handleSaveApiKey()}>
@@ -2089,6 +2218,8 @@ function formatPromptKey(key: string): string {
     runtime_finalization_prompt_template: '运行时最终总结模板',
     runtime_batch_confirm_policy: '运行时批量确认策略',
     runtime_output_compaction_policy: '运行时输出压缩策略',
+    runtime_permission_precheck_policy: '运行时权限预检策略',
+    runtime_final_action_marker_policy: '运行时结论动作词策略',
   }
   return map[key] || key
 }
@@ -2249,7 +2380,7 @@ function messageTitle(msg: ChatMessage): string {
 
 function summarizeCommandCard(command: CommandExecution): string {
   const headline = command.command
-  const result = truncateText(command.output || command.error || '', 80)
+  const result = truncateText(renderCommandOutputBody(command), 180)
   if (result) return `${headline}\n${result}`
   return headline
 }
@@ -2257,25 +2388,33 @@ function summarizeCommandCard(command: CommandExecution): string {
 function summarizeCommandRow(row: CommandDisplayRow): string {
   const headline = row.commandText
   const merged = renderCommandRowOutput(row)
-  const result = truncateText(merged || '', 80)
+  const result = truncateText(merged || '', 180)
   if (result) return `${headline}\n${result}`
   return headline
+}
+
+function renderCommandOutputBody(command: Pick<CommandExecution, 'output' | 'error' | 'status'>): string {
+  const output = (command.output || '').trim()
+  if (output) return output
+  const error = (command.error || '').trim()
+  if (error) return error
+  if (command.status === 'pending_confirm') return '(待确认，尚未执行)'
+  if (command.status === 'succeeded') return '(命令已执行，设备未返回文本回显)'
+  if (command.status === 'failed') return '(执行失败，设备未返回文本回显)'
+  return '(无回显)'
 }
 
 function renderCommandRowOutput(row: CommandDisplayRow): string {
   if (row.members.length <= 1) {
     const item = row.members[0]
-    return item?.output || item?.error || '-'
+    return item ? renderCommandOutputBody(item) : '(无回显)'
   }
   const parts: string[] = []
   for (const item of row.members) {
-    const output = (item.output || '').trim()
-    const error = (item.error || '').trim()
-    const body = output || error
-    if (!body) continue
+    const body = renderCommandOutputBody(item)
     parts.push(`#${item.step_no} ${item.command}\n${body}`)
   }
-  if (parts.length === 0) return '-'
+  if (parts.length === 0) return '(无回显)'
   return parts.join('\n\n')
 }
 

@@ -2,12 +2,14 @@ import pytest
 
 from app.models.schemas import (
     AutomationLevel,
+    CommandExecution,
     CommandPolicyUpdateRequest,
     CommandStatus,
     ConfirmCommandRequest,
     DeviceProtocol,
     DeviceTarget,
     IncidentSummary,
+    RiskLevel,
     SessionCreateRequest,
 )
 from app.services.orchestrator import ConversationOrchestrator
@@ -423,3 +425,31 @@ async def test_confirm_command_uses_same_adapter_context_after_enable(monkeypatc
     result = await orchestrator.confirm_command(session.id, pending[0].id, ConfirmCommandRequest(approved=True))
     assert result.status == CommandStatus.succeeded
     assert len(created_adapters) == 1
+
+
+def test_append_command_result_includes_permission_hint_for_low_privilege():
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(host="10.0.0.13", protocol=DeviceProtocol.ssh),
+            automation_level=AutomationLevel.assisted,
+        )
+    )
+
+    command = CommandExecution(
+        session_id=session.id,
+        step_no=1,
+        title="检查权限",
+        command="show privilege",
+        adapter_type=DeviceProtocol.ssh,
+        risk_level=RiskLevel.low,
+        status=CommandStatus.succeeded,
+        output="Current privilege level is 1",
+    )
+
+    orchestrator._append_command_result_to_ai_context(session.id, command)
+    latest = store.list_ai_context(session.id)[-1]["content"]
+    assert "permission_state: insufficient(level=1)" in latest
+    assert "权限不足" in latest

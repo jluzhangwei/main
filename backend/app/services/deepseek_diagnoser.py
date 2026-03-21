@@ -22,6 +22,22 @@ OUTPUT_COMPACTION_RULES = (
     "当decision=final时，仅引用关键证据行，禁止粘贴大段原始回显。"
 )
 
+PERMISSION_PRECHECK_RULES = (
+    "执行查询前必须先评估当前会话是否具备所需执行权限。"
+    "在基线识别命令（如show version/display version）完成后，下一步优先检查当前权限级别与会话模式。"
+    "若第一次发现权限不足，应优先返回最小必要提权命令并立即复核权限，不要继续无关查询。"
+    "对可能受权限限制的命令，先返回权限探测命令（如角色/级别/模式检查），再决定是否继续执行目标命令。"
+    "若探测结果显示权限不足，不要继续盲目下发后续命令，应先输出明确的提权或放权需求。"
+    "若最近证据已显示在特权/配置模式，禁止重复输出enable或system-view这类提权命令。"
+    "当用户可确认放行时，应将待执行命令组一次性给出，避免逐条失败后再补权限。"
+)
+
+ACTION_MARKER_RULES = (
+    "当decision=final时，必须在行动建议文本中显式给出状态词。"
+    "若仍需执行动作（如继续配置/修复），follow_up_action或recommendation必须包含以下词之一：建议执行、修复、打开、变更。"
+    "若任务已闭环且无需继续动作，follow_up_action或recommendation必须包含以下词之一：已完成、无需。"
+)
+
 NEXT_STEP_SYSTEM_PROMPT_WITH_HISTORY = (
     "你是网络故障诊断代理。"
     "你正在同一会话内连续对话，必须结合已有上下文。"
@@ -40,6 +56,8 @@ NEXT_STEP_SYSTEM_PROMPT_WITH_HISTORY = (
     "当用户未明确提供对象标识（如具体接口名）时，禁止直接输出配置命令，必须先输出只读发现命令。"
     "禁止凭空假设接口名（如Ethernet1/Gi1/0/1）并直接下发配置。"
     f"{OUTPUT_COMPACTION_RULES}"
+    f"{PERMISSION_PRECHECK_RULES}"
+    f"{ACTION_MARKER_RULES}"
 )
 
 NEXT_STEP_SYSTEM_PROMPT = (
@@ -59,6 +77,8 @@ NEXT_STEP_SYSTEM_PROMPT = (
     "当用户未明确提供对象标识（如具体接口名）时，禁止直接输出配置命令，必须先输出只读发现命令。"
     "禁止凭空假设接口名（如Ethernet1/Gi1/0/1）并直接下发配置。"
     f"{OUTPUT_COMPACTION_RULES}"
+    f"{PERMISSION_PRECHECK_RULES}"
+    f"{ACTION_MARKER_RULES}"
 )
 
 PRIMARY_SUMMARY_SYSTEM_PROMPT = (

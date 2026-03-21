@@ -57,6 +57,7 @@ class ConversationOrchestrator:
                 "- title: {title}\\n"
                 "- command: {command}\\n"
                 "- status: {status}\\n"
+                "- permission_state: {permission_state(optional)}\\n"
                 "- error: {error(optional)}\\n"
                 "- output: {output(optional)}"
             ),
@@ -77,6 +78,18 @@ class ConversationOrchestrator:
                 "优先使用过滤/匹配命令减少回显（include/exclude/begin/section/count/match/grep/regex）；"
                 "先摘要后细查，避免一次抓取全量配置；"
                 "每轮命令建议2-5条并确保目标明确。"
+            ),
+            "runtime_permission_precheck_policy": (
+                "运行期权限预检策略："
+                "基线识别命令（show/display version）后优先探测当前权限/模式；"
+                "执行可能受限命令前先探测当前会话权限/模式；"
+                "若首次探测权限不足，优先最小提权并立即复核；"
+                "若已在特权/配置模式，不重复提权命令。"
+            ),
+            "runtime_final_action_marker_policy": (
+                "运行期结论动作词策略："
+                "若仍需继续执行，结论中应包含“建议执行/修复/打开/变更”；"
+                "若任务已闭环，结论中应包含“已完成/无需”。"
             ),
         }
 
@@ -519,48 +532,18 @@ class ConversationOrchestrator:
         )
 
     async def _execute_batch_and_record(self, adapter, commands: list[CommandExecution]) -> None:
-        started = now_utc()
-        for command in commands:
-            command.status = CommandStatus.running
-            command.started_at = started
-            command.completed_at = None
-            command.duration_ms = None
-            self.store.update_command(command)
-
-        merged_command = " ; ".join(command.command for command in commands)
-        try:
-            output = await adapter.run_command(merged_command)
-            completed = now_utc()
-            duration_ms = max(0, int((completed - started).total_seconds() * 1000))
-            for command in commands:
-                category, parsed_data, conclusion = parse_command_output(command.command, output)
-                parsed_device_name = str(parsed_data.get("device_name") or "").strip() if isinstance(parsed_data, dict) else ""
-                if parsed_device_name:
-                    self.store.update_session_device_name(command.session_id, parsed_device_name)
-                command.output = output
-                command.status = CommandStatus.succeeded
-                command.completed_at = completed
-                command.duration_ms = duration_ms
-                self.store.update_command(command)
-
-                evidence = Evidence(
-                    session_id=command.session_id,
-                    command_id=command.id,
-                    category=category,
-                    raw_output=output,
-                    parsed_data=parsed_data,
-                    conclusion=conclusion,
-                )
-                self.store.add_evidence(evidence)
-        except Exception as exc:  # pragma: no cover
-            completed = now_utc()
-            duration_ms = max(0, int((completed - started).total_seconds() * 1000))
-            for command in commands:
-                command.status = CommandStatus.failed
-                command.error = str(exc)
-                command.completed_at = completed
-                command.duration_ms = duration_ms
-                self.store.update_command(command)
+        for idx, command in enumerate(commands):
+            await self._execute_and_record(adapter, command)
+            if command.status == CommandStatus.failed:
+                skipped_at = now_utc()
+                base_error = (command.error or "Command execution failed").strip()
+                for queued in commands[idx + 1:]:
+                    queued.status = CommandStatus.failed
+                    queued.error = f"{base_error} (skipped subsequent command in same batch)"
+                    queued.completed_at = skipped_at
+                    queued.duration_ms = 0
+                    self.store.update_command(queued)
+                break
 
     def _bootstrap_command_for_vendor(self, vendor: str) -> str:
         normalized = (vendor or "").strip().lower()
@@ -718,11 +701,55 @@ class ConversationOrchestrator:
             f"- command: {command.command}\n"
             f"- status: {command.status.value}\n"
         )
+        permission_state, permission_hint = self._derive_permission_signal(
+            command.command,
+            command.output or "",
+            command.error or "",
+        )
+        if permission_state:
+            text += f"- permission_state: {permission_state}\n"
+        if permission_hint:
+            text += f"- permission_action_hint: {permission_hint}\n"
         if command.error:
             text += f"- error: {self._sanitize_for_llm(command.error)[:1200]}\n"
         if command.output:
             text += f"- output:\n{self._sanitize_for_llm(command.output)[:2500]}"
         self.store.append_ai_context(session_id, "user", text)
+
+    def _derive_permission_signal(self, command: str, output: str, error: str) -> tuple[str, str]:
+        merged = f"{output}\n{error}".strip()
+        lowered = merged.lower()
+        normalized_command = command.strip().lower()
+
+        level_match = re.search(r"(?i)current\s+privilege\s+level\s+is\s+(\d+)", merged)
+        if level_match:
+            level = int(level_match.group(1))
+            if level >= 15:
+                return ("privileged(level=15)", "已具备高权限，禁止重复enable，继续目标命令。")
+            return (f"insufficient(level={level})", "权限不足，下一步应先最小提权（如enable）并立即复核权限。")
+
+        if any(
+            token in lowered
+            for token in (
+                "permission denied",
+                "insufficient privileges",
+                "not authorized",
+                "authorization failed",
+                "privilege level insufficient",
+                "not enough privileges",
+                "权限不足",
+                "无权限",
+            )
+        ):
+            return ("insufficient", "权限不足，下一步应先最小提权并立即复核权限。")
+
+        if normalized_command == "enable":
+            if any(token in lowered for token in ("already in privileged mode", "privilege level is 15")):
+                return ("privileged(level=15)", "已经在特权模式，禁止重复enable。")
+            if "#" in merged:
+                return ("privileged", "已进入特权模式，可继续执行目标命令。")
+
+        return ("", "")
 
     def _sanitize_for_llm(self, text: str) -> str:
         if not text:

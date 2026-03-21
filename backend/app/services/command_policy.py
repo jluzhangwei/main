@@ -21,6 +21,9 @@ def default_command_policy() -> CommandPolicy:
         dict.fromkeys(
             [
                 *risk.readonly_prefixes,
+                "terminal length ",
+                "screen-length ",
+                "no page",
                 "enable",
                 "return",
                 "exit",

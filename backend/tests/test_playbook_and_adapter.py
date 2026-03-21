@@ -185,6 +185,21 @@ async def test_enable_command_uses_connection_enable_api():
 
 
 @pytest.mark.asyncio
+async def test_enable_command_is_skipped_when_already_privileged():
+    session = Session(
+        device=DeviceTarget(host="192.168.0.101", protocol=DeviceProtocol.ssh, vendor="cisco_like", device_type="cisco_ios"),
+    )
+    adapter = SSHAdapter(session)
+    fake = _FakeConfigConn(enabled=True)
+    adapter.conn = fake
+
+    output = await adapter.run_command("enable")
+
+    assert output == "Already in privileged mode."
+    assert fake.enable_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_config_workflow_does_not_force_enable_implicitly():
     session = Session(
         device=DeviceTarget(host="192.168.0.101", protocol=DeviceProtocol.ssh, vendor="cisco_like", device_type="cisco_ios"),
@@ -275,12 +290,18 @@ class _FakeEnablePromptConn(_FakeConfigConn):
     def __init__(self):
         super().__init__(enabled=False)
         self.timing_calls = 0
+        self.timing_history: list[str] = []
 
     def enable(self) -> str:
         raise RuntimeError("Pattern not detected: 'Arista\\\\-EOS\\\\-1.*' in output.")
 
     def send_command_timing(self, command: str, read_timeout: int = 30) -> str:
         self.timing_calls += 1
+        self.timing_history.append(command)
+        if command.strip().lower().startswith("terminal length"):
+            return "Arista-EOS-1#"
+        if command.strip().lower().startswith("screen-length"):
+            return "Arista-EOS-1#"
         self.enabled = True
         return "enable\nArista-EOS-1#"
 
@@ -297,7 +318,8 @@ async def test_enable_falls_back_to_timing_mode_when_prompt_detection_fails():
     output = await adapter.run_command("enable")
 
     assert "Arista-EOS-1#" in output
-    assert fake.timing_calls == 1
+    assert fake.timing_calls >= 1
+    assert "enable" in [item.lower() for item in fake.timing_history]
 
 
 class _FakeAliveConn:
@@ -326,6 +348,7 @@ async def test_connect_reuses_existing_alive_connection(monkeypatch):
 class _FakeConnectedDevice:
     def __init__(self, device_type: str):
         self.device_type = device_type
+        self.timing_history: list[str] = []
 
     def is_alive(self):
         return {"is_alive": True}
@@ -336,6 +359,15 @@ class _FakeConnectedDevice:
         if self.device_type == "arista_eos":
             return "Arista vEOS-lab"
         return "Cisco IOS XE Software"
+
+    def send_command_timing(self, command: str, read_timeout: int = 30):
+        self.timing_history.append(command)
+        lowered = command.strip().lower()
+        if lowered.startswith("terminal length"):
+            return "terminal length 0\n#"
+        if lowered.startswith("screen-length"):
+            return "screen-length 0 temporary\n>"
+        return "#"
 
     def disconnect(self):
         return None
@@ -371,6 +403,29 @@ async def test_connect_can_fallback_to_huawei_when_initial_device_type_mismatche
     assert "huawei" in attempts
     assert adapter.session.device.device_type == "huawei"
     assert adapter.session.device.vendor == "huawei"
+
+
+@pytest.mark.asyncio
+async def test_connect_applies_terminal_paging_off_after_successful_probe(monkeypatch):
+    session = Session(
+        device=DeviceTarget(
+            host="192.168.0.102",
+            protocol=DeviceProtocol.ssh,
+            vendor="arista",
+            device_type="arista_eos",
+            username="tester",
+            password="tester",
+        ),
+    )
+    adapter = SSHAdapter(session, allow_simulation=False)
+    fake = _FakeConnectedDevice("arista_eos")
+
+    monkeypatch.setattr("app.services.adapters.ConnectHandler", lambda **kwargs: fake)
+
+    await adapter.connect()
+
+    assert adapter.conn is fake
+    assert any(cmd.strip().lower() == "terminal length 0" for cmd in fake.timing_history)
 
 
 def split_config_command(command: str) -> list[str]:

@@ -36,6 +36,7 @@ class SSHAdapter(DeviceAdapter):
         super().__init__(session, allow_simulation=allow_simulation)
         self.conn = None
         self.connection_error: Optional[Exception] = None
+        self._paging_configured = False
 
     async def connect(self) -> None:
         if self.conn:
@@ -65,6 +66,7 @@ class SSHAdapter(DeviceAdapter):
                             conn_timeout=15,
                             auth_timeout=15,
                             banner_timeout=20,
+                            keepalive=30,
                         )
                         if not await self._probe_device_identity(candidate):
                             try:
@@ -77,6 +79,8 @@ class SSHAdapter(DeviceAdapter):
                         self.connection_error = None
                         self.session.device.device_type = candidate
                         self._refresh_vendor_hint_from_device_type(candidate)
+                        self._paging_configured = False
+                        await self._ensure_terminal_paging_off()
                         return
                     except Exception as exc:
                         self.conn = None
@@ -96,80 +100,31 @@ class SSHAdapter(DeviceAdapter):
         normalized_translated = translated.strip().lower()
         command_parts = self._split_commands(translated)
         workflow_commands = self._extract_config_workflow(translated)
-
-        if self.conn and normalized_translated == "enable":
+        if not self.conn:
             try:
-                output = await asyncio.to_thread(self.conn.enable)
-                if isinstance(output, str) and output.strip():
-                    return output
-                return "Entered privileged mode."
+                await self.connect()
+            except Exception:
+                pass
+
+        for attempt in range(2):
+            if not self.conn:
+                break
+            try:
+                return await self._run_command_on_active_connection(
+                    original_command=command,
+                    translated=translated,
+                    normalized_translated=normalized_translated,
+                    command_parts=command_parts,
+                    workflow_commands=workflow_commands,
+                )
             except Exception as exc:
-                if self._is_prompt_detection_error(exc):
+                if attempt == 0 and self._is_retryable_execution_error(exc):
+                    await self._reset_connection()
                     try:
-                        output = await asyncio.to_thread(self.conn.send_command_timing, "enable", read_timeout=30)
-                        if isinstance(output, str) and output.strip():
-                            return output
-                        return "Entered privileged mode."
+                        await self.connect()
+                        continue
                     except Exception:
                         pass
-                if self.allow_simulation:
-                    return "Entered privileged mode."
-                raise
-
-        if self.conn and workflow_commands:
-            if self._is_pure_config_workflow(command_parts):
-                try:
-                    return await asyncio.to_thread(
-                        self.conn.send_config_set,
-                        workflow_commands,
-                        cmd_verify=False,
-                        read_timeout=45,
-                    )
-                except Exception as exc:
-                    if self._is_prompt_detection_error(exc):
-                        try:
-                            return await self._run_compound_timing(command_parts)
-                        except Exception:
-                            pass
-                    if self.allow_simulation:
-                        return _simulate_cli_output(command)
-                    raise
-            try:
-                return await self._run_compound_timing(command_parts)
-            except Exception as exc:
-                if self.allow_simulation:
-                    return _simulate_cli_output(command)
-                raise
-
-        if self.conn and len(command_parts) > 1:
-            try:
-                return await self._run_compound_timing(command_parts)
-            except Exception as exc:
-                if self.allow_simulation:
-                    return _simulate_cli_output(command)
-                raise
-
-        if self.conn and len(command_parts) == 1 and self._looks_like_config_command(command_parts[0]):
-            try:
-                return await asyncio.to_thread(self.conn.send_command_timing, translated, read_timeout=30)
-            except Exception as exc:
-                if self.allow_simulation:
-                    return _simulate_cli_output(command)
-                raise
-
-        if self.conn:
-            try:
-                output = await asyncio.to_thread(self.conn.send_command, translated)
-                retried = await self._retry_on_cli_error(command, translated, output)
-                self._refresh_vendor_hint_from_output(retried)
-                return retried
-            except Exception as exc:
-                # Huawei ping often has delayed prompt return; timing mode is safer as a fallback.
-                if self._is_prompt_detection_error(exc):
-                    output = await asyncio.to_thread(self.conn.send_command_timing, translated, read_timeout=30)
-                    retried = await self._retry_on_cli_error(command, translated, output)
-                    self._refresh_vendor_hint_from_output(retried)
-                    return retried
                 if self.allow_simulation:
                     return _simulate_cli_output(command)
                 raise
@@ -181,6 +136,76 @@ class SSHAdapter(DeviceAdapter):
         await asyncio.sleep(0.2)
         return _simulate_cli_output(command)
 
+    async def _run_command_on_active_connection(
+        self,
+        *,
+        original_command: str,
+        translated: str,
+        normalized_translated: str,
+        command_parts: list[str],
+        workflow_commands: list[str],
+    ) -> str:
+        if not self.conn:
+            raise RuntimeError("SSH session is not connected")
+
+        if normalized_translated == "enable":
+            if hasattr(self.conn, "check_enable_mode"):
+                try:
+                    already_enabled = await asyncio.to_thread(self.conn.check_enable_mode)
+                    if bool(already_enabled):
+                        return "Already in privileged mode."
+                except Exception:
+                    pass
+            try:
+                output = await asyncio.to_thread(self.conn.enable)
+                await self._ensure_terminal_paging_off(force=True)
+                if isinstance(output, str) and output.strip():
+                    return output
+                return "Entered privileged mode."
+            except Exception as exc:
+                if self._is_prompt_detection_error(exc):
+                    output = await asyncio.to_thread(self.conn.send_command_timing, "enable", read_timeout=30)
+                    await self._ensure_terminal_paging_off(force=True)
+                    if isinstance(output, str) and output.strip():
+                        return output
+                    return "Entered privileged mode."
+                raise
+
+        if workflow_commands:
+            if self._is_pure_config_workflow(command_parts):
+                try:
+                    return await asyncio.to_thread(
+                        self.conn.send_config_set,
+                        workflow_commands,
+                        cmd_verify=False,
+                        read_timeout=45,
+                    )
+                except Exception as exc:
+                    if self._is_prompt_detection_error(exc):
+                        return await self._run_compound_timing(command_parts)
+                    raise
+            return await self._run_compound_timing(command_parts)
+
+        if len(command_parts) > 1:
+            return await self._run_compound_timing(command_parts)
+
+        if len(command_parts) == 1 and self._looks_like_config_command(command_parts[0]):
+            return await asyncio.to_thread(self.conn.send_command_timing, translated, read_timeout=30)
+
+        try:
+            output = await asyncio.to_thread(self.conn.send_command, translated)
+            retried = await self._retry_on_cli_error(original_command, translated, output)
+            self._refresh_vendor_hint_from_output(retried)
+            return retried
+        except Exception as exc:
+            # Huawei ping often has delayed prompt return; timing mode is safer as a fallback.
+            if self._is_prompt_detection_error(exc):
+                output = await asyncio.to_thread(self.conn.send_command_timing, translated, read_timeout=30)
+                retried = await self._retry_on_cli_error(original_command, translated, output)
+                self._refresh_vendor_hint_from_output(retried)
+                return retried
+            raise
+
     async def close(self) -> None:
         if self.conn:
             try:
@@ -189,6 +214,7 @@ class SSHAdapter(DeviceAdapter):
                 pass
             finally:
                 self.conn = None
+                self._paging_configured = False
 
     def _resolve_device_type(self) -> str:
         if self.session.device.protocol != DeviceProtocol.telnet:
@@ -264,11 +290,20 @@ class SSHAdapter(DeviceAdapter):
         try:
             output = await asyncio.to_thread(self.conn.send_command, probe)
         except Exception as exc:
-            return not self._is_prompt_detection_error(exc)
+            if self._is_prompt_detection_error(exc):
+                try:
+                    output = await asyncio.to_thread(self.conn.send_command_timing, probe, read_timeout=30)
+                except Exception:
+                    return False
+            else:
+                return not self._is_prompt_detection_error(exc)
 
         if self._looks_like_cli_error(output):
             return False
 
+        return self._probe_output_matches_device_type(output, device_type)
+
+    def _probe_output_matches_device_type(self, output: str, device_type: str) -> bool:
         lowered = output.lower()
         if device_type == "huawei":
             return any(token in lowered for token in ("huawei", "versatile routing platform", "vrp"))
@@ -430,6 +465,74 @@ class SSHAdapter(DeviceAdapter):
 
     def _is_prompt_detection_error(self, exc: Exception) -> bool:
         return "Pattern not detected" in str(exc)
+
+    def _is_retryable_execution_error(self, exc: Exception) -> bool:
+        text = str(exc).lower()
+        return self._is_prompt_detection_error(exc) or any(
+            token in text
+            for token in (
+                "session not alive",
+                "socket is closed",
+                "channel closed",
+                "eof",
+                "timed out",
+                "read timeout",
+            )
+        )
+
+    async def _reset_connection(self) -> None:
+        if not self.conn:
+            return
+        try:
+            await asyncio.to_thread(self.conn.disconnect)
+        except Exception:
+            pass
+        finally:
+            self.conn = None
+            self._paging_configured = False
+
+    async def _ensure_terminal_paging_off(self, *, force: bool = False) -> None:
+        if not self.conn:
+            return
+        if self._paging_configured and not force:
+            return
+        sender = getattr(self.conn, "send_command_timing", None)
+        if not callable(sender):
+            self._paging_configured = True
+            return
+
+        commands = self._paging_disable_candidates()
+        for cmd in commands:
+            try:
+                output = await asyncio.to_thread(sender, cmd, read_timeout=20)
+            except TypeError:
+                try:
+                    output = await asyncio.to_thread(sender, cmd)
+                except Exception:
+                    continue
+            except Exception:
+                continue
+
+            if isinstance(output, str) and self._looks_like_cli_error(output):
+                continue
+            self._paging_configured = True
+            return
+
+        self._paging_configured = True
+
+    def _paging_disable_candidates(self) -> list[str]:
+        vendor = (self.session.device.vendor or "").strip().lower()
+        device_type = (self.session.device.device_type or "").strip().lower()
+
+        is_huawei = "huawei" in vendor or device_type == "huawei"
+        is_arista = "arista" in vendor or "arista" in device_type
+        is_cisco = "cisco" in vendor or device_type in {"cisco_ios", "cisco_xe"}
+
+        if is_huawei:
+            return ["screen-length 0 temporary", "screen-length 0"]
+        if is_arista or is_cisco:
+            return ["terminal length 0"]
+        return ["terminal length 0", "screen-length 0 temporary", "screen-length 0"]
 
     def _normalize_interface_tokens(self, command: str) -> str:
         # Normalize forms like "GigabitEthernet 1/0/6" -> "GigabitEthernet1/0/6"

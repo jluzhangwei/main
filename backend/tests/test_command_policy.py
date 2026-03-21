@@ -8,6 +8,8 @@ def test_default_command_policy_includes_existing_block_and_execute_rules():
 
     assert "reload" in [item.lower() for item in policy.blocked_patterns]
     assert "show " in [item.lower() for item in policy.executable_patterns]
+    assert "terminal length " in [item.lower() for item in policy.executable_patterns]
+    assert "screen-length " in [item.lower() for item in policy.executable_patterns]
     assert "configure terminal" not in [item.lower() for item in policy.executable_patterns]
 
 

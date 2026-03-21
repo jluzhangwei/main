@@ -243,6 +243,30 @@ h6 {
   flex-wrap: wrap;
 }
 
+.pending-confirm-toolbar {
+  margin-bottom: 7px;
+  border: 1px solid rgba(169, 84, 6, 0.3);
+  border-radius: 8px;
+  background: rgba(169, 84, 6, 0.06);
+  padding: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pending-confirm-label {
+  font-size: 11px;
+  color: #6f3f0a;
+  font-weight: 600;
+}
+
+.pending-confirm-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .workspace-toolbar {
   background: #f7f9fc;
 }
@@ -532,6 +556,27 @@ h6 {
   gap: 6px;
 }
 
+.summary-action-strip {
+  margin-top: 3px;
+  border: 1px solid rgba(29, 98, 209, 0.3);
+  border-radius: 8px;
+  background: rgba(29, 98, 209, 0.06);
+  padding: 7px;
+  display: grid;
+  gap: 7px;
+}
+
+.summary-action-text {
+  font-size: 11px;
+  color: #1f4d92;
+}
+
+.summary-action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .chat-bubble {
   margin-bottom: 7px;
   border-radius: 8px;
@@ -646,6 +691,45 @@ h6 {
 
 .right-bottom {
   grid-template-rows: auto minmax(0, 1fr);
+}
+
+.terminal-confirm-strip {
+  border: 1px solid rgba(169, 84, 6, 0.3);
+  border-radius: 8px;
+  background: rgba(169, 84, 6, 0.06);
+  padding: 7px;
+  display: grid;
+  gap: 7px;
+}
+
+.terminal-confirm-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6f3f0a;
+}
+
+.terminal-confirm-list {
+  display: grid;
+  gap: 4px;
+  max-height: 92px;
+  overflow: auto;
+}
+
+.terminal-confirm-list code {
+  border: 1px dashed rgba(169, 84, 6, 0.35);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.82);
+  padding: 3px 6px;
+  color: #5a3400;
+  font-family: 'IBM Plex Mono', 'SFMono-Regular', Menlo, monospace;
+  font-size: 10px;
+  word-break: break-all;
+}
+
+.terminal-confirm-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .right-block-head {
@@ -1384,6 +1468,11 @@ h6 {
   .composer-inline-controls {
     width: 100%;
     justify-content: space-between;
+  }
+
+  .pending-confirm-toolbar {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .composer-model-select {
