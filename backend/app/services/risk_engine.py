@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.models.schemas import AutomationLevel, RiskLevel
+from app.models.schemas import AutomationLevel, RiskLevel, RiskPolicy
 
 
 @dataclass
@@ -14,6 +14,30 @@ class RiskDecision:
 
 
 class RiskEngine:
+    default_high_risk_patterns = (
+        "configure terminal",
+        "conf t",
+        "interface ",
+        "shutdown",
+        "no shutdown",
+        "write memory",
+        "copy running-config startup-config",
+        "wr mem",
+        "router bgp",
+        "router ospf",
+        "ip route ",
+        "commit",
+        "save",
+        "clear ",
+    )
+
+    default_medium_risk_patterns = (
+        "clear arp",
+        "clear ip route",
+        "debug",
+        "reset",
+    )
+
     readonly_prefixes = (
         "show ",
         "display ",
@@ -31,25 +55,51 @@ class RiskEngine:
         "reload",
     )
 
-    high_risk_patterns = (
-        "configure terminal",
-        "conf t",
-        "interface ",
-        "shutdown",
-        "no shutdown",
-        "router bgp",
-        "router ospf",
-        "ip route ",
-        "commit",
-        "save",
-    )
+    def __init__(
+        self,
+        *,
+        high_risk_patterns: list[str] | tuple[str, ...] | None = None,
+        medium_risk_patterns: list[str] | tuple[str, ...] | None = None,
+    ):
+        self.high_risk_patterns = self._normalize_patterns(
+            list(high_risk_patterns) if high_risk_patterns is not None else list(self.default_high_risk_patterns)
+        )
+        self.medium_risk_patterns = self._normalize_patterns(
+            list(medium_risk_patterns)
+            if medium_risk_patterns is not None
+            else list(self.default_medium_risk_patterns)
+        )
 
-    medium_risk_patterns = (
-        "clear arp",
-        "clear ip route",
-        "debug",
-        "reset",
-    )
+    @classmethod
+    def default_policy(cls) -> RiskPolicy:
+        return RiskPolicy(
+            high_risk_patterns=list(cls.default_high_risk_patterns),
+            medium_risk_patterns=list(cls.default_medium_risk_patterns),
+        )
+
+    def update_policy(
+        self,
+        *,
+        high_risk_patterns: list[str] | None = None,
+        medium_risk_patterns: list[str] | None = None,
+    ) -> None:
+        if high_risk_patterns is not None:
+            self.high_risk_patterns = self._normalize_patterns(high_risk_patterns)
+        if medium_risk_patterns is not None:
+            self.medium_risk_patterns = self._normalize_patterns(medium_risk_patterns)
+
+    def _normalize_patterns(self, values: list[str]) -> tuple[str, ...]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in values:
+            text = str(item).strip().lower()
+            if not text:
+                continue
+            if text in seen:
+                continue
+            seen.add(text)
+            normalized.append(text)
+        return tuple(normalized)
 
     def classify(self, command: str) -> RiskLevel:
         normalized = command.lower()

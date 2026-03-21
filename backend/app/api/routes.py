@@ -19,6 +19,8 @@ from app.models.schemas import (
     SessionResponse,
     SessionUpdateRequest,
     ServiceTraceResponse,
+    RiskPolicy,
+    RiskPolicyUpdateRequest,
 )
 from app.services.exporter import export_timeline_markdown
 from app.services.orchestrator import ConversationOrchestrator
@@ -88,6 +90,21 @@ async def reset_command_policy() -> CommandPolicy:
     return store.reset_command_policy()
 
 
+@router.get("/risk-policy", response_model=RiskPolicy)
+async def get_risk_policy() -> RiskPolicy:
+    return store.get_risk_policy()
+
+
+@router.put("/risk-policy", response_model=RiskPolicy)
+async def update_risk_policy(req: RiskPolicyUpdateRequest) -> RiskPolicy:
+    return store.update_risk_policy(req)
+
+
+@router.post("/risk-policy/reset", response_model=RiskPolicy)
+async def reset_risk_policy() -> RiskPolicy:
+    return store.reset_risk_policy()
+
+
 @router.get("/llm/status", response_model=LLMConfigResponse)
 async def get_llm_status() -> LLMConfigResponse:
     status = orchestrator.deepseek_diagnoser.status()
@@ -118,6 +135,10 @@ async def delete_llm_config() -> LLMConfigResponse:
 @router.get("/llm/prompt-policy", response_model=LLMPromptPolicyResponse)
 async def get_llm_prompt_policy() -> LLMPromptPolicyResponse:
     payload = orchestrator.deepseek_diagnoser.prompt_strategy()
+    runtime = orchestrator.prompt_runtime_policy()
+    prompts = payload.get("prompts")
+    if isinstance(prompts, dict):
+        payload["prompts"] = {**prompts, **runtime}
     return LLMPromptPolicyResponse(**payload)
 
 

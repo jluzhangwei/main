@@ -41,6 +41,45 @@ class ConversationOrchestrator:
         self._session_adapters: dict[str, object] = {}
         self._trace_perf_started: dict[str, float] = {}
 
+    def prompt_runtime_policy(self) -> dict[str, str]:
+        return {
+            "runtime_session_header_template": (
+                "会话ID: {session_id}\\n"
+                "当前设备厂商: {vendor}\\n"
+                "接入协议: {protocol}\\n"
+                "会话模式: {operation_mode}\\n"
+                "请只基于当前会话上下文继续诊断，禁止引用或臆测其他会话。\\n"
+                "用户问题: {user_content}"
+            ),
+            "runtime_command_result_template": (
+                "执行结果\\n"
+                "- step: {step_no}\\n"
+                "- title: {title}\\n"
+                "- command: {command}\\n"
+                "- status: {status}\\n"
+                "- error: {error(optional)}\\n"
+                "- output: {output(optional)}"
+            ),
+            "runtime_finalization_prompt_template": (
+                "请基于当前会话已有证据直接给出最终结论。"
+                "只允许输出decision=final，不要再输出run_command。"
+                "如果用户是信息查询任务，请返回mode=query和query_result；"
+                "如果用户是配置任务，请返回mode=config和query_result；"
+                "如果是故障诊断任务，请返回mode=diagnosis和根因/影响/建议。"
+            ),
+            "runtime_batch_confirm_policy": (
+                "当批量命令同时包含“可直接执行命令”和“待确认命令”时："
+                "系统会先执行确认前的前置命令，再将后续命令作为同一批次待确认；"
+                "用户确认一次即可执行整批命令。"
+            ),
+            "runtime_output_compaction_policy": (
+                "运行期输出压缩策略："
+                "优先使用过滤/匹配命令减少回显（include/exclude/begin/section/count/match/grep/regex）；"
+                "先摘要后细查，避免一次抓取全量配置；"
+                "每轮命令建议2-5条并确保目标明确。"
+            ),
+        }
+
     async def stream_message(self, session_id: str, user_content: str) -> AsyncIterator[str]:
         try:
             session = self.store.get_session(session_id)
@@ -142,6 +181,7 @@ class ConversationOrchestrator:
         user_content: str,
         preferred_mode: Literal["query", "diagnosis", "config"] | None = None,
     ) -> AsyncIterator[str]:
+        self._sync_risk_policy()
         session = self.store.get_session(session_id)
         self._append_user_problem_to_ai_context(
             session_id,
@@ -211,8 +251,8 @@ class ConversationOrchestrator:
             if not plan_commands:
                 break
 
-            plan_batch_id = make_id() if len(plan_commands) > 1 else None
-            plan_batch_total = len(plan_commands)
+            plan_batch_id = make_id() if ("commands" in plan or len(plan_commands) > 1) else None
+            plan_batch_total = len(plan_commands) if plan_batch_id else None
             batch_commands: list[CommandExecution] = []
             for index, (title, next_command) in enumerate(plan_commands, start=1):
                 step_no += 1
@@ -229,7 +269,7 @@ class ConversationOrchestrator:
                         status=CommandStatus.queued,
                         batch_id=plan_batch_id,
                         batch_index=index if plan_batch_id else None,
-                        batch_total=plan_batch_total if plan_batch_id else None,
+                        batch_total=plan_batch_total,
                     )
                 )
 
@@ -332,11 +372,13 @@ class ConversationOrchestrator:
 
         policy = self.store.get_command_policy()
         blocked_reasons: dict[str, str] = {}
-        requires_batch_confirmation = False
-        confirm_reason = ""
+        decisions: list[dict[str, object]] = []
+        first_confirm_idx: int | None = None
+        confirm_reason = "批量命令包含待确认项，请确认后继续执行后续命令。"
 
-        for command in commands:
+        for idx, command in enumerate(commands):
             decision = self._decide_execution_action(session, command.command, policy)
+            decisions.append(decision)
             command.risk_level = decision["risk_level"]
             command.requires_confirmation = decision["action"] == "confirm"
 
@@ -344,9 +386,9 @@ class ConversationOrchestrator:
                 blocked_reasons[command.id] = decision["reason"]
                 continue
             if decision["action"] == "confirm":
-                requires_batch_confirmation = True
-                if not confirm_reason:
-                    confirm_reason = decision["reason"]
+                if first_confirm_idx is None:
+                    first_confirm_idx = idx
+                    confirm_reason = str(decision["reason"] or confirm_reason)
 
         if blocked_reasons:
             first_blocked = next((item for item in commands if item.id in blocked_reasons), commands[0])
@@ -369,10 +411,42 @@ class ConversationOrchestrator:
             self._trace_finish(execution_trace, status="blocked", detail=batch_reason[:300])
             return
 
-        if requires_batch_confirmation:
+        if first_confirm_idx is not None:
+            precheck_commands = commands[:first_confirm_idx]
+            pending_commands = commands[first_confirm_idx:]
+            adapter = None
+
+            if precheck_commands:
+                for command in precheck_commands:
+                    self.store.add_command(command)
+
+                try:
+                    adapter = await self._get_session_adapter(session)
+                    for command in precheck_commands:
+                        await self._execute_and_record(adapter, command)
+                        yield self._sse("command_completed", {"command": command.model_dump(mode="json")})
+                        if command.status == CommandStatus.failed:
+                            self._trace_finish(execution_trace, status="failed", detail=(command.error or "")[:300])
+                            return
+                except Exception as exc:
+                    failed_at = now_utc()
+                    for command in precheck_commands:
+                        if command.status in {CommandStatus.succeeded, CommandStatus.failed}:
+                            continue
+                        command.status = CommandStatus.failed
+                        command.error = str(exc)
+                        command.completed_at = failed_at
+                        if command.started_at:
+                            command.duration_ms = max(0, int((failed_at - command.started_at).total_seconds() * 1000))
+                        self.store.update_command(command)
+                        yield self._sse("command_completed", {"command": command.model_dump(mode="json")})
+                    self._trace_finish(execution_trace, status="failed", detail=str(exc)[:300])
+                    await self._drop_session_adapter(session.id)
+                    return
+
             reason = confirm_reason or "批量命令包含未命中可执行规则的命令，请确认后整批执行。"
             self._trace_finish(execution_trace, status="pending_confirm", detail=reason[:300])
-            for idx, command in enumerate(commands):
+            for idx, command in enumerate(pending_commands):
                 pending_reason = reason if idx == 0 else "批量命令等待统一确认"
                 yield self._mark_pending_confirmation(command, pending_reason)
             return
@@ -406,6 +480,7 @@ class ConversationOrchestrator:
             yield self._sse("command_completed", {"command": command.model_dump(mode="json")})
 
     def _decide_execution_action(self, session, command_text: str, policy: CommandPolicy) -> dict[str, object]:
+        self._sync_risk_policy()
         policy_decision = self.command_policy_engine.evaluate(command_text, policy)
         risk_decision = self.risk_engine.decide(command_text, session.automation_level)
         risk_level = risk_decision.risk_level
@@ -435,6 +510,13 @@ class ConversationOrchestrator:
             return {"action": "confirm", "reason": policy_decision.reason, "risk_level": risk_level}
 
         return {"action": "allow", "reason": "Command allowed.", "risk_level": risk_level}
+
+    def _sync_risk_policy(self) -> None:
+        policy = self.store.get_risk_policy()
+        self.risk_engine.update_policy(
+            high_risk_patterns=policy.high_risk_patterns,
+            medium_risk_patterns=policy.medium_risk_patterns,
+        )
 
     async def _execute_batch_and_record(self, adapter, commands: list[CommandExecution]) -> None:
         started = now_utc()

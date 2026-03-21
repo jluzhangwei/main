@@ -22,8 +22,11 @@ from app.models.schemas import (
     ServiceTraceResponse,
     ServiceTraceStep,
     TimelineResponse,
+    RiskPolicy,
+    RiskPolicyUpdateRequest,
 )
 from app.services.command_policy import default_command_policy
+from app.services.risk_engine import RiskEngine
 
 
 class InMemoryStore:
@@ -42,6 +45,9 @@ class InMemoryStore:
         self.command_policy: CommandPolicy = default_command_policy()
         self.command_policy_path: Path = self._resolve_command_policy_path()
         self._load_command_policy()
+        self.risk_policy: RiskPolicy = RiskEngine.default_policy()
+        self.risk_policy_path: Path = self._resolve_risk_policy_path()
+        self._load_risk_policy()
         self.session_store_path: Path = self._resolve_session_store_path()
         self.trace_steps: Dict[str, List[ServiceTraceStep]] = defaultdict(list)
         self._load_session_store()
@@ -208,6 +214,22 @@ class InMemoryStore:
         self._save_command_policy()
         return self.get_command_policy()
 
+    def get_risk_policy(self) -> RiskPolicy:
+        return self.risk_policy.model_copy(deep=True)
+
+    def update_risk_policy(self, req: RiskPolicyUpdateRequest) -> RiskPolicy:
+        if req.high_risk_patterns is not None:
+            self.risk_policy.high_risk_patterns = self._normalize_patterns(req.high_risk_patterns)
+        if req.medium_risk_patterns is not None:
+            self.risk_policy.medium_risk_patterns = self._normalize_patterns(req.medium_risk_patterns)
+        self._save_risk_policy()
+        return self.get_risk_policy()
+
+    def reset_risk_policy(self) -> RiskPolicy:
+        self.risk_policy = RiskEngine.default_policy()
+        self._save_risk_policy()
+        return self.get_risk_policy()
+
     def _normalize_device_type(self, vendor: str, protocol: DeviceProtocol, current: str) -> str:
         if protocol == DeviceProtocol.api:
             return current
@@ -255,6 +277,15 @@ class InMemoryStore:
             return home / ".netops-ai-v1" / "session_store.json"
         return Path(tempfile.gettempdir()) / "netops_ai_v1_session_store.json"
 
+    def _resolve_risk_policy_path(self) -> Path:
+        env_path = (os.getenv("NETOPS_RISK_POLICY_PATH") or "").strip()
+        if env_path:
+            return Path(env_path).expanduser()
+        home = Path.home()
+        if str(home).strip() and str(home) != "/":
+            return home / ".netops-ai-v1" / "risk_policy.json"
+        return Path(tempfile.gettempdir()) / "netops_ai_v1_risk_policy.json"
+
     def _load_command_policy(self) -> None:
         path = self.command_policy_path
         if not path.exists():
@@ -279,6 +310,37 @@ class InMemoryStore:
     def _save_command_policy(self) -> None:
         path = self.command_policy_path
         payload = self.command_policy.model_dump(mode="json")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            try:
+                os.chmod(path, 0o600)
+            except Exception:
+                pass
+        except Exception:
+            return
+
+    def _load_risk_policy(self) -> None:
+        path = self.risk_policy_path
+        if not path.exists():
+            return
+        try:
+            raw = path.read_text(encoding="utf-8")
+            payload = json.loads(raw)
+            if not isinstance(payload, dict):
+                return
+            high = payload.get("high_risk_patterns")
+            medium = payload.get("medium_risk_patterns")
+            if isinstance(high, list):
+                self.risk_policy.high_risk_patterns = self._normalize_patterns([str(item) for item in high])
+            if isinstance(medium, list):
+                self.risk_policy.medium_risk_patterns = self._normalize_patterns([str(item) for item in medium])
+        except Exception:
+            return
+
+    def _save_risk_policy(self) -> None:
+        path = self.risk_policy_path
+        payload = self.risk_policy.model_dump(mode="json")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

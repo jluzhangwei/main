@@ -266,6 +266,34 @@ def test_command_policy_endpoint_can_view_and_update_rules():
     assert reset_payload["legality_check_enabled"] is True
 
 
+def test_risk_policy_endpoint_can_view_and_update_rules():
+    initial = client.get("/v1/risk-policy")
+    assert initial.status_code == 200
+    before = initial.json()
+    assert "high_risk_patterns" in before
+    assert "medium_risk_patterns" in before
+    assert "shutdown" in [item.lower() for item in before["high_risk_patterns"]]
+    assert "clear " in [item.lower() for item in before["high_risk_patterns"]]
+
+    updated = client.put(
+        "/v1/risk-policy",
+        json={
+            "high_risk_patterns": ["shutdown", "custom-high"],
+            "medium_risk_patterns": ["debug", "custom-medium"],
+        },
+    )
+    assert updated.status_code == 200
+    payload = updated.json()
+    assert "custom-high" in payload["high_risk_patterns"]
+    assert "custom-medium" in payload["medium_risk_patterns"]
+
+    reset = client.post("/v1/risk-policy/reset")
+    assert reset.status_code == 200
+    reset_payload = reset.json()
+    assert "custom-high" not in [item.lower() for item in reset_payload["high_risk_patterns"]]
+    assert "shutdown" in [item.lower() for item in reset_payload["high_risk_patterns"]]
+
+
 def test_service_trace_endpoint_returns_step_timings():
     session_id = _create_session("assisted")
     _stream_message(session_id, "请检查接口状态并分析")
@@ -286,6 +314,7 @@ def test_service_trace_endpoint_returns_step_timings():
 def test_session_store_persists_history_across_store_reinit(tmp_path, monkeypatch):
     monkeypatch.setenv("NETOPS_SESSION_STORE_PATH", str(tmp_path / "session_store.json"))
     monkeypatch.setenv("NETOPS_COMMAND_POLICY_PATH", str(tmp_path / "command_policy.json"))
+    monkeypatch.setenv("NETOPS_RISK_POLICY_PATH", str(tmp_path / "risk_policy.json"))
 
     from app.services.store import InMemoryStore
     from app.models.schemas import SessionCreateRequest, DeviceTarget

@@ -161,7 +161,7 @@ class _FakeConfigConn:
         self.enabled = True
         return "enabled"
 
-    def send_config_set(self, commands: list[str]) -> str:
+    def send_config_set(self, commands: list[str], **kwargs) -> str:
         self.last_config_set = list(commands)
         return "ok"
 
@@ -198,6 +198,62 @@ async def test_config_workflow_does_not_force_enable_implicitly():
     assert output == "ok"
     assert fake.enable_calls == 0
     assert fake.last_config_set == ["interface GigabitEthernet1/0/6", "no shutdown"]
+
+
+class _FakePromptFailConfigConn(_FakeConfigConn):
+    def __init__(self):
+        super().__init__(enabled=True)
+        self.timing_history: list[str] = []
+
+    def send_config_set(self, commands: list[str], **kwargs) -> str:
+        raise RuntimeError("Pattern not detected: '[>#]' in output.")
+
+    def send_command_timing(self, command: str, read_timeout: int = 30) -> str:
+        self.timing_history.append(command)
+        return f"timing:{command}"
+
+
+@pytest.mark.asyncio
+async def test_config_workflow_falls_back_to_compound_timing_on_prompt_detection_error():
+    session = Session(
+        device=DeviceTarget(host="192.168.0.102", protocol=DeviceProtocol.ssh, vendor="arista", device_type="arista_eos"),
+    )
+    adapter = SSHAdapter(session, allow_simulation=False)
+    fake = _FakePromptFailConfigConn()
+    adapter.conn = fake
+
+    output = await adapter.run_command("configure terminal ; interface Ethernet2 ; no shutdown")
+
+    assert "timing:configure terminal" in output
+    assert "timing:interface Ethernet2" in output
+    assert "timing:no shutdown" in output
+    assert "timing:end" in output
+    assert fake.timing_history[-1].lower() == "end"
+
+
+@pytest.mark.asyncio
+async def test_mixed_compound_workflow_uses_timing_sequence_and_runs_save_after_exit():
+    session = Session(
+        device=DeviceTarget(host="192.168.0.102", protocol=DeviceProtocol.ssh, vendor="arista", device_type="arista_eos"),
+    )
+    adapter = SSHAdapter(session, allow_simulation=False)
+    fake = _FakePromptFailConfigConn()
+    adapter.conn = fake
+
+    output = await adapter.run_command(
+        "show interfaces status ; configure terminal ; interface Ethernet2 ; no shutdown ; write memory"
+    )
+
+    assert "timing:show interfaces status" in output
+    assert "timing:configure terminal" in output
+    assert "timing:interface Ethernet2" in output
+    assert "timing:no shutdown" in output
+    assert "timing:end" in output
+    assert "timing:write memory" in output
+    # Should exit config before save command.
+    end_idx = fake.timing_history.index("end")
+    save_idx = fake.timing_history.index("write memory")
+    assert end_idx < save_idx
 
 
 @pytest.mark.asyncio

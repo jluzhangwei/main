@@ -816,10 +816,11 @@ async def test_batch_with_mixed_rules_requires_single_confirmation_then_executes
     commands = store.list_commands(session.id)
     assert len(commands) == 4
     assert commands[0].status == CommandStatus.succeeded
-    assert all(item.status == CommandStatus.pending_confirm for item in commands[1:])
-    assert len({item.batch_id for item in commands[1:]}) == 1
+    assert commands[1].status == CommandStatus.succeeded
+    assert all(item.status == CommandStatus.pending_confirm for item in commands[2:])
+    assert len({item.batch_id for item in commands[2:]}) == 1
 
-    approved = await orchestrator.confirm_command(session.id, commands[1].id, ConfirmCommandRequest(approved=True))
+    approved = await orchestrator.confirm_command(session.id, commands[2].id, ConfirmCommandRequest(approved=True))
     assert approved.status == CommandStatus.succeeded
 
     commands_after = store.list_commands(session.id)

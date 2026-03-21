@@ -12,6 +12,16 @@ import httpx
 
 from app.models.schemas import CommandExecution, Evidence, IncidentSummary, Session
 
+OUTPUT_COMPACTION_RULES = (
+    "为减少命令回显长度并提升执行效率，生成命令时必须优先使用“最小化输出”策略。"
+    "优先使用设备支持的过滤语法，例如 include/exclude/begin/section/count/match/grep/regex。"
+    "若不确定过滤语法是否支持，先用简短探测命令确认，再选择等效过滤写法。"
+    "先执行摘要型命令，再按命中结果执行细节命令，避免直接抓取全量输出。"
+    "每轮命令应控制在2-5条，且每条命令都要有明确目标，禁止无目标全量采集。"
+    "commands数组建议使用对象结构{title, command}，title需简述该命令要验证的信号。"
+    "当decision=final时，仅引用关键证据行，禁止粘贴大段原始回显。"
+)
+
 NEXT_STEP_SYSTEM_PROMPT_WITH_HISTORY = (
     "你是网络故障诊断代理。"
     "你正在同一会话内连续对话，必须结合已有上下文。"
@@ -20,12 +30,16 @@ NEXT_STEP_SYSTEM_PROMPT_WITH_HISTORY = (
     "只输出JSON对象。"
     "字段: decision, title, command, commands, reason, mode, query_result, follow_up_action, root_cause, impact_scope, recommendation, confidence, evidence_refs。"
     "decision只能是run_command或final。"
-    "run_command时可给出command（单条）或commands（数组，最多5条）。"
+    "run_command时优先使用commands（数组，最多5条）；仅在确实只有单条且无需分组时才使用command。"
     "commands每项可为字符串，或对象{title, command}。"
     "final时如果是查询任务，mode=query且必须给出query_result，可选follow_up_action；"
     "final时如果是配置任务，mode=config且必须给出query_result，可选follow_up_action；"
     "final时如果是诊断任务，mode=diagnosis且必须给出root_cause, impact_scope, recommendation。"
     "confidence是0到1。evidence_refs是数组，quote应来自会话中的证据输出。"
+    "若要执行配置命令，必须先有只读取证证明目标对象存在且状态明确。"
+    "当用户未明确提供对象标识（如具体接口名）时，禁止直接输出配置命令，必须先输出只读发现命令。"
+    "禁止凭空假设接口名（如Ethernet1/Gi1/0/1）并直接下发配置。"
+    f"{OUTPUT_COMPACTION_RULES}"
 )
 
 NEXT_STEP_SYSTEM_PROMPT = (
@@ -35,12 +49,16 @@ NEXT_STEP_SYSTEM_PROMPT = (
     "只输出JSON对象。"
     "字段: decision, title, command, commands, reason, mode, query_result, follow_up_action, root_cause, impact_scope, recommendation, confidence, evidence_refs。"
     "decision只能是run_command或final。"
-    "当decision为run_command时，可给出command（单条）或commands（数组，最多5条）；优先只读排查命令。"
+    "当decision为run_command时，优先使用commands（数组，最多5条）；仅在确实只有单条且无需分组时才使用command。优先只读排查命令。"
     "commands每项可为字符串，或对象{title, command}。"
     "当decision为final时，如果是查询任务，mode=query且必须给出query_result；"
     "当decision为final时，如果是配置任务，mode=config且必须给出query_result；"
     "当decision为final时，如果是诊断任务，mode=diagnosis且必须给出root_cause, impact_scope, recommendation。"
     "confidence是0到1。evidence_refs是数组，且quote必须来自已有证据原文。"
+    "若要执行配置命令，必须先有只读取证证明目标对象存在且状态明确。"
+    "当用户未明确提供对象标识（如具体接口名）时，禁止直接输出配置命令，必须先输出只读发现命令。"
+    "禁止凭空假设接口名（如Ethernet1/Gi1/0/1）并直接下发配置。"
+    f"{OUTPUT_COMPACTION_RULES}"
 )
 
 PRIMARY_SUMMARY_SYSTEM_PROMPT = (
@@ -622,6 +640,9 @@ class DeepSeekDiagnoser:
             "优先使用批量命令计划。"
             "若任务涉及多步命令（尤其配置任务），请优先返回commands数组，一次给出完整命令组，而不是多轮单条命令。"
             "若会话模式是config且需要变更配置，请优先返回commands数组。"
+            "若包含配置变更，请先用只读命令采集当前状态，再给出配置命令组。"
+            "不要在同一个commands数组里混合“状态采集命令”和“配置变更命令”。"
+            "若用户未明确对象标识（如接口名），先返回发现对象的只读命令，不要猜测对象名。"
         )
 
     def _extract_content(self, data: dict[str, Any]) -> str:

@@ -38,3 +38,12 @@ def test_show_interface_commands_remain_low_risk():
     assert decision.risk_level == RiskLevel.low
     assert decision.allowed is True
     assert decision.requires_confirmation is False
+
+
+def test_clear_command_is_high_risk_by_default():
+    engine = RiskEngine()
+
+    decision = engine.decide("clear counters", AutomationLevel.assisted)
+
+    assert decision.risk_level == RiskLevel.high
+    assert decision.requires_confirmation is True

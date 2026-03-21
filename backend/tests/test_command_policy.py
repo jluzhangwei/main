@@ -1,4 +1,4 @@
-from app.models.schemas import CommandPolicy, CommandPolicyUpdateRequest
+from app.models.schemas import CommandPolicy, CommandPolicyUpdateRequest, RiskPolicyUpdateRequest
 from app.services.command_policy import CommandPolicyEngine, default_command_policy
 from app.services.store import InMemoryStore
 
@@ -65,3 +65,24 @@ def test_command_policy_persists_after_update(tmp_path, monkeypatch):
     current = reloaded.get_command_policy()
     assert "custom-allow" in [item.lower() for item in current.executable_patterns]
     assert current.legality_check_enabled is False
+
+
+def test_risk_policy_persists_after_update(tmp_path, monkeypatch):
+    risk_policy_path = tmp_path / "risk_policy.json"
+    monkeypatch.setenv("NETOPS_RISK_POLICY_PATH", str(risk_policy_path))
+
+    store = InMemoryStore()
+    updated = store.update_risk_policy(
+        RiskPolicyUpdateRequest(
+            high_risk_patterns=["shutdown", "custom-high"],
+            medium_risk_patterns=["debug", "custom-medium"],
+        )
+    )
+
+    assert risk_policy_path.exists() is True
+    assert "custom-high" in [item.lower() for item in updated.high_risk_patterns]
+
+    reloaded = InMemoryStore()
+    current = reloaded.get_risk_policy()
+    assert "custom-high" in [item.lower() for item in current.high_risk_patterns]
+    assert "custom-medium" in [item.lower() for item in current.medium_risk_patterns]

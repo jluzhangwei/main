@@ -5,6 +5,8 @@ import type {
   EventPayload,
   LLMPromptPolicy,
   LLMStatus,
+  RiskPolicy,
+  RiskPolicyUpdateRequest,
   ServiceTrace,
   SessionListItem,
   SessionResponse,
@@ -232,6 +234,37 @@ export async function resetCommandPolicy(): Promise<CommandPolicy> {
   })
   if (!res.ok) {
     throw new Error('Failed to reset command policy')
+  }
+  return res.json()
+}
+
+export async function getRiskPolicy(): Promise<RiskPolicy> {
+  const res = await fetch('/v1/risk-policy')
+  if (!res.ok) {
+    throw new Error('Failed to load risk policy')
+  }
+  return res.json()
+}
+
+export async function updateRiskPolicy(payload: RiskPolicyUpdateRequest): Promise<RiskPolicy> {
+  const res = await fetch('/v1/risk-policy', {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    throw new Error('Failed to update risk policy')
+  }
+  return res.json()
+}
+
+export async function resetRiskPolicy(): Promise<RiskPolicy> {
+  const res = await fetch('/v1/risk-policy/reset', {
+    method: 'POST',
+    headers,
+  })
+  if (!res.ok) {
+    throw new Error('Failed to reset risk policy')
   }
   return res.json()
 }

@@ -117,8 +117,33 @@ class SSHAdapter(DeviceAdapter):
                 raise
 
         if self.conn and workflow_commands:
+            if self._is_pure_config_workflow(command_parts):
+                try:
+                    return await asyncio.to_thread(
+                        self.conn.send_config_set,
+                        workflow_commands,
+                        cmd_verify=False,
+                        read_timeout=45,
+                    )
+                except Exception as exc:
+                    if self._is_prompt_detection_error(exc):
+                        try:
+                            return await self._run_compound_timing(command_parts)
+                        except Exception:
+                            pass
+                    if self.allow_simulation:
+                        return _simulate_cli_output(command)
+                    raise
             try:
-                return await asyncio.to_thread(self.conn.send_config_set, workflow_commands)
+                return await self._run_compound_timing(command_parts)
+            except Exception as exc:
+                if self.allow_simulation:
+                    return _simulate_cli_output(command)
+                raise
+
+        if self.conn and len(command_parts) > 1:
+            try:
+                return await self._run_compound_timing(command_parts)
             except Exception as exc:
                 if self.allow_simulation:
                     return _simulate_cli_output(command)
@@ -315,6 +340,93 @@ class SSHAdapter(DeviceAdapter):
     def _is_mode_wrapper(self, command: str) -> bool:
         normalized = command.strip().lower()
         return normalized in {"configure terminal", "system-view", "return", "exit"}
+
+    def _is_exec_mode_only_command(self, command: str) -> bool:
+        normalized = command.strip().lower()
+        return normalized.startswith(
+            (
+                "write memory",
+                "wr mem",
+                "copy running-config startup-config",
+                "save",
+            )
+        )
+
+    def _looks_like_readonly_command(self, command: str) -> bool:
+        normalized = command.strip().lower()
+        return normalized.startswith(("show ", "display ", "ping ", "traceroute ", "tracert "))
+
+    def _is_pure_config_workflow(self, parts: list[str]) -> bool:
+        if not parts:
+            return False
+        has_config = any(self._looks_like_config_command(part) for part in parts)
+        if not has_config:
+            return False
+        for part in parts:
+            if self._is_mode_wrapper(part):
+                continue
+            if self._looks_like_config_command(part):
+                continue
+            return False
+        return True
+
+    def _config_enter_command(self) -> str:
+        vendor = (self.session.device.vendor or "").strip().lower()
+        return "system-view" if "huawei" in vendor else "configure terminal"
+
+    def _config_exit_command(self) -> str:
+        vendor = (self.session.device.vendor or "").strip().lower()
+        return "return" if "huawei" in vendor else "end"
+
+    async def _run_compound_timing(self, parts: list[str]) -> str:
+        if not self.conn:
+            return ""
+        outputs: list[str] = []
+        in_config = False
+        for raw in parts:
+            command = raw.strip()
+            if not command:
+                continue
+            normalized = command.lower()
+
+            if normalized in {"configure terminal", "system-view"}:
+                out = await asyncio.to_thread(self.conn.send_command_timing, command, read_timeout=45)
+                outputs.append(out)
+                in_config = True
+                continue
+
+            if normalized in {"end", "return"}:
+                out = await asyncio.to_thread(self.conn.send_command_timing, command, read_timeout=45)
+                outputs.append(out)
+                in_config = False
+                continue
+
+            if normalized == "exit":
+                out = await asyncio.to_thread(self.conn.send_command_timing, command, read_timeout=45)
+                outputs.append(out)
+                in_config = False
+                continue
+
+            if self._looks_like_config_command(command):
+                if not in_config:
+                    enter = self._config_enter_command()
+                    outputs.append(await asyncio.to_thread(self.conn.send_command_timing, enter, read_timeout=45))
+                    in_config = True
+                outputs.append(await asyncio.to_thread(self.conn.send_command_timing, command, read_timeout=45))
+                continue
+
+            if in_config and (self._is_exec_mode_only_command(command) or self._looks_like_readonly_command(command)):
+                leave = self._config_exit_command()
+                outputs.append(await asyncio.to_thread(self.conn.send_command_timing, leave, read_timeout=45))
+                in_config = False
+
+            outputs.append(await asyncio.to_thread(self.conn.send_command_timing, command, read_timeout=45))
+
+        if in_config:
+            leave = self._config_exit_command()
+            outputs.append(await asyncio.to_thread(self.conn.send_command_timing, leave, read_timeout=45))
+
+        return "\n".join(part for part in outputs if isinstance(part, str) and part.strip())
 
     def _is_prompt_detection_error(self, exc: Exception) -> bool:
         return "Pattern not detected" in str(exc)

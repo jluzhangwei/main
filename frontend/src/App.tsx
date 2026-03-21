@@ -12,12 +12,15 @@ import {
   getCommandPolicy,
   getLlmPromptPolicy,
   getLlmStatus,
+  getRiskPolicy,
   getServiceTrace,
   getTimeline,
   listSessions,
   resetCommandPolicy,
+  resetRiskPolicy,
   streamMessage,
   updateCommandPolicy,
+  updateRiskPolicy,
   updateSessionAutomation,
 } from './api/client'
 import type {
@@ -30,6 +33,7 @@ import type {
   LLMPromptPolicy,
   LLMStatus,
   OperationMode,
+  RiskPolicy,
   ServiceTraceStep,
   SessionListItem,
   SessionResponse,
@@ -48,6 +52,7 @@ type PageId =
 type PersistedUiState = {
   activePage?: PageId
   rightPanelWidth?: number
+  terminalSplitRatio?: number
   statusCollapsed?: boolean
   directionInput?: string
   currentSessionId?: string
@@ -103,6 +108,17 @@ type ActivityCard =
       summary: DiagnosisSummary
     }
 
+type CommandDisplayRow = {
+  key: string
+  primary: CommandExecution
+  members: CommandExecution[]
+  status: string
+  risk_level: CommandExecution['risk_level']
+  stepLabel: string
+  title: string
+  commandText: string
+}
+
 function App() {
   const [automationLevel, setAutomationLevel] = useState<AutomationLevel>('assisted')
   const [session, setSession] = useState<SessionResponse | null>(null)
@@ -128,9 +144,19 @@ function App() {
   const [newBlockedRule, setNewBlockedRule] = useState('')
   const [newExecutableRule, setNewExecutableRule] = useState('')
   const [legalityCheckEnabled, setLegalityCheckEnabled] = useState(true)
+  const [riskPolicy, setRiskPolicy] = useState<RiskPolicy | null>(null)
+  const [highRiskRules, setHighRiskRules] = useState<string[]>([])
+  const [mediumRiskRules, setMediumRiskRules] = useState<string[]>([])
+  const [highRiskSearch, setHighRiskSearch] = useState('')
+  const [mediumRiskSearch, setMediumRiskSearch] = useState('')
+  const [newHighRiskRule, setNewHighRiskRule] = useState('')
+  const [newMediumRiskRule, setNewMediumRiskRule] = useState('')
   const [policySaving, setPolicySaving] = useState(false)
   const [editingRule, setEditingRule] = useState<
     { kind: 'blocked' | 'executable'; index: number; value: string } | undefined
+  >(undefined)
+  const [editingRiskRule, setEditingRiskRule] = useState<
+    { kind: 'high' | 'medium'; index: number; value: string } | undefined
   >(undefined)
   const policyImportInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -138,6 +164,8 @@ function App() {
   const [statusCollapsed, setStatusCollapsed] = useState(false)
   const [rightPanelWidth, setRightPanelWidth] = useState(getDefaultWorkbenchRightWidth)
   const [resizing, setResizing] = useState(false)
+  const [terminalSplitRatio, setTerminalSplitRatio] = useState(0.5)
+  const [terminalResizing, setTerminalResizing] = useState(false)
   const [directionInput, setDirectionInput] = useState('')
   const [draftInput, setDraftInput] = useState('')
   const [sessionDeviceAddress, setSessionDeviceAddress] = useState('')
@@ -156,17 +184,54 @@ function App() {
   const [commandAutoScrollEnabled, setCommandAutoScrollEnabled] = useState(true)
   const [showCommandScrollToBottom, setShowCommandScrollToBottom] = useState(false)
   const commandListRef = useRef<HTMLDivElement | null>(null)
+  const terminalGridRef = useRef<HTMLDivElement | null>(null)
 
   const sessionReady = useMemo(() => Boolean(session?.id), [session])
+  const commandDisplayRows = useMemo(() => groupCommandsForDisplay(commands), [commands])
   const activityCards = useMemo(() => buildActivityCards(messages, commands, summary), [messages, commands, summary])
 
   const selectedCommand = useMemo(() => {
     if (!selectedCommandId) return commands[commands.length - 1]
     return commands.find((item) => item.id === selectedCommandId) || commands[commands.length - 1]
   }, [commands, selectedCommandId])
+  const selectedCommandRow = useMemo(() => {
+    if (commandDisplayRows.length === 0) return undefined
+    if (!selectedCommandId) return commandDisplayRows[commandDisplayRows.length - 1]
+    return commandDisplayRows.find((row) => row.members.some((item) => item.id === selectedCommandId))
+      || commandDisplayRows[commandDisplayRows.length - 1]
+  }, [commandDisplayRows, selectedCommandId])
+  const pendingBatchMetaByCommandId = useMemo(() => {
+    const pendingGroups = new Map<string, CommandExecution[]>()
+    for (const command of commands) {
+      if (command.status !== 'pending_confirm' || !command.batch_id) continue
+      const list = pendingGroups.get(command.batch_id) || []
+      list.push(command)
+      pendingGroups.set(command.batch_id, list)
+    }
+    const meta = new Map<string, { isLeader: boolean; total: number; commands: CommandExecution[] }>()
+    for (const [, list] of pendingGroups) {
+      const sorted = [...list].sort((a, b) => (a.batch_index || a.step_no) - (b.batch_index || b.step_no))
+      const leaderId = sorted[0]?.id
+      for (const item of sorted) {
+        meta.set(item.id, {
+          isLeader: item.id === leaderId,
+          total: sorted.length,
+          commands: sorted,
+        })
+      }
+    }
+    return meta
+  }, [commands])
   const pendingCommand = useMemo(
-    () => [...commands].reverse().find((item) => item.status === 'pending_confirm'),
-    [commands],
+    () =>
+      [...commands]
+        .reverse()
+        .find(
+          (item) =>
+            item.status === 'pending_confirm'
+            && (!item.batch_id || pendingBatchMetaByCommandId.get(item.id)?.isLeader),
+        ),
+    [commands, pendingBatchMetaByCommandId],
   )
   const runningCommand = useMemo(
     () => [...commands].reverse().find((item) => item.status === 'running'),
@@ -211,16 +276,21 @@ function App() {
 
   const selectedDetailTitle = useMemo(() => {
     if (!selectedActivity) return '分析显示区'
-    if (selectedActivity.kind === 'command') return `步骤 #${selectedActivity.command.step_no} 详情`
+    if (selectedActivity.kind === 'command') {
+      return `步骤 #${selectedCommandRow?.stepLabel || selectedActivity.command.step_no} 详情`
+    }
     if (selectedActivity.kind === 'message') return `${selectedActivity.label} 消息详情`
     return '最终诊断详情'
-  }, [selectedActivity])
+  }, [selectedActivity, selectedCommandRow])
 
   const selectedDetailBody = useMemo(() => {
+    if (selectedActivity?.kind === 'command' && selectedCommandRow) {
+      return renderCommandDisplayRowDetail(selectedCommandRow)
+    }
     if (selectedActivity) return renderActivityDetail(selectedActivity)
     if (summary) return renderSummaryBrief(summary)
     return '等待 AI 诊断输出...'
-  }, [selectedActivity, summary])
+  }, [selectedActivity, selectedCommandRow, summary])
 
   const blockedRuleRows = useMemo(
     () => buildRuleRows(blockedRules, blockedSearch),
@@ -230,14 +300,30 @@ function App() {
     () => buildRuleRows(executableRules, executableSearch),
     [executableRules, executableSearch],
   )
+  const highRiskRuleRows = useMemo(
+    () => buildRuleRows(highRiskRules, highRiskSearch),
+    [highRiskRules, highRiskSearch],
+  )
+  const mediumRiskRuleRows = useMemo(
+    () => buildRuleRows(mediumRiskRules, mediumRiskSearch),
+    [mediumRiskRules, mediumRiskSearch],
+  )
   const policyDirty = useMemo(() => {
-    if (!commandPolicy) return false
-    return (
+    const commandDirty = commandPolicy
+      ? (
       legalityCheckEnabled !== commandPolicy.legality_check_enabled ||
       !sameRules(blockedRules, commandPolicy.blocked_patterns) ||
       !sameRules(executableRules, commandPolicy.executable_patterns)
-    )
-  }, [commandPolicy, legalityCheckEnabled, blockedRules, executableRules])
+        )
+      : false
+    const riskDirty = riskPolicy
+      ? (
+      !sameRules(highRiskRules, riskPolicy.high_risk_patterns) ||
+      !sameRules(mediumRiskRules, riskPolicy.medium_risk_patterns)
+        )
+      : false
+    return commandDirty || riskDirty
+  }, [commandPolicy, riskPolicy, legalityCheckEnabled, blockedRules, executableRules, highRiskRules, mediumRiskRules])
 
   useEffect(() => {
     try {
@@ -251,6 +337,9 @@ function App() {
         setRightPanelWidth(Math.min(1400, Math.max(300, parsed.rightPanelWidth)))
       } else {
         setRightPanelWidth(getDefaultWorkbenchRightWidth())
+      }
+      if (typeof parsed.terminalSplitRatio === 'number' && Number.isFinite(parsed.terminalSplitRatio)) {
+        setTerminalSplitRatio(Math.min(0.75, Math.max(0.25, parsed.terminalSplitRatio)))
       }
       if (typeof parsed.statusCollapsed === 'boolean') {
         setStatusCollapsed(parsed.statusCollapsed)
@@ -270,12 +359,13 @@ function App() {
     const payload: PersistedUiState = {
       activePage,
       rightPanelWidth,
+      terminalSplitRatio,
       statusCollapsed,
       directionInput,
       currentSessionId: session?.id,
     }
     localStorage.setItem(UI_STATE_KEY, JSON.stringify(payload))
-  }, [activePage, rightPanelWidth, statusCollapsed, directionInput, session?.id])
+  }, [activePage, rightPanelWidth, terminalSplitRatio, statusCollapsed, directionInput, session?.id])
 
   useEffect(() => {
     if (commands.length === 0) {
@@ -330,6 +420,28 @@ function App() {
       window.removeEventListener('mouseup', onUp)
     }
   }, [resizing])
+
+  useEffect(() => {
+    if (!terminalResizing) return
+
+    const onMove = (event: MouseEvent) => {
+      const target = terminalGridRef.current
+      if (!target) return
+      const rect = target.getBoundingClientRect()
+      if (rect.width <= 0) return
+      const next = (event.clientX - rect.left) / rect.width
+      setTerminalSplitRatio(Math.min(0.75, Math.max(0.25, next)))
+    }
+
+    const onUp = () => setTerminalResizing(false)
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [terminalResizing])
 
   useEffect(() => {
     if (activePage !== 'service_trace') return
@@ -426,6 +538,15 @@ function App() {
         setLegalityCheckEnabled(policy.legality_check_enabled)
       } catch {
         setCommandPolicy(null)
+      }
+
+      try {
+        const policy = await getRiskPolicy()
+        setRiskPolicy(policy)
+        setHighRiskRules(normalizeRules(policy.high_risk_patterns))
+        setMediumRiskRules(normalizeRules(policy.medium_risk_patterns))
+      } catch {
+        setRiskPolicy(null)
       }
 
       await refreshSessionHistory()
@@ -640,16 +761,23 @@ function App() {
   async function handleSaveCommandPolicy() {
     setPolicySaving(true)
     try {
-      const updated = await updateCommandPolicy({
+      const updatedCommandPolicy = await updateCommandPolicy({
         blocked_patterns: blockedRules,
         executable_patterns: executableRules,
         legality_check_enabled: legalityCheckEnabled,
       })
-      setCommandPolicy(updated)
-      setBlockedRules(normalizeRules(updated.blocked_patterns))
-      setExecutableRules(normalizeRules(updated.executable_patterns))
-      setLegalityCheckEnabled(updated.legality_check_enabled)
-      antMessage.success('命令执行控制规则已更新')
+      const updatedRiskPolicy = await updateRiskPolicy({
+        high_risk_patterns: highRiskRules,
+        medium_risk_patterns: mediumRiskRules,
+      })
+      setCommandPolicy(updatedCommandPolicy)
+      setBlockedRules(normalizeRules(updatedCommandPolicy.blocked_patterns))
+      setExecutableRules(normalizeRules(updatedCommandPolicy.executable_patterns))
+      setLegalityCheckEnabled(updatedCommandPolicy.legality_check_enabled)
+      setRiskPolicy(updatedRiskPolicy)
+      setHighRiskRules(normalizeRules(updatedRiskPolicy.high_risk_patterns))
+      setMediumRiskRules(normalizeRules(updatedRiskPolicy.medium_risk_patterns))
+      antMessage.success('命令与风险判定规则已更新')
     } catch (error) {
       antMessage.error((error as Error).message)
     } finally {
@@ -660,13 +788,18 @@ function App() {
   async function handleResetCommandPolicy() {
     setPolicySaving(true)
     try {
-      const updated = await resetCommandPolicy()
-      setCommandPolicy(updated)
-      setBlockedRules(normalizeRules(updated.blocked_patterns))
-      setExecutableRules(normalizeRules(updated.executable_patterns))
-      setLegalityCheckEnabled(updated.legality_check_enabled)
+      const updatedCommandPolicy = await resetCommandPolicy()
+      const updatedRiskPolicy = await resetRiskPolicy()
+      setCommandPolicy(updatedCommandPolicy)
+      setBlockedRules(normalizeRules(updatedCommandPolicy.blocked_patterns))
+      setExecutableRules(normalizeRules(updatedCommandPolicy.executable_patterns))
+      setLegalityCheckEnabled(updatedCommandPolicy.legality_check_enabled)
+      setRiskPolicy(updatedRiskPolicy)
+      setHighRiskRules(normalizeRules(updatedRiskPolicy.high_risk_patterns))
+      setMediumRiskRules(normalizeRules(updatedRiskPolicy.medium_risk_patterns))
       setEditingRule(undefined)
-      antMessage.success('已恢复默认规则')
+      setEditingRiskRule(undefined)
+      antMessage.success('已恢复默认命令与风险规则')
     } catch (error) {
       antMessage.error((error as Error).message)
     } finally {
@@ -679,6 +812,8 @@ function App() {
       blocked_patterns: blockedRules,
       executable_patterns: executableRules,
       legality_check_enabled: legalityCheckEnabled,
+      high_risk_patterns: highRiskRules,
+      medium_risk_patterns: mediumRiskRules,
     }
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' })
     const url = URL.createObjectURL(blob)
@@ -694,7 +829,7 @@ function App() {
     try {
       const text = await file.text()
       const parsed = JSON.parse(text) as Partial<CommandPolicy>
-      const updated = await updateCommandPolicy({
+      const updatedCommandPolicy = await updateCommandPolicy({
         blocked_patterns: Array.isArray(parsed.blocked_patterns) ? parsed.blocked_patterns : blockedRules,
         executable_patterns: Array.isArray(parsed.executable_patterns)
           ? parsed.executable_patterns
@@ -702,11 +837,24 @@ function App() {
         legality_check_enabled:
           typeof parsed.legality_check_enabled === 'boolean' ? parsed.legality_check_enabled : legalityCheckEnabled,
       })
-      setCommandPolicy(updated)
-      setBlockedRules(normalizeRules(updated.blocked_patterns))
-      setExecutableRules(normalizeRules(updated.executable_patterns))
-      setLegalityCheckEnabled(updated.legality_check_enabled)
+      const parsedRisk = parsed as Partial<RiskPolicy>
+      const updatedRiskPolicy = await updateRiskPolicy({
+        high_risk_patterns: Array.isArray(parsedRisk.high_risk_patterns)
+          ? parsedRisk.high_risk_patterns
+          : highRiskRules,
+        medium_risk_patterns: Array.isArray(parsedRisk.medium_risk_patterns)
+          ? parsedRisk.medium_risk_patterns
+          : mediumRiskRules,
+      })
+      setCommandPolicy(updatedCommandPolicy)
+      setBlockedRules(normalizeRules(updatedCommandPolicy.blocked_patterns))
+      setExecutableRules(normalizeRules(updatedCommandPolicy.executable_patterns))
+      setLegalityCheckEnabled(updatedCommandPolicy.legality_check_enabled)
+      setRiskPolicy(updatedRiskPolicy)
+      setHighRiskRules(normalizeRules(updatedRiskPolicy.high_risk_patterns))
+      setMediumRiskRules(normalizeRules(updatedRiskPolicy.medium_risk_patterns))
       setEditingRule(undefined)
+      setEditingRiskRule(undefined)
       antMessage.success('规则导入成功')
     } catch {
       antMessage.error('导入失败，请检查 JSON 格式')
@@ -771,6 +919,61 @@ function App() {
       setExecutableRules((prev) => replaceRuleAt(prev, editingRule.index, normalized))
     }
     setEditingRule(undefined)
+  }
+
+  function appendRiskRule(kind: 'high' | 'medium') {
+    const raw = kind === 'high' ? newHighRiskRule : newMediumRiskRule
+    const normalized = normalizeRule(raw)
+    if (!normalized) {
+      antMessage.warning('规则不能为空')
+      return
+    }
+    if (kind === 'high') {
+      setHighRiskRules((prev) => appendRuleUnique(prev, normalized))
+      setNewHighRiskRule('')
+      return
+    }
+    setMediumRiskRules((prev) => appendRuleUnique(prev, normalized))
+    setNewMediumRiskRule('')
+  }
+
+  function removeRiskRule(kind: 'high' | 'medium', index: number) {
+    if (kind === 'high') {
+      setHighRiskRules((prev) => prev.filter((_, idx) => idx !== index))
+      return
+    }
+    setMediumRiskRules((prev) => prev.filter((_, idx) => idx !== index))
+  }
+
+  function moveRiskRule(kind: 'high' | 'medium', index: number, direction: -1 | 1) {
+    if (kind === 'high') {
+      setHighRiskRules((prev) => moveRuleItem(prev, index, direction))
+      return
+    }
+    setMediumRiskRules((prev) => moveRuleItem(prev, index, direction))
+  }
+
+  function startEditRiskRule(kind: 'high' | 'medium', index: number, value: string) {
+    setEditingRiskRule({ kind, index, value })
+  }
+
+  function cancelEditRiskRule() {
+    setEditingRiskRule(undefined)
+  }
+
+  function saveEditRiskRule() {
+    if (!editingRiskRule) return
+    const normalized = normalizeRule(editingRiskRule.value)
+    if (!normalized) {
+      antMessage.warning('规则不能为空')
+      return
+    }
+    if (editingRiskRule.kind === 'high') {
+      setHighRiskRules((prev) => replaceRuleAt(prev, editingRiskRule.index, normalized))
+    } else {
+      setMediumRiskRules((prev) => replaceRuleAt(prev, editingRiskRule.index, normalized))
+    }
+    setEditingRiskRule(undefined)
   }
 
   async function handleSend(content: string) {
@@ -1058,11 +1261,30 @@ function App() {
                           </div>
                         )}
                         <div className="activity-preview">{item.preview}</div>
-                        {item.kind === 'command' && item.command.status === 'pending_confirm' && (
+                        {item.kind === 'command'
+                          && item.command.status === 'pending_confirm'
+                          && (
+                            !item.command.batch_id
+                            || pendingBatchMetaByCommandId.get(item.command.id)?.isLeader
+                          ) && (
                           <div className="inline-confirm-strip" onClick={(event) => event.stopPropagation()}>
-                            <div className="inline-confirm-text">
-                              该命令待人工确认后执行: <code>{item.command.command}</code>
-                            </div>
+                            {item.command.batch_id
+                              && (pendingBatchMetaByCommandId.get(item.command.id)?.total || 0) > 1 ? (
+                                <>
+                                  <div className="inline-confirm-text">
+                                    该批次共有 {pendingBatchMetaByCommandId.get(item.command.id)?.total} 条命令，确认一次将整批执行。
+                                  </div>
+                                  <div className="inline-confirm-batch-list">
+                                    {(pendingBatchMetaByCommandId.get(item.command.id)?.commands || []).map((command) => (
+                                      <code key={command.id}>{command.command}</code>
+                                    ))}
+                                  </div>
+                                </>
+                              ) : (
+                                <div className="inline-confirm-text">
+                                  该命令待人工确认后执行: <code>{item.command.command}</code>
+                                </div>
+                              )}
                             <div className="inline-confirm-actions">
                               <Button
                                 size="small"
@@ -1070,7 +1292,7 @@ function App() {
                                 loading={confirmingCommandId === item.command.id}
                                 onClick={() => void handleConfirmCommandInline(item.command.id, true)}
                               >
-                                确认执行
+                                {(pendingBatchMetaByCommandId.get(item.command.id)?.total || 0) > 1 ? '确认整批执行' : '确认执行'}
                               </Button>
                               <Button
                                 size="small"
@@ -1078,7 +1300,7 @@ function App() {
                                 disabled={confirmingCommandId === item.command.id}
                                 onClick={() => void handleConfirmCommandInline(item.command.id, false)}
                               >
-                                拒绝
+                                {(pendingBatchMetaByCommandId.get(item.command.id)?.total || 0) > 1 ? '拒绝整批' : '拒绝'}
                               </Button>
                             </div>
                           </div>
@@ -1162,25 +1384,31 @@ function App() {
 
                 <section className="right-bottom panel-card">
                   <h3>设备终端回显</h3>
-                  <div className="terminal-grid">
-                    <div>
+                  <div
+                    className="terminal-grid"
+                    ref={terminalGridRef}
+                    style={{
+                      gridTemplateColumns: `minmax(0, ${terminalSplitRatio * 100}%) 8px minmax(0, ${(1 - terminalSplitRatio) * 100}%)`,
+                    }}
+                  >
+                    <div className="terminal-pane">
                       <div className="summary-title">命令列表</div>
                       <div className="command-list mini" ref={commandListRef} onScroll={handleCommandListScroll}>
-                        {commands.length === 0 && <div className="muted">-</div>}
-                        {commands.map((item) => (
+                        {commandDisplayRows.length === 0 && <div className="muted">-</div>}
+                        {commandDisplayRows.map((row) => (
                           <button
                             type="button"
-                            key={item.id}
-                            className={`command-row compact ${selectedCommand?.id === item.id ? 'active' : ''}`}
-                            onClick={() => setSelectedCommandId(item.id)}
+                            key={row.key}
+                            className={`command-row compact ${selectedCommandRow?.key === row.key ? 'active' : ''}`}
+                            onClick={() => setSelectedCommandId(row.primary.id)}
                           >
                             <div className="command-row-grid">
                               <div className="command-meta-inline">
-                                <span className="command-step">#{item.step_no}</span>
-                                <span className="command-title">{item.title}</span>
-                                <span className={`cmd-status ${statusClass(item.status)}`}>{item.status}</span>
+                                <span className="command-step">#{row.stepLabel}</span>
+                                <span className="command-title">{row.title}</span>
+                                <span className={`cmd-status ${statusClass(row.status)}`}>{row.status}</span>
                               </div>
-                              <code className="command-inline-code">{item.command}</code>
+                              <code className="command-inline-code">{row.commandText}</code>
                             </div>
                           </button>
                         ))}
@@ -1198,10 +1426,21 @@ function App() {
                         )}
                       </div>
                     </div>
-                    <div>
+                    <div
+                      className="terminal-divider"
+                      role="separator"
+                      aria-orientation="vertical"
+                      onMouseDown={(event) => {
+                        event.preventDefault()
+                        setTerminalResizing(true)
+                      }}
+                    />
+                    <div className="terminal-pane">
                       <div className="summary-title">执行结果</div>
                       <div className="terminal-box">
-                        {selectedCommand?.output || selectedCommand?.error || '-'}
+                        {selectedCommandRow
+                          ? renderCommandRowOutput(selectedCommandRow)
+                          : (selectedCommand?.output || selectedCommand?.error || '-')}
                       </div>
                     </div>
                   </div>
@@ -1236,7 +1475,7 @@ function App() {
                   <div>
                     <h3>命令执行控制中心</h3>
                     <p className="muted">
-                      判定顺序：阻断规则/硬阻断 → 模式基线（只读直接拒绝非只读；全自动放行非硬阻断）→ 放行规则覆盖（半自动可放行高风险）→ 其余命令进入人工确认。高风险按风险词表判定（如 configure/interface/shutdown/save/commit）。
+                      判定顺序：阻断规则/硬阻断 → 模式基线（只读直接拒绝非只读；全自动放行非硬阻断）→ 放行规则覆盖（半自动可放行高风险）→ 其余命令进入人工确认。高风险按可编辑风险词表判定（默认含 clear/shutdown 等）。
                     </p>
                   </div>
                   <div className="policy-switch">
@@ -1252,6 +1491,14 @@ function App() {
                   <div className="policy-stat-card">
                     <span className="muted">放行规则</span>
                     <strong>{executableRules.length}</strong>
+                  </div>
+                  <div className="policy-stat-card">
+                    <span className="muted">高风险规则</span>
+                    <strong>{highRiskRules.length}</strong>
+                  </div>
+                  <div className="policy-stat-card">
+                    <span className="muted">中风险规则</span>
+                    <strong>{mediumRiskRules.length}</strong>
                   </div>
                   <div className="policy-stat-card">
                     <span className="muted">规则状态</span>
@@ -1424,6 +1671,156 @@ function App() {
                       value={executableRules.join('\n')}
                       rows={7}
                       onChange={(event) => setExecutableRules(normalizeRules(event.target.value.split('\n')))}
+                    />
+                  </details>
+                </div>
+
+                <div className="panel-card policy-list-card">
+                  <div className="policy-list-head">
+                    <h3>高风险判定规则</h3>
+                    <Input
+                      size="small"
+                      value={highRiskSearch}
+                      onChange={(event) => setHighRiskSearch(event.target.value)}
+                      placeholder="搜索高风险规则"
+                    />
+                  </div>
+                  <div className="policy-add-row">
+                    <Input
+                      size="small"
+                      value={newHighRiskRule}
+                      onChange={(event) => setNewHighRiskRule(event.target.value)}
+                      placeholder="输入新规则，例如 clear "
+                      onPressEnter={() => appendRiskRule('high')}
+                    />
+                    <Button size="small" onClick={() => appendRiskRule('high')}>追加</Button>
+                  </div>
+                  <div className="policy-rule-table">
+                    <div className="policy-rule-row policy-rule-head">
+                      <span>#</span>
+                      <span>规则</span>
+                      <span>操作</span>
+                    </div>
+                    {highRiskRuleRows.length === 0 && <div className="policy-empty muted">暂无匹配规则</div>}
+                    {highRiskRuleRows.map((row) => {
+                      const isEditing = editingRiskRule?.kind === 'high' && editingRiskRule.index === row.index
+                      return (
+                        <div key={`high-${row.index}-${row.value}`} className="policy-rule-row">
+                          <span>{row.index + 1}</span>
+                          {isEditing ? (
+                            <Input
+                              size="small"
+                              value={editingRiskRule.value}
+                              onChange={(event) =>
+                                setEditingRiskRule((prev) =>
+                                  prev ? { ...prev, value: event.target.value } : prev,
+                                )
+                              }
+                              onPressEnter={saveEditRiskRule}
+                            />
+                          ) : (
+                            <code>{row.value}</code>
+                          )}
+                          <div className="policy-row-actions">
+                            {isEditing ? (
+                              <>
+                                <Button size="small" type="primary" onClick={saveEditRiskRule}>保存</Button>
+                                <Button size="small" onClick={cancelEditRiskRule}>取消</Button>
+                              </>
+                            ) : (
+                              <>
+                                <Button size="small" onClick={() => startEditRiskRule('high', row.index, row.value)}>编辑</Button>
+                                <Button size="small" onClick={() => moveRiskRule('high', row.index, -1)} disabled={row.index === 0}>上移</Button>
+                                <Button size="small" onClick={() => moveRiskRule('high', row.index, 1)} disabled={row.index === highRiskRules.length - 1}>下移</Button>
+                                <Button size="small" danger onClick={() => removeRiskRule('high', row.index)}>删除</Button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <details className="policy-bulk-editor">
+                    <summary>批量编辑（每行一条）</summary>
+                    <Input.TextArea
+                      value={highRiskRules.join('\n')}
+                      rows={7}
+                      onChange={(event) => setHighRiskRules(normalizeRules(event.target.value.split('\n')))}
+                    />
+                  </details>
+                </div>
+
+                <div className="panel-card policy-list-card">
+                  <div className="policy-list-head">
+                    <h3>中风险判定规则</h3>
+                    <Input
+                      size="small"
+                      value={mediumRiskSearch}
+                      onChange={(event) => setMediumRiskSearch(event.target.value)}
+                      placeholder="搜索中风险规则"
+                    />
+                  </div>
+                  <div className="policy-add-row">
+                    <Input
+                      size="small"
+                      value={newMediumRiskRule}
+                      onChange={(event) => setNewMediumRiskRule(event.target.value)}
+                      placeholder="输入新规则，例如 debug"
+                      onPressEnter={() => appendRiskRule('medium')}
+                    />
+                    <Button size="small" onClick={() => appendRiskRule('medium')}>追加</Button>
+                  </div>
+                  <div className="policy-rule-table">
+                    <div className="policy-rule-row policy-rule-head">
+                      <span>#</span>
+                      <span>规则</span>
+                      <span>操作</span>
+                    </div>
+                    {mediumRiskRuleRows.length === 0 && <div className="policy-empty muted">暂无匹配规则</div>}
+                    {mediumRiskRuleRows.map((row) => {
+                      const isEditing = editingRiskRule?.kind === 'medium' && editingRiskRule.index === row.index
+                      return (
+                        <div key={`medium-${row.index}-${row.value}`} className="policy-rule-row">
+                          <span>{row.index + 1}</span>
+                          {isEditing ? (
+                            <Input
+                              size="small"
+                              value={editingRiskRule.value}
+                              onChange={(event) =>
+                                setEditingRiskRule((prev) =>
+                                  prev ? { ...prev, value: event.target.value } : prev,
+                                )
+                              }
+                              onPressEnter={saveEditRiskRule}
+                            />
+                          ) : (
+                            <code>{row.value}</code>
+                          )}
+                          <div className="policy-row-actions">
+                            {isEditing ? (
+                              <>
+                                <Button size="small" type="primary" onClick={saveEditRiskRule}>保存</Button>
+                                <Button size="small" onClick={cancelEditRiskRule}>取消</Button>
+                              </>
+                            ) : (
+                              <>
+                                <Button size="small" onClick={() => startEditRiskRule('medium', row.index, row.value)}>编辑</Button>
+                                <Button size="small" onClick={() => moveRiskRule('medium', row.index, -1)} disabled={row.index === 0}>上移</Button>
+                                <Button size="small" onClick={() => moveRiskRule('medium', row.index, 1)} disabled={row.index === mediumRiskRules.length - 1}>下移</Button>
+                                <Button size="small" danger onClick={() => removeRiskRule('medium', row.index)}>删除</Button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <details className="policy-bulk-editor">
+                    <summary>批量编辑（每行一条）</summary>
+                    <Input.TextArea
+                      value={mediumRiskRules.join('\n')}
+                      rows={7}
+                      onChange={(event) => setMediumRiskRules(normalizeRules(event.target.value.split('\n')))}
                     />
                   </details>
                 </div>
@@ -1687,6 +2084,11 @@ function formatPromptKey(key: string): string {
     summary_primary: '诊断总结提示词',
     summary_review: '诊断审稿提示词',
     summary_rewrite: '诊断改写提示词',
+    runtime_session_header_template: '运行时会话上下文模板',
+    runtime_command_result_template: '运行时命令结果模板',
+    runtime_finalization_prompt_template: '运行时最终总结模板',
+    runtime_batch_confirm_policy: '运行时批量确认策略',
+    runtime_output_compaction_policy: '运行时输出压缩策略',
   }
   return map[key] || key
 }
@@ -1749,21 +2151,23 @@ function buildActivityCards(
     })
   }
 
-  for (let index = 0; index < commands.length; index += 1) {
-    const cmd = commands[index]
-    const createdAt = cmd.created_at || ''
+  const grouped = groupCommandsForDisplay(commands)
+  for (let index = 0; index < grouped.length; index += 1) {
+    const row = grouped[index]
+    const cmd = row.primary
+    const createdAt = cmd.created_at || row.members[0]?.created_at || ''
     cards.push({
       key: `cmd:${cmd.id}`,
       kind: 'command',
       createdAt,
       label: '执行',
-      title: `步骤 ${cmd.step_no}: ${cmd.title}`,
-      preview: summarizeCommandCard(cmd),
-      status: cmd.status,
-      riskLevel: riskLabel(cmd.risk_level),
+      title: `步骤 ${row.stepLabel}: ${row.title}`,
+      preview: summarizeCommandRow(row),
+      status: row.status,
+      riskLevel: riskLabel(row.risk_level),
       command: cmd,
-      sortAt: parseSortTime(createdAt, messages.length + index),
-      sortIdx: messages.length + index,
+      sortAt: parseSortTime(createdAt, messages.length + (cmd.step_no || index)),
+      sortIdx: messages.length + (cmd.step_no || index),
     })
   }
 
@@ -1848,6 +2252,106 @@ function summarizeCommandCard(command: CommandExecution): string {
   const result = truncateText(command.output || command.error || '', 80)
   if (result) return `${headline}\n${result}`
   return headline
+}
+
+function summarizeCommandRow(row: CommandDisplayRow): string {
+  const headline = row.commandText
+  const merged = renderCommandRowOutput(row)
+  const result = truncateText(merged || '', 80)
+  if (result) return `${headline}\n${result}`
+  return headline
+}
+
+function renderCommandRowOutput(row: CommandDisplayRow): string {
+  if (row.members.length <= 1) {
+    const item = row.members[0]
+    return item?.output || item?.error || '-'
+  }
+  const parts: string[] = []
+  for (const item of row.members) {
+    const output = (item.output || '').trim()
+    const error = (item.error || '').trim()
+    const body = output || error
+    if (!body) continue
+    parts.push(`#${item.step_no} ${item.command}\n${body}`)
+  }
+  if (parts.length === 0) return '-'
+  return parts.join('\n\n')
+}
+
+function renderCommandDisplayRowDetail(row: CommandDisplayRow): string {
+  const header = [
+    `标题: ${row.title}`,
+    `状态: ${row.status}`,
+    `风险: ${riskLabel(row.risk_level)}`,
+    `步骤: ${row.stepLabel}`,
+    `命令组: ${row.commandText}`,
+  ].join('\n')
+  const body = renderCommandRowOutput(row)
+  return `${header}\n\n输出:\n${body}`
+}
+
+function groupCommandsForDisplay(commands: CommandExecution[]): CommandDisplayRow[] {
+  const rows: CommandDisplayRow[] = []
+  const ordered = [...commands].sort((a, b) => a.step_no - b.step_no)
+  let index = 0
+  while (index < ordered.length) {
+    const current = ordered[index]
+    if (current.batch_id) {
+      const batchId = current.batch_id
+      const members: CommandExecution[] = []
+      let cursor = index
+      while (cursor < ordered.length && ordered[cursor].batch_id === batchId) {
+        members.push(ordered[cursor])
+        cursor += 1
+      }
+      rows.push(buildCommandDisplayRow(members))
+      index = cursor
+      continue
+    }
+    rows.push(buildCommandDisplayRow([current]))
+    index += 1
+  }
+  return rows
+}
+
+function buildCommandDisplayRow(members: CommandExecution[]): CommandDisplayRow {
+  const sorted = [...members].sort((a, b) => a.step_no - b.step_no)
+  const first = sorted[0]
+  const last = sorted[sorted.length - 1]
+  const pending = sorted.find((item) => item.status === 'pending_confirm')
+  const primary = pending || first
+  const stepLabel = first.step_no === last.step_no ? `${first.step_no}` : `${first.step_no}-${last.step_no}`
+  const status = summarizeBatchStatus(sorted)
+  const risk = summarizeBatchRisk(sorted)
+  const title = sorted.length > 1 ? `命令组合（${sorted.length} 条）` : first.title
+  const commandText = sorted.map((item) => item.command).join(' ; ')
+  return {
+    key: first.batch_id ? `batch:${first.batch_id}` : `single:${first.id}`,
+    primary,
+    members: sorted,
+    status,
+    risk_level: risk,
+    stepLabel,
+    title,
+    commandText,
+  }
+}
+
+function summarizeBatchStatus(items: CommandExecution[]): string {
+  if (items.some((item) => item.status === 'failed')) return 'failed'
+  if (items.some((item) => item.status === 'pending_confirm')) return 'pending_confirm'
+  if (items.some((item) => item.status === 'running')) return 'running'
+  if (items.some((item) => item.status === 'blocked')) return 'blocked'
+  if (items.some((item) => item.status === 'rejected')) return 'rejected'
+  if (items.every((item) => item.status === 'succeeded')) return 'succeeded'
+  return items[items.length - 1]?.status || 'queued'
+}
+
+function summarizeBatchRisk(items: CommandExecution[]): CommandExecution['risk_level'] {
+  if (items.some((item) => item.risk_level === 'high')) return 'high'
+  if (items.some((item) => item.risk_level === 'medium')) return 'medium'
+  return 'low'
 }
 
 function truncateText(value: string, limit: number): string {

@@ -258,3 +258,13 @@ class CommandPolicyUpdateRequest(BaseModel):
     blocked_patterns: Optional[list[str]] = None
     executable_patterns: Optional[list[str]] = None
     legality_check_enabled: Optional[bool] = None
+
+
+class RiskPolicy(BaseModel):
+    high_risk_patterns: list[str] = Field(default_factory=list)
+    medium_risk_patterns: list[str] = Field(default_factory=list)
+
+
+class RiskPolicyUpdateRequest(BaseModel):
+    high_risk_patterns: Optional[list[str]] = None
+    medium_risk_patterns: Optional[list[str]] = None

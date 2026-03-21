@@ -132,6 +132,16 @@ export type CommandPolicyUpdateRequest = {
   legality_check_enabled?: boolean
 }
 
+export type RiskPolicy = {
+  high_risk_patterns: string[]
+  medium_risk_patterns: string[]
+}
+
+export type RiskPolicyUpdateRequest = {
+  high_risk_patterns?: string[]
+  medium_risk_patterns?: string[]
+}
+
 export type ServiceTraceStep = {
   id: string
   session_id: string
