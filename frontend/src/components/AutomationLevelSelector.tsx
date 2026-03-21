@@ -4,13 +4,15 @@ import type { AutomationLevel } from '../types'
 type Props = {
   value: AutomationLevel
   onChange: (next: AutomationLevel) => void
+  className?: string
 }
 
-export function AutomationLevelSelector({ value, onChange }: Props) {
+export function AutomationLevelSelector({ value, onChange, className }: Props) {
   return (
-    <div className="panel-card">
+    <div className={`panel-card ${className || ''}`.trim()}>
       <h3>自动化等级</h3>
       <Radio.Group
+        className="mode-selector"
         value={value}
         onChange={(e) => onChange(e.target.value as AutomationLevel)}
         optionType="button"
@@ -21,7 +23,7 @@ export function AutomationLevelSelector({ value, onChange }: Props) {
           { label: '全自动', value: 'full_auto' },
         ]}
       />
-      <p className="muted">
+      <p className="muted mode-hint">
         高风险由系统风险词表判定（如 clear、shutdown、configure terminal、interface、save、commit 等）。半自动下未命中放行规则的高风险命令需确认；全自动自动执行非硬阻断命令。
       </p>
     </div>

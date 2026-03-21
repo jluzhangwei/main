@@ -15,10 +15,12 @@ from app.models.schemas import (
     LLMPromptPolicyResponse,
     MessageCreateRequest,
     SessionCreateRequest,
+    SessionCredentialUpdateRequest,
     SessionListItem,
     SessionResponse,
     SessionUpdateRequest,
     ServiceTraceResponse,
+    SessionStopResponse,
     RiskPolicy,
     RiskPolicyUpdateRequest,
 )
@@ -66,6 +68,21 @@ async def update_session(session_id: str, req: SessionUpdateRequest) -> SessionR
     )
 
 
+@router.patch("/sessions/{session_id}/credentials", response_model=SessionResponse)
+async def update_session_credentials(session_id: str, req: SessionCredentialUpdateRequest) -> SessionResponse:
+    if session_id not in store.sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session = store.update_session_credentials(session_id, req)
+    return SessionResponse(
+        id=session.id,
+        automation_level=session.automation_level,
+        operation_mode=session.operation_mode,
+        status=session.status,
+        created_at=session.created_at,
+    )
+
+
 @router.post("/sessions/{session_id}/messages")
 async def post_message(session_id: str, req: MessageCreateRequest):
     if session_id not in store.sessions:
@@ -73,6 +90,14 @@ async def post_message(session_id: str, req: MessageCreateRequest):
 
     generator = orchestrator.stream_message(session_id, req.content)
     return StreamingResponse(generator, media_type="text/event-stream")
+
+
+@router.post("/sessions/{session_id}/stop", response_model=SessionStopResponse)
+async def stop_session(session_id: str) -> SessionStopResponse:
+    if session_id not in store.sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    payload = await orchestrator.stop_session(session_id)
+    return SessionStopResponse(**payload)
 
 
 @router.get("/command-policy", response_model=CommandPolicy)

@@ -245,6 +245,12 @@ def _extract_device_name_from_version(output: str) -> str | None:
         if match:
             return match.group(1)
 
+    # Common prompt forms, e.g. "Device-102#" / "Device-102(config)#show version"
+    for line in lines:
+        match = re.match(r"^([A-Za-z0-9._-]{1,64})(?:\([^)]+\))?[>#]\s*(?:.*)?$", line)
+        if match:
+            return match.group(1)
+
     # Typical hostname line: "R1 uptime is ..."
     for line in lines:
         match = re.match(r"^([A-Za-z0-9._-]{1,64})\s+(?:system\s+)?uptime\s+is\b", line, flags=re.IGNORECASE)

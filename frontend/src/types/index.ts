@@ -22,6 +22,14 @@ export type SessionListItem = {
   created_at: string
 }
 
+export type SessionStopResponse = {
+  session_id: string
+  stop_requested: boolean
+  adapter_closed: boolean
+  running: boolean
+  message: string
+}
+
 export type ChatMessage = {
   id: string
   role: 'user' | 'assistant' | 'system'

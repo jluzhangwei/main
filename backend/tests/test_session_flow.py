@@ -311,6 +311,22 @@ def test_service_trace_endpoint_returns_step_timings():
             assert step.get("completed_at") is not None
 
 
+def test_stop_session_endpoint_appends_stop_message_and_returns_status():
+    session_id = _create_session("assisted")
+
+    stopped = client.post(f"/v1/sessions/{session_id}/stop")
+    assert stopped.status_code == 200
+    payload = stopped.json()
+    assert payload["session_id"] == session_id
+    assert payload["stop_requested"] is True
+    assert "message" in payload
+
+    timeline = client.get(f"/v1/sessions/{session_id}/timeline")
+    assert timeline.status_code == 200
+    messages = timeline.json()["messages"]
+    assert any(msg["role"] == "system" and "会话已手动停止" in msg["content"] for msg in messages)
+
+
 def test_session_store_persists_history_across_store_reinit(tmp_path, monkeypatch):
     monkeypatch.setenv("NETOPS_SESSION_STORE_PATH", str(tmp_path / "session_store.json"))
     monkeypatch.setenv("NETOPS_COMMAND_POLICY_PATH", str(tmp_path / "command_policy.json"))
@@ -334,3 +350,19 @@ def test_session_store_persists_history_across_store_reinit(tmp_path, monkeypatc
     items = reloaded.list_session_items()
     assert any(item.id == created.id for item in items)
     assert len(reloaded.list_messages(created.id)) == 1
+
+
+def test_update_session_credentials_and_timeline_hides_secrets():
+    session_id = _create_session("assisted")
+
+    updated = client.patch(
+        f"/v1/sessions/{session_id}/credentials",
+        json={"username": "zhangwei", "password": "Admin@123"},
+    )
+    assert updated.status_code == 200
+
+    timeline = client.get(f"/v1/sessions/{session_id}/timeline")
+    assert timeline.status_code == 200
+    session = timeline.json()["session"]
+    assert session["device"]["username"] is None
+    assert session["device"]["password"] is None

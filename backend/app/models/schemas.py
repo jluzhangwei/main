@@ -78,6 +78,12 @@ class SessionUpdateRequest(BaseModel):
     automation_level: AutomationLevel
 
 
+class SessionCredentialUpdateRequest(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+    api_token: Optional[str] = None
+
+
 class Session(BaseModel):
     id: str = Field(default_factory=make_id)
     device: DeviceTarget
@@ -172,6 +178,14 @@ class ConfirmCommandRequest(BaseModel):
 class ConfirmCommandResponse(BaseModel):
     command_id: str
     status: CommandStatus
+    message: str
+
+
+class SessionStopResponse(BaseModel):
+    session_id: str
+    stop_requested: bool
+    adapter_closed: bool
+    running: bool
     message: str
 
 

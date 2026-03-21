@@ -18,6 +18,7 @@ from app.models.schemas import (
     Message,
     Session,
     SessionCreateRequest,
+    SessionCredentialUpdateRequest,
     SessionListItem,
     ServiceTraceResponse,
     ServiceTraceStep,
@@ -50,6 +51,9 @@ class InMemoryStore:
         self._load_risk_policy()
         self.session_store_path: Path = self._resolve_session_store_path()
         self.trace_steps: Dict[str, List[ServiceTraceStep]] = defaultdict(list)
+        self.persist_session_credentials = (
+            os.getenv("NETOPS_PERSIST_SESSION_CREDENTIALS", "1").strip().lower() in {"1", "true", "yes"}
+        )
         self._load_session_store()
 
     def create_session(self, req: SessionCreateRequest) -> Session:
@@ -95,6 +99,18 @@ class InMemoryStore:
     def update_session_automation(self, session_id: str, automation_level: AutomationLevel) -> Session:
         session = self.sessions[session_id]
         session.automation_level = automation_level
+        self.sessions[session_id] = session
+        self._save_session_store()
+        return session
+
+    def update_session_credentials(self, session_id: str, req: SessionCredentialUpdateRequest) -> Session:
+        session = self.sessions[session_id]
+        if req.username is not None:
+            session.device.username = str(req.username).strip() or None
+        if req.password is not None:
+            session.device.password = str(req.password).strip() or None
+        if req.api_token is not None:
+            session.device.api_token = str(req.api_token).strip() or None
         self.sessions[session_id] = session
         self._save_session_store()
         return session
@@ -154,7 +170,7 @@ class InMemoryStore:
 
     def get_timeline(self, session_id: str) -> TimelineResponse:
         return TimelineResponse(
-            session=self.get_session(session_id),
+            session=self._session_for_api(self.get_session(session_id)),
             messages=self.list_messages(session_id),
             commands=self.list_commands(session_id),
             evidences=self.list_evidence(session_id),
@@ -470,6 +486,14 @@ class InMemoryStore:
             return
 
     def _session_for_persistence(self, session: Session) -> Session:
+        safe = session.model_copy(deep=True)
+        if not self.persist_session_credentials:
+            safe.device.username = None
+            safe.device.password = None
+            safe.device.api_token = None
+        return safe
+
+    def _session_for_api(self, session: Session) -> Session:
         safe = session.model_copy(deep=True)
         safe.device.username = None
         safe.device.password = None

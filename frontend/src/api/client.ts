@@ -9,6 +9,7 @@ import type {
   RiskPolicyUpdateRequest,
   ServiceTrace,
   SessionListItem,
+  SessionStopResponse,
   SessionResponse,
   Timeline,
 } from '../types'
@@ -61,11 +62,13 @@ export async function streamMessage(
   sessionId: string,
   content: string,
   onEvent: (event: string, payload: EventPayload) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const res = await fetch(`/v1/sessions/${sessionId}/messages`, {
     method: 'POST',
     headers,
     body: JSON.stringify({ content }),
+    signal,
   })
 
   if (!res.ok || !res.body) {
@@ -98,6 +101,17 @@ export async function streamMessage(
   }
 }
 
+export async function stopSession(sessionId: string): Promise<SessionStopResponse> {
+  const res = await fetch(`/v1/sessions/${sessionId}/stop`, {
+    method: 'POST',
+    headers,
+  })
+  if (!res.ok) {
+    throw new Error('Failed to stop session')
+  }
+  return res.json()
+}
+
 export async function updateSessionAutomation(sessionId: string, automationLevel: AutomationLevel): Promise<SessionResponse> {
   const res = await fetch(`/v1/sessions/${sessionId}`, {
     method: 'PATCH',
@@ -109,6 +123,21 @@ export async function updateSessionAutomation(sessionId: string, automationLevel
     throw new Error('Failed to update automation level')
   }
 
+  return res.json()
+}
+
+export async function updateSessionCredentials(
+  sessionId: string,
+  payload: { username?: string; password?: string; api_token?: string },
+): Promise<SessionResponse> {
+  const res = await fetch(`/v1/sessions/${sessionId}/credentials`, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    throw new Error('Failed to update session credentials')
+  }
   return res.json()
 }
 

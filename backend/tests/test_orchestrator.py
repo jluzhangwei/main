@@ -84,6 +84,44 @@ class UnknownCommandDiagnoser:
         return None
 
 
+class _BatchDisabledDiagnoser:
+    enabled = True
+    batch_execution_enabled = False
+
+    async def propose_next_step(
+        self,
+        *,
+        session,
+        user_problem: str,
+        commands,
+        evidences,
+        iteration: int,
+        max_iterations: int,
+        conversation_history=None,
+    ):
+        if iteration == 1:
+            return {
+                "decision": "run_command",
+                "title": "查询链路状态",
+                "commands": [
+                    {"title": "检查版本", "command": "show version"},
+                    {"title": "检查接口摘要", "command": "show interfaces status"},
+                    {"title": "检查路由摘要", "command": "show ip route summary"},
+                ],
+            }
+        return {
+            "decision": "final",
+            "mode": "query",
+            "query_result": "done",
+            "follow_up_action": "done",
+            "confidence": 0.9,
+            "evidence_refs": [],
+        }
+
+    async def diagnose(self, session, commands, evidences):
+        return None
+
+
 class ConnectFailAdapter:
     async def connect(self):
         raise RuntimeError("connection reset by peer")
@@ -353,6 +391,32 @@ async def test_unknown_command_executes_without_confirmation_in_full_auto_mode()
     commands = store.list_commands(session.id)
     assert any(command.command == "totally-unknown-command" and command.status == CommandStatus.succeeded for command in commands)
     assert all("command_pending_confirmation" not in event for event in events)
+
+
+@pytest.mark.asyncio
+async def test_batch_disabled_mode_executes_multiple_commands_without_batch_grouping():
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    orchestrator.deepseek_diagnoser = _BatchDisabledDiagnoser()
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(host="10.0.0.30", protocol=DeviceProtocol.ssh),
+            automation_level=AutomationLevel.full_auto,
+        )
+    )
+
+    async for _ in orchestrator.stream_message(session.id, "查询设备状态"):
+        pass
+
+    commands = store.list_commands(session.id)
+    planned = [cmd for cmd in commands if cmd.title in {"检查版本", "检查接口摘要", "检查路由摘要"}]
+    assert len(planned) == 3
+    assert all(cmd.batch_id is None for cmd in planned)
+
+    trace_steps = store.list_trace_steps(session.id)
+    assert any(step.step_type == "policy_decision" for step in trace_steps)
+    assert any(step.step_type == "plan_decision" for step in trace_steps)
 
 
 @pytest.mark.asyncio

@@ -90,3 +90,15 @@ Software image version: 4.28.4M
 
     assert category == "version"
     assert parsed["device_name"] == "ARISTA-LAB-02"
+
+
+def test_parse_version_extracts_device_name_from_hash_prompt_line():
+    output = """Device-102#show version
+Arista vEOS-lab
+Software image version: 4.29.2F
+Device-102#
+"""
+    category, parsed, _ = parse_command_output("show version", output)
+
+    assert category == "version"
+    assert parsed["device_name"] == "Device-102"

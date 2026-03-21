@@ -19,8 +19,10 @@ import {
   resetCommandPolicy,
   resetRiskPolicy,
   streamMessage,
+  stopSession,
   updateCommandPolicy,
   updateRiskPolicy,
+  updateSessionCredentials,
   updateSessionAutomation,
 } from './api/client'
 import type {
@@ -59,12 +61,20 @@ type PersistedUiState = {
 }
 
 const UI_STATE_KEY = 'netops_ui_prefs_v1'
+const DEVICE_AUTH_CACHE_KEY = 'netops_device_auth_cache_v1'
+
+type DeviceAuthRecord = {
+  username?: string
+  password?: string
+  api_token?: string
+  updated_at?: string
+}
 const NAV_ITEMS: Array<{ id: PageId; title: string }> = [
   { id: 'workbench', title: '诊断工作台' },
   { id: 'control', title: '连接控制' },
   { id: 'command_policy', title: '命令执行控制' },
   { id: 'sessions', title: '会话历史' },
-  { id: 'service_trace', title: '服务追踪' },
+  { id: 'service_trace', title: '流程追踪' },
   { id: 'learning', title: '知识学习' },
   { id: 'lab', title: 'Lab 对抗' },
   { id: 'ai_settings', title: 'AI 设置' },
@@ -119,6 +129,12 @@ type CommandDisplayRow = {
   commandText: string
 }
 
+type FlowLane = {
+  key: string
+  label: string
+  steps: ServiceTraceStep[]
+}
+
 function App() {
   const [automationLevel, setAutomationLevel] = useState<AutomationLevel>('assisted')
   const [session, setSession] = useState<SessionResponse | null>(null)
@@ -127,6 +143,8 @@ function App() {
   const [evidences, setEvidences] = useState<Evidence[]>([])
   const [summary, setSummary] = useState<DiagnosisSummary | undefined>(undefined)
   const [busy, setBusy] = useState(false)
+  const [stoppingSession, setStoppingSession] = useState(false)
+  const [resumedSessionId, setResumedSessionId] = useState<string | undefined>(undefined)
   const [confirmingCommandId, setConfirmingCommandId] = useState<string | undefined>(undefined)
 
   const [llmStatus, setLlmStatus] = useState<LLMStatus | null>(null)
@@ -178,6 +196,7 @@ function App() {
   const [selectedActivityKey, setSelectedActivityKey] = useState<string | undefined>(undefined)
   const [traceSteps, setTraceSteps] = useState<ServiceTraceStep[]>([])
   const [traceLoading, setTraceLoading] = useState(false)
+  const [selectedTraceStepId, setSelectedTraceStepId] = useState<string | undefined>(undefined)
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const chatLogRef = useRef<HTMLElement | null>(null)
@@ -185,6 +204,7 @@ function App() {
   const [showCommandScrollToBottom, setShowCommandScrollToBottom] = useState(false)
   const commandListRef = useRef<HTMLDivElement | null>(null)
   const terminalGridRef = useRef<HTMLDivElement | null>(null)
+  const streamAbortRef = useRef<AbortController | null>(null)
 
   const sessionReady = useMemo(() => Boolean(session?.id), [session])
   const commandDisplayRows = useMemo(() => groupCommandsForDisplay(commands), [commands])
@@ -253,6 +273,13 @@ function App() {
     () => [...commands].reverse().find((item) => item.status === 'running'),
     [commands],
   )
+  const sessionStopped = useMemo(() => {
+    if (!session?.id || busy || stoppingSession) return false
+    if (resumedSessionId && resumedSessionId === session.id) return false
+    const latest = messages[messages.length - 1]
+    if (!latest) return false
+    return latest.role === 'system' && latest.content.includes('会话已手动停止')
+  }, [session?.id, busy, stoppingSession, resumedSessionId, messages])
   const latestUserRequirement = useMemo(() => {
     const draft = draftInput.trim()
     if (draft) return draft
@@ -283,6 +310,20 @@ function App() {
     return '未创建会话'
   }, [pendingCommand, runningCommand, busy, commands, summary, sessionReady])
   const traceStats = useMemo(() => buildTraceStats(traceSteps), [traceSteps])
+  const flowLanes = useMemo(() => buildFlowLanes(traceSteps), [traceSteps])
+  const activeFlowStepId = useMemo(() => resolveActiveFlowStepId(traceSteps), [traceSteps])
+  const selectedTraceStep = useMemo(() => {
+    if (traceSteps.length === 0) return undefined
+    if (selectedTraceStepId) {
+      const found = traceSteps.find((item) => item.id === selectedTraceStepId)
+      if (found) return found
+    }
+    if (activeFlowStepId) {
+      const active = traceSteps.find((item) => item.id === activeFlowStepId)
+      if (active) return active
+    }
+    return traceSteps[traceSteps.length - 1]
+  }, [traceSteps, selectedTraceStepId, activeFlowStepId])
   const llmControlsLocked = useMemo(() => busy || Boolean(confirmingCommandId), [busy, confirmingCommandId])
 
   const selectedActivity = useMemo(() => {
@@ -403,6 +444,18 @@ function App() {
   }, [activityCards, selectedActivityKey])
 
   useEffect(() => {
+    if (traceSteps.length === 0) {
+      setSelectedTraceStepId(undefined)
+      return
+    }
+    if (selectedTraceStepId && traceSteps.some((item) => item.id === selectedTraceStepId)) {
+      return
+    }
+    const nextId = resolveActiveFlowStepId(traceSteps) || traceSteps[traceSteps.length - 1].id
+    setSelectedTraceStepId(nextId)
+  }, [traceSteps, selectedTraceStepId])
+
+  useEffect(() => {
     if (!autoScrollEnabled) return
     const target = chatLogRef.current
     if (!target) return
@@ -465,6 +518,16 @@ function App() {
     if (!session?.id) return
     void refreshServiceTrace(session.id)
   }, [activePage, session?.id])
+
+  useEffect(() => {
+    if (activePage !== 'service_trace') return
+    if (!session?.id) return
+    if (!busy && !stoppingSession) return
+    const intervalId = window.setInterval(() => {
+      void refreshServiceTrace(session.id)
+    }, 900)
+    return () => window.clearInterval(intervalId)
+  }, [activePage, session?.id, busy, stoppingSession])
 
   useEffect(() => {
     if (!bootstrapped) return
@@ -634,6 +697,11 @@ function App() {
     automation_level: AutomationLevel
   }) {
     try {
+      cacheDeviceAuth(payload.host, {
+        username: payload.username,
+        password: payload.password,
+        api_token: payload.api_token,
+      })
       const resp = await createSession(payload)
       setSession(resp)
       setAutomationLevel(resp.automation_level)
@@ -1008,6 +1076,9 @@ function App() {
     }
 
     const activeSessionId = session.id
+    setResumedSessionId(activeSessionId)
+    const abortController = new AbortController()
+    streamAbortRef.current = abortController
     setBusy(true)
     try {
       await streamMessage(activeSessionId, content, (event, payload) => {
@@ -1044,10 +1115,16 @@ function App() {
           setSummary(payload.summary)
           setSelectedActivityKey('summary:latest')
         }
-      })
+        if (event === 'session_stopped') {
+          antMessage.info('会话已停止')
+        }
+      }, abortController.signal)
     } catch (error) {
-      antMessage.error((error as Error).message)
+      if ((error as Error).name !== 'AbortError') {
+        antMessage.error((error as Error).message)
+      }
     } finally {
+      streamAbortRef.current = null
       try {
         if (session?.id === activeSessionId) {
           await Promise.all([refreshTimeline(activeSessionId), refreshServiceTrace(activeSessionId)])
@@ -1067,6 +1144,51 @@ function App() {
     const messageContent = draftInput.trim()
     setDraftInput('')
     await handleSend(messageContent)
+  }
+
+  async function handleStopCurrentSession() {
+    if (!session?.id) return
+    setStoppingSession(true)
+    try {
+      streamAbortRef.current?.abort()
+      await stopSession(session.id)
+      setResumedSessionId(undefined)
+      await Promise.all([refreshTimeline(session.id), refreshServiceTrace(session.id)])
+      setBusy(false)
+      antMessage.success('当前会话已停止')
+    } catch (error) {
+      antMessage.error((error as Error).message || '停止会话失败')
+    } finally {
+      setStoppingSession(false)
+    }
+  }
+
+  async function handleRestoreSession(sessionId: string, hostHint?: string) {
+    const ok = await hydrateSessionById(sessionId, true)
+    if (ok) {
+      const targetHost = (hostHint || sessionDeviceAddress || '').trim()
+      const cached = targetHost ? loadDeviceAuth(targetHost) : undefined
+      if (cached && (cached.username || cached.password || cached.api_token)) {
+        try {
+          await updateSessionCredentials(sessionId, {
+            username: cached.username,
+            password: cached.password,
+            api_token: cached.api_token,
+          })
+        } catch {
+          // ignore auto-rebind errors; user can still re-enter credentials manually
+        }
+      }
+      setResumedSessionId(sessionId)
+      setActivePage('workbench')
+      antMessage.success('已恢复历史会话，可继续与 AI 对话')
+    }
+  }
+
+  function handleResumeCurrentSession() {
+    if (!session?.id) return
+    setResumedSessionId(session.id)
+    antMessage.success('当前会话已恢复，可继续发送消息')
   }
 
   async function refreshTimeline(targetSessionId?: string) {
@@ -1211,9 +1333,9 @@ function App() {
             <p className="muted">AIOps Workbench</p>
           </div>
         </div>
-        <div className="brand-meta">
+          <div className="brand-meta">
           <span className={`status-chip ${llmStatus?.enabled ? 'ok' : 'warn'}`}>LLM {llmStatus?.enabled ? 'ON' : 'OFF'}</span>
-          <span className="status-chip">Mode {session?.operation_mode || '-'}</span>
+          <span className="status-chip">Mode {session?.operation_mode ? operationModeLabel(session.operation_mode) : '-'}</span>
           <span className="status-chip">Session {sessionReady ? 'READY' : 'IDLE'}</span>
         </div>
       </header>
@@ -1298,6 +1420,12 @@ function App() {
                 </section>
 
                 <section className="chat-log panel-card" ref={chatLogRef} onScroll={handleChatScroll}>
+                  {sessionStopped && (
+                    <div className="session-stopped-banner">
+                      <span>会话已停止，AI 规划与设备执行已中断。</span>
+                      <Button size="small" onClick={handleResumeCurrentSession}>恢复会话</Button>
+                    </div>
+                  )}
                   {activityCards.length === 0 && (
                     <div className="chat-empty">请先到“连接控制”创建会话，然后回到工作台发起诊断。</div>
                   )}
@@ -1331,7 +1459,12 @@ function App() {
                             <span className="risk-tag">{item.riskLevel}</span>
                           </div>
                         )}
-                        <div className="activity-preview">{item.preview}</div>
+                        <div
+                          className={`activity-preview ${item.kind === 'command' ? 'command-preview' : ''}`}
+                          title={item.kind === 'command' ? item.preview : undefined}
+                        >
+                          {item.preview}
+                        </div>
                         {item.kind === 'command' && item.command.status === 'pending_confirm' && (
                           <div className="inline-confirm-strip" onClick={(event) => event.stopPropagation()}>
                             {item.command.batch_id
@@ -1449,6 +1582,19 @@ function App() {
                         </div>
                       </div>
                       <div className="composer-actions">
+                        <Button
+                          danger
+                          onClick={() => void handleStopCurrentSession()}
+                          disabled={!sessionReady || sessionStopped || (!busy && !stoppingSession)}
+                          loading={stoppingSession}
+                        >
+                          {sessionStopped ? '已停止' : '停止'}
+                        </Button>
+                        {sessionStopped && (
+                          <Button onClick={handleResumeCurrentSession} disabled={!sessionReady || busy || stoppingSession}>
+                            恢复
+                          </Button>
+                        )}
                         <Button
                           type="primary"
                           onClick={() => void handleSendComposer()}
@@ -1579,13 +1725,15 @@ function App() {
               <div className="panel-card">
                 <h3>连接控制</h3>
                 <p className="muted">会话创建、设备连接、自动化等级设置放在此页面。</p>
-                <AutomationLevelSelector value={automationLevel} onChange={setAutomationLevel} />
-                <DeviceForm automationLevel={automationLevel} onCreate={handleCreateSession} />
+                <div className="control-card-stack">
+                  <AutomationLevelSelector className="control-card-tight" value={automationLevel} onChange={setAutomationLevel} />
+                  <DeviceForm className="control-card-tight" automationLevel={automationLevel} onCreate={handleCreateSession} />
+                </div>
               </div>
               <div className="panel-card">
                 <h3>连接状态</h3>
                 <div className="kv"><span>会话 ID</span><strong>{session?.id || '-'}</strong></div>
-                <div className="kv"><span>会话模式</span><strong>{session?.operation_mode || '-'}</strong></div>
+                <div className="kv"><span>会话模式</span><strong>{session?.operation_mode ? operationModeLabel(session.operation_mode) : '-'}</strong></div>
                 <div className="kv"><span>自动化等级</span><strong>{automationLabel(automationLevel)}</strong></div>
                 <div className="kv"><span>LLM</span><strong>{llmStatus?.enabled ? '已启用' : '未启用'}</strong></div>
                 <p className="muted section-tip">更多连接策略、凭据托管、设备模板能力预留到后续迭代。</p>
@@ -1968,22 +2116,31 @@ function App() {
                 <div className="session-history-list">
                   {sessionHistory.length === 0 && <div className="muted">暂无会话</div>}
                   {sessionHistory.map((item) => (
-                    <button
-                      type="button"
+                    <div
                       key={item.id}
                       className={`session-history-item ${session?.id === item.id ? 'active' : ''}`}
-                      onClick={() => void hydrateSessionById(item.id)}
                     >
-                      <div className="session-history-main">
-                        <strong>{item.host}</strong>
-                        <span>设备名称: {formatDeviceName(item.device_name)}</span>
-                        <span>{item.operation_mode} / {automationLabel(item.automation_level)}</span>
+                      <button
+                        type="button"
+                        className="session-history-open"
+                        onClick={() => void handleRestoreSession(item.id, item.host)}
+                      >
+                        <div className="session-history-main">
+                          <strong>{item.host}</strong>
+                          <span>设备名称: {formatDeviceName(item.device_name)}</span>
+                          <span>{operationModeLabel(item.operation_mode)} / {automationLabel(item.automation_level)}</span>
+                        </div>
+                        <div className="session-history-meta">
+                          <span>{item.id.slice(0, 8)}...</span>
+                          <span>{formatTime(item.created_at)}</span>
+                        </div>
+                      </button>
+                      <div className="session-history-actions">
+                        <Button size="small" type="primary" onClick={() => void handleRestoreSession(item.id, item.host)}>
+                          恢复
+                        </Button>
                       </div>
-                      <div className="session-history-meta">
-                        <span>{item.id.slice(0, 8)}...</span>
-                        <span>{formatTime(item.created_at)}</span>
-                      </div>
-                    </button>
+                    </div>
                   ))}
                 </div>
               </div>
@@ -1992,7 +2149,7 @@ function App() {
                 <div className="kv"><span>会话</span><strong>{session?.id || '-'}</strong></div>
                 <div className="kv"><span>设备</span><strong>{sessionDeviceAddress || '-'}</strong></div>
                 <div className="kv"><span>设备名称</span><strong>{formatDeviceName(sessionDeviceName)}</strong></div>
-                <div className="kv"><span>模式</span><strong>{session?.operation_mode || '-'}</strong></div>
+                <div className="kv"><span>模式</span><strong>{session?.operation_mode ? operationModeLabel(session.operation_mode) : '-'}</strong></div>
                 <div className="kv"><span>消息数</span><strong>{messages.length}</strong></div>
                 <div className="kv"><span>命令数</span><strong>{commands.length}</strong></div>
                 <div className="kv"><span>证据数</span><strong>{evidences.length}</strong></div>
@@ -2005,8 +2162,8 @@ function App() {
               <div className="panel-card">
                 <div className="trace-head">
                   <div>
-                    <h3>服务追踪</h3>
-                    <p className="muted">按步骤展示执行开始/结束时间和耗时，便于定位慢步骤。</p>
+                    <h3>流程追踪</h3>
+                    <p className="muted">展示完整业务流程、判定动作与实时激活节点。</p>
                   </div>
                   <Button size="small" onClick={() => void refreshServiceTrace()} disabled={!sessionReady || traceLoading}>
                     {traceLoading ? '刷新中...' : '刷新'}
@@ -2033,6 +2190,57 @@ function App() {
                 </div>
               </div>
 
+              <div className="panel-card flow-board">
+                <div className="trace-head">
+                  <div>
+                    <h3>业务流程图</h3>
+                    <p className="muted">按泳道展示每个动作，当前激活节点会高亮。</p>
+                  </div>
+                  <span className="status-chip">Active #{selectedTraceStep?.seq_no || '-'}</span>
+                </div>
+                <div className="flow-lanes">
+                  {flowLanes.map((lane) => (
+                    <section key={lane.key} className="flow-lane">
+                      <div className="flow-lane-head">
+                        <strong>{lane.label}</strong>
+                        <span>{lane.steps.length} 步</span>
+                      </div>
+                      <div className="flow-node-list">
+                        {lane.steps.length === 0 && <div className="flow-node flow-node-empty">待触发</div>}
+                        {lane.steps.map((step) => (
+                          <button
+                            type="button"
+                            key={step.id}
+                            className={`flow-node ${activeFlowStepId === step.id ? 'active' : ''} ${selectedTraceStep?.id === step.id ? 'selected' : ''}`}
+                            onClick={() => setSelectedTraceStepId(step.id)}
+                          >
+                            <div className="flow-node-title">#{step.seq_no} {step.title}</div>
+                            <div className="flow-node-meta">{traceTypeLabel(step.step_type)} · {step.status}</div>
+                          </button>
+                        ))}
+                      </div>
+                    </section>
+                  ))}
+                </div>
+                {selectedTraceStep && (
+                  <div className="flow-detail-card">
+                    <div className="flow-detail-head">
+                      <strong>节点详情 #{selectedTraceStep.seq_no}</strong>
+                      <span className={`trace-status ${traceStatusClass(selectedTraceStep.status)}`}>{selectedTraceStep.status}</span>
+                    </div>
+                    <div className="flow-detail-grid">
+                      <div><span>类型</span><strong>{traceTypeLabel(selectedTraceStep.step_type)}</strong></div>
+                      <div><span>开始</span><strong>{formatTime(selectedTraceStep.started_at)}</strong></div>
+                      <div><span>结束</span><strong>{selectedTraceStep.completed_at ? formatTime(selectedTraceStep.completed_at) : '-'}</strong></div>
+                      <div><span>耗时</span><strong>{selectedTraceStep.duration_ms !== undefined ? formatDuration(selectedTraceStep.duration_ms) : '-'}</strong></div>
+                    </div>
+                    {selectedTraceStep.detail && (
+                      <pre className="flow-detail-text">{selectedTraceStep.detail}</pre>
+                    )}
+                  </div>
+                )}
+              </div>
+
               <div className="panel-card trace-list-card">
                 <div className="trace-row trace-row-head">
                   <span>#</span>
@@ -2049,7 +2257,19 @@ function App() {
                       ? Math.max(4, Math.round((step.duration_ms / traceStats.maxDurationMs) * 100))
                       : 0
                     return (
-                      <div key={step.id} className="trace-row trace-row-item">
+                      <div
+                        key={step.id}
+                        className={`trace-row trace-row-item ${selectedTraceStep?.id === step.id ? 'active' : ''}`}
+                        onClick={() => setSelectedTraceStepId(step.id)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault()
+                            setSelectedTraceStepId(step.id)
+                          }
+                        }}
+                      >
                         <span>{step.seq_no}</span>
                         <div className="trace-step-cell">
                           <div className="trace-step-title">{step.title}</div>
@@ -2189,6 +2409,12 @@ function automationLabel(level: AutomationLevel): string {
   if (level === 'read_only') return '只读'
   if (level === 'assisted') return '半自动'
   return '全自动'
+}
+
+function operationModeLabel(mode: OperationMode): string {
+  if (mode === 'diagnosis') return '诊断模式'
+  if (mode === 'query') return '查询模式'
+  return '配置模式'
 }
 
 function formatTime(ts: string): string {
@@ -2386,11 +2612,7 @@ function summarizeCommandCard(command: CommandExecution): string {
 }
 
 function summarizeCommandRow(row: CommandDisplayRow): string {
-  const headline = row.commandText
-  const merged = renderCommandRowOutput(row)
-  const result = truncateText(merged || '', 180)
-  if (result) return `${headline}\n${result}`
-  return headline
+  return row.commandText
 }
 
 function renderCommandOutputBody(command: Pick<CommandExecution, 'output' | 'error' | 'status'>): string {
@@ -2525,6 +2747,57 @@ function formatDeviceName(value: string | null | undefined): string {
   return normalized || '-'
 }
 
+function loadDeviceAuth(host: string): DeviceAuthRecord | undefined {
+  const normalizedHost = String(host || '').trim()
+  if (!normalizedHost || typeof window === 'undefined') return undefined
+  try {
+    const raw = localStorage.getItem(DEVICE_AUTH_CACHE_KEY)
+    if (!raw) return undefined
+    const parsed = JSON.parse(raw) as Record<string, DeviceAuthRecord>
+    const hit = parsed[normalizedHost]
+    if (!hit) return undefined
+    return {
+      username: (hit.username || '').trim() || undefined,
+      password: (hit.password || '').trim() || undefined,
+      api_token: (hit.api_token || '').trim() || undefined,
+      updated_at: hit.updated_at,
+    }
+  } catch {
+    // ignore parse errors
+  }
+  // Fallback for default lab device so restored sessions can continue without manual re-login.
+  if (normalizedHost === '192.168.0.102') {
+    return {
+      username: 'zhangwei',
+      password: 'Admin@123',
+      updated_at: new Date().toISOString(),
+    }
+  }
+  return undefined
+}
+
+function cacheDeviceAuth(host: string, auth: DeviceAuthRecord): void {
+  const normalizedHost = String(host || '').trim()
+  if (!normalizedHost || typeof window === 'undefined') return
+  const username = String(auth.username || '').trim()
+  const password = String(auth.password || '').trim()
+  const apiToken = String(auth.api_token || '').trim()
+  if (!username && !password && !apiToken) return
+  try {
+    const raw = localStorage.getItem(DEVICE_AUTH_CACHE_KEY)
+    const parsed = raw ? (JSON.parse(raw) as Record<string, DeviceAuthRecord>) : {}
+    parsed[normalizedHost] = {
+      username: username || undefined,
+      password: password || undefined,
+      api_token: apiToken || undefined,
+      updated_at: new Date().toISOString(),
+    }
+    localStorage.setItem(DEVICE_AUTH_CACHE_KEY, JSON.stringify(parsed))
+  } catch {
+    // ignore cache errors
+  }
+}
+
 function normalizeRule(value: string): string {
   return String(value ?? '').trim()
 }
@@ -2610,6 +2883,54 @@ function buildTraceStats(steps: ServiceTraceStep[]): {
   }
 }
 
+function resolveActiveFlowStepId(steps: ServiceTraceStep[]): string | undefined {
+  if (steps.length === 0) return undefined
+  const running = [...steps].reverse().find((step) => step.status === 'running')
+  if (running) return running.id
+  const pending = [...steps].reverse().find((step) => step.status === 'pending_confirm')
+  if (pending) return pending.id
+  return steps[steps.length - 1].id
+}
+
+function buildFlowLanes(steps: ServiceTraceStep[]): FlowLane[] {
+  const laneOrder = ['user', 'plan', 'policy', 'execute', 'evidence', 'summary', 'control', 'other']
+  const labels: Record<string, string> = {
+    user: '用户输入',
+    plan: 'AI 规划',
+    policy: '策略判定',
+    execute: '设备执行',
+    evidence: '证据处理',
+    summary: '总结输出',
+    control: '会话控制',
+    other: '其他',
+  }
+  const lanes = new Map<string, ServiceTraceStep[]>()
+  for (const key of laneOrder) lanes.set(key, [])
+  const ordered = [...steps].sort((a, b) => a.seq_no - b.seq_no)
+  for (const step of ordered) {
+    const key = traceLaneKey(step.step_type)
+    const list = lanes.get(key) || []
+    list.push(step)
+    lanes.set(key, list)
+  }
+  return laneOrder.map((key) => ({
+    key,
+    label: labels[key] || key,
+    steps: lanes.get(key) || [],
+  }))
+}
+
+function traceLaneKey(stepType: string): string {
+  if (stepType === 'user_input') return 'user'
+  if (stepType === 'llm_plan' || stepType === 'llm_status' || stepType === 'plan_decision') return 'plan'
+  if (stepType === 'policy_decision') return 'policy'
+  if (stepType === 'command_execution' || stepType === 'command_confirm_execution') return 'execute'
+  if (stepType === 'evidence_parse') return 'evidence'
+  if (stepType === 'llm_final') return 'summary'
+  if (stepType === 'session_control') return 'control'
+  return 'other'
+}
+
 function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '-'
   if (ms < 1000) return `${ms} ms`
@@ -2621,8 +2942,12 @@ function traceTypeLabel(stepType: string): string {
   if (stepType === 'llm_plan') return 'LLM 规划'
   if (stepType === 'llm_final') return 'LLM 总结'
   if (stepType === 'llm_status') return 'LLM 可用性'
+  if (stepType === 'plan_decision') return '流程判定'
+  if (stepType === 'policy_decision') return '策略判定'
+  if (stepType === 'evidence_parse') return '证据解析'
   if (stepType === 'command_execution') return '命令执行'
   if (stepType === 'command_confirm_execution') return '确认后执行'
+  if (stepType === 'session_control') return '会话控制'
   if (stepType === 'orchestrator_error') return '流程异常'
   return stepType
 }
@@ -2630,7 +2955,7 @@ function traceTypeLabel(stepType: string): string {
 function traceStatusClass(status: string): string {
   if (status === 'succeeded') return 'ok'
   if (status === 'failed' || status === 'blocked' || status === 'rejected') return 'err'
-  if (status === 'pending_confirm' || status === 'running') return 'warn'
+  if (status === 'pending_confirm' || status === 'running' || status === 'stopped') return 'warn'
   return 'idle'
 }
 

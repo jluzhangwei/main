@@ -81,6 +81,7 @@ class SSHAdapter(DeviceAdapter):
                         self._refresh_vendor_hint_from_device_type(candidate)
                         self._paging_configured = False
                         await self._ensure_terminal_paging_off()
+                        await self._refresh_device_name_from_prompt()
                         return
                     except Exception as exc:
                         self.conn = None
@@ -196,6 +197,7 @@ class SSHAdapter(DeviceAdapter):
             output = await asyncio.to_thread(self.conn.send_command, translated)
             retried = await self._retry_on_cli_error(original_command, translated, output)
             self._refresh_vendor_hint_from_output(retried)
+            self._refresh_device_name_from_output(retried)
             return retried
         except Exception as exc:
             # Huawei ping often has delayed prompt return; timing mode is safer as a fallback.
@@ -203,6 +205,7 @@ class SSHAdapter(DeviceAdapter):
                 output = await asyncio.to_thread(self.conn.send_command_timing, translated, read_timeout=30)
                 retried = await self._retry_on_cli_error(original_command, translated, output)
                 self._refresh_vendor_hint_from_output(retried)
+                self._refresh_device_name_from_output(retried)
                 return retried
             raise
 
@@ -599,6 +602,63 @@ class SSHAdapter(DeviceAdapter):
             self.session.device.vendor = "huawei"
             if self.session.device.protocol == DeviceProtocol.ssh:
                 self.session.device.device_type = "huawei"
+
+    async def _refresh_device_name_from_prompt(self) -> None:
+        if not self.conn:
+            return
+        finder = getattr(self.conn, "find_prompt", None)
+        if not callable(finder):
+            return
+        try:
+            prompt = await asyncio.to_thread(finder)
+        except Exception:
+            return
+        device_name = self._extract_device_name_from_prompt(prompt)
+        if device_name:
+            self.session.device.name = device_name
+
+    def _refresh_device_name_from_output(self, output: str) -> None:
+        if not output:
+            return
+        for line in output.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # Prompt-like lines, e.g. "Device-102#" or "Device-102(config)#show version"
+            prompt_match = re.match(
+                r"^([A-Za-z0-9._-]{1,64})(?:\([^)]+\))?[>#]\s*(?:.*)?$",
+                line,
+            )
+            if prompt_match:
+                self.session.device.name = prompt_match.group(1)
+                return
+            # Explicit name fields occasionally present in platform outputs.
+            explicit_match = re.search(
+                r"(?i)\b(hostname|sysname|system\s+name)\b\s*[:=]\s*([A-Za-z0-9._-]{1,64})\b",
+                line,
+            )
+            if explicit_match:
+                self.session.device.name = explicit_match.group(2)
+                return
+
+    def _extract_device_name_from_prompt(self, prompt: str) -> str | None:
+        text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", (prompt or "")).strip()
+        if not text:
+            return None
+
+        line = text.splitlines()[-1].strip()
+        if not line:
+            return None
+
+        bracket_match = re.match(r"^[<\[]\s*([A-Za-z0-9._-]{1,64})\s*[>\]]$", line)
+        if bracket_match:
+            return bracket_match.group(1)
+
+        prompt_match = re.match(r"^([A-Za-z0-9._-]{1,64})(?:\([^)]+\))?[>#]\s*$", line)
+        if prompt_match:
+            return prompt_match.group(1)
+
+        return None
 
 
 class APIAdapter(DeviceAdapter):

@@ -349,6 +349,7 @@ class _FakeConnectedDevice:
     def __init__(self, device_type: str):
         self.device_type = device_type
         self.timing_history: list[str] = []
+        self.prompt = "Device-102#"
 
     def is_alive(self):
         return {"is_alive": True}
@@ -368,6 +369,9 @@ class _FakeConnectedDevice:
         if lowered.startswith("screen-length"):
             return "screen-length 0 temporary\n>"
         return "#"
+
+    def find_prompt(self):
+        return self.prompt
 
     def disconnect(self):
         return None
@@ -426,6 +430,7 @@ async def test_connect_applies_terminal_paging_off_after_successful_probe(monkey
 
     assert adapter.conn is fake
     assert any(cmd.strip().lower() == "terminal length 0" for cmd in fake.timing_history)
+    assert adapter.session.device.name == "Device-102"
 
 
 def split_config_command(command: str) -> list[str]:
