@@ -21,6 +21,18 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
+select_backend_python() {
+  if command_exists python3.11; then
+    echo "python3.11"
+    return 0
+  fi
+  if command_exists python3; then
+    echo "python3"
+    return 0
+  fi
+  return 1
+}
+
 port_pid() {
   local port="$1"
   lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -n 1 || true
@@ -56,13 +68,23 @@ wait_port_up() {
 }
 
 ensure_backend_env() {
+  local py_cmd=""
+  py_cmd="$(select_backend_python || true)"
+  if [[ -z "$py_cmd" ]]; then
+    echo "[backend] python3.11/python3 not found. Please install Python 3.11 first."
+    exit 1
+  fi
+
+  if [[ -x "$BACKEND_DIR/.venv/bin/python" ]]; then
+    if ! "$BACKEND_DIR/.venv/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
+      echo "[backend] existing .venv uses unsupported Python (<3.11), recreating..."
+      rm -rf "$BACKEND_DIR/.venv"
+    fi
+  fi
+
   if [[ ! -x "$BACKEND_DIR/.venv/bin/uvicorn" ]]; then
     echo "[backend] .venv not found, creating..."
-    if ! command_exists python3; then
-      echo "[backend] python3 not found. Please install Python 3 first."
-      exit 1
-    fi
-    (cd "$BACKEND_DIR" && python3 -m venv .venv)
+    (cd "$BACKEND_DIR" && "$py_cmd" -m venv .venv)
     echo "[backend] installing dependencies..."
     (cd "$BACKEND_DIR" && ./.venv/bin/pip install -e .[dev])
   fi
