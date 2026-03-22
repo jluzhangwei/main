@@ -55,6 +55,11 @@ export type CommandExecution = {
   started_at?: string
   completed_at?: string
   duration_ms?: number
+  original_command?: string
+  effective_command?: string
+  capability_state?: string
+  capability_reason?: string
+  capability_rule_id?: string
 }
 
 export type Evidence = {
@@ -91,6 +96,7 @@ export type Timeline = {
       host: string
       name?: string
       protocol: DeviceProtocol
+      version_signature?: string
     }
   }
   messages: ChatMessage[]
@@ -138,6 +144,59 @@ export type CommandPolicyUpdateRequest = {
   blocked_patterns?: string[]
   executable_patterns?: string[]
   legality_check_enabled?: boolean
+}
+
+export type CommandCapabilityHistoryItem = {
+  changed_at: string
+  action: 'rewrite' | 'block'
+  rewrite_to?: string
+  reason_code?: string
+  reason_text?: string
+}
+
+export type CommandCapabilityRule = {
+  id: string
+  scope_type: 'version' | 'device' | 'vendor' | 'global'
+  scope_key: string
+  host?: string
+  protocol: DeviceProtocol
+  device_type?: string
+  vendor?: string
+  version_signature?: string
+  command_key: string
+  action: 'rewrite' | 'block'
+  rewrite_to?: string
+  reason_code?: string
+  reason_text?: string
+  source: 'learned' | 'manual'
+  enabled: boolean
+  hit_count: number
+  last_hit_at?: string
+  history: CommandCapabilityHistoryItem[]
+  created_at: string
+  updated_at: string
+}
+
+export type CommandCapabilityUpsertRequest = {
+  id?: string
+  scope_type?: 'version' | 'device' | 'vendor' | 'global'
+  host?: string
+  protocol?: DeviceProtocol
+  device_type?: string
+  vendor?: string
+  version_signature?: string
+  command_key: string
+  action: 'rewrite' | 'block'
+  rewrite_to?: string
+  reason_code?: string
+  reason_text?: string
+  source?: 'learned' | 'manual'
+  enabled?: boolean
+}
+
+export type CommandCapabilityResetResponse = {
+  removed: number
+  remaining: number
 }
 
 export type RiskPolicy = {

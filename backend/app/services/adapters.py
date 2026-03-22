@@ -17,6 +17,7 @@ class DeviceAdapter(ABC):
     def __init__(self, session: Session, *, allow_simulation: bool = True):
         self.session = session
         self.allow_simulation = allow_simulation
+        self.last_command_meta: dict[str, object] = {}
 
     @abstractmethod
     async def connect(self) -> None:
@@ -101,6 +102,15 @@ class SSHAdapter(DeviceAdapter):
         normalized_translated = translated.strip().lower()
         command_parts = self._split_commands(translated)
         workflow_commands = self._extract_config_workflow(translated)
+        self.last_command_meta = {
+            "original_command": command,
+            "translated_command": translated,
+            "effective_command": translated,
+            "retry_used": False,
+            "retry_from": None,
+            "retry_to": None,
+            "simulated": False,
+        }
         if not self.conn:
             try:
                 await self.connect()
@@ -127,6 +137,13 @@ class SSHAdapter(DeviceAdapter):
                     except Exception:
                         pass
                 if self.allow_simulation:
+                    self.last_command_meta.update(
+                        {
+                            "effective_command": command,
+                            "simulated": True,
+                            "execution_error": str(exc),
+                        }
+                    )
                     return _simulate_cli_output(command)
                 raise
 
@@ -135,6 +152,13 @@ class SSHAdapter(DeviceAdapter):
             raise RuntimeError(f"SSH connection not established: {reason}")
 
         await asyncio.sleep(0.2)
+        self.last_command_meta.update(
+            {
+                "effective_command": command,
+                "simulated": True,
+                "execution_error": str(self.connection_error) if self.connection_error else None,
+            }
+        )
         return _simulate_cli_output(command)
 
     async def _run_command_on_active_connection(
@@ -160,6 +184,7 @@ class SSHAdapter(DeviceAdapter):
             try:
                 output = await asyncio.to_thread(self.conn.enable)
                 await self._ensure_terminal_paging_off(force=True)
+                self.last_command_meta.update({"effective_command": translated, "retry_used": False})
                 if isinstance(output, str) and output.strip():
                     return output
                 return "Entered privileged mode."
@@ -167,6 +192,7 @@ class SSHAdapter(DeviceAdapter):
                 if self._is_prompt_detection_error(exc):
                     output = await asyncio.to_thread(self.conn.send_command_timing, "enable", read_timeout=30)
                     await self._ensure_terminal_paging_off(force=True)
+                    self.last_command_meta.update({"effective_command": translated, "retry_used": False})
                     if isinstance(output, str) and output.strip():
                         return output
                     return "Entered privileged mode."
@@ -175,6 +201,7 @@ class SSHAdapter(DeviceAdapter):
         if workflow_commands:
             if self._is_pure_config_workflow(command_parts):
                 try:
+                    self.last_command_meta.update({"effective_command": translated, "retry_used": False})
                     return await asyncio.to_thread(
                         self.conn.send_config_set,
                         workflow_commands,
@@ -183,19 +210,36 @@ class SSHAdapter(DeviceAdapter):
                     )
                 except Exception as exc:
                     if self._is_prompt_detection_error(exc):
+                        self.last_command_meta.update({"effective_command": translated, "retry_used": False})
                         return await self._run_compound_timing(command_parts)
                     raise
+            self.last_command_meta.update({"effective_command": translated, "retry_used": False})
             return await self._run_compound_timing(command_parts)
 
         if len(command_parts) > 1:
+            self.last_command_meta.update({"effective_command": translated, "retry_used": False})
             return await self._run_compound_timing(command_parts)
 
         if len(command_parts) == 1 and self._looks_like_config_command(command_parts[0]):
+            self.last_command_meta.update({"effective_command": translated, "retry_used": False})
             return await asyncio.to_thread(self.conn.send_command_timing, translated, read_timeout=30)
 
         try:
             output = await asyncio.to_thread(self.conn.send_command, translated)
-            retried = await self._retry_on_cli_error(original_command, translated, output)
+            retried, effective_command, retry_used, retry_error = await self._retry_on_cli_error(
+                original_command,
+                translated,
+                output,
+            )
+            self.last_command_meta.update(
+                {
+                    "effective_command": effective_command,
+                    "retry_used": retry_used,
+                    "retry_from": translated if retry_used else None,
+                    "retry_to": effective_command if retry_used else None,
+                    "retry_error": retry_error if retry_used else None,
+                }
+            )
             self._refresh_vendor_hint_from_output(retried)
             self._refresh_device_name_from_output(retried)
             return retried
@@ -203,7 +247,20 @@ class SSHAdapter(DeviceAdapter):
             # Huawei ping often has delayed prompt return; timing mode is safer as a fallback.
             if self._is_prompt_detection_error(exc):
                 output = await asyncio.to_thread(self.conn.send_command_timing, translated, read_timeout=30)
-                retried = await self._retry_on_cli_error(original_command, translated, output)
+                retried, effective_command, retry_used, retry_error = await self._retry_on_cli_error(
+                    original_command,
+                    translated,
+                    output,
+                )
+                self.last_command_meta.update(
+                    {
+                        "effective_command": effective_command,
+                        "retry_used": retry_used,
+                        "retry_from": translated if retry_used else None,
+                        "retry_to": effective_command if retry_used else None,
+                        "retry_error": retry_error if retry_used else None,
+                    }
+                )
                 self._refresh_vendor_hint_from_output(retried)
                 self._refresh_device_name_from_output(retried)
                 return retried
@@ -546,13 +603,14 @@ class SSHAdapter(DeviceAdapter):
             flags=re.IGNORECASE,
         ).strip()
 
-    async def _retry_on_cli_error(self, original: str, translated: str, output: str) -> str:
+    async def _retry_on_cli_error(self, original: str, translated: str, output: str) -> tuple[str, str, bool, str | None]:
         if not self.conn:
-            return output
+            return output, translated, False, None
         if not self._looks_like_cli_error(output):
-            return output
+            return output, translated, False, None
 
         candidates = self._retry_candidates(original, translated)
+        original_error = self._extract_cli_error_line(output)
         for candidate in candidates:
             if candidate.strip().lower() == translated.strip().lower():
                 continue
@@ -561,8 +619,8 @@ class SSHAdapter(DeviceAdapter):
             except Exception:
                 continue
             if not self._looks_like_cli_error(retried):
-                return retried
-        return output
+                return retried, candidate, True, original_error
+        return output, translated, False, original_error
 
     def _retry_candidates(self, original: str, translated: str) -> list[str]:
         candidates: list[str] = []
@@ -593,8 +651,16 @@ class SSHAdapter(DeviceAdapter):
                 "incomplete command",
                 "error:",
                 "unknown command",
+                "% invalid input",
+                "invalid input",
             ]
         )
+
+    def _extract_cli_error_line(self, output: str) -> str:
+        for line in output.splitlines():
+            if "error:" in line.lower() or "invalid input" in line.lower() or "unknown command" in line.lower():
+                return line.strip()
+        return "cli_error"
 
     def _refresh_vendor_hint_from_output(self, output: str) -> None:
         lowered = output.lower()

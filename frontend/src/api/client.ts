@@ -1,5 +1,8 @@
 import type {
   AutomationLevel,
+  CommandCapabilityResetResponse,
+  CommandCapabilityRule,
+  CommandCapabilityUpsertRequest,
   CommandPolicy,
   CommandPolicyUpdateRequest,
   EventPayload,
@@ -240,6 +243,65 @@ export async function getCommandPolicy(): Promise<CommandPolicy> {
   const res = await fetch('/v1/command-policy')
   if (!res.ok) {
     throw new Error('Failed to load command policy')
+  }
+  return res.json()
+}
+
+export async function getCommandCapability(input?: {
+  host?: string
+  version_signature?: string
+  scope_key?: string
+}): Promise<CommandCapabilityRule[]> {
+  const params = new URLSearchParams()
+  if (input?.host) params.set('host', input.host)
+  if (input?.version_signature) params.set('version_signature', input.version_signature)
+  if (input?.scope_key) params.set('scope_key', input.scope_key)
+  const query = params.toString()
+  const res = await fetch(`/v1/command-capability${query ? `?${query}` : ''}`)
+  if (!res.ok) {
+    throw new Error('Failed to load command capability rules')
+  }
+  return res.json()
+}
+
+export async function upsertCommandCapability(
+  payload: CommandCapabilityUpsertRequest,
+): Promise<CommandCapabilityRule> {
+  const res = await fetch('/v1/command-capability', {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    throw new Error('Failed to save command capability rule')
+  }
+  return res.json()
+}
+
+export async function deleteCommandCapability(ruleId: string): Promise<void> {
+  const res = await fetch(`/v1/command-capability/${ruleId}`, {
+    method: 'DELETE',
+    headers,
+  })
+  if (!res.ok) {
+    throw new Error('Failed to delete command capability rule')
+  }
+}
+
+export async function resetCommandCapability(input?: {
+  host?: string
+  version_signature?: string
+}): Promise<CommandCapabilityResetResponse> {
+  const res = await fetch('/v1/command-capability/reset', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      host: input?.host || undefined,
+      version_signature: input?.version_signature || undefined,
+    }),
+  })
+  if (!res.ok) {
+    throw new Error('Failed to reset command capability rules')
   }
   return res.json()
 }

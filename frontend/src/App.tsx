@@ -7,8 +7,10 @@ import {
   configureLlm,
   confirmCommand,
   createSession,
+  deleteCommandCapability,
   deleteLlmConfig,
   exportMarkdown,
+  getCommandCapability,
   getCommandPolicy,
   getLlmPromptPolicy,
   getLlmStatus,
@@ -20,14 +22,17 @@ import {
   resetRiskPolicy,
   streamMessage,
   stopSession,
+  upsertCommandCapability,
   updateCommandPolicy,
   updateRiskPolicy,
   updateSessionCredentials,
   updateSessionAutomation,
+  resetCommandCapability,
 } from './api/client'
 import type {
   AutomationLevel,
   ChatMessage,
+  CommandCapabilityRule,
   CommandPolicy,
   CommandExecution,
   DiagnosisSummary,
@@ -177,6 +182,15 @@ function App() {
   const [editingRiskRule, setEditingRiskRule] = useState<
     { kind: 'high' | 'medium'; index: number; value: string } | undefined
   >(undefined)
+  const [commandCapabilityRules, setCommandCapabilityRules] = useState<CommandCapabilityRule[]>([])
+  const [capabilityLoading, setCapabilityLoading] = useState(false)
+  const [capabilitySaving, setCapabilitySaving] = useState(false)
+  const [capabilityVersionFilter, setCapabilityVersionFilter] = useState('')
+  const [capabilityCommandInput, setCapabilityCommandInput] = useState('')
+  const [capabilityActionInput, setCapabilityActionInput] = useState<'rewrite' | 'block'>('rewrite')
+  const [capabilityRewriteInput, setCapabilityRewriteInput] = useState('')
+  const [capabilityReasonInput, setCapabilityReasonInput] = useState('')
+  const [editingCapabilityId, setEditingCapabilityId] = useState<string | undefined>(undefined)
   const policyImportInputRef = useRef<HTMLInputElement | null>(null)
 
   const [activePage, setActivePage] = useState<PageId>('workbench')
@@ -189,6 +203,7 @@ function App() {
   const [draftInput, setDraftInput] = useState('')
   const [sessionDeviceAddress, setSessionDeviceAddress] = useState('')
   const [sessionDeviceName, setSessionDeviceName] = useState('')
+  const [sessionVersionSignature, setSessionVersionSignature] = useState('')
   const [sessionHistory, setSessionHistory] = useState<SessionListItem[]>([])
   const [sessionsLoading, setSessionsLoading] = useState(false)
   const [initialSessionId, setInitialSessionId] = useState<string | undefined>(undefined)
@@ -368,6 +383,11 @@ function App() {
     () => buildRuleRows(mediumRiskRules, mediumRiskSearch),
     [mediumRiskRules, mediumRiskSearch],
   )
+  const capabilityRows = useMemo(() => {
+    const signature = capabilityVersionFilter.trim().toLowerCase()
+    if (!signature) return commandCapabilityRules
+    return commandCapabilityRules.filter((item) => (item.version_signature || '').toLowerCase().includes(signature))
+  }, [commandCapabilityRules, capabilityVersionFilter])
   const policyDirty = useMemo(() => {
     const commandDirty = commandPolicy
       ? (
@@ -438,6 +458,17 @@ function App() {
     }
     setSelectedCommandId(commands[commands.length - 1].id)
   }, [commands])
+
+  useEffect(() => {
+    if (!sessionVersionSignature) return
+    if (capabilityVersionFilter.trim()) return
+    setCapabilityVersionFilter(sessionVersionSignature)
+  }, [sessionVersionSignature, capabilityVersionFilter])
+
+  useEffect(() => {
+    if (activePage !== 'command_policy') return
+    void refreshCommandCapabilityRules(capabilityVersionFilter.trim() || undefined)
+  }, [activePage])
 
   useEffect(() => {
     if (activityCards.length === 0) {
@@ -635,6 +666,8 @@ function App() {
         setRiskPolicy(null)
       }
 
+      await refreshCommandCapabilityRules()
+
       await refreshSessionHistory()
       setBootstrapped(true)
     }
@@ -662,6 +695,18 @@ function App() {
     }
   }
 
+  async function refreshCommandCapabilityRules(versionSignature?: string) {
+    setCapabilityLoading(true)
+    try {
+      const rows = await getCommandCapability({ version_signature: versionSignature || undefined })
+      setCommandCapabilityRules(rows)
+    } catch {
+      setCommandCapabilityRules([])
+    } finally {
+      setCapabilityLoading(false)
+    }
+  }
+
   async function hydrateSessionById(sessionId: string, silent = false) {
     try {
       const data = await getTimeline(sessionId)
@@ -680,6 +725,7 @@ function App() {
       setSummary(data.summary)
       setSessionDeviceAddress(data.session.device?.host || '')
       setSessionDeviceName(formatDeviceName(data.session.device?.name))
+      setSessionVersionSignature(String(data.session.device?.version_signature || '').trim())
       await refreshServiceTrace(sessionId)
       if (!silent) {
         antMessage.success(`已恢复会话 ${sessionId.slice(0, 8)}...`)
@@ -718,6 +764,7 @@ function App() {
       setTraceSteps([])
       setSessionDeviceAddress(payload.host)
       setSessionDeviceName('-')
+      setSessionVersionSignature('')
       setDraftInput('')
       await refreshSessionHistory()
       antMessage.success(`会话已创建: ${resp.id}`)
@@ -1073,6 +1120,119 @@ function App() {
       setMediumRiskRules((prev) => replaceRuleAt(prev, editingRiskRule.index, normalized))
     }
     setEditingRiskRule(undefined)
+  }
+
+  function beginEditCapability(rule: CommandCapabilityRule) {
+    setEditingCapabilityId(rule.id)
+    setCapabilityVersionFilter(rule.version_signature || capabilityVersionFilter)
+    setCapabilityCommandInput(rule.command_key)
+    setCapabilityActionInput(rule.action)
+    setCapabilityRewriteInput(rule.rewrite_to || '')
+    setCapabilityReasonInput(rule.reason_text || '')
+  }
+
+  function resetCapabilityEditor() {
+    setEditingCapabilityId(undefined)
+    setCapabilityCommandInput('')
+    setCapabilityActionInput('rewrite')
+    setCapabilityRewriteInput('')
+    setCapabilityReasonInput('')
+  }
+
+  async function handleSaveCapabilityRule() {
+    const versionSignature = capabilityVersionFilter.trim()
+    const commandKey = capabilityCommandInput.trim()
+    if (!versionSignature) {
+      antMessage.warning('请先输入版本指纹')
+      return
+    }
+    if (!commandKey) {
+      antMessage.warning('请输入命令')
+      return
+    }
+    if (capabilityActionInput === 'rewrite' && !capabilityRewriteInput.trim()) {
+      antMessage.warning('rewrite 模式必须提供替代命令')
+      return
+    }
+
+    setCapabilitySaving(true)
+    try {
+      await upsertCommandCapability({
+        id: editingCapabilityId,
+        scope_type: 'version',
+        version_signature: versionSignature,
+        protocol: 'ssh',
+        command_key: commandKey,
+        action: capabilityActionInput,
+        rewrite_to: capabilityActionInput === 'rewrite' ? capabilityRewriteInput.trim() : undefined,
+        reason_text: capabilityReasonInput.trim() || undefined,
+        source: 'manual',
+        enabled: true,
+      })
+      await refreshCommandCapabilityRules(versionSignature)
+      resetCapabilityEditor()
+      antMessage.success('学习规则已保存')
+    } catch (error) {
+      antMessage.error((error as Error).message)
+    } finally {
+      setCapabilitySaving(false)
+    }
+  }
+
+  async function handleToggleCapabilityEnabled(rule: CommandCapabilityRule, enabled: boolean) {
+    setCapabilitySaving(true)
+    try {
+      await upsertCommandCapability({
+        id: rule.id,
+        scope_type: rule.scope_type,
+        host: rule.host,
+        protocol: rule.protocol,
+        command_key: rule.command_key,
+        action: rule.action,
+        version_signature: rule.version_signature,
+        rewrite_to: rule.rewrite_to,
+        reason_code: rule.reason_code,
+        reason_text: rule.reason_text,
+        source: rule.source,
+        enabled,
+      })
+      await refreshCommandCapabilityRules(capabilityVersionFilter.trim() || undefined)
+    } catch (error) {
+      antMessage.error((error as Error).message)
+    } finally {
+      setCapabilitySaving(false)
+    }
+  }
+
+  async function handleDeleteCapabilityRule(ruleId: string) {
+    setCapabilitySaving(true)
+    try {
+      await deleteCommandCapability(ruleId)
+      await refreshCommandCapabilityRules(capabilityVersionFilter.trim() || undefined)
+      if (editingCapabilityId === ruleId) {
+        resetCapabilityEditor()
+      }
+      antMessage.success('学习规则已删除')
+    } catch (error) {
+      antMessage.error((error as Error).message)
+    } finally {
+      setCapabilitySaving(false)
+    }
+  }
+
+  async function handleResetCapabilityRules() {
+    const versionSignature = capabilityVersionFilter.trim()
+    setCapabilitySaving(true)
+    try {
+      const result = await resetCommandCapability({ version_signature: versionSignature || undefined })
+      await refreshCommandCapabilityRules(versionSignature || undefined)
+      resetCapabilityEditor()
+      antMessage.success(`已清空规则 ${result.removed} 条，剩余 ${result.remaining} 条`)
+    } catch (error) {
+      antMessage.error((error as Error).message)
+    } finally {
+      setCapabilitySaving(false)
+    }
   }
 
   async function handleSend(content: string) {
@@ -2104,6 +2264,106 @@ function App() {
                   </details>
                 </div>
               </div>
+
+              <div className="panel-card capability-panel">
+                <div className="policy-list-head">
+                  <h3>学习规则（版本级：失败阻断 / 替代改写）</h3>
+                  <div className="capability-toolbar-actions">
+                    <Button size="small" onClick={() => void refreshCommandCapabilityRules(capabilityVersionFilter.trim() || undefined)} disabled={capabilityLoading}>
+                      {capabilityLoading ? '刷新中...' : '刷新'}
+                    </Button>
+                    <Button size="small" danger loading={capabilitySaving} onClick={() => void handleResetCapabilityRules()}>
+                      清空筛选范围
+                    </Button>
+                  </div>
+                </div>
+                <div className="capability-filter-row">
+                  <Input
+                    size="small"
+                    value={capabilityVersionFilter}
+                    onChange={(event) => setCapabilityVersionFilter(event.target.value)}
+                    placeholder="版本指纹筛选，例如 huawei|ne40e|8.180"
+                  />
+                  <Button size="small" onClick={() => void refreshCommandCapabilityRules(capabilityVersionFilter.trim() || undefined)}>
+                    加载
+                  </Button>
+                </div>
+                <div className="capability-editor-grid">
+                  <Input
+                    size="small"
+                    value={capabilityCommandInput}
+                    onChange={(event) => setCapabilityCommandInput(event.target.value)}
+                    placeholder="命令（例如 show inventory）"
+                  />
+                  <Select
+                    size="small"
+                    value={capabilityActionInput}
+                    options={[
+                      { value: 'rewrite', label: 'rewrite' },
+                      { value: 'block', label: 'block' },
+                    ]}
+                    onChange={(value) => setCapabilityActionInput(value)}
+                  />
+                  <Input
+                    size="small"
+                    value={capabilityRewriteInput}
+                    disabled={capabilityActionInput !== 'rewrite'}
+                    onChange={(event) => setCapabilityRewriteInput(event.target.value)}
+                    placeholder="替代命令（rewrite_to）"
+                  />
+                  <Input
+                    size="small"
+                    value={capabilityReasonInput}
+                    onChange={(event) => setCapabilityReasonInput(event.target.value)}
+                    placeholder="原因（可选）"
+                  />
+                  <div className="capability-editor-actions">
+                    <Button size="small" type="primary" loading={capabilitySaving} onClick={() => void handleSaveCapabilityRule()}>
+                      {editingCapabilityId ? '更新' : '新增'}
+                    </Button>
+                    <Button size="small" onClick={resetCapabilityEditor} disabled={capabilitySaving}>
+                      清空
+                    </Button>
+                  </div>
+                </div>
+                <div className="capability-table">
+                  <div className="capability-row capability-head">
+                    <span>#</span>
+                    <span>版本指纹</span>
+                    <span>命令</span>
+                    <span>动作</span>
+                    <span>替代</span>
+                    <span>来源</span>
+                    <span>命中</span>
+                    <span>最近命中</span>
+                    <span>状态</span>
+                    <span>操作</span>
+                  </div>
+                  {capabilityRows.length === 0 && <div className="policy-empty muted">暂无学习规则</div>}
+                  {capabilityRows.map((rule, index) => (
+                    <div key={rule.id} className={`capability-row ${editingCapabilityId === rule.id ? 'active' : ''}`}>
+                      <span>{index + 1}</span>
+                      <span title={rule.version_signature || '-'}>{rule.version_signature || '-'}</span>
+                      <code title={rule.command_key}>{rule.command_key}</code>
+                      <span>{rule.action}</span>
+                      <code title={rule.rewrite_to || '-'}>{rule.rewrite_to || '-'}</code>
+                      <span>{rule.source}</span>
+                      <span>{rule.hit_count}</span>
+                      <span>{rule.last_hit_at ? formatTime(rule.last_hit_at) : '-'}</span>
+                      <span>{rule.enabled ? '启用' : '停用'}</span>
+                      <div className="policy-row-actions">
+                        <Switch
+                          size="small"
+                          checked={rule.enabled}
+                          onChange={(checked) => void handleToggleCapabilityEnabled(rule, checked)}
+                        />
+                        <Button size="small" onClick={() => beginEditCapability(rule)}>编辑</Button>
+                        <Button size="small" danger onClick={() => void handleDeleteCapabilityRule(rule.id)}>删除</Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
 
@@ -2464,6 +2724,7 @@ function formatPromptKey(key: string): string {
     runtime_batch_confirm_policy: '运行时批量确认策略',
     runtime_output_compaction_policy: '运行时输出压缩策略',
     runtime_permission_precheck_policy: '运行时权限预检策略',
+    runtime_capability_precheck_policy: '运行时命令能力预检策略',
     runtime_final_action_marker_policy: '运行时结论动作词策略',
   }
   return map[key] || key
@@ -2942,7 +3203,7 @@ function buildFlowLanes(steps: ServiceTraceStep[]): FlowLane[] {
 function traceLaneKey(stepType: string): string {
   if (stepType === 'user_input') return 'user'
   if (stepType === 'llm_plan' || stepType === 'llm_status' || stepType === 'plan_decision') return 'plan'
-  if (stepType === 'policy_decision') return 'policy'
+  if (stepType === 'policy_decision' || stepType === 'capability_decision') return 'policy'
   if (stepType === 'command_execution' || stepType === 'command_confirm_execution') return 'execute'
   if (stepType === 'evidence_parse') return 'evidence'
   if (stepType === 'llm_final') return 'summary'
@@ -2963,6 +3224,7 @@ function traceTypeLabel(stepType: string): string {
   if (stepType === 'llm_status') return 'LLM 可用性'
   if (stepType === 'plan_decision') return '流程判定'
   if (stepType === 'policy_decision') return '策略判定'
+  if (stepType === 'capability_decision') return '能力判定'
   if (stepType === 'evidence_parse') return '证据解析'
   if (stepType === 'command_execution') return '命令执行'
   if (stepType === 'command_confirm_execution') return '确认后执行'

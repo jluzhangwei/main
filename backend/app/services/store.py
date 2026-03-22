@@ -9,6 +9,8 @@ from typing import Dict, List, Optional
 
 from app.models.schemas import (
     AutomationLevel,
+    CommandCapabilityRule,
+    CommandCapabilityUpsertRequest,
     CommandPolicy,
     CommandPolicyUpdateRequest,
     CommandExecution,
@@ -26,6 +28,7 @@ from app.models.schemas import (
     RiskPolicy,
     RiskPolicyUpdateRequest,
 )
+from app.services.command_capability_store import CapabilityMatch, CommandCapabilityStore
 from app.services.command_policy import default_command_policy
 from app.services.risk_engine import RiskEngine
 
@@ -46,6 +49,14 @@ class InMemoryStore:
         self.command_policy: CommandPolicy = default_command_policy()
         self.command_policy_path: Path = self._resolve_command_policy_path()
         self._load_command_policy()
+        self.command_capability_snapshot_path: Path = CommandCapabilityStore.default_snapshot_path()
+        self.command_capability_wal_path: Path = CommandCapabilityStore.default_wal_path()
+        self.command_capability_store = CommandCapabilityStore(
+            snapshot_path=self.command_capability_snapshot_path,
+            wal_path=self.command_capability_wal_path,
+            compact_interval_seconds=int(os.getenv("NETOPS_COMMAND_CAPABILITY_COMPACT_SECONDS", "60")),
+            compact_event_threshold=int(os.getenv("NETOPS_COMMAND_CAPABILITY_COMPACT_EVENTS", "200")),
+        )
         self.risk_policy: RiskPolicy = RiskEngine.default_policy()
         self.risk_policy_path: Path = self._resolve_risk_policy_path()
         self._load_risk_policy()
@@ -118,6 +129,31 @@ class InMemoryStore:
     def update_session_device_name(self, session_id: str, device_name: str) -> Session:
         session = self.sessions[session_id]
         session.device.name = (device_name or "").strip() or None
+        self.sessions[session_id] = session
+        self._save_session_store()
+        return session
+
+    def update_session_device_profile(
+        self,
+        session_id: str,
+        *,
+        vendor: str | None = None,
+        device_type: str | None = None,
+        platform: str | None = None,
+        software_version: str | None = None,
+        version_signature: str | None = None,
+    ) -> Session:
+        session = self.sessions[session_id]
+        if vendor is not None:
+            session.device.vendor = str(vendor).strip() or session.device.vendor
+        if device_type is not None:
+            session.device.device_type = str(device_type).strip() or session.device.device_type
+        if platform is not None:
+            session.device.platform = str(platform).strip() or None
+        if software_version is not None:
+            session.device.software_version = str(software_version).strip() or None
+        if version_signature is not None:
+            session.device.version_signature = str(version_signature).strip() or None
         self.sessions[session_id] = session
         self._save_session_store()
         return session
@@ -229,6 +265,94 @@ class InMemoryStore:
         self.command_policy = default_command_policy()
         self._save_command_policy()
         return self.get_command_policy()
+
+    def list_command_capability_rules(
+        self,
+        *,
+        host: str | None = None,
+        version_signature: str | None = None,
+        scope_key: str | None = None,
+    ) -> list[CommandCapabilityRule]:
+        return self.command_capability_store.list_rules(
+            host=host,
+            version_signature=version_signature,
+            scope_key=scope_key,
+        )
+
+    def upsert_command_capability_rule(self, req: CommandCapabilityUpsertRequest) -> CommandCapabilityRule:
+        rule = self.command_capability_store.upsert_rule(req)
+        return rule
+
+    def delete_command_capability_rule(self, rule_id: str) -> bool:
+        return self.command_capability_store.delete_rule(rule_id)
+
+    def reset_command_capability_rules(
+        self,
+        *,
+        host: str | None = None,
+        version_signature: str | None = None,
+    ) -> tuple[int, int]:
+        return self.command_capability_store.reset(host=host, version_signature=version_signature)
+
+    def resolve_command_capability(
+        self,
+        *,
+        host: str,
+        protocol: DeviceProtocol,
+        device_type: str | None,
+        vendor: str | None,
+        version_signature: str | None,
+        command_text: str,
+    ) -> CapabilityMatch | None:
+        return self.command_capability_store.resolve_match(
+            host=host,
+            protocol=protocol,
+            device_type=device_type,
+            vendor=vendor,
+            version_signature=version_signature,
+            command_text=command_text,
+        )
+
+    def register_command_capability_hit(self, rule_id: str) -> CommandCapabilityRule | None:
+        return self.command_capability_store.register_hit(rule_id)
+
+    def learn_command_rewrite(
+        self,
+        *,
+        session_id: str,
+        failed_command: str,
+        rewrite_to: str,
+        reason_text: str,
+    ) -> CommandCapabilityRule | None:
+        session = self.get_session(session_id)
+        return self.command_capability_store.learn_rewrite(
+            host=session.device.host,
+            protocol=session.device.protocol,
+            device_type=session.device.device_type,
+            vendor=session.device.vendor,
+            version_signature=session.device.version_signature,
+            failed_command=failed_command,
+            rewrite_to=rewrite_to,
+            reason_text=reason_text,
+        )
+
+    def learn_command_block(
+        self,
+        *,
+        session_id: str,
+        failed_command: str,
+        reason_text: str,
+    ) -> CommandCapabilityRule | None:
+        session = self.get_session(session_id)
+        return self.command_capability_store.learn_block(
+            host=session.device.host,
+            protocol=session.device.protocol,
+            device_type=session.device.device_type,
+            vendor=session.device.vendor,
+            version_signature=session.device.version_signature,
+            failed_command=failed_command,
+            reason_text=reason_text,
+        )
 
     def get_risk_policy(self) -> RiskPolicy:
         return self.risk_policy.model_copy(deep=True)

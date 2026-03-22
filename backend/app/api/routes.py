@@ -6,6 +6,10 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.models.schemas import (
+    CommandCapabilityResetRequest,
+    CommandCapabilityResetResponse,
+    CommandCapabilityRule,
+    CommandCapabilityUpsertRequest,
     CommandPolicy,
     CommandPolicyUpdateRequest,
     ConfirmCommandRequest,
@@ -103,6 +107,41 @@ async def stop_session(session_id: str) -> SessionStopResponse:
 @router.get("/command-policy", response_model=CommandPolicy)
 async def get_command_policy() -> CommandPolicy:
     return store.get_command_policy()
+
+
+@router.get("/command-capability", response_model=list[CommandCapabilityRule])
+async def get_command_capability(
+    host: str | None = None,
+    version_signature: str | None = None,
+    scope_key: str | None = None,
+) -> list[CommandCapabilityRule]:
+    return store.list_command_capability_rules(
+        host=host,
+        version_signature=version_signature,
+        scope_key=scope_key,
+    )
+
+
+@router.put("/command-capability", response_model=CommandCapabilityRule)
+async def upsert_command_capability(req: CommandCapabilityUpsertRequest) -> CommandCapabilityRule:
+    return store.upsert_command_capability_rule(req)
+
+
+@router.delete("/command-capability/{rule_id}")
+async def delete_command_capability(rule_id: str):
+    deleted = store.delete_command_capability_rule(rule_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Command capability rule not found")
+    return {"deleted": True}
+
+
+@router.post("/command-capability/reset", response_model=CommandCapabilityResetResponse)
+async def reset_command_capability(req: CommandCapabilityResetRequest) -> CommandCapabilityResetResponse:
+    removed, remaining = store.reset_command_capability_rules(
+        host=req.host,
+        version_signature=req.version_signature,
+    )
+    return CommandCapabilityResetResponse(removed=removed, remaining=remaining)
 
 
 @router.put("/command-policy", response_model=CommandPolicy)

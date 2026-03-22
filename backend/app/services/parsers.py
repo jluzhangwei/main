@@ -34,8 +34,14 @@ def parse_command_output(command: str, output: str) -> tuple[str, dict[str, Any]
 
 def _parse_version(output: str) -> tuple[str, dict[str, Any], str]:
     device_name = _extract_device_name_from_version(output)
+    vendor, platform, software_version = _extract_version_profile(output)
+    version_signature = _build_version_signature(vendor, platform, software_version)
     parsed: dict[str, Any] = {
         "device_name": device_name,
+        "vendor": vendor,
+        "platform": platform,
+        "software_version": software_version,
+        "version_signature": version_signature,
         "raw": output.strip()[:2000],
     }
     if device_name:
@@ -226,12 +232,15 @@ def _extract_cli_error(output: str) -> str | None:
         "error: incomplete command",
         "unknown command",
         "invalid input detected",
+        "% invalid input",
+        "invalid input",
     ]
     if not any(marker in lowered for marker in markers):
         return None
 
     for line in output.splitlines():
-        if "error:" in line.lower() or "invalid input" in line.lower() or "unknown command" in line.lower():
+        normalized = line.lower()
+        if "error:" in normalized or "invalid input" in normalized or "unknown command" in normalized:
             return line.strip()
     return "CLI command parsing failed"
 
@@ -269,3 +278,68 @@ def _extract_device_name_from_version(output: str) -> str | None:
             return match.group(1)
 
     return None
+
+
+def _extract_version_profile(output: str) -> tuple[str | None, str | None, str | None]:
+    text = output or ""
+    lowered = text.lower()
+
+    vendor: str | None = None
+    if "huawei" in lowered or "vrp" in lowered:
+        vendor = "huawei"
+    elif "arista" in lowered or "eos" in lowered:
+        vendor = "arista"
+    elif "cisco" in lowered or "ios xe" in lowered or "ios xr" in lowered:
+        vendor = "cisco"
+
+    platform: str | None = None
+    software_version: str | None = None
+
+    # Huawei examples:
+    # VRP (R) software, Version 8.180 (NE40E V800R011C00SPC607B607)
+    # HUAWEI NE40E uptime is ...
+    huawei_version = re.search(r"(?i)\bversion\s+([A-Za-z0-9._-]+)\s*\(([^)]+)\)", text)
+    if huawei_version:
+        software_version = huawei_version.group(1).strip()
+        detail = huawei_version.group(2).strip()
+        platform_match = re.search(r"\b([A-Za-z]+[0-9][A-Za-z0-9-]*)\b", detail)
+        if platform_match:
+            platform = platform_match.group(1)
+    if not platform:
+        huawei_platform = re.search(r"(?im)^\s*huawei\s+([A-Za-z0-9._-]+)\s+uptime\s+is", text)
+        if huawei_platform:
+            platform = huawei_platform.group(1).strip()
+
+    # Arista examples:
+    # Arista vEOS-lab
+    # Software image version: 4.29.2F
+    if not platform:
+        arista_platform = re.search(r"(?im)^\s*arista\s+([A-Za-z0-9._-]+)\s*$", text)
+        if arista_platform:
+            platform = arista_platform.group(1).strip()
+    if not software_version:
+        arista_version = re.search(r"(?im)^\s*software image version:\s*([A-Za-z0-9._-]+)\s*$", text)
+        if arista_version:
+            software_version = arista_version.group(1).strip()
+
+    # Cisco-like examples:
+    # Cisco IOS Software, ... Version 15.2(4)M7, ...
+    if not software_version:
+        cisco_version = re.search(r"(?i)\bversion\s+([A-Za-z0-9()._-]+)", text)
+        if cisco_version:
+            software_version = cisco_version.group(1).strip().rstrip(",")
+    if not platform:
+        cisco_platform = re.search(r"(?i)\bcisco\s+([A-Za-z0-9._-]+)\s+\(", text)
+        if cisco_platform:
+            platform = cisco_platform.group(1).strip()
+
+    return (vendor, platform, software_version)
+
+
+def _build_version_signature(vendor: str | None, platform: str | None, software_version: str | None) -> str | None:
+    vendor_text = (vendor or "").strip().lower()
+    platform_text = (platform or "").strip().lower()
+    version_text = (software_version or "").strip().lower()
+    if not vendor_text and not platform_text and not version_text:
+        return None
+    return "|".join([vendor_text, platform_text, version_text])

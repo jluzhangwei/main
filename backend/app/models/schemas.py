@@ -65,6 +65,9 @@ class DeviceTarget(BaseModel):
     password: Optional[str] = None
     api_token: Optional[str] = None
     device_type: str = "autodetect"
+    platform: Optional[str] = None
+    software_version: Optional[str] = None
+    version_signature: Optional[str] = None
 
 
 class SessionCreateRequest(BaseModel):
@@ -144,6 +147,11 @@ class CommandExecution(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     duration_ms: Optional[int] = None
+    original_command: Optional[str] = None
+    effective_command: Optional[str] = None
+    capability_state: Optional[str] = None
+    capability_reason: Optional[str] = None
+    capability_rule_id: Optional[str] = None
 
 
 class Evidence(BaseModel):
@@ -272,6 +280,64 @@ class CommandPolicyUpdateRequest(BaseModel):
     blocked_patterns: Optional[list[str]] = None
     executable_patterns: Optional[list[str]] = None
     legality_check_enabled: Optional[bool] = None
+
+
+class CommandCapabilityHistoryItem(BaseModel):
+    changed_at: datetime = Field(default_factory=now_utc)
+    action: Literal["rewrite", "block"]
+    rewrite_to: Optional[str] = None
+    reason_code: Optional[str] = None
+    reason_text: Optional[str] = None
+
+
+class CommandCapabilityRule(BaseModel):
+    id: str = Field(default_factory=make_id)
+    scope_type: Literal["version", "device", "vendor", "global"] = "version"
+    scope_key: str
+    host: Optional[str] = None
+    protocol: DeviceProtocol
+    device_type: Optional[str] = None
+    vendor: Optional[str] = None
+    version_signature: Optional[str] = None
+    command_key: str
+    action: Literal["rewrite", "block"]
+    rewrite_to: Optional[str] = None
+    reason_code: Optional[str] = None
+    reason_text: Optional[str] = None
+    source: Literal["learned", "manual"] = "learned"
+    enabled: bool = True
+    hit_count: int = 0
+    last_hit_at: Optional[datetime] = None
+    history: list[CommandCapabilityHistoryItem] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=now_utc)
+    updated_at: datetime = Field(default_factory=now_utc)
+
+
+class CommandCapabilityUpsertRequest(BaseModel):
+    id: Optional[str] = None
+    scope_type: Optional[Literal["version", "device", "vendor", "global"]] = None
+    host: Optional[str] = None
+    protocol: DeviceProtocol = DeviceProtocol.ssh
+    device_type: Optional[str] = None
+    vendor: Optional[str] = None
+    version_signature: Optional[str] = None
+    command_key: str
+    action: Literal["rewrite", "block"]
+    rewrite_to: Optional[str] = None
+    reason_code: Optional[str] = None
+    reason_text: Optional[str] = None
+    source: Optional[Literal["learned", "manual"]] = None
+    enabled: Optional[bool] = None
+
+
+class CommandCapabilityResetRequest(BaseModel):
+    host: Optional[str] = None
+    version_signature: Optional[str] = None
+
+
+class CommandCapabilityResetResponse(BaseModel):
+    removed: int
+    remaining: int
 
 
 class RiskPolicy(BaseModel):

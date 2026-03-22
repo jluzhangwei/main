@@ -4,6 +4,7 @@ import pytest
 
 from app.models.schemas import (
     AutomationLevel,
+    CommandCapabilityUpsertRequest,
     CommandPolicyUpdateRequest,
     CommandStatus,
     ConfirmCommandRequest,
@@ -340,6 +341,42 @@ class BatchMixedConfirmDiagnoser:
                 ],
             }
         return None
+
+    async def diagnose(self, session, commands, evidences):
+        return None
+
+
+class BatchBlockedButContinueDiagnoser:
+    enabled = True
+
+    async def propose_next_step(
+        self,
+        *,
+        session,
+        user_problem: str,
+        commands,
+        evidences,
+        iteration: int,
+        max_iterations: int,
+        conversation_history=None,
+    ):
+        if iteration == 1:
+            return {
+                "decision": "run_command",
+                "title": "批量查询（含一条会被拦截）",
+                "commands": [
+                    "show ip route",
+                    "show ip interface brief",
+                ],
+            }
+        return {
+            "decision": "final",
+            "mode": "query",
+            "query_result": "批量执行完成（含拦截）",
+            "follow_up_action": "done",
+            "confidence": 0.9,
+            "evidence_refs": [],
+        }
 
     async def diagnose(self, session, commands, evidences):
         return None
@@ -825,3 +862,56 @@ async def test_batch_with_mixed_rules_requires_single_confirmation_then_executes
 
     commands_after = store.list_commands(session.id)
     assert all(item.status == CommandStatus.succeeded for item in commands_after[1:])
+
+
+@pytest.mark.asyncio
+async def test_batch_blocked_command_does_not_block_other_commands_in_same_group():
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    orchestrator.deepseek_diagnoser = BatchBlockedButContinueDiagnoser()
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(
+                host="192.168.0.88",
+                protocol=DeviceProtocol.ssh,
+                vendor="huawei",
+                username="zhangwei",
+                password="test-password",
+                device_type="huawei",
+            ),
+            operation_mode=OperationMode.query,
+            automation_level=AutomationLevel.full_auto,
+        )
+    )
+    store.update_session_device_profile(
+        session.id,
+        vendor="huawei",
+        platform="ne40e",
+        software_version="8.180",
+        version_signature="huawei|ne40e|8.180",
+    )
+    store.upsert_command_capability_rule(
+        CommandCapabilityUpsertRequest(
+            scope_type="version",
+            protocol=DeviceProtocol.ssh,
+            version_signature="huawei|ne40e|8.180",
+            command_key="show ip route",
+            action="block",
+            reason_code="test_block",
+            reason_text="blocked by test rule",
+            source="manual",
+            enabled=True,
+        )
+    )
+
+    async for _ in orchestrator.stream_message(session.id, "批量执行看看"):
+        pass
+
+    commands = store.list_commands(session.id)
+    assert len(commands) == 3
+    assert commands[0].status == CommandStatus.succeeded
+    assert commands[1].command == "show ip route"
+    assert commands[1].status == CommandStatus.blocked
+    assert commands[2].command == "show ip interface brief"
+    assert commands[2].status == CommandStatus.succeeded

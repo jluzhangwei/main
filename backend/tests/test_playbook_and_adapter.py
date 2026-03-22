@@ -114,6 +114,7 @@ def test_cli_error_detection_for_common_parser_errors():
 
     assert adapter._looks_like_cli_error("Error: Unrecognized command found at '^' position.")
     assert adapter._looks_like_cli_error("Error: Wrong parameter found at '^' position.")
+    assert adapter._looks_like_cli_error("% Invalid input detected at '^' marker.")
     assert not adapter._looks_like_cli_error("Interface GigabitEthernet1/0/6 current state : UP")
 
 

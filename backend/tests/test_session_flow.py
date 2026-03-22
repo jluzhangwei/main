@@ -266,6 +266,63 @@ def test_command_policy_endpoint_can_view_and_update_rules():
     assert reset_payload["legality_check_enabled"] is True
 
 
+def test_command_capability_endpoint_crud():
+    initial = client.get("/v1/command-capability")
+    assert initial.status_code == 200
+    assert initial.json() == []
+
+    created = client.put(
+        "/v1/command-capability",
+        json={
+            "scope_type": "version",
+            "version_signature": "huawei|ne40e|8.180",
+            "protocol": "ssh",
+            "command_key": "show version",
+            "action": "rewrite",
+            "rewrite_to": "display version",
+            "reason_text": "learned from retry",
+            "source": "manual",
+            "enabled": True,
+        },
+    )
+    assert created.status_code == 200
+    payload = created.json()
+    assert payload["command_key"] == "show version"
+    assert payload["action"] == "rewrite"
+    rule_id = payload["id"]
+
+    listed = client.get("/v1/command-capability", params={"version_signature": "huawei|ne40e|8.180"})
+    assert listed.status_code == 200
+    rows = listed.json()
+    assert len(rows) == 1
+    assert rows[0]["id"] == rule_id
+
+    disabled = client.put(
+        "/v1/command-capability",
+        json={
+            "id": rule_id,
+            "scope_type": "version",
+            "version_signature": "huawei|ne40e|8.180",
+            "protocol": "ssh",
+            "command_key": "show version",
+            "action": "rewrite",
+            "rewrite_to": "display version",
+            "source": "manual",
+            "enabled": False,
+        },
+    )
+    assert disabled.status_code == 200
+    assert disabled.json()["enabled"] is False
+
+    removed = client.delete(f"/v1/command-capability/{rule_id}")
+    assert removed.status_code == 200
+    assert removed.json()["deleted"] is True
+
+    reset = client.post("/v1/command-capability/reset", json={"version_signature": "huawei|ne40e|8.180"})
+    assert reset.status_code == 200
+    assert reset.json()["remaining"] == 0
+
+
 def test_risk_policy_endpoint_can_view_and_update_rules():
     initial = client.get("/v1/risk-policy")
     assert initial.status_code == 200
@@ -331,6 +388,8 @@ def test_session_store_persists_history_across_store_reinit(tmp_path, monkeypatc
     monkeypatch.setenv("NETOPS_SESSION_STORE_PATH", str(tmp_path / "session_store.json"))
     monkeypatch.setenv("NETOPS_COMMAND_POLICY_PATH", str(tmp_path / "command_policy.json"))
     monkeypatch.setenv("NETOPS_RISK_POLICY_PATH", str(tmp_path / "risk_policy.json"))
+    monkeypatch.setenv("NETOPS_COMMAND_CAPABILITY_SNAPSHOT_PATH", str(tmp_path / "command_capability_snapshot.json"))
+    monkeypatch.setenv("NETOPS_COMMAND_CAPABILITY_WAL_PATH", str(tmp_path / "command_capability.wal"))
 
     from app.services.store import InMemoryStore
     from app.models.schemas import SessionCreateRequest, DeviceTarget

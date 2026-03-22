@@ -57,8 +57,12 @@ class ConversationOrchestrator:
                 "执行结果\\n"
                 "- step: {step_no}\\n"
                 "- title: {title}\\n"
+                "- original_command: {original_command}\\n"
+                "- effective_command: {effective_command}\\n"
                 "- command: {command}\\n"
                 "- status: {status}\\n"
+                "- capability_state: {capability_state(optional)}\\n"
+                "- capability_reason: {capability_reason(optional)}\\n"
                 "- permission_state: {permission_state(optional)}\\n"
                 "- error: {error(optional)}\\n"
                 "- output: {output(optional)}"
@@ -87,6 +91,13 @@ class ConversationOrchestrator:
                 "执行可能受限命令前先探测当前会话权限/模式；"
                 "若首次探测权限不足，优先最小提权并立即复核；"
                 "若已在特权/配置模式，不重复提权命令。"
+            ),
+            "runtime_capability_precheck_policy": (
+                "运行期命令能力预检策略："
+                "系统会在执行前进行本地命令能力命中（rewrite/block）；"
+                "命中rewrite时会直接改写执行并回传改写关系；"
+                "命中block时会直接拦截并回传结构化原因；"
+                "执行后会基于语法错误与成功候选进行自动学习更新。"
             ),
             "runtime_final_action_marker_policy": (
                 "运行期结论动作词策略："
@@ -383,10 +394,13 @@ class ConversationOrchestrator:
                         )
                     )
 
-                blocked_or_pending = False
+                blocked_hit = False
+                pending_hit = False
                 async for event in self._execute_batch_with_policy(session, batch_commands):
-                    if "command_blocked" in event or "command_pending_confirmation" in event:
-                        blocked_or_pending = True
+                    if "command_blocked" in event:
+                        blocked_hit = True
+                    if "command_pending_confirmation" in event:
+                        pending_hit = True
                     yield event
 
                 if self._is_stop_requested(session_id):
@@ -395,15 +409,19 @@ class ConversationOrchestrator:
                 for command in batch_commands:
                     self._append_command_result_to_ai_context(session_id, command)
 
-                if blocked_or_pending:
+                if pending_hit:
                     break
+                if blocked_hit:
+                    # Let AI continue in next round with structured block reasons.
+                    continue
                 if any(command.status == CommandStatus.failed for command in batch_commands):
                     # Keep autonomous loop alive: feed execution failure back to AI so it can self-correct.
                     continue
                 continue
 
             executed_commands: list[CommandExecution] = []
-            blocked_or_pending = False
+            blocked_hit = False
+            pending_hit = False
             for title, next_command in plan_commands:
                 step_no += 1
                 decision = self.risk_engine.decide(next_command, session.automation_level)
@@ -418,15 +436,19 @@ class ConversationOrchestrator:
                     status=CommandStatus.queued,
                 )
                 async for event in self._execute_with_policy(session, command):
-                    if "command_blocked" in event or "command_pending_confirmation" in event:
-                        blocked_or_pending = True
+                    if "command_blocked" in event:
+                        blocked_hit = True
+                    if "command_pending_confirmation" in event:
+                        pending_hit = True
                     yield event
                 executed_commands.append(command)
                 self._append_command_result_to_ai_context(session_id, command)
 
                 if self._is_stop_requested(session_id):
                     break
-                if blocked_or_pending:
+                if pending_hit:
+                    break
+                if blocked_hit:
                     break
                 if command.status == CommandStatus.failed:
                     # Let AI self-correct from the failure result before continuing.
@@ -434,8 +456,11 @@ class ConversationOrchestrator:
 
             if self._is_stop_requested(session_id):
                 break
-            if blocked_or_pending:
+            if pending_hit:
                 break
+            if blocked_hit:
+                # Let AI self-correct with blocked reason in next round.
+                continue
             if any(command.status == CommandStatus.failed for command in executed_commands):
                 continue
 
@@ -461,6 +486,23 @@ class ConversationOrchestrator:
             yield self._sse("command_completed", {"command": command.model_dump(mode="json")})
             return
 
+        capability = self._apply_capability_precheck(session, command)
+        if capability["action"] == "block":
+            command.status = CommandStatus.blocked
+            command.error = str(capability["reason"])
+            command.completed_at = now_utc()
+            command.duration_ms = 0
+            self.store.add_command(command)
+            self._trace_finish(execution_trace, status="blocked", detail=str(capability["reason"])[:300])
+            yield self._sse(
+                "command_blocked",
+                {
+                    "command": command.model_dump(mode="json"),
+                    "reason": capability["reason"],
+                },
+            )
+            return
+
         policy = self.store.get_command_policy()
         decision = self._decide_execution_action(session, command.command, policy, session_id=command.session_id)
         command.risk_level = decision["risk_level"]
@@ -469,9 +511,9 @@ class ConversationOrchestrator:
         if decision["action"] == "blocked":
             command.status = CommandStatus.blocked
             command.error = decision["reason"]
-            self.store.add_command(command)
             command.completed_at = now_utc()
             command.duration_ms = 0
+            self.store.add_command(command)
             self._trace_finish(execution_trace, status="blocked", detail=decision["reason"])
             yield self._sse(
                 "command_blocked",
@@ -543,6 +585,10 @@ class ConversationOrchestrator:
         confirm_reason = "批量命令包含待确认项，请确认后继续执行后续命令。"
 
         for idx, command in enumerate(commands):
+            capability = self._apply_capability_precheck(session, command)
+            if capability["action"] == "block":
+                blocked_reasons[command.id] = str(capability["reason"])
+                continue
             decision = self._decide_execution_action(session, command.command, policy, session_id=command.session_id)
             decisions.append(decision)
             command.risk_level = decision["risk_level"]
@@ -556,14 +602,13 @@ class ConversationOrchestrator:
                     first_confirm_idx = idx
                     confirm_reason = str(decision["reason"] or confirm_reason)
 
+        blocked_commands = [command for command in commands if command.id in blocked_reasons]
+        executable_commands = [command for command in commands if command.id not in blocked_reasons]
+
         if blocked_reasons:
-            first_blocked = next((item for item in commands if item.id in blocked_reasons), commands[0])
-            batch_reason = (
-                f"Batch blocked because command is blocked: {first_blocked.command[:120]}"
-            )
-            for command in commands:
+            for command in blocked_commands:
                 command.status = CommandStatus.blocked
-                command.error = blocked_reasons.get(command.id, batch_reason)
+                command.error = blocked_reasons.get(command.id, "Command blocked by policy.")
                 command.completed_at = now_utc()
                 command.duration_ms = 0
                 self.store.add_command(command)
@@ -574,12 +619,21 @@ class ConversationOrchestrator:
                         "reason": command.error,
                     },
                 )
-            self._trace_finish(execution_trace, status="blocked", detail=batch_reason[:300])
-            return
+            if not executable_commands:
+                self._trace_finish(execution_trace, status="blocked", detail="All commands in batch were blocked.")
+                return
 
         if first_confirm_idx is not None:
-            precheck_commands = commands[:first_confirm_idx]
-            pending_commands = commands[first_confirm_idx:]
+            precheck_commands = [
+                command
+                for idx, command in enumerate(commands)
+                if idx < first_confirm_idx and command.id not in blocked_reasons
+            ]
+            pending_commands = [
+                command
+                for idx, command in enumerate(commands)
+                if idx >= first_confirm_idx and command.id not in blocked_reasons
+            ]
             adapter = None
 
             if precheck_commands:
@@ -626,15 +680,15 @@ class ConversationOrchestrator:
                 yield self._mark_pending_confirmation(command, pending_reason)
             return
 
-        for command in commands:
+        for command in executable_commands:
             self.store.add_command(command)
 
         try:
             adapter = await self._get_session_adapter(session)
-            await self._execute_batch_and_record(adapter, commands)
+            await self._execute_batch_and_record(adapter, executable_commands)
         except Exception as exc:
             failed_at = now_utc()
-            for command in commands:
+            for command in executable_commands:
                 command.status = CommandStatus.failed
                 command.error = str(exc)
                 command.completed_at = failed_at
@@ -644,14 +698,24 @@ class ConversationOrchestrator:
             self._trace_finish(execution_trace, status="failed", detail=str(exc)[:300])
             await self._drop_session_adapter(session.id)
         else:
-            first_error = next((command.error for command in commands if command.status == CommandStatus.failed), "")
+            first_error = next((command.error for command in executable_commands if command.status == CommandStatus.failed), "")
             if first_error:
                 self._trace_finish(execution_trace, status="failed", detail=first_error[:300])
             else:
-                output_brief = next((command.output for command in commands if command.output), "")
-                self._trace_finish(execution_trace, status="succeeded", detail=(output_brief or "")[:300])
+                output_brief = next((command.output for command in executable_commands if command.output), "")
+                if blocked_commands:
+                    self._trace_finish(
+                        execution_trace,
+                        status="succeeded",
+                        detail=(
+                            f"partial execution: blocked={len(blocked_commands)}, "
+                            f"executed={len(executable_commands)}; {(output_brief or '')[:200]}"
+                        ),
+                    )
+                else:
+                    self._trace_finish(execution_trace, status="succeeded", detail=(output_brief or "")[:300])
 
-        for command in commands:
+        for command in executable_commands:
             yield self._sse("command_completed", {"command": command.model_dump(mode="json")})
 
     def _decide_execution_action(
@@ -723,6 +787,67 @@ class ConversationOrchestrator:
 
     def _batch_execution_enabled(self) -> bool:
         return bool(getattr(self.deepseek_diagnoser, "batch_execution_enabled", True))
+
+    def _apply_capability_precheck(self, session, command: CommandExecution) -> dict[str, str]:
+        original_command = (command.command or "").strip()
+        command.original_command = command.original_command or original_command
+        command.effective_command = original_command
+        if not original_command:
+            command.capability_state = "invalid"
+            command.capability_reason = "empty command"
+            return {"action": "block", "reason": "Command is empty."}
+
+        matched = self.store.resolve_command_capability(
+            host=session.device.host,
+            protocol=session.device.protocol,
+            device_type=session.device.device_type,
+            vendor=session.device.vendor,
+            version_signature=session.device.version_signature,
+            command_text=original_command,
+        )
+        if not matched:
+            return {"action": "none", "reason": "no capability match"}
+
+        rule = matched.rule
+        self.store.register_command_capability_hit(rule.id)
+        if rule.action == "rewrite" and rule.rewrite_to:
+            rewritten = rule.rewrite_to.strip()
+            if rewritten:
+                command.command = rewritten
+                command.effective_command = rewritten
+                command.capability_state = "rewrite_hit"
+                command.capability_rule_id = rule.id
+                command.capability_reason = rule.reason_text or f"rewrite by capability rule {rule.id}"
+                self._trace_decision(
+                    session_id=command.session_id,
+                    step_type="capability_decision",
+                    title="命令能力命中（改写）",
+                    detail=(
+                        f"original={original_command[:120]}; "
+                        f"rewrite_to={rewritten[:120]}; "
+                        f"rule_id={rule.id}"
+                    ),
+                )
+                return {"action": "rewrite", "reason": command.capability_reason or "rewrite hit"}
+
+        if rule.action == "block":
+            command.capability_state = "block_hit"
+            command.capability_rule_id = rule.id
+            command.capability_reason = rule.reason_text or f"blocked by capability rule {rule.id}"
+            self._trace_decision(
+                session_id=command.session_id,
+                step_type="capability_decision",
+                title="命令能力命中（阻断）",
+                detail=(
+                    f"command={original_command[:120]}; "
+                    f"rule_id={rule.id}; "
+                    f"reason={str(command.capability_reason)[:120]}"
+                ),
+                status="failed",
+            )
+            return {"action": "block", "reason": command.capability_reason or "blocked by capability"}
+
+        return {"action": "none", "reason": "capability rule ignored"}
 
     async def _execute_batch_and_record(self, adapter, commands: list[CommandExecution]) -> None:
         for idx, command in enumerate(commands):
@@ -900,9 +1025,15 @@ class ConversationOrchestrator:
             f"执行结果\n"
             f"- step: {command.step_no}\n"
             f"- title: {command.title}\n"
+            f"- original_command: {command.original_command or command.command}\n"
+            f"- effective_command: {command.effective_command or command.command}\n"
             f"- command: {command.command}\n"
             f"- status: {command.status.value}\n"
         )
+        if command.capability_state:
+            text += f"- capability_state: {command.capability_state}\n"
+        if command.capability_reason:
+            text += f"- capability_reason: {self._sanitize_for_llm(command.capability_reason)[:500]}\n"
         permission_state, permission_hint = self._derive_permission_signal(
             command.command,
             command.output or "",
@@ -1078,6 +1209,14 @@ class ConversationOrchestrator:
 
         try:
             output = await adapter.run_command(command.command)
+            adapter_meta = getattr(adapter, "last_command_meta", {}) or {}
+            if isinstance(adapter_meta, dict):
+                adapter_effective = str(adapter_meta.get("effective_command") or "").strip()
+                if adapter_effective:
+                    command.effective_command = adapter_effective
+                if not command.original_command:
+                    original = str(adapter_meta.get("original_command") or "").strip()
+                    command.original_command = original or command.command
             if self._is_stop_requested(command.session_id):
                 command.status = CommandStatus.rejected
                 command.error = "Stopped by operator"
@@ -1086,7 +1225,7 @@ class ConversationOrchestrator:
                     command.duration_ms = max(0, int((command.completed_at - command.started_at).total_seconds() * 1000))
                 self.store.update_command(command)
                 return
-            category, parsed_data, conclusion = parse_command_output(command.command, output)
+            category, parsed_data, conclusion = parse_command_output(command.effective_command or command.command, output)
             self._trace_decision(
                 session_id=command.session_id,
                 step_type="evidence_parse",
@@ -1098,14 +1237,33 @@ class ConversationOrchestrator:
                 ),
             )
             parsed_device_name = str(parsed_data.get("device_name") or "").strip() if isinstance(parsed_data, dict) else ""
-            if parsed_device_name:
-                self.store.update_session_device_name(command.session_id, parsed_device_name)
+            parsed_vendor = str(parsed_data.get("vendor") or "").strip().lower() if isinstance(parsed_data, dict) else ""
+            parsed_platform = str(parsed_data.get("platform") or "").strip() if isinstance(parsed_data, dict) else ""
+            parsed_software_version = str(parsed_data.get("software_version") or "").strip() if isinstance(parsed_data, dict) else ""
+            parsed_version_signature = str(parsed_data.get("version_signature") or "").strip().lower() if isinstance(parsed_data, dict) else ""
+            if parsed_device_name or parsed_vendor or parsed_platform or parsed_software_version or parsed_version_signature:
+                self.store.update_session_device_profile(
+                    command.session_id,
+                    vendor=parsed_vendor or None,
+                    platform=parsed_platform or None,
+                    software_version=parsed_software_version or None,
+                    version_signature=parsed_version_signature or None,
+                )
+                if parsed_device_name:
+                    self.store.update_session_device_name(command.session_id, parsed_device_name)
             command.output = output
             # Keep transport/execution semantics simple: command is successful if SSH/API execution returned.
             # Whether CLI syntax is semantically correct is left for the LLM to judge from raw output.
             command.status = CommandStatus.succeeded
             command.completed_at = now_utc()
             command.duration_ms = max(0, int((command.completed_at - command.started_at).total_seconds() * 1000))
+            self._learn_command_capability_from_result(
+                session_id=command.session_id,
+                command=command,
+                category=category,
+                parsed_data=parsed_data,
+                adapter=adapter,
+            )
             self.store.update_command(command)
 
             evidence = Evidence(
@@ -1123,6 +1281,115 @@ class ConversationOrchestrator:
             command.completed_at = now_utc()
             command.duration_ms = max(0, int((command.completed_at - command.started_at).total_seconds() * 1000))
             self.store.update_command(command)
+
+    def _learn_command_capability_from_result(
+        self,
+        *,
+        session_id: str,
+        command: CommandExecution,
+        category: str,
+        parsed_data: dict,
+        adapter,
+    ) -> None:
+        meta = getattr(adapter, "last_command_meta", {}) or {}
+        if not isinstance(meta, dict):
+            meta = {}
+        if bool(meta.get("simulated")):
+            return
+
+        retry_used = bool(meta.get("retry_used"))
+        retry_to = str(meta.get("retry_to") or "").strip()
+        retry_from = str(meta.get("retry_from") or "").strip()
+        original_command = str(command.original_command or retry_from or command.command or "").strip()
+
+        if retry_used and retry_to:
+            if original_command and original_command.lower() != retry_to.lower():
+                learned = self.store.learn_command_rewrite(
+                    session_id=session_id,
+                    failed_command=original_command,
+                    rewrite_to=retry_to,
+                    reason_text=str(meta.get("retry_error") or "learned from successful retry"),
+                )
+                if not learned:
+                    session = self.store.get_session(session_id)
+                    if not (session.device.version_signature or "").strip():
+                        command.capability_state = "learn_skipped"
+                        command.capability_reason = "version_signature missing, skipped learned rewrite"
+                        self._trace_decision(
+                            session_id=session_id,
+                            step_type="capability_decision",
+                            title="命令能力学习（跳过）",
+                            detail=(
+                                f"learn_skipped; from={original_command[:120]}; "
+                                f"to={retry_to[:120]}; reason=missing version signature"
+                            ),
+                            status="skipped",
+                        )
+                    return
+                command.capability_state = "learned_update"
+                command.capability_rule_id = learned.id
+                command.capability_reason = learned.reason_text or "rewrite learned from retry success"
+                command.original_command = original_command
+                command.effective_command = retry_to
+                self._trace_decision(
+                    session_id=session_id,
+                    step_type="capability_decision",
+                    title="命令能力学习（rewrite）",
+                    detail=(
+                        f"learned_update; from={original_command[:120]}; "
+                        f"to={retry_to[:120]}; rule_id={learned.id}"
+                    ),
+                )
+            return
+
+        if category != "command_error":
+            return
+
+        reason = ""
+        if isinstance(parsed_data, dict):
+            reason = str(parsed_data.get("reason") or "").strip()
+        if not reason:
+            reason = "CLI syntax/parameter error"
+
+        if original_command:
+            learned = self.store.learn_command_block(
+                session_id=session_id,
+                failed_command=original_command,
+                reason_text=reason,
+            )
+            if not learned:
+                session = self.store.get_session(session_id)
+                if not (session.device.version_signature or "").strip():
+                    command.capability_state = "learn_skipped"
+                    command.capability_reason = "version_signature missing, skipped learned block"
+                    command.original_command = original_command
+                    command.effective_command = command.command
+                    self._trace_decision(
+                        session_id=session_id,
+                        step_type="capability_decision",
+                        title="命令能力学习（跳过）",
+                        detail=(
+                            f"learn_skipped; command={original_command[:120]}; "
+                            "reason=missing version signature"
+                        ),
+                        status="skipped",
+                    )
+                return
+            command.capability_state = "learned_update"
+            command.capability_rule_id = learned.id
+            command.capability_reason = learned.reason_text or reason
+            command.original_command = original_command
+            command.effective_command = command.command
+            self._trace_decision(
+                session_id=session_id,
+                step_type="capability_decision",
+                title="命令能力学习（block）",
+                detail=(
+                    f"learned_update; command={original_command[:120]}; "
+                    f"reason={reason[:120]}; rule_id={learned.id}"
+                ),
+                status="failed",
+            )
 
     async def _get_session_adapter(self, session):
         adapter = self._session_adapters.get(session.id)

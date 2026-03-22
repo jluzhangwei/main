@@ -61,6 +61,16 @@ def test_parse_command_error_output():
     assert "failed" in conclusion.lower()
 
 
+def test_parse_command_error_output_for_invalid_input():
+    output = "          ^\n% Invalid input detected at '^' marker."
+    category, parsed, conclusion = parse_command_output("interface Ethernet2", output)
+
+    assert category == "command_error"
+    assert parsed["cli_error"] is True
+    assert "invalid input" in parsed["reason"].lower()
+    assert "failed" in conclusion.lower()
+
+
 def test_parse_version_extracts_device_name_from_uptime_line():
     output = """Cisco IOS Software
 R1 uptime is 3 weeks, 1 day
