@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import combinations
 import json
 import logging
 import os
@@ -78,7 +79,14 @@ class CommandCapabilityStore:
 
     @staticmethod
     def normalize_version_signature(version_signature: str | None) -> str:
-        return str(version_signature or "").strip().lower()
+        normalized = str(version_signature or "").strip().lower()
+        if not normalized:
+            return ""
+        # Canonical form: keep only non-empty segments so partial signatures
+        # (1 or 2 segments) can match consistently.
+        parts = [segment.strip() for segment in normalized.split("|")]
+        tokens = [token for token in parts if token]
+        return "|".join(tokens)
 
     @staticmethod
     def normalize_command_key(command: str) -> str:
@@ -446,17 +454,26 @@ class CommandCapabilityStore:
         normalized_signature = self.normalize_version_signature(version_signature)
         if not normalized_signature:
             return []
+        signature_tokens = [token for token in normalized_signature.split("|") if token]
+        if not signature_tokens:
+            return []
 
-        candidates = [
-            self.build_scope_key(
-                scope_type="version",
-                host=normalized_host,
-                protocol=protocol_text,
-                device_type=device_text,
-                vendor=vendor_text,
-                version_signature=normalized_signature,
-            ),
-        ]
+        candidates: list[str] = []
+        # Try exact match first, then progressively broader partial signatures.
+        # Example with 3 tokens: (a|b|c), (a|b), (a|c), (b|c), (a), (b), (c)
+        for size in range(len(signature_tokens), 0, -1):
+            for indexes in combinations(range(len(signature_tokens)), size):
+                candidate_signature = "|".join(signature_tokens[idx] for idx in indexes)
+                candidates.append(
+                    self.build_scope_key(
+                        scope_type="version",
+                        host=normalized_host,
+                        protocol=protocol_text,
+                        device_type=device_text,
+                        vendor=vendor_text,
+                        version_signature=candidate_signature,
+                    )
+                )
 
         # Keep order, remove duplicates.
         deduped: list[str] = []
@@ -504,6 +521,18 @@ class CommandCapabilityStore:
             yield rule
 
     def _put_rule(self, rule: CommandCapabilityRule) -> None:
+        if self.normalize_scope_type(rule.scope_type) == "version":
+            normalized_signature = self.normalize_version_signature(rule.version_signature)
+            rule.version_signature = normalized_signature or None
+            rule.scope_key = self.build_scope_key(
+                scope_type="version",
+                host=rule.host,
+                protocol=rule.protocol,
+                device_type=rule.device_type,
+                vendor=rule.vendor,
+                version_signature=normalized_signature,
+            )
+        rule.command_key = self.normalize_command_key(rule.command_key)
         old_key = self._id_to_key.get(rule.id)
         new_key = (rule.scope_key, rule.command_key)
 

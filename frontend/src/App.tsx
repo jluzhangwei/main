@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { UIEvent } from 'react'
 import { AutomationLevelSelector } from './components/AutomationLevelSelector'
 import { DeviceForm } from './components/DeviceForm'
+import { TaskModeSelector } from './components/TaskModeSelector'
 import {
   configureLlm,
   confirmCommand,
@@ -141,8 +142,34 @@ type FlowLane = {
   steps: ServiceTraceStep[]
 }
 
+type ContinuePreview = {
+  source: 'pending' | 'none'
+  commands: string[]
+}
+
+type ContinueExecutionCommand = {
+  id: string
+  step_no: number
+  command: string
+  status: string
+}
+
+type ContinueExecutionState = {
+  active: boolean
+  baselineStepNo: number
+  plannedCommands: string[]
+  observedCommands: ContinueExecutionCommand[]
+}
+
+type SendOptions = {
+  continueExecution?: {
+    baselineStepNo: number
+  }
+}
+
 function App() {
   const [automationLevel, setAutomationLevel] = useState<AutomationLevel>('assisted')
+  const [operationMode, setOperationMode] = useState<OperationMode>('diagnosis')
   const [session, setSession] = useState<SessionResponse | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [commands, setCommands] = useState<CommandExecution[]>([])
@@ -176,6 +203,7 @@ function App() {
   const [newHighRiskRule, setNewHighRiskRule] = useState('')
   const [newMediumRiskRule, setNewMediumRiskRule] = useState('')
   const [policySaving, setPolicySaving] = useState(false)
+  const [policyTab, setPolicyTab] = useState<'blocked' | 'executable' | 'high' | 'medium'>('blocked')
   const [editingRule, setEditingRule] = useState<
     { kind: 'blocked' | 'executable'; index: number; value: string } | undefined
   >(undefined)
@@ -186,6 +214,8 @@ function App() {
   const [capabilityLoading, setCapabilityLoading] = useState(false)
   const [capabilitySaving, setCapabilitySaving] = useState(false)
   const [capabilityVersionFilter, setCapabilityVersionFilter] = useState('')
+  const [capabilityVersionInput, setCapabilityVersionInput] = useState('')
+  const [capabilityCommandSearch, setCapabilityCommandSearch] = useState('')
   const [capabilityCommandInput, setCapabilityCommandInput] = useState('')
   const [capabilityActionInput, setCapabilityActionInput] = useState<'rewrite' | 'block'>('rewrite')
   const [capabilityRewriteInput, setCapabilityRewriteInput] = useState('')
@@ -214,6 +244,7 @@ function App() {
   const [traceLoading, setTraceLoading] = useState(false)
   const [selectedTraceStepId, setSelectedTraceStepId] = useState<string | undefined>(undefined)
   const [traceListExpanded, setTraceListExpanded] = useState(false)
+  const [continueExecutionState, setContinueExecutionState] = useState<ContinueExecutionState | null>(null)
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const chatLogRef = useRef<HTMLElement | null>(null)
@@ -228,6 +259,10 @@ function App() {
   const commandListRows = useMemo(
     () => [...commands].sort((a, b) => a.step_no - b.step_no),
     [commands],
+  )
+  const continuePreview = useMemo<ContinuePreview>(
+    () => buildContinuePreview(commands, summary),
+    [commands, summary],
   )
   const activityCards = useMemo(() => buildActivityCards(messages, commands, summary), [messages, commands, summary])
 
@@ -341,6 +376,22 @@ function App() {
     }
     return traceSteps[traceSteps.length - 1]
   }, [traceSteps, selectedTraceStepId, activeFlowStepId])
+  const sortedTraceSteps = useMemo(
+    () => [...traceSteps].sort((a, b) => a.seq_no - b.seq_no),
+    [traceSteps],
+  )
+  const selectedTraceIndex = useMemo(() => {
+    if (!selectedTraceStep) return -1
+    return sortedTraceSteps.findIndex((item) => item.id === selectedTraceStep.id)
+  }, [selectedTraceStep, sortedTraceSteps])
+  const previousTraceStep = useMemo(() => {
+    if (selectedTraceIndex <= 0) return undefined
+    return sortedTraceSteps[selectedTraceIndex - 1]
+  }, [selectedTraceIndex, sortedTraceSteps])
+  const nextTraceStep = useMemo(() => {
+    if (selectedTraceIndex < 0 || selectedTraceIndex >= sortedTraceSteps.length - 1) return undefined
+    return sortedTraceSteps[selectedTraceIndex + 1]
+  }, [selectedTraceIndex, sortedTraceSteps])
   const llmControlsLocked = useMemo(() => busy || Boolean(confirmingCommandId), [busy, confirmingCommandId])
 
   const selectedActivity = useMemo(() => {
@@ -385,9 +436,28 @@ function App() {
   )
   const capabilityRows = useMemo(() => {
     const signature = capabilityVersionFilter.trim().toLowerCase()
-    if (!signature) return commandCapabilityRules
-    return commandCapabilityRules.filter((item) => (item.version_signature || '').toLowerCase().includes(signature))
-  }, [commandCapabilityRules, capabilityVersionFilter])
+    const commandKeyword = capabilityCommandSearch.trim().toLowerCase()
+    return commandCapabilityRules.filter((item) => {
+      const versionMatch = !signature || (item.version_signature || '').toLowerCase().includes(signature)
+      const commandMatch = !commandKeyword || (item.command_key || '').toLowerCase().includes(commandKeyword)
+      return versionMatch && commandMatch
+    })
+  }, [commandCapabilityRules, capabilityVersionFilter, capabilityCommandSearch])
+  const capabilityEffectiveVersion = useMemo(() => {
+    const explicit = capabilityVersionFilter.trim()
+    if (explicit) return explicit
+    const sessionSig = sessionVersionSignature.trim()
+    if (sessionSig) return sessionSig
+    const unique = Array.from(
+      new Set(
+        commandCapabilityRules
+          .map((item) => String(item.version_signature || '').trim())
+          .filter(Boolean),
+      ),
+    )
+    if (unique.length === 1) return unique[0]
+    return ''
+  }, [capabilityVersionFilter, sessionVersionSignature, commandCapabilityRules])
   const policyDirty = useMemo(() => {
     const commandDirty = commandPolicy
       ? (
@@ -466,8 +536,8 @@ function App() {
   }, [sessionVersionSignature, capabilityVersionFilter])
 
   useEffect(() => {
-    if (activePage !== 'command_policy') return
-    void refreshCommandCapabilityRules(capabilityVersionFilter.trim() || undefined)
+    if (activePage !== 'learning') return
+    void refreshCommandCapabilityRules()
   }, [activePage])
 
   useEffect(() => {
@@ -604,10 +674,10 @@ function App() {
         const updated = await updateSessionAutomation(session.id, automationLevel)
         if (canceled) return
         setSession(updated)
-        antMessage.success(`自动化等级已切换为 ${automationLabel(updated.automation_level)}`)
+        antMessage.success(`命令执行控制等级已切换为 ${automationLabel(updated.automation_level)}`)
       } catch {
         if (canceled) return
-        antMessage.error('自动化等级切换失败，已恢复原设置')
+        antMessage.error('命令执行控制等级切换失败，已恢复原设置')
         setAutomationLevel(session.automation_level)
       }
     }
@@ -719,10 +789,12 @@ function App() {
       }
       setSession(restoredSession)
       setAutomationLevel(restoredSession.automation_level)
+      setOperationMode(restoredSession.operation_mode)
       setMessages(data.messages)
       setCommands(data.commands)
       setEvidences(data.evidences)
       setSummary(data.summary)
+      setContinueExecutionState(null)
       setSessionDeviceAddress(data.session.device?.host || '')
       setSessionDeviceName(formatDeviceName(data.session.device?.name))
       setSessionVersionSignature(String(data.session.device?.version_signature || '').trim())
@@ -757,10 +829,12 @@ function App() {
       const resp = await createSession(payload)
       setSession(resp)
       setAutomationLevel(resp.automation_level)
+      setOperationMode(resp.operation_mode)
       setMessages([])
       setCommands([])
       setEvidences([])
       setSummary(undefined)
+      setContinueExecutionState(null)
       setTraceSteps([])
       setSessionDeviceAddress(payload.host)
       setSessionDeviceName('-')
@@ -1125,6 +1199,7 @@ function App() {
   function beginEditCapability(rule: CommandCapabilityRule) {
     setEditingCapabilityId(rule.id)
     setCapabilityVersionFilter(rule.version_signature || capabilityVersionFilter)
+    setCapabilityVersionInput(rule.version_signature || '')
     setCapabilityCommandInput(rule.command_key)
     setCapabilityActionInput(rule.action)
     setCapabilityRewriteInput(rule.rewrite_to || '')
@@ -1133,6 +1208,7 @@ function App() {
 
   function resetCapabilityEditor() {
     setEditingCapabilityId(undefined)
+    setCapabilityVersionInput('')
     setCapabilityCommandInput('')
     setCapabilityActionInput('rewrite')
     setCapabilityRewriteInput('')
@@ -1140,7 +1216,7 @@ function App() {
   }
 
   async function handleSaveCapabilityRule() {
-    const versionSignature = capabilityVersionFilter.trim()
+    const versionSignature = capabilityVersionInput.trim() || capabilityEffectiveVersion.trim()
     const commandKey = capabilityCommandInput.trim()
     if (!versionSignature) {
       antMessage.warning('请先输入版本指纹')
@@ -1235,10 +1311,15 @@ function App() {
     }
   }
 
-  async function handleSend(content: string) {
+  async function handleSend(content: string, options?: SendOptions) {
     if (!session?.id) {
       antMessage.warning('请先在连接控制创建会话')
       return
+    }
+
+    const continueBaselineStepNo = options?.continueExecution?.baselineStepNo
+    if (continueBaselineStepNo === undefined) {
+      setContinueExecutionState(null)
     }
 
     const activeSessionId = session.id
@@ -1258,18 +1339,27 @@ function App() {
           const cmd = payload.command as CommandExecution
           setCommands((prev) => upsertCommand(prev, cmd))
           setSelectedActivityKey(`cmd:${cmd.id}`)
+          if (typeof continueBaselineStepNo === 'number' && cmd.step_no > continueBaselineStepNo) {
+            setContinueExecutionState((prev) => upsertContinueExecutionState(prev, cmd, continueBaselineStepNo))
+          }
         }
 
         if (event === 'command_blocked' && payload.command) {
           const cmd = payload.command as CommandExecution
           setCommands((prev) => upsertCommand(prev, cmd))
           setSelectedActivityKey(`cmd:${cmd.id}`)
+          if (typeof continueBaselineStepNo === 'number' && cmd.step_no > continueBaselineStepNo) {
+            setContinueExecutionState((prev) => upsertContinueExecutionState(prev, cmd, continueBaselineStepNo))
+          }
         }
 
         if (event === 'command_pending_confirmation' && payload.command) {
           const command = payload.command as CommandExecution
           setCommands((prev) => upsertCommand(prev, command))
           setSelectedActivityKey(`cmd:${command.id}`)
+          if (typeof continueBaselineStepNo === 'number' && command.step_no > continueBaselineStepNo) {
+            setContinueExecutionState((prev) => upsertContinueExecutionState(prev, command, continueBaselineStepNo))
+          }
         }
 
         if (event === 'final_summary' && payload.message) {
@@ -1291,6 +1381,9 @@ function App() {
       }
     } finally {
       streamAbortRef.current = null
+      if (typeof continueBaselineStepNo === 'number') {
+        setContinueExecutionState((prev) => (prev ? { ...prev, active: false } : prev))
+      }
       try {
         if (session?.id === activeSessionId) {
           await Promise.all([refreshTimeline(activeSessionId), refreshServiceTrace(activeSessionId)])
@@ -1319,6 +1412,7 @@ function App() {
       streamAbortRef.current?.abort()
       await stopSession(session.id)
       setResumedSessionId(undefined)
+      setContinueExecutionState(null)
       await Promise.all([refreshTimeline(session.id), refreshServiceTrace(session.id)])
       setBusy(false)
       antMessage.success('当前会话已停止')
@@ -1368,6 +1462,7 @@ function App() {
       status: data.session.status,
       created_at: data.session.created_at,
     })
+    setOperationMode(data.session.operation_mode)
     setSessionDeviceAddress(data.session.device?.host || sessionDeviceAddress)
     setSessionDeviceName(formatDeviceName(data.session.device?.name))
     setMessages(data.messages)
@@ -1420,7 +1515,18 @@ function App() {
 
   async function handleContinueFromCard() {
     if (!session?.id || busy) return
-    await handleSend('请继续执行下一步，不要结束。基于当前会话继续诊断/查询/配置，必要时输出待执行命令组。')
+    const baselineStepNo = getMaxStepNo(commands)
+    const plannedCommands = continuePreview.commands
+    setContinueExecutionState({
+      active: true,
+      baselineStepNo,
+      plannedCommands,
+      observedCommands: [],
+    })
+    await handleSend(
+      '请继续执行下一步，不要结束。基于当前会话和当前任务模式继续，必要时输出待执行命令组。',
+      { continueExecution: { baselineStepNo } },
+    )
   }
 
   function shouldShowContinueAction(summaryData: DiagnosisSummary): boolean {
@@ -1489,6 +1595,21 @@ function App() {
     target.scrollTo({ top: target.scrollHeight, behavior: 'smooth' })
   }
 
+  function jumpToTraceStep(stepId: string) {
+    if (!stepId) return
+    setSelectedTraceStepId(stepId)
+    window.requestAnimationFrame(() => {
+      const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+        ? CSS.escape(stepId)
+        : stepId.replace(/"/g, '\\"')
+      const flowNode = document.querySelector(`.flow-node[data-trace-step-id="${escaped}"]`) as HTMLElement | null
+      const listNode = document.querySelector(`.trace-row-item[data-trace-step-id="${escaped}"]`) as HTMLElement | null
+      const target = flowNode || listNode
+      if (!target) return
+      target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' })
+    })
+  }
+
   return (
     <div className="noc-root">
       <header className="brand-bar">
@@ -1540,33 +1661,6 @@ function App() {
                       <Button size="small" shape="circle" onClick={() => void refreshTimeline()} disabled={!sessionReady}>↻</Button>
                     </div>
                   </div>
-                  {pendingConfirmMeta && (
-                    <div className="pending-confirm-toolbar">
-                      <span className="pending-confirm-label">
-                        {pendingConfirmMeta.isBatch
-                          ? `待确认命令组（${pendingConfirmMeta.total} 条）`
-                          : '待确认命令'}
-                      </span>
-                      <div className="pending-confirm-actions">
-                        <Button
-                          size="small"
-                          type="primary"
-                          loading={confirmingCommandId === pendingConfirmMeta.commandId}
-                          onClick={() => void handleConfirmCommandInline(pendingConfirmMeta.commandId, true)}
-                        >
-                          {pendingConfirmMeta.isBatch ? '确认整批执行' : '确认执行'}
-                        </Button>
-                        <Button
-                          size="small"
-                          danger
-                          disabled={confirmingCommandId === pendingConfirmMeta.commandId}
-                          onClick={() => void handleConfirmCommandInline(pendingConfirmMeta.commandId, false)}
-                        >
-                          {pendingConfirmMeta.isBatch ? '拒绝整批' : '拒绝'}
-                        </Button>
-                      </div>
-                    </div>
-                  )}
                   <div className="live-meta-row">
                     <div className="live-meta-item">
                       <span>设备</span>
@@ -1623,6 +1717,11 @@ function App() {
                           <div className="activity-tags">
                             <span className={`cmd-status ${statusClass(item.status)}`}>{item.status}</span>
                             <span className="risk-tag">{item.riskLevel}</span>
+                            {commandConstraintLabel(item.command) && (
+                              <span className={`constraint-tag ${constraintTagClass(item.command)}`}>
+                                {commandConstraintLabel(item.command)}
+                              </span>
+                            )}
                           </div>
                         )}
                         <div
@@ -1679,15 +1778,34 @@ function App() {
                         {item.kind === 'summary' && shouldShowContinueAction(item.summary) && (
                           <div className="summary-action-strip" onClick={(event) => event.stopPropagation()}>
                             <div className="summary-action-text">已生成阶段结论。是否继续执行下一步？</div>
+                            <div className="summary-plan-strip">
+                              <div className="summary-plan-head">
+                                <span>继续执行前命令序列</span>
+                                <span className="summary-plan-source">
+                                  {continuePreview.source === 'pending'
+                                    ? '来源: 待确认命令'
+                                    : '来源: 待继续后生成'}
+                                </span>
+                              </div>
+                              {continuePreview.commands.length > 0 ? (
+                                <div className="summary-plan-list">
+                                  {continuePreview.commands.map((commandText, index) => (
+                                    <code key={`${commandText}-${index}`}>{commandText}</code>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className="summary-plan-empty">当前未收到可直接执行命令，点击后将由 AI 生成下一步命令。</div>
+                              )}
+                            </div>
                             <div className="summary-action-buttons">
                               <Button
                                 size="small"
                                 type="primary"
-                                loading={busy}
+                                loading={Boolean(continueExecutionState?.active)}
                                 disabled={!sessionReady || busy}
                                 onClick={() => void handleContinueFromCard()}
                               >
-                                继续执行
+                                {continueExecutionState?.active ? '继续执行中...' : '继续执行'}
                               </Button>
                               <Button
                                 size="small"
@@ -1697,6 +1815,36 @@ function App() {
                                 暂不继续
                               </Button>
                             </div>
+                            {continueExecutionState && (
+                              <div className={`summary-progress-strip ${continueExecutionState.active ? 'running' : ''}`}>
+                                <div className="summary-progress-head">
+                                  <span>
+                                    {continueExecutionState.active ? '正在继续执行，命令流如下：' : '本轮继续执行命令流：'}
+                                  </span>
+                                  <span className="summary-progress-count">
+                                    {continueExecutionState.observedCommands.length} 条
+                                  </span>
+                                </div>
+                                {continueExecutionState.observedCommands.length > 0 ? (
+                                  <div className="summary-progress-list">
+                                    {continueExecutionState.observedCommands.map((entry) => (
+                                      <div key={entry.id} className="summary-progress-item">
+                                        <span className={`cmd-status ${statusClass(entry.status)}`}>{entry.status}</span>
+                                        <code>{`#${entry.step_no} ${entry.command}`}</code>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : continueExecutionState.plannedCommands.length > 0 ? (
+                                  <div className="summary-progress-planned">
+                                    {continueExecutionState.plannedCommands.map((entry, index) => (
+                                      <code key={`${entry}-${index}`}>{entry}</code>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <div className="summary-progress-empty">等待 AI 返回命令并开始执行...</div>
+                                )}
+                              </div>
+                            )}
                           </div>
                         )}
                       </article>
@@ -1785,44 +1933,44 @@ function App() {
                   <div className="summary-title">已选卡片 / 详情</div>
                   <div className="summary-title">{selectedDetailTitle}</div>
                   <div className="analysis-result-box detail-panel">
-                    <pre className="detail-pre">{selectedDetailBody}</pre>
+                    {selectedActivity?.kind === 'command' && selectedCommandRow ? (
+                      <div className="detail-command-panel">
+                        <div className="detail-meta-block">
+                          <div className="detail-meta-row"><span>标题</span><strong>{selectedCommandRow.title}</strong></div>
+                          <div className="detail-meta-row"><span>步骤</span><strong>{selectedCommandRow.stepLabel}</strong></div>
+                          <div className="detail-meta-row"><span>状态</span><strong>{selectedCommandRow.status}</strong></div>
+                          <div className="detail-meta-row"><span>风险</span><strong>{riskLabel(selectedCommandRow.risk_level)}</strong></div>
+                          {summarizeCommandConstraintLabels(selectedCommandRow.members) && (
+                            <div className="detail-meta-row">
+                              <span>约束</span>
+                              <strong>{summarizeCommandConstraintLabels(selectedCommandRow.members)}</strong>
+                            </div>
+                          )}
+                        </div>
+                        <div className="detail-seq-title">命令序列（按执行顺序）</div>
+                        <div className="detail-seq-list">
+                          {[...selectedCommandRow.members]
+                            .sort((a, b) => a.step_no - b.step_no)
+                            .map((item, index) => (
+                              <div key={item.id} className="detail-seq-row">
+                                <span className="detail-seq-order">{index + 1}.</span>
+                                <span className="detail-seq-step">#{item.step_no}</span>
+                                <span className={`cmd-status ${statusClass(item.status)}`}>{item.status}</span>
+                                <code className="detail-command-code" title={item.command}>{item.command}</code>
+                              </div>
+                            ))}
+                        </div>
+                        <div className="detail-seq-title">输出</div>
+                        <pre className="detail-pre">{renderCommandRowOutput(selectedCommandRow)}</pre>
+                      </div>
+                    ) : (
+                      <pre className="detail-pre">{selectedDetailBody}</pre>
+                    )}
                   </div>
                 </section>
 
                 <section className="right-bottom panel-card">
                   <h3>设备终端回显</h3>
-                  {pendingConfirmMeta && (
-                    <div className="terminal-confirm-strip">
-                      <div className="terminal-confirm-title">
-                        {pendingConfirmMeta.isBatch
-                          ? `待确认命令组（${pendingConfirmMeta.total} 条）`
-                          : '待确认命令'}
-                      </div>
-                      <div className="terminal-confirm-list">
-                        {pendingConfirmMeta.commands.map((item) => (
-                          <code key={item.id}>{item.command}</code>
-                        ))}
-                      </div>
-                      <div className="terminal-confirm-actions">
-                        <Button
-                          size="small"
-                          type="primary"
-                          loading={confirmingCommandId === pendingConfirmMeta.commandId}
-                          onClick={() => void handleConfirmCommandInline(pendingConfirmMeta.commandId, true)}
-                        >
-                          {pendingConfirmMeta.isBatch ? '确认整批执行' : '确认执行'}
-                        </Button>
-                        <Button
-                          size="small"
-                          danger
-                          disabled={confirmingCommandId === pendingConfirmMeta.commandId}
-                          onClick={() => void handleConfirmCommandInline(pendingConfirmMeta.commandId, false)}
-                        >
-                          {pendingConfirmMeta.isBatch ? '拒绝整批' : '拒绝'}
-                        </Button>
-                      </div>
-                    </div>
-                  )}
                   <div
                     className="terminal-grid"
                     ref={terminalGridRef}
@@ -1887,20 +2035,26 @@ function App() {
           )}
 
           {activePage === 'control' && (
-            <div className="page-grid two-col">
+            <div className="page-grid control-layout">
               <div className="panel-card">
                 <h3>连接控制</h3>
-                <p className="muted">会话创建、设备连接、自动化等级设置放在此页面。</p>
+                <p className="muted">会话创建、任务模式、设备连接、命令执行控制等级设置放在此页面。</p>
                 <div className="control-card-stack">
                   <AutomationLevelSelector className="control-card-tight" value={automationLevel} onChange={setAutomationLevel} />
-                  <DeviceForm className="control-card-tight" automationLevel={automationLevel} onCreate={handleCreateSession} />
+                  <TaskModeSelector className="control-card-tight" value={operationMode} onChange={setOperationMode} />
+                  <DeviceForm
+                    className="control-card-tight"
+                    automationLevel={automationLevel}
+                    operationMode={operationMode}
+                    onCreate={handleCreateSession}
+                  />
                 </div>
               </div>
               <div className="panel-card">
                 <h3>连接状态</h3>
                 <div className="kv"><span>会话 ID</span><strong>{session?.id || '-'}</strong></div>
                 <div className="kv"><span>会话模式</span><strong>{session?.operation_mode ? operationModeLabel(session.operation_mode) : '-'}</strong></div>
-                <div className="kv"><span>自动化等级</span><strong>{automationLabel(automationLevel)}</strong></div>
+                <div className="kv"><span>命令执行控制等级</span><strong>{automationLabel(automationLevel)}</strong></div>
                 <div className="kv"><span>LLM</span><strong>{llmStatus?.enabled ? '已启用' : '未启用'}</strong></div>
                 <p className="muted section-tip">更多连接策略、凭据托管、设备模板能力预留到后续迭代。</p>
               </div>
@@ -1914,7 +2068,7 @@ function App() {
                   <div>
                     <h3>命令执行控制中心</h3>
                     <p className="muted">
-                      判定顺序：阻断规则/硬阻断 → 模式基线（只读直接拒绝非只读；全自动放行非硬阻断）→ 放行规则覆盖（半自动可放行高风险）→ 其余命令进入人工确认。高风险按可编辑风险词表判定（默认含 clear/shutdown 等）。
+                      判定顺序：先看阻断规则/硬阻断；再按控制等级执行（极低风险仅只读，中风险可执行自动执行低/中风险并对高风险要求确认，高风险可执行自动执行非阻断命令）；最后由放行规则覆盖确认策略。高风险由可编辑风险词表判定（默认含 clear/shutdown 等）。
                     </p>
                   </div>
                   <div className="policy-switch">
@@ -1940,8 +2094,8 @@ function App() {
                     <strong>{mediumRiskRules.length}</strong>
                   </div>
                   <div className="policy-stat-card">
-                    <span className="muted">规则状态</span>
-                    <strong>{policyDirty ? '待保存' : '已同步'}</strong>
+                    <span className="muted">规则状态（本地草稿 vs 服务端）</span>
+                    <strong>{policyDirty ? '待保存（有改动未提交）' : '已同步（与服务端一致）'}</strong>
                   </div>
                 </div>
                 <div className="policy-actions">
@@ -1963,8 +2117,41 @@ function App() {
                 </div>
               </div>
 
-              <div className="page-grid two-col">
-                <div className="panel-card policy-list-card">
+              <div className="panel-card policy-tab-shell">
+                <div className="policy-tab-bar">
+                  <Button
+                    size="small"
+                    type={policyTab === 'blocked' ? 'primary' : 'default'}
+                    onClick={() => setPolicyTab('blocked')}
+                  >
+                    阻断规则
+                  </Button>
+                  <Button
+                    size="small"
+                    type={policyTab === 'executable' ? 'primary' : 'default'}
+                    onClick={() => setPolicyTab('executable')}
+                  >
+                    放行规则
+                  </Button>
+                  <Button
+                    size="small"
+                    type={policyTab === 'high' ? 'primary' : 'default'}
+                    onClick={() => setPolicyTab('high')}
+                  >
+                    高风险
+                  </Button>
+                  <Button
+                    size="small"
+                    type={policyTab === 'medium' ? 'primary' : 'default'}
+                    onClick={() => setPolicyTab('medium')}
+                  >
+                    中风险
+                  </Button>
+                </div>
+
+                <div className="policy-tab-body">
+                  {policyTab === 'blocked' && (
+                    <div className="panel-card policy-list-card">
                   <div className="policy-list-head">
                     <h3>阻断规则（不可执行）</h3>
                     <Input
@@ -2037,9 +2224,11 @@ function App() {
                       onChange={(event) => setBlockedRules(normalizeRules(event.target.value.split('\n')))}
                     />
                   </details>
-                </div>
+                    </div>
+                  )}
 
-                <div className="panel-card policy-list-card">
+                  {policyTab === 'executable' && (
+                    <div className="panel-card policy-list-card">
                   <div className="policy-list-head">
                     <h3>放行规则（可执行）</h3>
                     <Input
@@ -2112,9 +2301,11 @@ function App() {
                       onChange={(event) => setExecutableRules(normalizeRules(event.target.value.split('\n')))}
                     />
                   </details>
-                </div>
+                    </div>
+                  )}
 
-                <div className="panel-card policy-list-card">
+                  {policyTab === 'high' && (
+                    <div className="panel-card policy-list-card">
                   <div className="policy-list-head">
                     <h3>高风险判定规则</h3>
                     <Input
@@ -2187,9 +2378,11 @@ function App() {
                       onChange={(event) => setHighRiskRules(normalizeRules(event.target.value.split('\n')))}
                     />
                   </details>
-                </div>
+                    </div>
+                  )}
 
-                <div className="panel-card policy-list-card">
+                  {policyTab === 'medium' && (
+                    <div className="panel-card policy-list-card">
                   <div className="policy-list-head">
                     <h3>中风险判定规则</h3>
                     <Input
@@ -2262,108 +2455,11 @@ function App() {
                       onChange={(event) => setMediumRiskRules(normalizeRules(event.target.value.split('\n')))}
                     />
                   </details>
+                    </div>
+                  )}
                 </div>
               </div>
 
-              <div className="panel-card capability-panel">
-                <div className="policy-list-head">
-                  <h3>学习规则（版本级：失败阻断 / 替代改写）</h3>
-                  <div className="capability-toolbar-actions">
-                    <Button size="small" onClick={() => void refreshCommandCapabilityRules(capabilityVersionFilter.trim() || undefined)} disabled={capabilityLoading}>
-                      {capabilityLoading ? '刷新中...' : '刷新'}
-                    </Button>
-                    <Button size="small" danger loading={capabilitySaving} onClick={() => void handleResetCapabilityRules()}>
-                      清空筛选范围
-                    </Button>
-                  </div>
-                </div>
-                <div className="capability-filter-row">
-                  <Input
-                    size="small"
-                    value={capabilityVersionFilter}
-                    onChange={(event) => setCapabilityVersionFilter(event.target.value)}
-                    placeholder="版本指纹筛选，例如 huawei|ne40e|8.180"
-                  />
-                  <Button size="small" onClick={() => void refreshCommandCapabilityRules(capabilityVersionFilter.trim() || undefined)}>
-                    加载
-                  </Button>
-                </div>
-                <div className="capability-editor-grid">
-                  <Input
-                    size="small"
-                    value={capabilityCommandInput}
-                    onChange={(event) => setCapabilityCommandInput(event.target.value)}
-                    placeholder="命令（例如 show inventory）"
-                  />
-                  <Select
-                    size="small"
-                    value={capabilityActionInput}
-                    options={[
-                      { value: 'rewrite', label: 'rewrite' },
-                      { value: 'block', label: 'block' },
-                    ]}
-                    onChange={(value) => setCapabilityActionInput(value)}
-                  />
-                  <Input
-                    size="small"
-                    value={capabilityRewriteInput}
-                    disabled={capabilityActionInput !== 'rewrite'}
-                    onChange={(event) => setCapabilityRewriteInput(event.target.value)}
-                    placeholder="替代命令（rewrite_to）"
-                  />
-                  <Input
-                    size="small"
-                    value={capabilityReasonInput}
-                    onChange={(event) => setCapabilityReasonInput(event.target.value)}
-                    placeholder="原因（可选）"
-                  />
-                  <div className="capability-editor-actions">
-                    <Button size="small" type="primary" loading={capabilitySaving} onClick={() => void handleSaveCapabilityRule()}>
-                      {editingCapabilityId ? '更新' : '新增'}
-                    </Button>
-                    <Button size="small" onClick={resetCapabilityEditor} disabled={capabilitySaving}>
-                      清空
-                    </Button>
-                  </div>
-                </div>
-                <div className="capability-table">
-                  <div className="capability-row capability-head">
-                    <span>#</span>
-                    <span>版本指纹</span>
-                    <span>命令</span>
-                    <span>动作</span>
-                    <span>替代</span>
-                    <span>来源</span>
-                    <span>命中</span>
-                    <span>最近命中</span>
-                    <span>状态</span>
-                    <span>操作</span>
-                  </div>
-                  {capabilityRows.length === 0 && <div className="policy-empty muted">暂无学习规则</div>}
-                  {capabilityRows.map((rule, index) => (
-                    <div key={rule.id} className={`capability-row ${editingCapabilityId === rule.id ? 'active' : ''}`}>
-                      <span>{index + 1}</span>
-                      <span title={rule.version_signature || '-'}>{rule.version_signature || '-'}</span>
-                      <code title={rule.command_key}>{rule.command_key}</code>
-                      <span>{rule.action}</span>
-                      <code title={rule.rewrite_to || '-'}>{rule.rewrite_to || '-'}</code>
-                      <span>{rule.source}</span>
-                      <span>{rule.hit_count}</span>
-                      <span>{rule.last_hit_at ? formatTime(rule.last_hit_at) : '-'}</span>
-                      <span>{rule.enabled ? '启用' : '停用'}</span>
-                      <div className="policy-row-actions">
-                        <Switch
-                          size="small"
-                          checked={rule.enabled}
-                          onChange={(checked) => void handleToggleCapabilityEnabled(rule, checked)}
-                        />
-                        <Button size="small" onClick={() => beginEditCapability(rule)}>编辑</Button>
-                        <Button size="small" danger onClick={() => void handleDeleteCapabilityRule(rule.id)}>删除</Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
             </div>
           )}
 
@@ -2460,9 +2556,29 @@ function App() {
                 <div className="trace-head">
                   <div>
                     <h3>业务流程图</h3>
-                    <p className="muted">按泳道展示每个动作，当前激活节点会高亮。</p>
+                    <p className="muted">按泳道展示每个动作；点击节点可区分前序/后续步骤，并查看约束判定来源。</p>
                   </div>
-                  <span className="status-chip">Active #{selectedTraceStep?.seq_no || '-'}</span>
+                  <div className="flow-head-right">
+                    <span className="status-chip">Active #{selectedTraceStep?.seq_no || '-'}</span>
+                    <button
+                      type="button"
+                      className="flow-legend flow-legend-btn upstream"
+                      disabled={!previousTraceStep}
+                      onClick={() => previousTraceStep && jumpToTraceStep(previousTraceStep.id)}
+                      title={previousTraceStep ? `跳到前序步骤 #${previousTraceStep.seq_no}` : '无前序步骤'}
+                    >
+                      ⬆️ 前序
+                    </button>
+                    <button
+                      type="button"
+                      className="flow-legend flow-legend-btn downstream"
+                      disabled={!nextTraceStep}
+                      onClick={() => nextTraceStep && jumpToTraceStep(nextTraceStep.id)}
+                      title={nextTraceStep ? `跳到后续步骤 #${nextTraceStep.seq_no}` : '无后续步骤'}
+                    >
+                      后续 ⬇️
+                    </button>
+                  </div>
                 </div>
                 <div className="flow-lanes">
                   {flowLanes.map((lane) => (
@@ -2477,11 +2593,21 @@ function App() {
                           <button
                             type="button"
                             key={step.id}
-                            className={`flow-node ${activeFlowStepId === step.id ? 'active' : ''} ${selectedTraceStep?.id === step.id ? 'selected' : ''}`}
+                            data-trace-step-id={step.id}
+                            className={`flow-node ${activeFlowStepId === step.id ? 'active' : ''} ${selectedTraceStep?.id === step.id ? 'selected' : ''} ${traceNodeRelationClass(step, selectedTraceStep)}`}
                             onClick={() => setSelectedTraceStepId(step.id)}
+                            title={[
+                              `#${step.seq_no} ${step.title}`,
+                              `${traceTypeLabel(step.step_type)} · ${step.status}`,
+                              traceConstraintLabel(step) ? `约束判定 · ${traceConstraintLabel(step)}` : '',
+                            ].filter(Boolean).join('\n')}
                           >
-                            <div className="flow-node-title">#{step.seq_no} {step.title}</div>
-                            <div className="flow-node-meta">{traceTypeLabel(step.step_type)} · {step.status}</div>
+                            <div className="flow-node-line">
+                              <div className="flow-node-title">#{step.seq_no} {step.title}</div>
+                              <div className="flow-node-type">{traceTypeLabel(step.step_type)}</div>
+                              <div className="flow-node-constraint">{traceConstraintLabel(step) || '-'}</div>
+                              <span className={`trace-status compact ${traceStatusClass(step.status)}`}>{step.status}</span>
+                            </div>
                           </button>
                         ))}
                       </div>
@@ -2492,10 +2618,31 @@ function App() {
                   <div className="flow-detail-card">
                     <div className="flow-detail-head">
                       <strong>节点详情 #{selectedTraceStep.seq_no}</strong>
-                      <span className={`trace-status ${traceStatusClass(selectedTraceStep.status)}`}>{selectedTraceStep.status}</span>
+                      <div className="flow-detail-head-actions">
+                        <button
+                          type="button"
+                          className="flow-legend flow-legend-btn upstream"
+                          disabled={!previousTraceStep}
+                          onClick={() => previousTraceStep && jumpToTraceStep(previousTraceStep.id)}
+                          title={previousTraceStep ? `跳到前序步骤 #${previousTraceStep.seq_no}` : '无前序步骤'}
+                        >
+                          ⬆️ 前序
+                        </button>
+                        <button
+                          type="button"
+                          className="flow-legend flow-legend-btn downstream"
+                          disabled={!nextTraceStep}
+                          onClick={() => nextTraceStep && jumpToTraceStep(nextTraceStep.id)}
+                          title={nextTraceStep ? `跳到后续步骤 #${nextTraceStep.seq_no}` : '无后续步骤'}
+                        >
+                          后续 ⬇️
+                        </button>
+                        <span className={`trace-status ${traceStatusClass(selectedTraceStep.status)}`}>{selectedTraceStep.status}</span>
+                      </div>
                     </div>
                     <div className="flow-detail-grid">
                       <div><span>类型</span><strong>{traceTypeLabel(selectedTraceStep.step_type)}</strong></div>
+                      <div><span>约束判定</span><strong>{traceConstraintLabel(selectedTraceStep) || '-'}</strong></div>
                       <div><span>开始</span><strong>{formatTime(selectedTraceStep.started_at)}</strong></div>
                       <div><span>结束</span><strong>{selectedTraceStep.completed_at ? formatTime(selectedTraceStep.completed_at) : '-'}</strong></div>
                       <div><span>耗时</span><strong>{selectedTraceStep.duration_ms !== undefined ? formatDuration(selectedTraceStep.duration_ms) : '-'}</strong></div>
@@ -2537,7 +2684,8 @@ function App() {
                       return (
                         <div
                           key={step.id}
-                          className={`trace-row trace-row-item ${selectedTraceStep?.id === step.id ? 'active' : ''}`}
+                          data-trace-step-id={step.id}
+                          className={`trace-row trace-row-item ${selectedTraceStep?.id === step.id ? 'active' : ''} ${traceNodeRelationClass(step, selectedTraceStep)}`}
                           onClick={() => setSelectedTraceStepId(step.id)}
                           role="button"
                           tabIndex={0}
@@ -2573,14 +2721,133 @@ function App() {
           )}
 
           {activePage === 'learning' && (
-            <div className="page-grid two-col">
-              <div className="panel-card">
-                <h3>学习库（预留）</h3>
-                <p className="muted">对齐 netdiag 的规则库 / 案例库 / 知识沉淀，当前留空待开发。</p>
+            <div className="learning-layout">
+              <div className="panel-card learning-toolbar-card">
+                <div className="learning-toolbar-main">
+                  <div>
+                    <h3>学习规则（版本级：失败阻断 / 替代改写）</h3>
+                    <p className="muted learning-subtitle">按版本指纹维护命令替代与阻断规则，避免重复试错。</p>
+                  </div>
+                  <div className="capability-toolbar-actions">
+                    <Button size="small" onClick={() => void refreshCommandCapabilityRules()} disabled={capabilityLoading}>
+                      {capabilityLoading ? '刷新中...' : '刷新'}
+                    </Button>
+                    <Button size="small" danger loading={capabilitySaving} onClick={() => void handleResetCapabilityRules()}>
+                      清空筛选范围
+                    </Button>
+                  </div>
+                </div>
               </div>
-              <div className="panel-card placeholder-card">
-                <h3>命令库（预留）</h3>
-                <p className="muted">用于维护厂商命令模板与经验条目，后续与你一起落地。</p>
+              <div className="panel-card learning-table-card">
+                <div className="capability-table">
+                  <div className="capability-row capability-filter-row">
+                    <span />
+                    <div className="capability-filter-cell">
+                      <span className="learning-filter-label">版本指纹</span>
+                      <Input
+                        size="small"
+                        value={capabilityVersionFilter}
+                        onChange={(event) => setCapabilityVersionFilter(event.target.value)}
+                        placeholder="版本指纹搜索，例如 huawei|ne40e|8.180"
+                      />
+                    </div>
+                    <div className="capability-filter-cell">
+                      <span className="learning-filter-label">命令</span>
+                      <Input
+                        size="small"
+                        value={capabilityCommandSearch}
+                        onChange={(event) => setCapabilityCommandSearch(event.target.value)}
+                        placeholder="命令搜索，例如 show interface"
+                      />
+                    </div>
+                    <span />
+                    <span />
+                    <span />
+                    <span />
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                  <div className="capability-row capability-head">
+                    <span>#</span>
+                    <span>版本指纹</span>
+                    <span>命令</span>
+                    <span>动作</span>
+                    <span>替代</span>
+                    <span>来源</span>
+                    <span>命中</span>
+                    <span>最近命中</span>
+                    <span>状态</span>
+                    <span>操作</span>
+                  </div>
+                  <div className="capability-row capability-add-row">
+                    <span>{editingCapabilityId ? '编' : '+'}</span>
+                    <Input
+                      size="small"
+                      value={capabilityVersionInput}
+                      onChange={(event) => setCapabilityVersionInput(event.target.value)}
+                      placeholder={capabilityEffectiveVersion ? `默认 ${capabilityEffectiveVersion}` : '输入版本指纹（必填）'}
+                    />
+                    <Input
+                      size="small"
+                      value={capabilityCommandInput}
+                      onChange={(event) => setCapabilityCommandInput(event.target.value)}
+                      placeholder="命令（例如 show inventory）"
+                    />
+                    <Select
+                      size="small"
+                      value={capabilityActionInput}
+                      options={[
+                        { value: 'rewrite', label: 'rewrite' },
+                        { value: 'block', label: 'block' },
+                      ]}
+                      onChange={(value) => setCapabilityActionInput(value)}
+                    />
+                    <Input
+                      size="small"
+                      value={capabilityRewriteInput}
+                      disabled={capabilityActionInput !== 'rewrite'}
+                      onChange={(event) => setCapabilityRewriteInput(event.target.value)}
+                      placeholder="替代命令（rewrite_to）"
+                    />
+                    <span>manual</span>
+                    <span>-</span>
+                    <span>-</span>
+                    <span>启用</span>
+                    <div className="policy-row-actions capability-add-actions">
+                      <span className="capability-switch-slot" aria-hidden="true" />
+                      <Button size="small" type="primary" loading={capabilitySaving} onClick={() => void handleSaveCapabilityRule()}>
+                        {editingCapabilityId ? '更新' : '新增'}
+                      </Button>
+                      <Button size="small" onClick={resetCapabilityEditor} disabled={capabilitySaving}>
+                        清空
+                      </Button>
+                    </div>
+                  </div>
+                  {capabilityRows.length === 0 && <div className="policy-empty muted">暂无学习规则</div>}
+                  {capabilityRows.map((rule, index) => (
+                    <div key={rule.id} className={`capability-row ${editingCapabilityId === rule.id ? 'active' : ''}`}>
+                      <span>{index + 1}</span>
+                      <code className="capability-version-cell" title={rule.version_signature || '-'}>{rule.version_signature || '-'}</code>
+                      <code title={rule.command_key}>{rule.command_key}</code>
+                      <span>{rule.action}</span>
+                      <code title={rule.rewrite_to || '-'}>{rule.rewrite_to || '-'}</code>
+                      <span>{rule.source}</span>
+                      <span>{rule.hit_count}</span>
+                      <span>{rule.last_hit_at ? formatTime(rule.last_hit_at) : '-'}</span>
+                      <span>{rule.enabled ? '启用' : '停用'}</span>
+                      <div className="policy-row-actions">
+                        <Switch
+                          size="small"
+                          checked={rule.enabled}
+                          onChange={(checked) => void handleToggleCapabilityEnabled(rule, checked)}
+                        />
+                        <Button size="small" onClick={() => beginEditCapability(rule)}>编辑</Button>
+                        <Button size="small" danger onClick={() => void handleDeleteCapabilityRule(rule.id)}>删除</Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           )}
@@ -2685,15 +2952,15 @@ function upsertCommand(existing: CommandExecution[], incoming: CommandExecution)
 }
 
 function automationLabel(level: AutomationLevel): string {
-  if (level === 'read_only') return '只读'
-  if (level === 'assisted') return '半自动'
-  return '全自动'
+  if (level === 'read_only') return '极低风险'
+  if (level === 'assisted') return '中风险可执行'
+  return '高风险可执行'
 }
 
 function operationModeLabel(mode: OperationMode): string {
-  if (mode === 'diagnosis') return '诊断模式'
-  if (mode === 'query') return '查询模式'
-  return '配置模式'
+  if (mode === 'diagnosis') return '诊断排障'
+  if (mode === 'query') return '状态查询'
+  return '⚠️ 配置变更'
 }
 
 function formatTime(ts: string): string {
@@ -2724,6 +2991,7 @@ function formatPromptKey(key: string): string {
     runtime_batch_confirm_policy: '运行时批量确认策略',
     runtime_output_compaction_policy: '运行时输出压缩策略',
     runtime_permission_precheck_policy: '运行时权限预检策略',
+    runtime_mode_scope_policy: '运行时模式范围策略',
     runtime_capability_precheck_policy: '运行时命令能力预检策略',
     runtime_final_action_marker_policy: '运行时结论动作词策略',
   }
@@ -2844,6 +3112,8 @@ function renderActivityDetail(activity: ActivityCard): string {
       `标题: ${cmd.title}`,
       `状态: ${cmd.status}`,
       `风险: ${riskLabel(cmd.risk_level)}`,
+      commandConstraintLabel(cmd) ? `约束: ${commandConstraintLabel(cmd)}` : '',
+      commandConstraintReason(cmd) ? `约束说明: ${commandConstraintReason(cmd)}` : '',
       `命令: ${cmd.command}`,
       output ? `输出:\n${output}` : '',
       error ? `错误:\n${error}` : '',
@@ -2921,15 +3191,19 @@ function renderCommandRowOutput(row: CommandDisplayRow): string {
 }
 
 function renderCommandDisplayRowDetail(row: CommandDisplayRow): string {
+  const constraintLabels = summarizeCommandConstraintLabels(row.members)
+  const constraintReason = summarizeCommandConstraintReasons(row.members)
   const header = [
     `标题: ${row.title}`,
     `状态: ${row.status}`,
     `风险: ${riskLabel(row.risk_level)}`,
+    constraintLabels ? `约束: ${constraintLabels}` : '',
+    constraintReason ? `约束说明: ${constraintReason}` : '',
     `步骤: ${row.stepLabel}`,
-    `命令组: ${row.commandText}`,
   ].join('\n')
+  const sequence = renderCommandSequence(row.members)
   const body = renderCommandRowOutput(row)
-  return `${header}\n\n输出:\n${body}`
+  return `${header}\n\n命令序列（按执行顺序）:\n${sequence}\n\n输出:\n${body}`
 }
 
 function groupCommandsForDisplay(commands: CommandExecution[]): CommandDisplayRow[] {
@@ -2995,6 +3269,84 @@ function summarizeBatchRisk(items: CommandExecution[]): CommandExecution['risk_l
   return 'low'
 }
 
+function renderCommandSequence(items: CommandExecution[]): string {
+  const ordered = [...items].sort((a, b) => a.step_no - b.step_no)
+  if (ordered.length === 0) return '-'
+  return ordered
+    .map((item, index) => `${index + 1}. #${item.step_no} [${item.status}] ${item.command}`)
+    .join('\n')
+}
+
+function getMaxStepNo(commands: CommandExecution[]): number {
+  let max = 0
+  for (const command of commands) {
+    if (command.step_no > max) max = command.step_no
+  }
+  return max
+}
+
+function buildContinuePreview(commands: CommandExecution[], summary?: DiagnosisSummary): ContinuePreview {
+  void summary
+  const pendingCommands = resolveLatestPendingCommands(commands)
+  if (pendingCommands.length > 0) {
+    return {
+      source: 'pending',
+      commands: pendingCommands.map((item) => `#${item.step_no} ${item.command}`),
+    }
+  }
+  return {
+    source: 'none',
+    commands: [],
+  }
+}
+
+function resolveLatestPendingCommands(commands: CommandExecution[]): CommandExecution[] {
+  const ordered = [...commands].sort((a, b) => a.step_no - b.step_no)
+  if (ordered.length === 0) return []
+  let end = ordered.length - 1
+  while (end >= 0 && ordered[end].status !== 'pending_confirm') {
+    end -= 1
+  }
+  if (end < 0) return []
+  const batchId = ordered[end].batch_id
+  if (batchId) {
+    return ordered.filter((item) => item.status === 'pending_confirm' && item.batch_id === batchId)
+  }
+  let start = end
+  while (start - 1 >= 0 && ordered[start - 1].status === 'pending_confirm' && !ordered[start - 1].batch_id) {
+    start -= 1
+  }
+  return ordered.slice(start, end + 1)
+}
+
+function upsertContinueExecutionState(
+  state: ContinueExecutionState | null,
+  command: CommandExecution,
+  baselineStepNo: number,
+): ContinueExecutionState | null {
+  if (!state) return state
+  const nextCommand: ContinueExecutionCommand = {
+    id: command.id,
+    step_no: command.step_no,
+    command: command.command,
+    status: command.status,
+  }
+  const existingIndex = state.observedCommands.findIndex((item) => item.id === command.id)
+  let observedCommands = state.observedCommands
+  if (existingIndex >= 0) {
+    observedCommands = [...state.observedCommands]
+    observedCommands[existingIndex] = nextCommand
+  } else {
+    observedCommands = [...state.observedCommands, nextCommand]
+  }
+  observedCommands.sort((left, right) => left.step_no - right.step_no)
+  return {
+    ...state,
+    baselineStepNo,
+    observedCommands,
+  }
+}
+
 function truncateText(value: string, limit: number): string {
   if (value.length <= limit) return value
   return `${value.slice(0, limit)}...`
@@ -3004,6 +3356,55 @@ function riskLabel(level: CommandExecution['risk_level']): string {
   if (level === 'high') return '高风险'
   if (level === 'medium') return '中风险'
   return '低风险'
+}
+
+function commandConstraintLabel(command: Pick<CommandExecution, 'constraint_source' | 'status'>): string {
+  const source = String(command.constraint_source || '').trim().toLowerCase()
+  if (!source) {
+    if (command.status === 'pending_confirm') return '待人工确认'
+    return ''
+  }
+  const labels: Record<string, string> = {
+    capability_block: '能力规则拦截',
+    capability_rewrite: '能力规则改写',
+    mode_scope_block: '模式范围拦截',
+    policy_block: '阻断规则拦截',
+    risk_baseline_block: '风险基线拦截',
+    risk_confirm: '高风险需确认',
+    policy_confirm: '未命中放行需确认',
+    policy_allow: '放行规则允许',
+    full_auto_allow: '高风险自动执行',
+    default_allow: '默认允许',
+  }
+  return labels[source] || source
+}
+
+function commandConstraintReason(
+  command: Pick<CommandExecution, 'constraint_reason' | 'capability_reason' | 'error'>,
+): string {
+  const reason = String(command.constraint_reason || '').trim()
+  if (reason) return reason
+  const capabilityReason = String(command.capability_reason || '').trim()
+  if (capabilityReason) return capabilityReason
+  return ''
+}
+
+function summarizeCommandConstraintLabels(commands: CommandExecution[]): string {
+  const labels = Array.from(new Set(commands.map((item) => commandConstraintLabel(item)).filter(Boolean)))
+  return labels.join('；')
+}
+
+function summarizeCommandConstraintReasons(commands: CommandExecution[]): string {
+  const reasons = Array.from(new Set(commands.map((item) => commandConstraintReason(item)).filter(Boolean)))
+  return reasons.join('；')
+}
+
+function constraintTagClass(command: Pick<CommandExecution, 'constraint_source' | 'status'>): string {
+  const source = String(command.constraint_source || '').trim().toLowerCase()
+  if (source.includes('block')) return 'err'
+  if (source.includes('confirm') || command.status === 'pending_confirm') return 'warn'
+  if (source.includes('allow') || source.includes('rewrite')) return 'ok'
+  return 'idle'
 }
 
 function parseSortTime(value: string | undefined, fallback: number): number {
@@ -3046,10 +3447,10 @@ function loadDeviceAuth(host: string): DeviceAuthRecord | undefined {
     // ignore parse errors
   }
   // Fallback for default lab device so restored sessions can continue without manual re-login.
-  if (normalizedHost === '192.168.0.102') {
+  if (normalizedHost === '192.168.0.88') {
     return {
       username: 'zhangwei',
-      password: 'Admin@123',
+      password: 'Huawei@123',
       updated_at: new Date().toISOString(),
     }
   }
@@ -3200,10 +3601,48 @@ function buildFlowLanes(steps: ServiceTraceStep[]): FlowLane[] {
   }))
 }
 
+function traceNodeRelationClass(step: ServiceTraceStep, selected?: ServiceTraceStep): string {
+  if (!selected) return ''
+  if (step.id === selected.id) return 'selected-focus'
+  return ''
+}
+
+function traceConstraintLabel(step: ServiceTraceStep): string {
+  if (step.step_type === 'scope_decision') return '模式范围约束'
+  if (step.step_type === 'capability_decision') {
+    const lowered = `${step.title} ${step.detail || ''}`.toLowerCase()
+    if (lowered.includes('改写') || lowered.includes('rewrite')) return '能力规则改写'
+    if (lowered.includes('阻断') || lowered.includes('block')) return '能力规则拦截'
+    if (lowered.includes('跳过') || lowered.includes('skip')) return '能力规则跳过'
+    return '能力约束'
+  }
+  if (step.step_type !== 'policy_decision') return ''
+
+  const source = traceConstraintSourceFromDetail(step.detail)
+  const labels: Record<string, string> = {
+    policy_block: '阻断规则拦截',
+    risk_baseline_block: '风险基线拦截',
+    risk_confirm: '高风险需确认',
+    policy_confirm: '未命中放行需确认',
+    policy_allow: '放行规则允许',
+    full_auto_allow: '高风险自动执行',
+    default_allow: '默认允许',
+  }
+  return labels[source] || '策略约束'
+}
+
+function traceConstraintSourceFromDetail(detail?: string): string {
+  const text = String(detail || '')
+  if (!text.trim()) return ''
+  const matched = text.match(/(?:^|[;\s])source=([a-z_]+)/i)
+  if (!matched) return ''
+  return String(matched[1] || '').trim().toLowerCase()
+}
+
 function traceLaneKey(stepType: string): string {
   if (stepType === 'user_input') return 'user'
   if (stepType === 'llm_plan' || stepType === 'llm_status' || stepType === 'plan_decision') return 'plan'
-  if (stepType === 'policy_decision' || stepType === 'capability_decision') return 'policy'
+  if (stepType === 'policy_decision' || stepType === 'capability_decision' || stepType === 'scope_decision') return 'policy'
   if (stepType === 'command_execution' || stepType === 'command_confirm_execution') return 'execute'
   if (stepType === 'evidence_parse') return 'evidence'
   if (stepType === 'llm_final') return 'summary'
@@ -3225,6 +3664,7 @@ function traceTypeLabel(stepType: string): string {
   if (stepType === 'plan_decision') return '流程判定'
   if (stepType === 'policy_decision') return '策略判定'
   if (stepType === 'capability_decision') return '能力判定'
+  if (stepType === 'scope_decision') return '模式范围判定'
   if (stepType === 'evidence_parse') return '证据解析'
   if (stepType === 'command_execution') return '命令执行'
   if (stepType === 'command_confirm_execution') return '确认后执行'

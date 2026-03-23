@@ -160,3 +160,92 @@ def test_hit_count_persists_across_reload(tmp_path):
     assert rule is not None
     assert rule.hit_count == 1
     assert rule.last_hit_at is not None
+
+
+def test_partial_version_signature_single_token_matches(tmp_path):
+    store = _build_store(tmp_path, threshold=100000, interval=3600)
+    store.upsert_rule(
+        CommandCapabilityUpsertRequest(
+            scope_type="version",
+            version_signature="ne40e",
+            protocol=DeviceProtocol.ssh,
+            command_key="show version",
+            action="rewrite",
+            rewrite_to="display version",
+            source="manual",
+        )
+    )
+
+    matched = store.resolve_match(
+        host="192.168.0.88",
+        protocol=DeviceProtocol.ssh,
+        device_type=None,
+        vendor=None,
+        version_signature="huawei|ne40e|8.180",
+        command_text="show version",
+    )
+    assert matched is not None
+    assert matched.rule.rewrite_to == "display version"
+
+
+def test_partial_version_signature_two_tokens_preferred_over_single(tmp_path):
+    store = _build_store(tmp_path, threshold=100000, interval=3600)
+    store.upsert_rule(
+        CommandCapabilityUpsertRequest(
+            scope_type="version",
+            version_signature="huawei",
+            protocol=DeviceProtocol.ssh,
+            command_key="show interface brief",
+            action="rewrite",
+            rewrite_to="display interface brief",
+            source="manual",
+        )
+    )
+    store.upsert_rule(
+        CommandCapabilityUpsertRequest(
+            scope_type="version",
+            version_signature="huawei|8.180",
+            protocol=DeviceProtocol.ssh,
+            command_key="show interface brief",
+            action="rewrite",
+            rewrite_to="display interface brief | include up",
+            source="manual",
+        )
+    )
+
+    matched = store.resolve_match(
+        host="192.168.0.88",
+        protocol=DeviceProtocol.ssh,
+        device_type=None,
+        vendor=None,
+        version_signature="huawei|ne40e|8.180",
+        command_text="show interface brief",
+    )
+    assert matched is not None
+    assert matched.rule.version_signature == "huawei|8.180"
+    assert matched.rule.rewrite_to == "display interface brief | include up"
+
+
+def test_partial_version_signature_non_match_returns_none(tmp_path):
+    store = _build_store(tmp_path, threshold=100000, interval=3600)
+    store.upsert_rule(
+        CommandCapabilityUpsertRequest(
+            scope_type="version",
+            version_signature="arista",
+            protocol=DeviceProtocol.ssh,
+            command_key="show version",
+            action="rewrite",
+            rewrite_to="show version",
+            source="manual",
+        )
+    )
+
+    matched = store.resolve_match(
+        host="192.168.0.88",
+        protocol=DeviceProtocol.ssh,
+        device_type=None,
+        vendor=None,
+        version_signature="huawei|ne40e|8.180",
+        command_text="show version",
+    )
+    assert matched is None
