@@ -417,7 +417,14 @@ def test_update_session_credentials_and_timeline_hides_secrets():
 
     updated = client.patch(
         f"/v1/sessions/{session_id}/credentials",
-        json={"username": "zhangwei", "password": "Admin@123"},
+        json={
+            "username": "zhangwei",
+            "password": "Admin@123",
+            "jump_host": "10.0.0.10",
+            "jump_port": 22,
+            "jump_username": "jump-user",
+            "jump_password": "jump-pass",
+        },
     )
     assert updated.status_code == 200
 
@@ -426,3 +433,5 @@ def test_update_session_credentials_and_timeline_hides_secrets():
     session = timeline.json()["session"]
     assert session["device"]["username"] is None
     assert session["device"]["password"] is None
+    assert session["device"]["jump_username"] is None
+    assert session["device"]["jump_password"] is None

@@ -1,4 +1,4 @@
-# NetOps AI V1 Frontend
+# NetOps AI V2 Frontend
 
 ## Run
 

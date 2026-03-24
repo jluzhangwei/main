@@ -1,4 +1,4 @@
-# NetOps AI V1
+# NetOps AI V2
 
 对话式网络设备故障排查平台（Web UI）。
 

@@ -27,6 +27,10 @@ export async function createSession(input: {
   operation_mode: 'diagnosis' | 'query' | 'config'
   username?: string
   password?: string
+  jump_host?: string
+  jump_port?: number
+  jump_username?: string
+  jump_password?: string
   api_token?: string
   automation_level: AutomationLevel
 }): Promise<SessionResponse> {
@@ -39,6 +43,10 @@ export async function createSession(input: {
         protocol: input.protocol,
         username: input.username,
         password: input.password,
+        jump_host: input.jump_host,
+        jump_port: input.jump_port,
+        jump_username: input.jump_username,
+        jump_password: input.jump_password,
         api_token: input.api_token,
       },
       operation_mode: input.operation_mode,
@@ -131,7 +139,15 @@ export async function updateSessionAutomation(sessionId: string, automationLevel
 
 export async function updateSessionCredentials(
   sessionId: string,
-  payload: { username?: string; password?: string; api_token?: string },
+  payload: {
+    username?: string
+    password?: string
+    jump_host?: string
+    jump_port?: number
+    jump_username?: string
+    jump_password?: string
+    api_token?: string
+  },
 ): Promise<SessionResponse> {
   const res = await fetch(`/v1/sessions/${sessionId}/credentials`, {
     method: 'PATCH',

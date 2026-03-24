@@ -378,6 +378,58 @@ class _FakeConnectedDevice:
         return None
 
 
+class _FakeJumpChannel:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeJumpTransport:
+    def __init__(self):
+        self.open_calls: list[tuple[tuple[str, int], tuple[str, int]]] = []
+        self.active = True
+
+    def is_active(self):
+        return self.active
+
+    def open_channel(self, kind: str, destination: tuple[str, int], source: tuple[str, int]):
+        assert kind == "direct-tcpip"
+        self.open_calls.append((destination, source))
+        return _FakeJumpChannel()
+
+
+class _FakeJumpClient:
+    def __init__(self):
+        self.transport = _FakeJumpTransport()
+        self.connect_kwargs: dict[str, object] = {}
+        self.closed = False
+
+    def set_missing_host_key_policy(self, _policy) -> None:
+        return None
+
+    def connect(self, **kwargs) -> None:
+        self.connect_kwargs = dict(kwargs)
+
+    def get_transport(self):
+        return self.transport
+
+    def close(self):
+        self.closed = True
+        self.transport.active = False
+
+
+class _FakeParamikoModule:
+    AutoAddPolicy = object
+
+    def __init__(self, jump_client: _FakeJumpClient):
+        self._jump_client = jump_client
+
+    def SSHClient(self):
+        return self._jump_client
+
+
 @pytest.mark.asyncio
 async def test_connect_can_fallback_to_huawei_when_initial_device_type_mismatches(monkeypatch):
     session = Session(
@@ -432,6 +484,68 @@ async def test_connect_applies_terminal_paging_off_after_successful_probe(monkey
     assert adapter.conn is fake
     assert any(cmd.strip().lower() == "terminal length 0" for cmd in fake.timing_history)
     assert adapter.session.device.name == "Device-102"
+
+
+@pytest.mark.asyncio
+async def test_connect_uses_jump_host_tunnel_for_netmiko(monkeypatch):
+    session = Session(
+        device=DeviceTarget(
+            host="192.168.0.88",
+            protocol=DeviceProtocol.ssh,
+            vendor="huawei",
+            device_type="huawei",
+            username="device-user",
+            password="device-pass",
+            jump_host="10.0.0.10",
+            jump_port=22,
+            jump_username="jump-user",
+            jump_password="jump-pass",
+        ),
+    )
+    adapter = SSHAdapter(session, allow_simulation=False)
+    fake_jump_client = _FakeJumpClient()
+    fake_connected = _FakeConnectedDevice("huawei")
+    seen_kwargs: dict[str, object] = {}
+
+    def _fake_connect_handler(**kwargs):
+        seen_kwargs.update(kwargs)
+        return fake_connected
+
+    monkeypatch.setattr("app.services.adapters.paramiko", _FakeParamikoModule(fake_jump_client))
+    monkeypatch.setattr("app.services.adapters.ConnectHandler", _fake_connect_handler)
+
+    await adapter.connect()
+
+    assert adapter.conn is fake_connected
+    assert "sock" in seen_kwargs
+    assert fake_jump_client.connect_kwargs["hostname"] == "10.0.0.10"
+    assert fake_jump_client.connect_kwargs["username"] == "jump-user"
+    assert fake_jump_client.connect_kwargs["password"] == "jump-pass"
+    assert fake_jump_client.transport.open_calls
+    assert fake_jump_client.transport.open_calls[0][0] == ("192.168.0.88", 22)
+
+
+@pytest.mark.asyncio
+async def test_expect_fallback_is_disabled_by_default_to_keep_single_session_transport(monkeypatch):
+    session = Session(
+        device=DeviceTarget(
+            host="192.168.0.88",
+            protocol=DeviceProtocol.ssh,
+            vendor="huawei",
+            device_type="huawei",
+            username="tester",
+            password="tester",
+        ),
+    )
+    adapter = SSHAdapter(session, allow_simulation=False)
+    monkeypatch.setattr("app.services.adapters.ConnectHandler", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("connect failed")))
+    monkeypatch.setattr(adapter, "_can_use_expect_fallback", lambda: True)
+    monkeypatch.setattr(adapter, "_probe_expect_login", lambda: (True, None))
+
+    with pytest.raises(RuntimeError):
+        await adapter.connect()
+
+    assert adapter._use_expect_fallback is False
 
 
 def split_config_command(command: str) -> list[str]:

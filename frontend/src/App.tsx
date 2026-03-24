@@ -75,6 +75,10 @@ const DEVICE_AUTH_CACHE_KEY = 'netops_device_auth_cache_v1'
 type DeviceAuthRecord = {
   username?: string
   password?: string
+  jump_host?: string
+  jump_port?: number
+  jump_username?: string
+  jump_password?: string
   api_token?: string
   updated_at?: string
 }
@@ -993,6 +997,10 @@ function App() {
     operation_mode: OperationMode
     username?: string
     password?: string
+    jump_host?: string
+    jump_port?: number
+    jump_username?: string
+    jump_password?: string
     api_token?: string
     automation_level: AutomationLevel
   }) {
@@ -1000,6 +1008,10 @@ function App() {
       cacheDeviceAuth(payload.host, {
         username: payload.username,
         password: payload.password,
+        jump_host: payload.jump_host,
+        jump_port: payload.jump_port,
+        jump_username: payload.jump_username,
+        jump_password: payload.jump_password,
         api_token: payload.api_token,
       })
       const resp = await createSession(payload)
@@ -1604,11 +1616,23 @@ function App() {
     if (ok) {
       const targetHost = (hostHint || sessionDeviceAddress || '').trim()
       const cached = targetHost ? loadDeviceAuth(targetHost) : undefined
-      if (cached && (cached.username || cached.password || cached.api_token)) {
+      if (
+        cached
+        && (cached.username
+          || cached.password
+          || cached.jump_host
+          || cached.jump_username
+          || cached.jump_password
+          || cached.api_token)
+      ) {
         try {
           await updateSessionCredentials(sessionId, {
             username: cached.username,
             password: cached.password,
+            jump_host: cached.jump_host,
+            jump_port: cached.jump_port,
+            jump_username: cached.jump_username,
+            jump_password: cached.jump_password,
             api_token: cached.api_token,
           })
         } catch {
@@ -1843,9 +1867,9 @@ function App() {
     <div className="noc-root">
       <header className="brand-bar">
         <div className="brand-left">
-          <div className="brand-mark">NA</div>
+          <img className="brand-logo" src="/infra-logo.png" alt="Infra Logo" />
           <div>
-            <h1>NetOps AI V1</h1>
+            <h1>NetOps AI V2</h1>
             <p className="muted">AIOps Workbench</p>
           </div>
         </div>
@@ -3799,19 +3823,15 @@ function loadDeviceAuth(host: string): DeviceAuthRecord | undefined {
     return {
       username: (hit.username || '').trim() || undefined,
       password: (hit.password || '').trim() || undefined,
+      jump_host: (hit.jump_host || '').trim() || undefined,
+      jump_port: Number.isFinite(Number(hit.jump_port)) ? Number(hit.jump_port) : undefined,
+      jump_username: (hit.jump_username || '').trim() || undefined,
+      jump_password: (hit.jump_password || '').trim() || undefined,
       api_token: (hit.api_token || '').trim() || undefined,
       updated_at: hit.updated_at,
     }
   } catch {
     // ignore parse errors
-  }
-  // Fallback for default lab device so restored sessions can continue without manual re-login.
-  if (normalizedHost === '192.168.0.88') {
-    return {
-      username: 'zhangwei',
-      password: 'Huawei@123',
-      updated_at: new Date().toISOString(),
-    }
   }
   return undefined
 }
@@ -3821,14 +3841,22 @@ function cacheDeviceAuth(host: string, auth: DeviceAuthRecord): void {
   if (!normalizedHost || typeof window === 'undefined') return
   const username = String(auth.username || '').trim()
   const password = String(auth.password || '').trim()
+  const jumpHost = String(auth.jump_host || '').trim()
+  const jumpPort = Number(auth.jump_port)
+  const jumpUsername = String(auth.jump_username || '').trim()
+  const jumpPassword = String(auth.jump_password || '').trim()
   const apiToken = String(auth.api_token || '').trim()
-  if (!username && !password && !apiToken) return
+  if (!username && !password && !jumpHost && !jumpUsername && !jumpPassword && !apiToken) return
   try {
     const raw = localStorage.getItem(DEVICE_AUTH_CACHE_KEY)
     const parsed = raw ? (JSON.parse(raw) as Record<string, DeviceAuthRecord>) : {}
     parsed[normalizedHost] = {
       username: username || undefined,
       password: password || undefined,
+      jump_host: jumpHost || undefined,
+      jump_port: Number.isFinite(jumpPort) && jumpPort > 0 ? jumpPort : undefined,
+      jump_username: jumpUsername || undefined,
+      jump_password: jumpPassword || undefined,
       api_token: apiToken || undefined,
       updated_at: new Date().toISOString(),
     }

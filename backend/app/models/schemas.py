@@ -63,6 +63,10 @@ class DeviceTarget(BaseModel):
     protocol: DeviceProtocol = DeviceProtocol.ssh
     username: Optional[str] = None
     password: Optional[str] = None
+    jump_host: Optional[str] = None
+    jump_port: int = 22
+    jump_username: Optional[str] = None
+    jump_password: Optional[str] = None
     api_token: Optional[str] = None
     device_type: str = "autodetect"
     platform: Optional[str] = None
@@ -84,6 +88,10 @@ class SessionUpdateRequest(BaseModel):
 class SessionCredentialUpdateRequest(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
+    jump_host: Optional[str] = None
+    jump_port: Optional[int] = None
+    jump_username: Optional[str] = None
+    jump_password: Optional[str] = None
     api_token: Optional[str] = None
 
 

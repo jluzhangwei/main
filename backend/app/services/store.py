@@ -120,6 +120,14 @@ class InMemoryStore:
             session.device.username = str(req.username).strip() or None
         if req.password is not None:
             session.device.password = str(req.password).strip() or None
+        if req.jump_host is not None:
+            session.device.jump_host = str(req.jump_host).strip() or None
+        if req.jump_port is not None:
+            session.device.jump_port = int(req.jump_port)
+        if req.jump_username is not None:
+            session.device.jump_username = str(req.jump_username).strip() or None
+        if req.jump_password is not None:
+            session.device.jump_password = str(req.jump_password).strip() or None
         if req.api_token is not None:
             session.device.api_token = str(req.api_token).strip() or None
         self.sessions[session_id] = session
@@ -617,6 +625,8 @@ class InMemoryStore:
         if not self.persist_session_credentials:
             safe.device.username = None
             safe.device.password = None
+            safe.device.jump_username = None
+            safe.device.jump_password = None
             safe.device.api_token = None
         return safe
 
@@ -624,5 +634,7 @@ class InMemoryStore:
         safe = session.model_copy(deep=True)
         safe.device.username = None
         safe.device.password = None
+        safe.device.jump_username = None
+        safe.device.jump_password = None
         safe.device.api_token = None
         return safe

@@ -68,16 +68,12 @@ h6 {
   gap: 10px;
 }
 
-.brand-mark {
-  width: 38px;
-  height: 38px;
-  border-radius: 9px;
-  background: linear-gradient(145deg, var(--brand), #2aa7df);
-  color: #fff;
-  font-size: 13px;
-  font-weight: 700;
-  display: grid;
-  place-items: center;
+.brand-logo {
+  display: block;
+  height: 40px;
+  width: auto;
+  max-width: 132px;
+  object-fit: contain;
 }
 
 .brand-bar h1 {
@@ -1372,8 +1368,27 @@ h6 {
   gap: 8px;
 }
 
+.device-inline-fields.device-inline-fields-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.jump-switch-row {
+  margin-top: -2px;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
 @media (max-width: 1100px) {
   .device-inline-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .device-inline-fields.device-inline-fields-4 {
     grid-template-columns: 1fr;
   }
 }

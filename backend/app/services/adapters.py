@@ -15,6 +15,11 @@ try:
 except Exception:  # pragma: no cover - optional dependency during local dry run
     ConnectHandler = None
 
+try:
+    import paramiko
+except Exception:  # pragma: no cover - optional dependency during local dry run
+    paramiko = None
+
 
 class DeviceAdapter(ABC):
     def __init__(self, session: Session, *, allow_simulation: bool = True):
@@ -42,6 +47,10 @@ class SSHAdapter(DeviceAdapter):
         self.connection_error: Optional[Exception] = None
         self._paging_configured = False
         self._use_expect_fallback = False
+        self._expect_fallback_enabled = (
+            os.getenv("NETOPS_ENABLE_EXPECT_FALLBACK", "0").strip().lower() in {"1", "true", "yes"}
+        )
+        self._jump_client = None
 
     async def connect(self) -> None:
         if self._use_expect_fallback:
@@ -61,11 +70,13 @@ class SSHAdapter(DeviceAdapter):
         if ConnectHandler and self.session.device.username and self.session.device.password:
             candidates = self._candidate_device_types()
             banner_reset_seen = False
+            jump_setup_failed = False
             for candidate in candidates:
                 for _ in range(2):
+                    jump_sock = None
                     try:
-                        self.conn = await asyncio.to_thread(
-                            ConnectHandler,
+                        jump_sock = await self._open_jump_sock_if_needed()
+                        connect_kwargs = dict(
                             device_type=candidate,
                             host=self.session.device.host,
                             username=self.session.device.username,
@@ -77,6 +88,13 @@ class SSHAdapter(DeviceAdapter):
                             banner_timeout=45,
                             keepalive=30,
                         )
+                        if jump_sock is not None:
+                            connect_kwargs["sock"] = jump_sock
+                        self.conn = await asyncio.to_thread(
+                            ConnectHandler,
+                            **connect_kwargs,
+                        )
+                        jump_sock = None
                         if not await self._probe_device_identity(candidate):
                             try:
                                 await asyncio.to_thread(self.conn.disconnect)
@@ -93,8 +111,16 @@ class SSHAdapter(DeviceAdapter):
                         await self._refresh_device_name_from_prompt()
                         return
                     except Exception as exc:
+                        if jump_sock is not None:
+                            try:
+                                await asyncio.to_thread(jump_sock.close)
+                            except Exception:
+                                pass
                         self.conn = None
                         self.connection_error = exc
+                        if self._is_jump_setup_error(exc):
+                            jump_setup_failed = True
+                            break
                         if self._is_auth_error(exc):
                             break
                         if self._is_banner_reset_error(exc):
@@ -108,9 +134,11 @@ class SSHAdapter(DeviceAdapter):
                     # Banner reset is transport-side and independent from device_type probing.
                     # Stop rotating candidates to reduce repeated resets.
                     break
+                if jump_setup_failed:
+                    break
 
             if not self.allow_simulation:
-                if self._can_use_expect_fallback():
+                if self._expect_fallback_enabled and self._can_use_expect_fallback():
                     ok, error_message = await asyncio.to_thread(self._probe_expect_login)
                     if ok:
                         self._use_expect_fallback = True
@@ -121,7 +149,7 @@ class SSHAdapter(DeviceAdapter):
                         self.connection_error = RuntimeError(error_message)
                 raise self.connection_error
         elif not self.allow_simulation:
-            if self._can_use_expect_fallback():
+            if self._expect_fallback_enabled and self._can_use_expect_fallback():
                 ok, error_message = await asyncio.to_thread(self._probe_expect_login)
                 if ok:
                     self._use_expect_fallback = True
@@ -335,6 +363,7 @@ class SSHAdapter(DeviceAdapter):
             finally:
                 self.conn = None
                 self._paging_configured = False
+        await asyncio.to_thread(self._close_jump_client)
         self._use_expect_fallback = False
 
     def _can_use_expect_fallback(self) -> bool:
@@ -344,6 +373,104 @@ class SSHAdapter(DeviceAdapter):
             and shutil.which("ssh")
             and shutil.which("expect")
         )
+
+    def _jump_enabled(self) -> bool:
+        return bool(str(self.session.device.jump_host or "").strip())
+
+    def _resolved_jump_host(self) -> str:
+        return str(self.session.device.jump_host or "").strip()
+
+    def _resolved_jump_port(self) -> int:
+        try:
+            port = int(self.session.device.jump_port or 22)
+        except Exception:
+            port = 22
+        return port if port > 0 else 22
+
+    def _resolved_jump_username(self) -> str:
+        return str(self.session.device.jump_username or self.session.device.username or "").strip()
+
+    def _resolved_jump_password(self) -> str:
+        raw = self.session.device.jump_password
+        if raw is None or not str(raw).strip():
+            raw = self.session.device.password
+        return str(raw or "")
+
+    async def _open_jump_sock_if_needed(self):
+        if not self._jump_enabled():
+            return None
+        return await asyncio.to_thread(self._open_jump_channel)
+
+    def _open_jump_channel(self):
+        self._ensure_jump_client()
+        if not self._jump_client:
+            return None
+        transport = self._jump_client.get_transport()
+        if transport is None or not transport.is_active():
+            self._close_jump_client()
+            raise RuntimeError("Jump host transport is not active")
+        try:
+            return transport.open_channel(
+                "direct-tcpip",
+                (str(self.session.device.host), int(self.session.device.port or 22)),
+                ("127.0.0.1", 0),
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Jump host tunnel open failed: {exc}") from exc
+
+    def _ensure_jump_client(self) -> None:
+        if not self._jump_enabled():
+            self._close_jump_client()
+            return
+        if paramiko is None:
+            raise RuntimeError("Jump host requires paramiko to be installed")
+
+        host = self._resolved_jump_host()
+        user = self._resolved_jump_username()
+        password = self._resolved_jump_password()
+        port = self._resolved_jump_port()
+        if not host:
+            raise RuntimeError("Jump host address is empty")
+        if not user:
+            raise RuntimeError("Jump host username is required")
+
+        if self._jump_client:
+            transport = self._jump_client.get_transport()
+            if transport is not None and transport.is_active():
+                return
+            self._close_jump_client()
+
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        use_password = bool(password.strip())
+        try:
+            client.connect(
+                hostname=host,
+                port=port,
+                username=user,
+                password=password if use_password else None,
+                timeout=12,
+                banner_timeout=45,
+                auth_timeout=20,
+                look_for_keys=not use_password,
+                allow_agent=not use_password,
+            )
+        except Exception as exc:
+            try:
+                client.close()
+            except Exception:
+                pass
+            raise RuntimeError(f"Jump host SSH login failed: {exc}") from exc
+        self._jump_client = client
+
+    def _close_jump_client(self) -> None:
+        if self._jump_client is None:
+            return
+        try:
+            self._jump_client.close()
+        except Exception:
+            pass
+        self._jump_client = None
 
     def _probe_expect_login(self) -> tuple[bool, str | None]:
         try:
@@ -357,8 +484,14 @@ class SSHAdapter(DeviceAdapter):
         user = (self.session.device.username or "").strip()
         password = self.session.device.password or ""
         port = int(self.session.device.port or 22)
+        jump_host = self._resolved_jump_host()
+        jump_port = self._resolved_jump_port()
+        jump_user = self._resolved_jump_username()
+        jump_password = self._resolved_jump_password()
         if not host or not user:
             raise RuntimeError("SSH expect fallback requires host and username")
+        if jump_host and not jump_user:
+            raise RuntimeError("SSH expect fallback requires jump host username")
 
         final_commands = [cmd.strip() for cmd in commands if cmd and cmd.strip()]
         if configure_paging and not self._paging_configured:
@@ -375,6 +508,10 @@ set host $env(NETOPS_EXPECT_HOST)
 set port $env(NETOPS_EXPECT_PORT)
 set user $env(NETOPS_EXPECT_USER)
 set pass $env(NETOPS_EXPECT_PASSWORD)
+set jump_host $env(NETOPS_EXPECT_JUMP_HOST)
+set jump_port $env(NETOPS_EXPECT_JUMP_PORT)
+set jump_user $env(NETOPS_EXPECT_JUMP_USER)
+set jump_pass $env(NETOPS_EXPECT_JUMP_PASSWORD)
 set cmds [split $env(NETOPS_EXPECT_COMMANDS) "\n"]
 set confirm_default [string toupper $env(NETOPS_EXPECT_CONFIRM_DEFAULT)]
 if {$confirm_default ne "Y" && $confirm_default ne "N"} {
@@ -383,9 +520,26 @@ if {$confirm_default ne "Y" && $confirm_default ne "N"} {
 set prompt_re {(<[^>\r\n]+>|\[[^\]\r\n]+\]|[A-Za-z0-9._/-]{1,128}(\([^)]+\))?[>#])\s*$}
 set yn_prompt_re {(?i)(\[(yes/no|y/n|y\(yes\)/n\(no\)(/c\(cancel\))?)\]|(yes/no|y/n|y\(yes\)/n\(no\))|are you sure|continue\?|confirm\?)\s*:?\s*$}
 set more_prompt_re {(?i)(----\s*more\s*----|--more--|<---\s*more\s*--->|press any key to continue|press .* key to continue)}
-spawn ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o ConnectTimeout=10 -p $port $user@$host
+if {[string trim $jump_host] ne ""} {
+  if {[string trim $jump_port] eq ""} {
+    set jump_port "22"
+  }
+  set jump_target "${jump_user}@${jump_host}:${jump_port}"
+  spawn ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o ConnectTimeout=10 -J $jump_target -p $port $user@$host
+} else {
+  spawn ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o ConnectTimeout=10 -p $port $user@$host
+}
+set jump_pass_sent 0
 expect {
-  -re "(?i)password:" { send -- "$pass\r"; exp_continue }
+  -re "(?i)password:" {
+    if {[string trim $jump_host] ne "" && $jump_pass_sent == 0 && [string trim $jump_pass] ne ""} {
+      send -- "$jump_pass\r"
+      set jump_pass_sent 1
+    } else {
+      send -- "$pass\r"
+    }
+    exp_continue
+  }
   -re "(?i)permission denied" { puts "__AUTH_FAILED__"; exit 13 }
   -re "(?i)connection closed by remote host" { puts "__SSH_CLOSED__"; exit 14 }
   -re "(?i)connection reset" { puts "__SSH_RESET__"; exit 15 }
@@ -433,6 +587,10 @@ puts $all
         env["NETOPS_EXPECT_PORT"] = str(port)
         env["NETOPS_EXPECT_USER"] = user
         env["NETOPS_EXPECT_PASSWORD"] = password
+        env["NETOPS_EXPECT_JUMP_HOST"] = jump_host
+        env["NETOPS_EXPECT_JUMP_PORT"] = str(jump_port)
+        env["NETOPS_EXPECT_JUMP_USER"] = jump_user
+        env["NETOPS_EXPECT_JUMP_PASSWORD"] = jump_password
         env["NETOPS_EXPECT_COMMANDS"] = "\n".join(final_commands)
         env["NETOPS_EXPECT_CONFIRM_DEFAULT"] = "Y"
         result = subprocess.run(
@@ -579,6 +737,10 @@ puts $all
                 "login invalid",
             ]
         )
+
+    def _is_jump_setup_error(self, exc: Exception) -> bool:
+        lowered = str(exc).lower()
+        return "jump host" in lowered or "jump tunnel" in lowered
 
     def _is_banner_reset_error(self, exc: Exception) -> bool:
         lowered = str(exc).lower()
