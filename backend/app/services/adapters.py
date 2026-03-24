@@ -53,6 +53,13 @@ class SSHAdapter(DeviceAdapter):
         self._jump_client = None
 
     async def connect(self) -> None:
+        simulation_only = (
+            os.getenv("NETOPS_SIMULATION_ONLY", "0").strip().lower() in {"1", "true", "yes"}
+        )
+        if self.allow_simulation and simulation_only:
+            self.connection_error = RuntimeError("simulation-only mode enabled")
+            return
+
         if self._use_expect_fallback:
             return
 
@@ -850,7 +857,10 @@ puts $all
         device_type = (self.session.device.device_type or "").strip().lower()
         if "huawei" in vendor or device_type == "huawei":
             return True
-        return any(self._is_mode_wrapper(part) for part in parts)
+        has_config = any(self._looks_like_config_command(part) for part in parts)
+        has_readonly = any(self._looks_like_readonly_command(part) for part in parts)
+        has_exec_only = any(self._is_exec_mode_only_command(part) for part in parts)
+        return has_config and (has_readonly or has_exec_only)
 
     def _is_exec_mode_only_command(self, command: str) -> bool:
         normalized = command.strip().lower()

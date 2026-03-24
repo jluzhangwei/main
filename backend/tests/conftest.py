@@ -4,6 +4,7 @@ import pytest
 
 from app.api import routes
 from app.services.command_capability_store import CommandCapabilityStore
+from app.services.job_orchestrator_v2 import JobV2Orchestrator
 
 
 @pytest.fixture(autouse=True)
@@ -13,11 +14,14 @@ def reset_global_store(tmp_path, monkeypatch):
     session_store_path = tmp_path / "session_store.json"
     capability_snapshot_path = tmp_path / "command_capability_snapshot.json"
     capability_wal_path = tmp_path / "command_capability.wal"
+    v2_state_path = tmp_path / "v2_state.json"
     monkeypatch.setenv("NETOPS_COMMAND_POLICY_PATH", str(policy_path))
     monkeypatch.setenv("NETOPS_RISK_POLICY_PATH", str(risk_policy_path))
     monkeypatch.setenv("NETOPS_SESSION_STORE_PATH", str(session_store_path))
     monkeypatch.setenv("NETOPS_COMMAND_CAPABILITY_SNAPSHOT_PATH", str(capability_snapshot_path))
     monkeypatch.setenv("NETOPS_COMMAND_CAPABILITY_WAL_PATH", str(capability_wal_path))
+    monkeypatch.setenv("NETOPS_V2_STATE_PATH", str(v2_state_path))
+    monkeypatch.setenv("NETOPS_SIMULATION_ONLY", "1")
 
     routes.store.sessions.clear()
     routes.store.messages.clear()
@@ -46,4 +50,5 @@ def reset_global_store(tmp_path, monkeypatch):
     diagnoser.base_url = diagnoser.default_base_url
     diagnoser.model = diagnoser.default_model
     routes.orchestrator.allow_simulation = True
+    routes.orchestrator_v2 = JobV2Orchestrator(routes.store, allow_simulation=True)
     yield

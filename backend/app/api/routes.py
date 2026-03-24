@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from app.models.schemas import (
+    ApiKeyCreateRequest,
+    ApiKeyCreateResponse,
+    ApiKeyListItem,
+    ApiKeyRecord,
+    AuditLog,
     CommandCapabilityResetRequest,
     CommandCapabilityResetResponse,
     CommandCapabilityRule,
@@ -14,10 +21,18 @@ from app.models.schemas import (
     CommandPolicyUpdateRequest,
     ConfirmCommandRequest,
     ExportRequest,
+    JobActionDecisionRequest,
+    JobActionDecisionResponse,
+    JobCreateRequest,
+    JobReportResponse,
+    JobResponse,
+    JobStatus,
+    JobTimelineResponse,
     LLMConfigRequest,
     LLMConfigResponse,
     LLMPromptPolicyResponse,
     MessageCreateRequest,
+    CommandProfile,
     SessionCreateRequest,
     SessionCredentialUpdateRequest,
     SessionListItem,
@@ -29,12 +44,18 @@ from app.models.schemas import (
     RiskPolicyUpdateRequest,
 )
 from app.services.exporter import export_timeline_markdown
+from app.services.job_orchestrator_v2 import JobV2Orchestrator
 from app.services.orchestrator import ConversationOrchestrator
 from app.services.store import InMemoryStore
 
 router = APIRouter(prefix="/v1", tags=["netops"])
+router_v2 = APIRouter(prefix="/v2", tags=["netops-v2"])
 store = InMemoryStore()
 orchestrator = ConversationOrchestrator(
+    store,
+    allow_simulation=os.getenv("NETOPS_ALLOW_SIMULATION_FALLBACK", "0").strip().lower() in {"1", "true", "yes"},
+)
+orchestrator_v2 = JobV2Orchestrator(
     store,
     allow_simulation=os.getenv("NETOPS_ALLOW_SIMULATION_FALLBACK", "0").strip().lower() in {"1", "true", "yes"},
 )
@@ -246,3 +267,326 @@ async def export_session(session_id: str, req: ExportRequest):
         markdown.mime_type = "application/pdf"
 
     return markdown
+
+
+def _extract_api_key_token(x_api_key: str | None, authorization: str | None) -> str | None:
+    raw = (x_api_key or "").strip()
+    if raw:
+        return raw
+    auth = (authorization or "").strip()
+    if not auth:
+        return None
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+        return token or None
+    return None
+
+
+async def _require_v2_permission(
+    permission: str,
+    x_api_key: str | None,
+    authorization: str | None,
+) -> ApiKeyRecord:
+    token = _extract_api_key_token(x_api_key, authorization)
+    try:
+        actor = await orchestrator_v2.authenticate(token)
+    except PermissionError as exc:
+        await orchestrator_v2.append_audit(
+            actor=None,
+            action="auth.check",
+            resource=f"permission:{permission}",
+            status="denied",
+            detail=str(exc),
+        )
+        raise HTTPException(status_code=401, detail="API key missing or invalid") from exc
+
+    if not orchestrator_v2.has_permission(actor, permission):
+        await orchestrator_v2.append_audit(
+            actor=actor,
+            action="auth.check",
+            resource=f"permission:{permission}",
+            status="denied",
+            detail="missing permission",
+        )
+        raise HTTPException(status_code=403, detail=f"forbidden: missing permission '{permission}'")
+    return actor
+
+
+def require_v2_permission(permission: str):
+    async def _dep(
+        x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> ApiKeyRecord:
+        return await _require_v2_permission(permission, x_api_key, authorization)
+
+    return _dep
+
+
+@router_v2.post("/jobs", response_model=JobResponse)
+async def create_job_v2(
+    req: JobCreateRequest,
+    actor: ApiKeyRecord = Depends(require_v2_permission("job.write")),
+) -> JobResponse:
+    try:
+        created = await orchestrator_v2.create_job(req)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="job.create",
+        resource=f"job:{created.id}",
+        status="ok",
+    )
+    return created
+
+
+@router_v2.get("/jobs", response_model=list[JobResponse])
+async def list_jobs_v2(
+    actor: ApiKeyRecord = Depends(require_v2_permission("job.read")),
+) -> list[JobResponse]:
+    rows = await orchestrator_v2.list_jobs()
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="job.list",
+        resource="job:*",
+        status="ok",
+    )
+    return rows
+
+
+@router_v2.get("/jobs/{job_id}", response_model=JobResponse)
+async def get_job_v2(
+    job_id: str,
+    actor: ApiKeyRecord = Depends(require_v2_permission("job.read")),
+) -> JobResponse:
+    try:
+        payload = await orchestrator_v2.get_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="job.read",
+        resource=f"job:{job_id}",
+        status="ok",
+    )
+    return payload
+
+
+@router_v2.get("/jobs/{job_id}/events")
+async def get_job_events_v2(
+    job_id: str,
+    from_seq: int = Query(default=0, ge=0),
+    actor: ApiKeyRecord = Depends(require_v2_permission("job.read")),
+):
+    async def _stream():
+        seq = int(from_seq)
+        idle_ticks = 0
+        terminal = {JobStatus.completed, JobStatus.failed, JobStatus.cancelled}
+        while True:
+            try:
+                events, status = await orchestrator_v2.list_events_since(job_id, from_seq=seq)
+            except KeyError:
+                payload = {"error": "Job not found", "job_id": job_id}
+                yield f"event: error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                return
+
+            if events:
+                for event in events:
+                    seq = event.seq_no
+                    blob = json.dumps(event.model_dump(mode="json"), ensure_ascii=False)
+                    yield f"event: {event.event_type}\ndata: {blob}\n\n"
+                idle_ticks = 0
+            else:
+                idle_ticks += 1
+                if idle_ticks % 15 == 0:
+                    yield "event: ping\ndata: {}\n\n"
+
+            if status in terminal and not events:
+                yield "event: completed\ndata: {}\n\n"
+                return
+            await asyncio.sleep(0.8)
+
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="job.events",
+        resource=f"job:{job_id}",
+        status="ok",
+    )
+    return StreamingResponse(_stream(), media_type="text/event-stream")
+
+
+@router_v2.post("/jobs/{job_id}/actions/{action_group_id}/approve", response_model=JobActionDecisionResponse)
+async def approve_action_group_v2(
+    job_id: str,
+    action_group_id: str,
+    req: JobActionDecisionRequest,
+    actor: ApiKeyRecord = Depends(require_v2_permission("command.approve")),
+) -> JobActionDecisionResponse:
+    try:
+        return await orchestrator_v2.approve_action_group(
+            job_id,
+            action_group_id,
+            actor_key_id=actor.id,
+            actor_name=actor.name,
+            reason=req.reason,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Job or action group not found") from exc
+
+
+@router_v2.post("/jobs/{job_id}/actions/{action_group_id}/reject", response_model=JobActionDecisionResponse)
+async def reject_action_group_v2(
+    job_id: str,
+    action_group_id: str,
+    req: JobActionDecisionRequest,
+    actor: ApiKeyRecord = Depends(require_v2_permission("command.approve")),
+) -> JobActionDecisionResponse:
+    try:
+        return await orchestrator_v2.reject_action_group(
+            job_id,
+            action_group_id,
+            actor_key_id=actor.id,
+            actor_name=actor.name,
+            reason=req.reason,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Job or action group not found") from exc
+
+
+@router_v2.get("/jobs/{job_id}/timeline", response_model=JobTimelineResponse)
+async def get_job_timeline_v2(
+    job_id: str,
+    actor: ApiKeyRecord = Depends(require_v2_permission("job.read")),
+) -> JobTimelineResponse:
+    try:
+        payload = await orchestrator_v2.get_timeline(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="job.timeline",
+        resource=f"job:{job_id}",
+        status="ok",
+    )
+    return payload
+
+
+@router_v2.get("/jobs/{job_id}/report")
+async def get_job_report_v2(
+    job_id: str,
+    format: str = Query(default="json"),
+    actor: ApiKeyRecord = Depends(require_v2_permission("job.read")),
+) -> JobReportResponse | dict:
+    fmt = str(format or "json").strip().lower()
+    if fmt not in {"json", "markdown", "pdf"}:
+        raise HTTPException(status_code=400, detail="format must be one of: json, markdown, pdf")
+    try:
+        payload = await orchestrator_v2.build_report(job_id, fmt=fmt)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="job.report",
+        resource=f"job:{job_id}",
+        status="ok",
+        detail=f"format={fmt}",
+    )
+    return payload
+
+
+@router_v2.post("/keys", response_model=ApiKeyCreateResponse)
+async def create_api_key_v2(
+    req: ApiKeyCreateRequest,
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> ApiKeyCreateResponse:
+    actor: ApiKeyRecord | None = None
+    if await orchestrator_v2.key_count() > 0:
+        actor = await _require_v2_permission("policy.write", x_api_key, authorization)
+
+    try:
+        payload = await orchestrator_v2.create_api_key(req)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="key.create",
+        resource=f"key:{payload.id}",
+        status="ok",
+    )
+    return payload
+
+
+@router_v2.get("/keys", response_model=list[ApiKeyListItem])
+async def list_api_keys_v2(
+    actor: ApiKeyRecord = Depends(require_v2_permission("policy.write")),
+) -> list[ApiKeyListItem]:
+    payload = await orchestrator_v2.list_api_keys()
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="key.list",
+        resource="key:*",
+        status="ok",
+    )
+    return payload
+
+
+@router_v2.delete("/keys/{key_id}")
+async def delete_api_key_v2(
+    key_id: str,
+    actor: ApiKeyRecord = Depends(require_v2_permission("policy.write")),
+):
+    deleted = await orchestrator_v2.delete_api_key(key_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="API key not found")
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="key.delete",
+        resource=f"key:{key_id}",
+        status="ok",
+    )
+    return {"deleted": True}
+
+
+@router_v2.get("/audit/logs", response_model=list[AuditLog])
+async def get_audit_logs_v2(
+    actor: ApiKeyRecord = Depends(require_v2_permission("audit.read")),
+) -> list[AuditLog]:
+    payload = await orchestrator_v2.list_audit_logs()
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="audit.logs",
+        resource="audit:logs",
+        status="ok",
+    )
+    return payload
+
+
+@router_v2.get("/audit/reports")
+async def get_audit_report_v2(
+    actor: ApiKeyRecord = Depends(require_v2_permission("audit.read")),
+):
+    payload = await orchestrator_v2.audit_report()
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="audit.report",
+        resource="audit:report",
+        status="ok",
+    )
+    return payload
+
+
+@router_v2.get("/command-profiles", response_model=list[CommandProfile])
+async def get_command_profiles_v2(
+    actor: ApiKeyRecord = Depends(require_v2_permission("audit.read")),
+) -> list[CommandProfile]:
+    payload = await orchestrator_v2.list_command_profiles()
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="profile.list",
+        resource="command_profile:*",
+        status="ok",
+    )
+    return payload

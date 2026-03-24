@@ -10,6 +10,10 @@
 - 自动化等级开关：只读 / 半自动 / 全自动
 - 高风险命令确认弹窗与审计时间线
 - 会话导出（Markdown）
+- V3 多设备并发任务编排（/v2 异步任务 API）
+- API Key 鉴权 + 权限标签（轻量 RBAC）
+- 多设备时间聚类 + 拓扑因果边 + 根因候选输出
+- 命令能力画像（版本级成功率/错误/替代命中）
 
 ## 用户文档
 
@@ -43,12 +47,85 @@ docker compose up --build
 
 ## API
 
+### v1（保持兼容）
+
 - `POST /v1/sessions`
 - `PATCH /v1/sessions/{id}`
 - `POST /v1/sessions/{id}/messages` (SSE)
 - `POST /v1/sessions/{id}/commands/{cmdId}/confirm`
 - `GET /v1/sessions/{id}/timeline`
 - `POST /v1/sessions/{id}/export`
+
+### v2（多设备任务）
+
+- `POST /v2/keys`
+- `GET /v2/keys`
+- `DELETE /v2/keys/{id}`
+- `POST /v2/jobs`
+- `GET /v2/jobs`
+- `GET /v2/jobs/{jobId}`
+- `GET /v2/jobs/{jobId}/events` (SSE)
+- `POST /v2/jobs/{jobId}/actions/{actionGroupId}/approve`
+- `POST /v2/jobs/{jobId}/actions/{actionGroupId}/reject`
+- `GET /v2/jobs/{jobId}/timeline`
+- `GET /v2/jobs/{jobId}/report?format=json|markdown|pdf`
+- `GET /v2/audit/logs`
+- `GET /v2/audit/reports`
+- `GET /v2/command-profiles`
+
+## v2 快速调用示例
+
+### 1) 初始化管理员 Key（首次可无鉴权）
+
+```bash
+curl -sS -X POST 'http://127.0.0.1:8000/v2/keys' \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"admin","permissions":["*"]}'
+```
+
+### 2) 创建多设备任务（诊断模式）
+
+```bash
+curl -sS -X POST 'http://127.0.0.1:8000/v2/jobs' \
+  -H 'X-API-Key: <YOUR_API_KEY>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "跨设备故障分析",
+    "problem": "5分钟内多设备告警，定位根因和传播链",
+    "mode": "diagnosis",
+    "max_gap_seconds": 300,
+    "topology_mode": "hybrid",
+    "max_device_concurrency": 20,
+    "devices": [
+      {"host":"192.168.0.88","protocol":"ssh","username":"zhangwei","password":"Huawei@123"},
+      {"host":"192.168.0.101","protocol":"ssh","username":"zhangwei","password":"Admin@123"},
+      {"host":"192.168.0.102","protocol":"ssh","username":"zhangwei","password":"Admin@123"}
+    ]
+  }'
+```
+
+### 3) 订阅事件流
+
+```bash
+curl -N -H 'X-API-Key: <YOUR_API_KEY>' \
+  'http://127.0.0.1:8000/v2/jobs/<JOB_ID>/events?from_seq=0'
+```
+
+### 4) 获取报告
+
+```bash
+curl -sS -H 'X-API-Key: <YOUR_API_KEY>' \
+  'http://127.0.0.1:8000/v2/jobs/<JOB_ID>/report?format=markdown'
+```
+
+## 权限标签建议
+
+- `job.read`: 读取任务、时间线、报告、事件
+- `job.write`: 创建任务
+- `command.approve`: 审批/拒绝命令组
+- `policy.write`: 管理 API Key / 策略
+- `audit.read`: 审计日志与报表读取
+- `command.execute`: 预留给后续执行面增强
 
 ## 单次设备诊断
 
