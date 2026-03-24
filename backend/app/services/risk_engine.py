@@ -145,7 +145,7 @@ class RiskEngine:
                 risk_level=risk,
                 allowed=True,
                 requires_confirmation=(risk == RiskLevel.high),
-                reason="High-risk commands require approval in assisted mode." if risk == RiskLevel.high else "",
+                reason="High-risk commands require approval in low-risk mode." if risk == RiskLevel.high else "",
             )
 
         return RiskDecision(risk_level=risk, allowed=True, requires_confirmation=False)

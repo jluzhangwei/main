@@ -9,6 +9,7 @@ from app.models.schemas import (
     DeviceProtocol,
     DeviceTarget,
     IncidentSummary,
+    OperationMode,
     RiskLevel,
     SessionCreateRequest,
 )
@@ -226,6 +227,38 @@ class _StatefulPendingConfirmDiagnoser:
         return None
 
 
+class _SingleCommandDiagnoser:
+    enabled = True
+
+    def __init__(self, command: str):
+        self.command = command
+
+    async def propose_next_step(
+        self,
+        *,
+        session,
+        user_problem: str,
+        commands,
+        evidences,
+        iteration: int,
+        max_iterations: int,
+        conversation_history=None,
+    ):
+        if iteration == 1:
+            return {"decision": "run_command", "title": "单步命令", "command": self.command}
+        return {
+            "decision": "final",
+            "mode": "query",
+            "query_result": "done",
+            "follow_up_action": "done",
+            "confidence": 0.8,
+            "evidence_refs": [],
+        }
+
+    async def diagnose(self, session, commands, evidences):
+        return None
+
+
 @pytest.mark.asyncio
 async def test_assisted_mode_executes_whitelisted_high_risk_without_confirmation():
     store = InMemoryStore()
@@ -248,6 +281,7 @@ async def test_assisted_mode_executes_whitelisted_high_risk_without_confirmation
         SessionCreateRequest(
             device=DeviceTarget(host="10.0.0.1", protocol=DeviceProtocol.ssh),
             automation_level=AutomationLevel.assisted,
+            operation_mode=OperationMode.config,
         )
     )
 
@@ -438,6 +472,7 @@ async def test_reuses_same_adapter_so_enable_state_survives_following_commands(m
         SessionCreateRequest(
             device=DeviceTarget(host="10.0.0.11", protocol=DeviceProtocol.ssh),
             automation_level=AutomationLevel.full_auto,
+            operation_mode=OperationMode.config,
         )
     )
 
@@ -447,7 +482,7 @@ async def test_reuses_same_adapter_so_enable_state_survives_following_commands(m
     commands = store.list_commands(session.id)
     assert any(cmd.command == "enable" and cmd.status == CommandStatus.succeeded for cmd in commands)
     privilege_checks = [cmd for cmd in commands if cmd.command == "show privilege"]
-    assert privilege_checks and "15" in (privilege_checks[0].output or "")
+    assert privilege_checks and any("15" in (item.output or "") for item in privilege_checks)
     assert any(cmd.command == "configure terminal" and cmd.status == CommandStatus.succeeded for cmd in commands)
     assert len(created_adapters) == 1
 
@@ -471,6 +506,7 @@ async def test_confirm_command_uses_same_adapter_context_after_enable(monkeypatc
         SessionCreateRequest(
             device=DeviceTarget(host="10.0.0.12", protocol=DeviceProtocol.ssh),
             automation_level=AutomationLevel.assisted,
+            operation_mode=OperationMode.config,
         )
     )
     store.update_command_policy(
@@ -517,3 +553,77 @@ def test_append_command_result_includes_permission_hint_for_low_privilege():
     latest = store.list_ai_context(session.id)[-1]["content"]
     assert "permission_state: insufficient(level=1)" in latest
     assert "权限不足" in latest
+
+
+@pytest.mark.asyncio
+async def test_query_mode_hard_blocks_mutating_command_before_policy():
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    orchestrator.deepseek_diagnoser = _SingleCommandDiagnoser("configure terminal")
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(host="10.0.0.31", protocol=DeviceProtocol.ssh),
+            automation_level=AutomationLevel.full_auto,
+            operation_mode=OperationMode.query,
+        )
+    )
+
+    async for _ in orchestrator.stream_message(session.id, "查询模式试图执行配置命令"):
+        pass
+
+    commands = store.list_commands(session.id)
+    blocked = [item for item in commands if item.command.strip().lower() == "configure terminal"]
+    assert blocked
+    assert blocked[0].status == CommandStatus.blocked
+    assert blocked[0].constraint_source == "mode_scope_block"
+    assert "Out-of-scope for mode=query" in (blocked[0].error or "")
+
+
+@pytest.mark.asyncio
+async def test_diagnosis_mode_hard_blocks_mutating_command_before_policy():
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    orchestrator.deepseek_diagnoser = _SingleCommandDiagnoser("shutdown")
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(host="10.0.0.32", protocol=DeviceProtocol.ssh),
+            automation_level=AutomationLevel.full_auto,
+            operation_mode=OperationMode.diagnosis,
+        )
+    )
+
+    async for _ in orchestrator.stream_message(session.id, "诊断模式试图执行变更命令"):
+        pass
+
+    commands = store.list_commands(session.id)
+    blocked = [item for item in commands if item.command.strip().lower() == "shutdown"]
+    assert blocked
+    assert blocked[0].status == CommandStatus.blocked
+    assert blocked[0].constraint_source == "mode_scope_block"
+    assert "Out-of-scope for mode=diagnosis" in (blocked[0].error or "")
+
+
+@pytest.mark.asyncio
+async def test_config_mode_allows_mutating_command_to_continue_policy_pipeline():
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    orchestrator.deepseek_diagnoser = _SingleCommandDiagnoser("configure terminal")
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(host="10.0.0.33", protocol=DeviceProtocol.ssh),
+            automation_level=AutomationLevel.full_auto,
+            operation_mode=OperationMode.config,
+        )
+    )
+
+    async for _ in orchestrator.stream_message(session.id, "配置模式执行配置命令"):
+        pass
+
+    commands = store.list_commands(session.id)
+    target = [item for item in commands if item.command.strip().lower() == "configure terminal"]
+    assert target
+    assert target[0].status == CommandStatus.succeeded
+    assert target[0].constraint_source in {"full_auto_allow", "policy_allow", "default_allow"}

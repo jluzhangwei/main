@@ -38,6 +38,29 @@ ACTION_MARKER_RULES = (
     "若任务已闭环且无需继续动作，follow_up_action或recommendation必须包含以下词之一：已完成、无需。"
 )
 
+MINIMAL_CHANGE_RULES = (
+    "变更执行遵循通用“最小必要变更”原则："
+    "优先闭环当前会话目标与已确认根因，不做机会性扩展修复。"
+    "若发现其他潜在问题，可写入follow_up_action/recommendation，但不要在同一轮直接下发无关变更命令。"
+    "配置命令必须具备证据锚点：命令中的目标对象需在用户目标或当前会话证据中出现。"
+    "若已定位到单一对象（如某接口/邻居/下一跳），后续变更仅允许作用于该对象，禁止扩展到未验证对象。"
+    "若要引入新对象或新子域，先返回只读验证命令收集证据，待证据成立后再变更。"
+)
+
+BASELINE_CONTEXT_RULES = (
+    "系统已在每轮开始前自动执行基线采集：版本识别、设备时钟、会话权限。"
+    "你应优先利用这些基线证据做判断，减少重复探测命令。"
+    "仅在证据不足或状态可能变化时，再追加必要复核命令。"
+)
+
+MODE_SCOPE_RULES = (
+    "你必须严格遵守会话模式边界（字段“会话模式”）："
+    "当会话模式为query或diagnosis时，只能输出采集/查询类命令，禁止输出配置变更类命令。"
+    "配置变更类命令包括但不限于configure terminal/system-view/interface/shutdown/no shutdown/undo/save/write memory/commit。"
+    "当会话模式为config时，允许输出配置变更命令，但必须先给出必要的只读验证，并在变更后给出复核命令。"
+    "若当前模式无法完成目标，请在reason中明确说明“需要切换到配置模式”，不要直接越界下发命令。"
+)
+
 NEXT_STEP_SYSTEM_PROMPT_WITH_HISTORY = (
     "你是网络故障诊断代理。"
     "你正在同一会话内连续对话，必须结合已有上下文。"
@@ -57,7 +80,10 @@ NEXT_STEP_SYSTEM_PROMPT_WITH_HISTORY = (
     "禁止凭空假设接口名（如Ethernet1/Gi1/0/1）并直接下发配置。"
     f"{OUTPUT_COMPACTION_RULES}"
     f"{PERMISSION_PRECHECK_RULES}"
+    f"{MODE_SCOPE_RULES}"
     f"{ACTION_MARKER_RULES}"
+    f"{MINIMAL_CHANGE_RULES}"
+    f"{BASELINE_CONTEXT_RULES}"
 )
 
 NEXT_STEP_SYSTEM_PROMPT = (
@@ -78,7 +104,10 @@ NEXT_STEP_SYSTEM_PROMPT = (
     "禁止凭空假设接口名（如Ethernet1/Gi1/0/1）并直接下发配置。"
     f"{OUTPUT_COMPACTION_RULES}"
     f"{PERMISSION_PRECHECK_RULES}"
+    f"{MODE_SCOPE_RULES}"
     f"{ACTION_MARKER_RULES}"
+    f"{MINIMAL_CHANGE_RULES}"
+    f"{BASELINE_CONTEXT_RULES}"
 )
 
 PRIMARY_SUMMARY_SYSTEM_PROMPT = (
@@ -663,6 +692,7 @@ class DeepSeekDiagnoser:
             "若包含配置变更，请先用只读命令采集当前状态，再给出配置命令组。"
             "不要在同一个commands数组里混合“状态采集命令”和“配置变更命令”。"
             "若用户未明确对象标识（如接口名），先返回发现对象的只读命令，不要猜测对象名。"
+            "同一轮变更应聚焦一个已证实目标；其他潜在问题写入follow_up_action，不要并行下发。"
         )
 
     def _extract_content(self, data: dict[str, Any]) -> str:

@@ -4,6 +4,7 @@ import pytest
 
 from app.models.schemas import (
     AutomationLevel,
+    CommandCapabilityUpsertRequest,
     DeviceProtocol,
     DeviceTarget,
     OperationMode,
@@ -73,6 +74,52 @@ class _ErrorOutputAdapter:
         if command.strip().lower() == "show inventory":
             return "            ^\nError: Unrecognized command found at '^' position."
         return "ok"
+
+
+class _PermissionErrorAdapter:
+    def __init__(self):
+        self.last_command_meta = {}
+        self.calls: list[str] = []
+
+    async def connect(self):
+        return None
+
+    async def close(self):
+        return None
+
+    async def run_command(self, command: str):
+        self.calls.append(command)
+        self.last_command_meta = {
+            "original_command": command,
+            "translated_command": command,
+            "effective_command": command,
+            "retry_used": False,
+            "simulated": False,
+        }
+        return "% Invalid input (privileged mode required)"
+
+
+class _AlwaysSyntaxErrorAdapter:
+    def __init__(self):
+        self.last_command_meta = {}
+        self.calls: list[str] = []
+
+    async def connect(self):
+        return None
+
+    async def close(self):
+        return None
+
+    async def run_command(self, command: str):
+        self.calls.append(command)
+        self.last_command_meta = {
+            "original_command": command,
+            "translated_command": command,
+            "effective_command": command,
+            "retry_used": False,
+            "simulated": False,
+        }
+        return "        ^\nError: Unrecognized command found at '^' position."
 
 
 class _RetrySuccessAdapter:
@@ -204,3 +251,182 @@ async def test_learns_rewrite_rule_and_rewrites_before_execution(monkeypatch):
     assert len(rows) >= 2
     assert rows[-1].command.strip().lower() == "display version"
     assert rows[-1].capability_state in {"rewrite_hit", "learned_update"}
+
+
+@pytest.mark.asyncio
+async def test_permission_mode_error_is_not_learned_as_block(monkeypatch):
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    orchestrator.deepseek_diagnoser = _AlwaysRunSameCommandDiagnoser("show running-config | include routing")
+
+    adapter = _PermissionErrorAdapter()
+
+    def _build_adapter(_session, *, allow_simulation=True):
+        return adapter
+
+    monkeypatch.setattr("app.services.orchestrator.build_adapter", _build_adapter)
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(host="192.168.0.102", protocol=DeviceProtocol.ssh),
+            automation_level=AutomationLevel.full_auto,
+            operation_mode=OperationMode.query,
+        )
+    )
+    store.update_session_device_profile(
+        session.id,
+        vendor="arista",
+        platform="veos-lab",
+        software_version="4.32.4.1m",
+        version_signature="arista|veos-lab|4.32.4.1m",
+    )
+
+    async for _ in orchestrator.stream_message(session.id, "检查一次"):
+        pass
+
+    learned_rules = store.list_command_capability_rules(version_signature="arista|veos-lab|4.32.4.1m")
+    assert not any(
+        item.action == "block" and item.command_key == "show running-config | include routing"
+        for item in learned_rules
+    )
+    rows = [item for item in store.list_commands(session.id) if item.original_command == "show running-config | include routing"]
+    assert rows
+    assert rows[-1].capability_state == "learn_skipped"
+
+
+@pytest.mark.asyncio
+async def test_permission_sensitive_learned_block_rule_is_ignored(monkeypatch):
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    orchestrator.deepseek_diagnoser = _AlwaysRunSameCommandDiagnoser("show running-config | include routing")
+
+    adapter = _ErrorOutputAdapter()
+
+    def _build_adapter(_session, *, allow_simulation=True):
+        return adapter
+
+    monkeypatch.setattr("app.services.orchestrator.build_adapter", _build_adapter)
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(host="192.168.0.102", protocol=DeviceProtocol.ssh),
+            automation_level=AutomationLevel.full_auto,
+            operation_mode=OperationMode.query,
+        )
+    )
+    store.update_session_device_profile(
+        session.id,
+        vendor="arista",
+        platform="veos-lab",
+        software_version="4.32.4.1m",
+        version_signature="arista|veos-lab|4.32.4.1m",
+    )
+    store.upsert_command_capability_rule(
+        CommandCapabilityUpsertRequest(
+            scope_type="version",
+            protocol=DeviceProtocol.ssh,
+            version_signature="arista|veos-lab|4.32.4.1m",
+            command_key="show running-config | include routing",
+            action="block",
+            reason_code="cli_syntax_error",
+            reason_text="% Invalid input (privileged mode required)",
+            source="learned",
+            enabled=True,
+        )
+    )
+
+    async for _ in orchestrator.stream_message(session.id, "检查一次"):
+        pass
+
+    rows = [item for item in store.list_commands(session.id) if item.original_command == "show running-config | include routing"]
+    assert rows
+    assert rows[-1].status.value != "blocked"
+    assert rows[-1].capability_state in {"block_skip_permission", "learn_skipped", "learned_update", "rewrite_hit", None}
+
+
+@pytest.mark.asyncio
+async def test_mode_sensitive_error_is_not_learned_as_block(monkeypatch):
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    orchestrator.deepseek_diagnoser = _AlwaysRunSameCommandDiagnoser("interface Ethernet1/0/6")
+
+    adapter = _AlwaysSyntaxErrorAdapter()
+
+    def _build_adapter(_session, *, allow_simulation=True):
+        return adapter
+
+    monkeypatch.setattr("app.services.orchestrator.build_adapter", _build_adapter)
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(host="192.168.0.88", protocol=DeviceProtocol.ssh),
+            automation_level=AutomationLevel.full_auto,
+            operation_mode=OperationMode.config,
+        )
+    )
+    store.update_session_device_profile(
+        session.id,
+        vendor="huawei",
+        platform="ne40e",
+        software_version="8.180",
+        version_signature="huawei|ne40e|8.180",
+    )
+
+    async for _ in orchestrator.stream_message(session.id, "打开接口"):
+        pass
+
+    learned_rules = store.list_command_capability_rules(version_signature="huawei|ne40e|8.180")
+    assert not any(item.action == "block" and item.command_key == "interface ethernet1/0/6" for item in learned_rules)
+    rows = [item for item in store.list_commands(session.id) if item.original_command == "interface Ethernet1/0/6"]
+    assert rows
+    assert rows[-1].capability_state == "learn_skipped"
+
+
+@pytest.mark.asyncio
+async def test_mode_sensitive_learned_block_rule_is_ignored(monkeypatch):
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    orchestrator.deepseek_diagnoser = _AlwaysRunSameCommandDiagnoser("interface Ethernet1/0/6")
+
+    adapter = _ErrorOutputAdapter()
+
+    def _build_adapter(_session, *, allow_simulation=True):
+        return adapter
+
+    monkeypatch.setattr("app.services.orchestrator.build_adapter", _build_adapter)
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(host="192.168.0.88", protocol=DeviceProtocol.ssh),
+            automation_level=AutomationLevel.full_auto,
+            operation_mode=OperationMode.config,
+        )
+    )
+    store.update_session_device_profile(
+        session.id,
+        vendor="huawei",
+        platform="ne40e",
+        software_version="8.180",
+        version_signature="huawei|ne40e|8.180",
+    )
+    store.upsert_command_capability_rule(
+        CommandCapabilityUpsertRequest(
+            scope_type="version",
+            protocol=DeviceProtocol.ssh,
+            version_signature="huawei|ne40e|8.180",
+            command_key="interface Ethernet1/0/6",
+            action="block",
+            reason_code="cli_syntax_error",
+            reason_text="Error: Unrecognized command found at '^' position.",
+            source="learned",
+            enabled=True,
+        )
+    )
+
+    async for _ in orchestrator.stream_message(session.id, "打开接口"):
+        pass
+
+    rows = [item for item in store.list_commands(session.id) if item.original_command == "interface Ethernet1/0/6"]
+    assert rows
+    assert rows[-1].status.value != "blocked"
+    assert rows[-1].capability_state in {"block_skip_mode_sensitive", "learn_skipped", "learned_update", "rewrite_hit", None}

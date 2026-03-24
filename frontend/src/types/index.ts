@@ -60,6 +60,8 @@ export type CommandExecution = {
   capability_state?: string
   capability_reason?: string
   capability_rule_id?: string
+  constraint_source?: string
+  constraint_reason?: string
 }
 
 export type Evidence = {

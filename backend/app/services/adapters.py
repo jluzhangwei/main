@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import shutil
+import subprocess
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -38,8 +41,12 @@ class SSHAdapter(DeviceAdapter):
         self.conn = None
         self.connection_error: Optional[Exception] = None
         self._paging_configured = False
+        self._use_expect_fallback = False
 
     async def connect(self) -> None:
+        if self._use_expect_fallback:
+            return
+
         if self.conn:
             try:
                 alive = await asyncio.to_thread(self.conn.is_alive)
@@ -53,6 +60,7 @@ class SSHAdapter(DeviceAdapter):
 
         if ConnectHandler and self.session.device.username and self.session.device.password:
             candidates = self._candidate_device_types()
+            banner_reset_seen = False
             for candidate in candidates:
                 for _ in range(2):
                     try:
@@ -66,7 +74,7 @@ class SSHAdapter(DeviceAdapter):
                             timeout=10,
                             conn_timeout=15,
                             auth_timeout=15,
-                            banner_timeout=20,
+                            banner_timeout=45,
                             keepalive=30,
                         )
                         if not await self._probe_device_identity(candidate):
@@ -89,11 +97,39 @@ class SSHAdapter(DeviceAdapter):
                         self.connection_error = exc
                         if self._is_auth_error(exc):
                             break
-                        await asyncio.sleep(0.25)
+                        if self._is_banner_reset_error(exc):
+                            banner_reset_seen = True
+                            # Remote side reset before SSH banner; avoid rapid hammering.
+                            await asyncio.sleep(1.2)
+                            break
+                        await asyncio.sleep(0.35)
+
+                if banner_reset_seen:
+                    # Banner reset is transport-side and independent from device_type probing.
+                    # Stop rotating candidates to reduce repeated resets.
+                    break
 
             if not self.allow_simulation:
+                if self._can_use_expect_fallback():
+                    ok, error_message = await asyncio.to_thread(self._probe_expect_login)
+                    if ok:
+                        self._use_expect_fallback = True
+                        self.connection_error = None
+                        self._paging_configured = False
+                        return
+                    if error_message:
+                        self.connection_error = RuntimeError(error_message)
                 raise self.connection_error
         elif not self.allow_simulation:
+            if self._can_use_expect_fallback():
+                ok, error_message = await asyncio.to_thread(self._probe_expect_login)
+                if ok:
+                    self._use_expect_fallback = True
+                    self.connection_error = None
+                    self._paging_configured = False
+                    return
+                if error_message:
+                    raise RuntimeError(error_message)
             raise RuntimeError("SSH connection cannot be established without netmiko and credentials")
 
     async def run_command(self, command: str) -> str:
@@ -116,6 +152,30 @@ class SSHAdapter(DeviceAdapter):
                 await self.connect()
             except Exception:
                 pass
+
+        if self._use_expect_fallback:
+            try:
+                prepared_commands = self._prepare_expect_commands(command_parts or [translated])
+                output = await asyncio.to_thread(
+                    self._run_expect_commands,
+                    prepared_commands,
+                    True,
+                )
+                self.last_command_meta.update({"effective_command": translated, "retry_used": False})
+                self._refresh_vendor_hint_from_output(output)
+                self._refresh_device_name_from_output(output)
+                return output
+            except Exception as exc:
+                if self.allow_simulation:
+                    self.last_command_meta.update(
+                        {
+                            "effective_command": command,
+                            "simulated": True,
+                            "execution_error": str(exc),
+                        }
+                    )
+                    return _simulate_cli_output(command)
+                raise
 
         for attempt in range(2):
             if not self.conn:
@@ -199,7 +259,7 @@ class SSHAdapter(DeviceAdapter):
                 raise
 
         if workflow_commands:
-            if self._is_pure_config_workflow(command_parts):
+            if self._is_pure_config_workflow(command_parts) and not self._should_force_compound_timing(command_parts):
                 try:
                     self.last_command_meta.update({"effective_command": translated, "retry_used": False})
                     return await asyncio.to_thread(
@@ -275,6 +335,184 @@ class SSHAdapter(DeviceAdapter):
             finally:
                 self.conn = None
                 self._paging_configured = False
+        self._use_expect_fallback = False
+
+    def _can_use_expect_fallback(self) -> bool:
+        return bool(
+            self.session.device.username
+            and self.session.device.password
+            and shutil.which("ssh")
+            and shutil.which("expect")
+        )
+
+    def _probe_expect_login(self) -> tuple[bool, str | None]:
+        try:
+            self._run_expect_commands([], configure_paging=False)
+            return True, None
+        except Exception as exc:
+            return False, str(exc)
+
+    def _run_expect_commands(self, commands: list[str], configure_paging: bool = True) -> str:
+        host = (self.session.device.host or "").strip()
+        user = (self.session.device.username or "").strip()
+        password = self.session.device.password or ""
+        port = int(self.session.device.port or 22)
+        if not host or not user:
+            raise RuntimeError("SSH expect fallback requires host and username")
+
+        final_commands = [cmd.strip() for cmd in commands if cmd and cmd.strip()]
+        if configure_paging and not self._paging_configured:
+            paging_candidates = self._paging_disable_candidates()
+            if paging_candidates:
+                final_commands.insert(0, paging_candidates[0])
+            self._paging_configured = True
+
+        script = r'''
+set timeout 45
+match_max 262144
+log_user 0
+set host $env(NETOPS_EXPECT_HOST)
+set port $env(NETOPS_EXPECT_PORT)
+set user $env(NETOPS_EXPECT_USER)
+set pass $env(NETOPS_EXPECT_PASSWORD)
+set cmds [split $env(NETOPS_EXPECT_COMMANDS) "\n"]
+set confirm_default [string toupper $env(NETOPS_EXPECT_CONFIRM_DEFAULT)]
+if {$confirm_default ne "Y" && $confirm_default ne "N"} {
+  set confirm_default "Y"
+}
+set prompt_re {(<[^>\r\n]+>|\[[^\]\r\n]+\]|[A-Za-z0-9._/-]{1,128}(\([^)]+\))?[>#])\s*$}
+set yn_prompt_re {(?i)(\[(yes/no|y/n|y\(yes\)/n\(no\)(/c\(cancel\))?)\]|(yes/no|y/n|y\(yes\)/n\(no\))|are you sure|continue\?|confirm\?)\s*:?\s*$}
+set more_prompt_re {(?i)(----\s*more\s*----|--more--|<---\s*more\s*--->|press any key to continue|press .* key to continue)}
+spawn ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o ConnectTimeout=10 -p $port $user@$host
+expect {
+  -re "(?i)password:" { send -- "$pass\r"; exp_continue }
+  -re "(?i)permission denied" { puts "__AUTH_FAILED__"; exit 13 }
+  -re "(?i)connection closed by remote host" { puts "__SSH_CLOSED__"; exit 14 }
+  -re "(?i)connection reset" { puts "__SSH_RESET__"; exit 15 }
+  -re "(?i)connection timed out|operation timed out|no route to host|host unreachable" { puts "__SSH_TIMEOUT__"; exit 16 }
+  -re $more_prompt_re { send -- " "; exp_continue }
+  -re $yn_prompt_re { send -- "$confirm_default\r"; exp_continue }
+  -re $prompt_re {}
+  timeout { puts "__SSH_TIMEOUT__"; exit 16 }
+  eof { puts "__SSH_EOF__"; exit 17 }
+}
+set all ""
+foreach cmd $cmds {
+  if {[string trim $cmd] eq ""} {
+    continue
+  }
+  send -- "$cmd\r"
+  expect {
+    -re $more_prompt_re {
+      send -- " "
+      exp_continue
+    }
+    -re $yn_prompt_re {
+      send -- "$confirm_default\r"
+      exp_continue
+    }
+    -re $prompt_re {
+      append all "\n# $cmd\n$expect_out(buffer)\n"
+    }
+    timeout {
+      append all "\n# $cmd\n__CMD_TIMEOUT__\n"
+      break
+    }
+    eof {
+      append all "\n# $cmd\n__SSH_EOF__\n"
+      break
+    }
+  }
+}
+send -- "quit\r"
+expect eof
+puts $all
+'''
+        env = os.environ.copy()
+        env["NETOPS_EXPECT_HOST"] = host
+        env["NETOPS_EXPECT_PORT"] = str(port)
+        env["NETOPS_EXPECT_USER"] = user
+        env["NETOPS_EXPECT_PASSWORD"] = password
+        env["NETOPS_EXPECT_COMMANDS"] = "\n".join(final_commands)
+        env["NETOPS_EXPECT_CONFIRM_DEFAULT"] = "Y"
+        result = subprocess.run(
+            [
+                "expect",
+                "-c",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=70,
+            env=env,
+        )
+        out = self._sanitize_expect_output((result.stdout or "").strip())
+        err = self._sanitize_expect_output((result.stderr or "").strip())
+        if result.returncode == 0:
+            return out
+        message = out or err or f"expect exited with code {result.returncode}"
+        lowered = message.lower()
+        if "__AUTH_FAILED__" in message or "permission denied" in lowered or "cannot log on" in lowered:
+            raise RuntimeError("SSH authentication failed: username/password rejected by device")
+        if "__SSH_TIMEOUT__" in message:
+            raise RuntimeError("SSH connection timeout in expect fallback")
+        if "__SSH_CLOSED__" in message or "__SSH_RESET__" in message:
+            raise RuntimeError("SSH connection closed/reset by remote host")
+        raise RuntimeError(message)
+
+    def _sanitize_expect_output(self, text: str) -> str:
+        if not text:
+            return text
+        lines: list[str] = []
+        for raw in text.splitlines():
+            line = raw.rstrip()
+            lowered = line.lower()
+            if lowered.startswith("spawn ssh "):
+                continue
+            if "warning: permanently added" in lowered:
+                continue
+            if "password:" in lowered:
+                continue
+            lines.append(line)
+        return "\n".join(lines).strip()
+
+    def _prepare_expect_commands(self, commands: list[str]) -> list[str]:
+        parts = [str(cmd or "").strip() for cmd in commands if str(cmd or "").strip()]
+        if not parts:
+            return []
+
+        prepared: list[str] = []
+        in_config = False
+        for command in parts:
+            normalized = command.lower()
+            if normalized in {"configure terminal", "system-view"}:
+                prepared.append(command)
+                in_config = True
+                continue
+            if normalized in {"end", "return"}:
+                prepared.append(command)
+                in_config = False
+                continue
+            if normalized == "exit":
+                prepared.append(command)
+                in_config = False
+                continue
+
+            if self._looks_like_config_command(command):
+                if not in_config:
+                    prepared.append(self._config_enter_command())
+                    in_config = True
+                prepared.append(command)
+                continue
+
+            if in_config and (self._is_exec_mode_only_command(command) or self._looks_like_readonly_command(command)):
+                prepared.append(self._config_exit_command())
+                in_config = False
+            prepared.append(command)
+
+        if in_config:
+            prepared.append(self._config_exit_command())
+        return prepared
 
     def _resolve_device_type(self) -> str:
         if self.session.device.protocol != DeviceProtocol.telnet:
@@ -340,6 +578,13 @@ class SSHAdapter(DeviceAdapter):
                 "auth failed",
                 "login invalid",
             ]
+        )
+
+    def _is_banner_reset_error(self, exc: Exception) -> bool:
+        lowered = str(exc).lower()
+        return (
+            "error reading ssh protocol banner" in lowered
+            or "connection reset by peer" in lowered
         )
 
     async def _probe_device_identity(self, device_type: str) -> bool:
@@ -434,7 +679,16 @@ class SSHAdapter(DeviceAdapter):
 
     def _is_mode_wrapper(self, command: str) -> bool:
         normalized = command.strip().lower()
-        return normalized in {"configure terminal", "system-view", "return", "exit"}
+        return normalized in {"configure terminal", "system-view", "return", "exit", "quit", "end"}
+
+    def _should_force_compound_timing(self, parts: list[str]) -> bool:
+        if not parts:
+            return False
+        vendor = (self.session.device.vendor or "").strip().lower()
+        device_type = (self.session.device.device_type or "").strip().lower()
+        if "huawei" in vendor or device_type == "huawei":
+            return True
+        return any(self._is_mode_wrapper(part) for part in parts)
 
     def _is_exec_mode_only_command(self, command: str) -> bool:
         normalized = command.strip().lower()
@@ -486,42 +740,73 @@ class SSHAdapter(DeviceAdapter):
 
             if normalized in {"configure terminal", "system-view"}:
                 out = await asyncio.to_thread(self.conn.send_command_timing, command, read_timeout=45)
-                outputs.append(out)
+                outputs.append(self._wrap_compound_output(command, out))
                 in_config = True
                 continue
 
             if normalized in {"end", "return"}:
                 out = await asyncio.to_thread(self.conn.send_command_timing, command, read_timeout=45)
-                outputs.append(out)
+                outputs.append(self._wrap_compound_output(command, out))
                 in_config = False
                 continue
 
             if normalized == "exit":
                 out = await asyncio.to_thread(self.conn.send_command_timing, command, read_timeout=45)
-                outputs.append(out)
+                outputs.append(self._wrap_compound_output(command, out))
                 in_config = False
                 continue
 
             if self._looks_like_config_command(command):
                 if not in_config:
                     enter = self._config_enter_command()
-                    outputs.append(await asyncio.to_thread(self.conn.send_command_timing, enter, read_timeout=45))
+                    outputs.append(
+                        self._wrap_compound_output(
+                            enter,
+                            await asyncio.to_thread(self.conn.send_command_timing, enter, read_timeout=45),
+                        )
+                    )
                     in_config = True
-                outputs.append(await asyncio.to_thread(self.conn.send_command_timing, command, read_timeout=45))
+                outputs.append(
+                    self._wrap_compound_output(
+                        command,
+                        await asyncio.to_thread(self.conn.send_command_timing, command, read_timeout=45),
+                    )
+                )
                 continue
 
             if in_config and (self._is_exec_mode_only_command(command) or self._looks_like_readonly_command(command)):
                 leave = self._config_exit_command()
-                outputs.append(await asyncio.to_thread(self.conn.send_command_timing, leave, read_timeout=45))
+                outputs.append(
+                    self._wrap_compound_output(
+                        leave,
+                        await asyncio.to_thread(self.conn.send_command_timing, leave, read_timeout=45),
+                    )
+                )
                 in_config = False
 
-            outputs.append(await asyncio.to_thread(self.conn.send_command_timing, command, read_timeout=45))
+            outputs.append(
+                self._wrap_compound_output(
+                    command,
+                    await asyncio.to_thread(self.conn.send_command_timing, command, read_timeout=45),
+                )
+            )
 
         if in_config:
             leave = self._config_exit_command()
-            outputs.append(await asyncio.to_thread(self.conn.send_command_timing, leave, read_timeout=45))
+            outputs.append(
+                self._wrap_compound_output(
+                    leave,
+                    await asyncio.to_thread(self.conn.send_command_timing, leave, read_timeout=45),
+                )
+            )
 
         return "\n".join(part for part in outputs if isinstance(part, str) and part.strip())
+
+    def _wrap_compound_output(self, command: str, output: str) -> str:
+        body = str(output or "").strip()
+        if body:
+            return f"# {command}\n{body}"
+        return f"# {command}\n(无回显)"
 
     def _is_prompt_detection_error(self, exc: Exception) -> bool:
         return "Pattern not detected" in str(exc)

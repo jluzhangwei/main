@@ -45,6 +45,7 @@ import type {
   ServiceTraceStep,
   SessionListItem,
   SessionResponse,
+  Timeline,
 } from './types'
 
 type PageId =
@@ -65,6 +66,7 @@ type PersistedUiState = {
   directionInput?: string
   currentSessionId?: string
   traceListExpanded?: boolean
+  flowLayoutMode?: FlowLayoutMode
 }
 
 const UI_STATE_KEY = 'netops_ui_prefs_v1'
@@ -139,8 +141,11 @@ type CommandDisplayRow = {
 type FlowLane = {
   key: string
   label: string
-  steps: ServiceTraceStep[]
+  steps: Array<ServiceTraceStep | null>
+  realCount: number
 }
+
+type FlowLayoutMode = 'compact' | 'stair'
 
 type ContinuePreview = {
   source: 'pending' | 'none'
@@ -235,6 +240,11 @@ function App() {
   const [sessionDeviceName, setSessionDeviceName] = useState('')
   const [sessionVersionSignature, setSessionVersionSignature] = useState('')
   const [sessionHistory, setSessionHistory] = useState<SessionListItem[]>([])
+  const [selectedHistorySessionId, setSelectedHistorySessionId] = useState<string | undefined>(undefined)
+  const [selectedHistorySnapshot, setSelectedHistorySnapshot] = useState<Timeline | null>(null)
+  const [historySnapshotLoading, setHistorySnapshotLoading] = useState(false)
+  const historySnapshotCacheRef = useRef<Record<string, Timeline>>({})
+  const historySnapshotRequestRef = useRef(0)
   const [sessionsLoading, setSessionsLoading] = useState(false)
   const [initialSessionId, setInitialSessionId] = useState<string | undefined>(undefined)
   const [bootstrapped, setBootstrapped] = useState(false)
@@ -244,6 +254,8 @@ function App() {
   const [traceLoading, setTraceLoading] = useState(false)
   const [selectedTraceStepId, setSelectedTraceStepId] = useState<string | undefined>(undefined)
   const [traceListExpanded, setTraceListExpanded] = useState(false)
+  const [flowLayoutMode, setFlowLayoutMode] = useState<FlowLayoutMode>('stair')
+  const [tracePlaybackActive, setTracePlaybackActive] = useState(false)
   const [continueExecutionState, setContinueExecutionState] = useState<ContinueExecutionState | null>(null)
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
@@ -251,6 +263,8 @@ function App() {
   const [commandAutoScrollEnabled, setCommandAutoScrollEnabled] = useState(true)
   const [showCommandScrollToBottom, setShowCommandScrollToBottom] = useState(false)
   const commandListRef = useRef<HTMLDivElement | null>(null)
+  const traceListScrollRef = useRef<HTMLDivElement | null>(null)
+  const tracePlaybackTimerRef = useRef<number | null>(null)
   const terminalGridRef = useRef<HTMLDivElement | null>(null)
   const streamAbortRef = useRef<AbortController | null>(null)
 
@@ -362,7 +376,21 @@ function App() {
     return '未创建会话'
   }, [pendingCommand, runningCommand, busy, commands, summary, sessionReady])
   const traceStats = useMemo(() => buildTraceStats(traceSteps), [traceSteps])
-  const flowLanes = useMemo(() => buildFlowLanes(traceSteps), [traceSteps])
+  const flowLanes = useMemo(() => buildFlowLanes(traceSteps, flowLayoutMode), [traceSteps, flowLayoutMode])
+  const flowRows = useMemo(() => {
+    if (flowLayoutMode !== 'stair') return []
+    const rowCount = flowLanes.reduce((max, lane) => Math.max(max, lane.steps.length), 0)
+    const rows: Array<Array<{ lane: FlowLane; step: ServiceTraceStep | null }>> = []
+    for (let row = 0; row < rowCount; row += 1) {
+      rows.push(
+        flowLanes.map((lane) => ({
+          lane,
+          step: lane.steps[row] || null,
+        })),
+      )
+    }
+    return rows
+  }, [flowLanes, flowLayoutMode])
   const activeFlowStepId = useMemo(() => resolveActiveFlowStepId(traceSteps), [traceSteps])
   const selectedTraceStep = useMemo(() => {
     if (traceSteps.length === 0) return undefined
@@ -376,6 +404,10 @@ function App() {
     }
     return traceSteps[traceSteps.length - 1]
   }, [traceSteps, selectedTraceStepId, activeFlowStepId])
+  const activeFlowLaneKey = useMemo(() => {
+    if (!selectedTraceStep) return undefined
+    return traceLaneKey(selectedTraceStep.step_type)
+  }, [selectedTraceStep])
   const sortedTraceSteps = useMemo(
     () => [...traceSteps].sort((a, b) => a.seq_no - b.seq_no),
     [traceSteps],
@@ -399,6 +431,67 @@ function App() {
     if (!selectedActivityKey) return activityCards[activityCards.length - 1]
     return activityCards.find((item) => item.key === selectedActivityKey) || activityCards[activityCards.length - 1]
   }, [activityCards, selectedActivityKey])
+  const selectedHistoryItem = useMemo(
+    () => sessionHistory.find((item) => item.id === selectedHistorySessionId),
+    [sessionHistory, selectedHistorySessionId],
+  )
+  const selectedHistorySnapshotView = useMemo<Timeline | null>(() => {
+    if (selectedHistorySnapshot && (!selectedHistorySessionId || selectedHistorySnapshot.session.id === selectedHistorySessionId)) {
+      return selectedHistorySnapshot
+    }
+    if (selectedHistorySessionId && session?.id === selectedHistorySessionId) {
+      return {
+        session: {
+          id: session.id,
+          automation_level: session.automation_level,
+          operation_mode: session.operation_mode,
+          status: session.status,
+          created_at: session.created_at,
+          device: {
+            host: sessionDeviceAddress || selectedHistoryItem?.host || '-',
+            name: sessionDeviceName || selectedHistoryItem?.device_name || undefined,
+            protocol: selectedHistoryItem?.protocol || 'ssh',
+            version_signature: sessionVersionSignature || undefined,
+          },
+        },
+        messages,
+        commands,
+        evidences,
+        summary,
+      }
+    }
+    return null
+  }, [
+    selectedHistorySnapshot,
+    selectedHistorySessionId,
+    session,
+    sessionDeviceAddress,
+    selectedHistoryItem,
+    sessionDeviceName,
+    sessionVersionSignature,
+    messages,
+    commands,
+    evidences,
+    summary,
+  ])
+  const snapshotMessages = selectedHistorySnapshotView?.messages || []
+  const snapshotSummary = selectedHistorySnapshotView?.summary
+  const snapshotLatestUserQuestion = useMemo(
+    () => extractLatestMessageByRole(snapshotMessages, 'user') || '-',
+    [snapshotMessages],
+  )
+  const snapshotLatestConclusion = useMemo(
+    () => summarizeSessionConclusion(snapshotSummary),
+    [snapshotSummary],
+  )
+  const snapshotLatestRecommendation = useMemo(
+    () => summarizeSessionRecommendation(snapshotSummary),
+    [snapshotSummary],
+  )
+  const snapshotUpdatedAt = useMemo(
+    () => computeSessionLastUpdatedAt(selectedHistorySnapshotView),
+    [selectedHistorySnapshotView],
+  )
 
   const selectedDetailTitle = useMemo(() => {
     if (!selectedActivity) return '分析显示区'
@@ -503,6 +596,9 @@ function App() {
       if (typeof parsed.traceListExpanded === 'boolean') {
         setTraceListExpanded(parsed.traceListExpanded)
       }
+      if (parsed.flowLayoutMode === 'compact' || parsed.flowLayoutMode === 'stair') {
+        setFlowLayoutMode(parsed.flowLayoutMode)
+      }
     } catch {
       // ignore local storage parse errors
     }
@@ -517,9 +613,10 @@ function App() {
       directionInput,
       currentSessionId: session?.id,
       traceListExpanded,
+      flowLayoutMode,
     }
     localStorage.setItem(UI_STATE_KEY, JSON.stringify(payload))
-  }, [activePage, rightPanelWidth, terminalSplitRatio, statusCollapsed, directionInput, session?.id, traceListExpanded])
+  }, [activePage, rightPanelWidth, terminalSplitRatio, statusCollapsed, directionInput, session?.id, traceListExpanded, flowLayoutMode])
 
   useEffect(() => {
     if (commands.length === 0) {
@@ -563,6 +660,17 @@ function App() {
   }, [traceSteps, selectedTraceStepId])
 
   useEffect(() => {
+    if (activePage !== 'service_trace') return
+    if (!selectedTraceStepId) return
+    const container = traceListScrollRef.current
+    if (!container) return
+    const escaped = selectedTraceStepId.replace(/"/g, '\\"')
+    const target = container.querySelector<HTMLElement>(`[data-trace-list-step-id="${escaped}"]`)
+    if (!target) return
+    target.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [activePage, selectedTraceStepId, traceSteps])
+
+  useEffect(() => {
     if (!autoScrollEnabled) return
     const target = chatLogRef.current
     if (!target) return
@@ -577,6 +685,31 @@ function App() {
     target.scrollTo({ top: target.scrollHeight, behavior: 'auto' })
     setShowCommandScrollToBottom(false)
   }, [commands, commandAutoScrollEnabled])
+
+  useEffect(() => {
+    if (sessionHistory.length === 0) {
+      setSelectedHistorySessionId(undefined)
+      setSelectedHistorySnapshot(null)
+      return
+    }
+    if (selectedHistorySessionId && sessionHistory.some((item) => item.id === selectedHistorySessionId)) {
+      return
+    }
+    if (session?.id && sessionHistory.some((item) => item.id === session.id)) {
+      setSelectedHistorySessionId(session.id)
+      return
+    }
+    setSelectedHistorySessionId(sessionHistory[0].id)
+  }, [sessionHistory, selectedHistorySessionId, session?.id])
+
+  useEffect(() => {
+    if (!selectedHistorySessionId) {
+      setSelectedHistorySnapshot(null)
+      setHistorySnapshotLoading(false)
+      return
+    }
+    void loadHistorySnapshot(selectedHistorySessionId, false)
+  }, [selectedHistorySessionId])
 
   useEffect(() => {
     if (!resizing) return
@@ -635,6 +768,46 @@ function App() {
     }, 900)
     return () => window.clearInterval(intervalId)
   }, [activePage, session?.id, busy, stoppingSession])
+
+  useEffect(() => {
+    return () => {
+      if (tracePlaybackTimerRef.current !== null) {
+        window.clearTimeout(tracePlaybackTimerRef.current)
+        tracePlaybackTimerRef.current = null
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!tracePlaybackActive || activePage !== 'service_trace') {
+      if (tracePlaybackTimerRef.current !== null) {
+        window.clearTimeout(tracePlaybackTimerRef.current)
+        tracePlaybackTimerRef.current = null
+      }
+      return
+    }
+    if (sortedTraceSteps.length <= 1) {
+      setTracePlaybackActive(false)
+      return
+    }
+    const currentIndex = selectedTraceIndex >= 0 ? selectedTraceIndex : 0
+    if (currentIndex >= sortedTraceSteps.length - 1) {
+      setTracePlaybackActive(false)
+      return
+    }
+    const currentStep = sortedTraceSteps[currentIndex]
+    const nextStep = sortedTraceSteps[currentIndex + 1]
+    const delayMs = computeTracePlaybackDelay(currentStep, nextStep)
+    tracePlaybackTimerRef.current = window.setTimeout(() => {
+      setSelectedTraceStepId(nextStep.id)
+    }, delayMs)
+    return () => {
+      if (tracePlaybackTimerRef.current !== null) {
+        window.clearTimeout(tracePlaybackTimerRef.current)
+        tracePlaybackTimerRef.current = null
+      }
+    }
+  }, [tracePlaybackActive, activePage, sortedTraceSteps, selectedTraceIndex])
 
   useEffect(() => {
     if (!bootstrapped) return
@@ -780,6 +953,7 @@ function App() {
   async function hydrateSessionById(sessionId: string, silent = false) {
     try {
       const data = await getTimeline(sessionId)
+      historySnapshotCacheRef.current[sessionId] = data
       const restoredSession: SessionResponse = {
         id: data.session.id,
         automation_level: data.session.automation_level,
@@ -798,6 +972,8 @@ function App() {
       setSessionDeviceAddress(data.session.device?.host || '')
       setSessionDeviceName(formatDeviceName(data.session.device?.name))
       setSessionVersionSignature(String(data.session.device?.version_signature || '').trim())
+      setSelectedHistorySessionId(sessionId)
+      setSelectedHistorySnapshot(data)
       await refreshServiceTrace(sessionId)
       if (!silent) {
         antMessage.success(`已恢复会话 ${sessionId.slice(0, 8)}...`)
@@ -1245,7 +1421,7 @@ function App() {
         source: 'manual',
         enabled: true,
       })
-      await refreshCommandCapabilityRules(versionSignature)
+      await refreshCommandCapabilityRules(capabilityVersionFilter.trim() || undefined)
       resetCapabilityEditor()
       antMessage.success('学习规则已保存')
     } catch (error) {
@@ -1445,6 +1621,44 @@ function App() {
     }
   }
 
+  function handleSelectHistorySession(sessionId: string) {
+    if (!sessionId) return
+    if (selectedHistorySessionId === sessionId) {
+      void loadHistorySnapshot(sessionId, true)
+      return
+    }
+    setSelectedHistorySessionId(sessionId)
+  }
+
+  async function loadHistorySnapshot(sessionId: string, forceRefresh: boolean) {
+    const target = String(sessionId || '').trim()
+    if (!target) return
+    const cached = historySnapshotCacheRef.current[target]
+    if (cached && !forceRefresh) {
+      setSelectedHistorySnapshot(cached)
+      setHistorySnapshotLoading(false)
+      return
+    }
+    const requestId = historySnapshotRequestRef.current + 1
+    historySnapshotRequestRef.current = requestId
+    setHistorySnapshotLoading(true)
+    if (!cached || forceRefresh) {
+      setSelectedHistorySnapshot((prev) => (prev && prev.session.id === target ? prev : null))
+    }
+    try {
+      const data = await getTimeline(target)
+      if (historySnapshotRequestRef.current !== requestId) return
+      historySnapshotCacheRef.current[target] = data
+      setSelectedHistorySnapshot(data)
+    } catch {
+      if (historySnapshotRequestRef.current !== requestId) return
+      setSelectedHistorySnapshot(null)
+    } finally {
+      if (historySnapshotRequestRef.current !== requestId) return
+      setHistorySnapshotLoading(false)
+    }
+  }
+
   function handleResumeCurrentSession() {
     if (!session?.id) return
     setResumedSessionId(session.id)
@@ -1608,6 +1822,21 @@ function App() {
       if (!target) return
       target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' })
     })
+  }
+
+  function handleToggleTracePlayback() {
+    if (tracePlaybackActive) {
+      setTracePlaybackActive(false)
+      return
+    }
+    if (sortedTraceSteps.length <= 1) {
+      antMessage.info('步骤不足，无法播放')
+      return
+    }
+    if (selectedTraceIndex < 0 || selectedTraceIndex >= sortedTraceSteps.length - 1) {
+      setSelectedTraceStepId(sortedTraceSteps[0].id)
+    }
+    setTracePlaybackActive(true)
   }
 
   return (
@@ -2464,8 +2693,8 @@ function App() {
           )}
 
           {activePage === 'sessions' && (
-            <div className="page-grid two-col">
-              <div className="panel-card">
+            <div className="page-grid two-col sessions-layout">
+              <div className="panel-card session-history-panel">
                 <div className="trace-head">
                   <div>
                     <h3>历史会话</h3>
@@ -2480,13 +2709,11 @@ function App() {
                   {sessionHistory.map((item) => (
                     <div
                       key={item.id}
-                      className={`session-history-item ${session?.id === item.id ? 'active' : ''}`}
+                      className={`session-history-item ${session?.id === item.id ? 'active' : ''} ${selectedHistorySessionId === item.id ? 'selected' : ''}`}
+                      onClick={() => handleSelectHistorySession(item.id)}
+                      onDoubleClick={() => void handleRestoreSession(item.id, item.host)}
                     >
-                      <button
-                        type="button"
-                        className="session-history-open"
-                        onClick={() => void handleRestoreSession(item.id, item.host)}
-                      >
+                      <div className="session-history-open">
                         <div className="session-history-main">
                           <strong>{item.host}</strong>
                           <span>设备名称: {formatDeviceName(item.device_name)}</span>
@@ -2496,7 +2723,7 @@ function App() {
                           <span>{item.id.slice(0, 8)}...</span>
                           <span>{formatTime(item.created_at)}</span>
                         </div>
-                      </button>
+                      </div>
                       <div className="session-history-actions">
                         <Button size="small" type="primary" onClick={() => void handleRestoreSession(item.id, item.host)}>
                           恢复
@@ -2506,15 +2733,32 @@ function App() {
                   ))}
                 </div>
               </div>
-              <div className="panel-card">
+              <div className="panel-card session-snapshot-panel">
                 <h3>当前会话快照</h3>
-                <div className="kv"><span>会话</span><strong>{session?.id || '-'}</strong></div>
-                <div className="kv"><span>设备</span><strong>{sessionDeviceAddress || '-'}</strong></div>
-                <div className="kv"><span>设备名称</span><strong>{formatDeviceName(sessionDeviceName)}</strong></div>
-                <div className="kv"><span>模式</span><strong>{session?.operation_mode ? operationModeLabel(session.operation_mode) : '-'}</strong></div>
-                <div className="kv"><span>消息数</span><strong>{messages.length}</strong></div>
-                <div className="kv"><span>命令数</span><strong>{commands.length}</strong></div>
-                <div className="kv"><span>证据数</span><strong>{evidences.length}</strong></div>
+                {historySnapshotLoading && <div className="muted">快照加载中...</div>}
+                <div className="kv"><span>已选会话</span><strong>{selectedHistorySessionId || session?.id || '-'}</strong></div>
+                <div className="kv"><span>设备</span><strong>{selectedHistorySnapshotView?.session.device.host || selectedHistoryItem?.host || sessionDeviceAddress || '-'}</strong></div>
+                <div className="kv"><span>设备名称</span><strong>{formatDeviceName(selectedHistorySnapshotView?.session.device.name || selectedHistoryItem?.device_name || sessionDeviceName)}</strong></div>
+                <div className="kv"><span>模式</span><strong>{selectedHistorySnapshotView?.session.operation_mode ? operationModeLabel(selectedHistorySnapshotView.session.operation_mode) : (selectedHistoryItem?.operation_mode ? operationModeLabel(selectedHistoryItem.operation_mode) : '-')}</strong></div>
+                <div className="kv"><span>自动化等级</span><strong>{selectedHistorySnapshotView?.session.automation_level ? automationLabel(selectedHistorySnapshotView.session.automation_level) : (selectedHistoryItem?.automation_level ? automationLabel(selectedHistoryItem.automation_level) : '-')}</strong></div>
+                <div className="kv"><span>状态</span><strong>{selectedHistorySnapshotView?.session.status || selectedHistoryItem?.status || '-'}</strong></div>
+                <div className="kv"><span>创建时间</span><strong>{formatTime(selectedHistorySnapshotView?.session.created_at || selectedHistoryItem?.created_at || '')}</strong></div>
+                <div className="kv"><span>最近活动</span><strong>{formatTime(snapshotUpdatedAt || '')}</strong></div>
+                <div className="kv"><span>消息数</span><strong>{selectedHistorySnapshotView?.messages.length ?? 0}</strong></div>
+                <div className="kv"><span>命令数</span><strong>{selectedHistorySnapshotView?.commands.length ?? 0}</strong></div>
+                <div className="kv"><span>证据数</span><strong>{selectedHistorySnapshotView?.evidences.length ?? 0}</strong></div>
+                <div className="snapshot-text-block">
+                  <span>用户问题</span>
+                  <p>{snapshotLatestUserQuestion}</p>
+                </div>
+                <div className="snapshot-text-block">
+                  <span>最终结论</span>
+                  <p>{snapshotLatestConclusion}</p>
+                </div>
+                <div className="snapshot-text-block">
+                  <span>建议动作</span>
+                  <p>{snapshotLatestRecommendation}</p>
+                </div>
               </div>
             </div>
           )}
@@ -2562,6 +2806,14 @@ function App() {
                     <span className="status-chip">Active #{selectedTraceStep?.seq_no || '-'}</span>
                     <button
                       type="button"
+                      className="flow-legend flow-legend-btn mode-toggle"
+                      onClick={() => setFlowLayoutMode((prev) => (prev === 'stair' ? 'compact' : 'stair'))}
+                      title={flowLayoutMode === 'stair' ? '切换到紧贴模式' : '切换到阶梯模式'}
+                    >
+                      {flowLayoutMode === 'stair' ? '阶梯模式' : '紧贴模式'}
+                    </button>
+                    <button
+                      type="button"
                       className="flow-legend flow-legend-btn upstream"
                       disabled={!previousTraceStep}
                       onClick={() => previousTraceStep && jumpToTraceStep(previousTraceStep.id)}
@@ -2578,95 +2830,149 @@ function App() {
                     >
                       后续 ⬇️
                     </button>
+                    <button
+                      type="button"
+                      className={`flow-legend flow-legend-btn play ${tracePlaybackActive ? 'active' : ''}`}
+                      disabled={sortedTraceSteps.length <= 1}
+                      onClick={handleToggleTracePlayback}
+                      title={tracePlaybackActive ? '停止自动播放' : '按步骤耗时自动播放后续步骤'}
+                    >
+                      {tracePlaybackActive ? '■ 停止' : '▶ Play'}
+                    </button>
                   </div>
                 </div>
-                <div className="flow-lanes">
-                  {flowLanes.map((lane) => (
-                    <section key={lane.key} className="flow-lane">
-                      <div className="flow-lane-head">
-                        <strong>{lane.label}</strong>
-                        <span>{lane.steps.length} 步</span>
-                      </div>
-                      <div className="flow-node-list">
-                        {lane.steps.length === 0 && <div className="flow-node flow-node-empty">待触发</div>}
-                        {lane.steps.map((step) => (
-                          <button
-                            type="button"
-                            key={step.id}
-                            data-trace-step-id={step.id}
-                            className={`flow-node ${activeFlowStepId === step.id ? 'active' : ''} ${selectedTraceStep?.id === step.id ? 'selected' : ''} ${traceNodeRelationClass(step, selectedTraceStep)}`}
-                            onClick={() => setSelectedTraceStepId(step.id)}
-                            title={[
-                              `#${step.seq_no} ${step.title}`,
-                              `${traceTypeLabel(step.step_type)} · ${step.status}`,
-                              traceConstraintLabel(step) ? `约束判定 · ${traceConstraintLabel(step)}` : '',
-                            ].filter(Boolean).join('\n')}
-                          >
-                            <div className="flow-node-line">
-                              <div className="flow-node-title">#{step.seq_no} {step.title}</div>
-                              <div className="flow-node-type">{traceTypeLabel(step.step_type)}</div>
-                              <div className="flow-node-constraint">{traceConstraintLabel(step) || '-'}</div>
-                              <span className={`trace-status compact ${traceStatusClass(step.status)}`}>{step.status}</span>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                    </section>
-                  ))}
-                </div>
-                {selectedTraceStep && (
-                  <div className="flow-detail-card">
-                    <div className="flow-detail-head">
-                      <strong>节点详情 #{selectedTraceStep.seq_no}</strong>
-                      <div className="flow-detail-head-actions">
-                        <button
-                          type="button"
-                          className="flow-legend flow-legend-btn upstream"
-                          disabled={!previousTraceStep}
-                          onClick={() => previousTraceStep && jumpToTraceStep(previousTraceStep.id)}
-                          title={previousTraceStep ? `跳到前序步骤 #${previousTraceStep.seq_no}` : '无前序步骤'}
+                {flowLayoutMode === 'stair' ? (
+                  <div className="flow-lanes">
+                    <div
+                      className="flow-matrix"
+                      style={{ gridTemplateColumns: `repeat(${Math.max(1, flowLanes.length)}, minmax(0, 1fr))` }}
+                    >
+                      {flowLanes.map((lane) => (
+                        <div
+                          key={`head-${lane.key}`}
+                          className={`flow-lane-head-cell ${activeFlowLaneKey === lane.key ? 'active' : ''}`}
                         >
-                          ⬆️ 前序
-                        </button>
-                        <button
-                          type="button"
-                          className="flow-legend flow-legend-btn downstream"
-                          disabled={!nextTraceStep}
-                          onClick={() => nextTraceStep && jumpToTraceStep(nextTraceStep.id)}
-                          title={nextTraceStep ? `跳到后续步骤 #${nextTraceStep.seq_no}` : '无后续步骤'}
-                        >
-                          后续 ⬇️
-                        </button>
-                        <span className={`trace-status ${traceStatusClass(selectedTraceStep.status)}`}>{selectedTraceStep.status}</span>
-                      </div>
+                          <strong>{lane.label}</strong>
+                          <span>{lane.realCount} 步</span>
+                        </div>
+                      ))}
+
+                      {flowRows.length === 0 && (
+                        <div className="flow-matrix-empty">暂无流程步骤，等待会话执行后展示。</div>
+                      )}
+
+                      {flowRows.map((row, rowIndex) =>
+                        row.map(({ lane, step }) => {
+                          if (!step) {
+                            return (
+                              <div
+                                key={`gap-${lane.key}-${rowIndex}`}
+                                className="flow-node flow-node-gap"
+                                aria-hidden="true"
+                              />
+                            )
+                          }
+                          return (
+                            <button
+                              type="button"
+                              key={step.id}
+                              data-trace-step-id={step.id}
+                              className={`flow-node ${activeFlowStepId === step.id ? 'active' : ''} ${selectedTraceStep?.id === step.id ? 'selected' : ''} ${traceNodeRelationClass(step, selectedTraceStep)}`}
+                              onClick={() => setSelectedTraceStepId(step.id)}
+                              title={[
+                                `#${step.seq_no} ${step.title}`,
+                                `${traceTypeLabel(step.step_type)} · ${step.status}`,
+                                traceConstraintLabel(step) ? `约束判定 · ${traceConstraintLabel(step)}` : '',
+                              ].filter(Boolean).join('\n')}
+                            >
+                              <div className="flow-node-line">
+                                <div className="flow-node-title">#{step.seq_no} {step.title}</div>
+                                <div className="flow-node-type">{traceTypeLabel(step.step_type)}</div>
+                                <div className="flow-node-constraint">{traceConstraintLabel(step) || '-'}</div>
+                                <span className={`trace-status compact ${traceStatusClass(step.status)}`}>{step.status}</span>
+                              </div>
+                            </button>
+                          )
+                        }),
+                      )}
                     </div>
-                    <div className="flow-detail-grid">
-                      <div><span>类型</span><strong>{traceTypeLabel(selectedTraceStep.step_type)}</strong></div>
-                      <div><span>约束判定</span><strong>{traceConstraintLabel(selectedTraceStep) || '-'}</strong></div>
-                      <div><span>开始</span><strong>{formatTime(selectedTraceStep.started_at)}</strong></div>
-                      <div><span>结束</span><strong>{selectedTraceStep.completed_at ? formatTime(selectedTraceStep.completed_at) : '-'}</strong></div>
-                      <div><span>耗时</span><strong>{selectedTraceStep.duration_ms !== undefined ? formatDuration(selectedTraceStep.duration_ms) : '-'}</strong></div>
-                    </div>
-                    {selectedTraceStep.detail && (
-                      <pre className="flow-detail-text">{selectedTraceStep.detail}</pre>
-                    )}
+                  </div>
+                ) : (
+                  <div
+                    className="flow-lanes compact"
+                    style={{ gridTemplateColumns: `repeat(${Math.max(1, flowLanes.length)}, minmax(0, 1fr))` }}
+                  >
+                    {flowLanes.map((lane) => (
+                      <section key={lane.key} className="flow-lane">
+                        <div className={`flow-lane-head ${activeFlowLaneKey === lane.key ? 'active' : ''}`}>
+                          <strong>{lane.label}</strong>
+                          <span>{lane.realCount} 步</span>
+                        </div>
+                        <div className="flow-node-list">
+                          {lane.realCount === 0 && <div className="flow-node flow-node-empty">待触发</div>}
+                          {lane.steps
+                            .filter((step): step is ServiceTraceStep => Boolean(step))
+                            .map((step) => (
+                              <button
+                                type="button"
+                                key={step.id}
+                                data-trace-step-id={step.id}
+                                className={`flow-node ${activeFlowStepId === step.id ? 'active' : ''} ${selectedTraceStep?.id === step.id ? 'selected' : ''} ${traceNodeRelationClass(step, selectedTraceStep)}`}
+                                onClick={() => setSelectedTraceStepId(step.id)}
+                                title={[
+                                  `#${step.seq_no} ${step.title}`,
+                                  `${traceTypeLabel(step.step_type)} · ${step.status}`,
+                                  traceConstraintLabel(step) ? `约束判定 · ${traceConstraintLabel(step)}` : '',
+                                ].filter(Boolean).join('\n')}
+                              >
+                                <div className="flow-node-line">
+                                  <div className="flow-node-title">#{step.seq_no} {step.title}</div>
+                                  <div className="flow-node-type">{traceTypeLabel(step.step_type)}</div>
+                                  <div className="flow-node-constraint">{traceConstraintLabel(step) || '-'}</div>
+                                  <span className={`trace-status compact ${traceStatusClass(step.status)}`}>{step.status}</span>
+                                </div>
+                              </button>
+                            ))}
+                        </div>
+                      </section>
+                    ))}
                   </div>
                 )}
               </div>
 
-              <div className={`panel-card trace-bottom-drawer ${traceListExpanded ? 'expanded' : 'collapsed'}`}>
-                <button
-                  type="button"
-                  className="trace-drawer-toggle"
-                  onClick={() => setTraceListExpanded((prev) => !prev)}
-                >
-                  <div className="trace-drawer-toggle-main">
-                    <strong>步骤明细</strong>
-                    <span>{traceSteps.length} 条</span>
+              <div className="trace-bottom-grid">
+                <div className="panel-card trace-detail-panel">
+                  <div className="trace-bottom-head">
+                    <strong>节点详情</strong>
+                    {selectedTraceStep && <span className="status-chip">#{selectedTraceStep.seq_no}</span>}
                   </div>
-                  <span className="trace-drawer-arrow">{traceListExpanded ? '▾' : '▴'}</span>
-                </button>
-                <div className="trace-drawer-panel">
+                  {selectedTraceStep ? (
+                    <div className="flow-detail-card">
+                      <div className="flow-detail-head">
+                        <strong>节点详情 #{selectedTraceStep.seq_no}</strong>
+                        <div className="flow-detail-head-actions">
+                          <span className={`trace-status ${traceStatusClass(selectedTraceStep.status)}`}>{selectedTraceStep.status}</span>
+                        </div>
+                      </div>
+                      <div className="flow-detail-grid">
+                        <div><span>类型</span><strong>{traceTypeLabel(selectedTraceStep.step_type)}</strong></div>
+                        <div><span>约束判定</span><strong>{traceConstraintLabel(selectedTraceStep) || '-'}</strong></div>
+                        <div><span>开始</span><strong>{formatTime(selectedTraceStep.started_at)}</strong></div>
+                        <div><span>结束</span><strong>{selectedTraceStep.completed_at ? formatTime(selectedTraceStep.completed_at) : '-'}</strong></div>
+                        <div><span>耗时</span><strong>{selectedTraceStep.duration_ms !== undefined ? formatDuration(selectedTraceStep.duration_ms) : '-'}</strong></div>
+                      </div>
+                      <pre className="flow-detail-text">{selectedTraceStep.detail || '(无详细信息)'}</pre>
+                    </div>
+                  ) : (
+                    <div className="trace-empty muted">暂无选中节点</div>
+                  )}
+                </div>
+
+                <div className="panel-card trace-steps-panel">
+                  <div className="trace-bottom-head">
+                    <strong>步骤明细</strong>
+                    <span className="muted">{traceSteps.length} 条</span>
+                  </div>
                   <div className="trace-row trace-row-head">
                     <span>#</span>
                     <span>步骤</span>
@@ -2675,7 +2981,7 @@ function App() {
                     <span>结束</span>
                     <span>耗时</span>
                   </div>
-                  <div className="trace-list-scroll">
+                  <div className="trace-list-scroll" ref={traceListScrollRef}>
                     {traceSteps.length === 0 && <div className="trace-empty muted">暂无追踪数据。先创建会话并执行一次对话。</div>}
                     {traceSteps.map((step) => {
                       const width = traceStats.maxDurationMs > 0 && step.duration_ms !== undefined
@@ -2685,6 +2991,7 @@ function App() {
                         <div
                           key={step.id}
                           data-trace-step-id={step.id}
+                          data-trace-list-step-id={step.id}
                           className={`trace-row trace-row-item ${selectedTraceStep?.id === step.id ? 'active' : ''} ${traceNodeRelationClass(step, selectedTraceStep)}`}
                           onClick={() => setSelectedTraceStepId(step.id)}
                           role="button"
@@ -3165,6 +3472,58 @@ function summarizeCommandRow(row: CommandDisplayRow): string {
   return row.commandText
 }
 
+function extractLatestMessageByRole(messages: ChatMessage[], role: ChatMessage['role']): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message.role !== role) continue
+    const text = String(message.content || '').trim()
+    if (!text) continue
+    return text
+  }
+  return ''
+}
+
+function summarizeSessionConclusion(summary?: DiagnosisSummary): string {
+  if (!summary) return '-'
+  const result = String(summary.query_result || '').trim()
+  if (result) return result
+  const cause = String(summary.root_cause || '').trim()
+  return cause || '-'
+}
+
+function summarizeSessionRecommendation(summary?: DiagnosisSummary): string {
+  if (!summary) return '-'
+  const followUp = String(summary.follow_up_action || '').trim()
+  if (followUp) return followUp
+  const recommendation = String(summary.recommendation || '').trim()
+  return recommendation || '-'
+}
+
+function computeSessionLastUpdatedAt(timeline: Timeline | null): string {
+  if (!timeline) return ''
+  const candidates: Array<string | undefined> = [timeline.session.created_at]
+  for (const message of timeline.messages || []) candidates.push(message.created_at)
+  for (const command of timeline.commands || []) {
+    candidates.push(command.completed_at)
+    candidates.push(command.started_at)
+    candidates.push(command.created_at)
+  }
+  for (const evidence of timeline.evidences || []) candidates.push(evidence.created_at)
+  candidates.push(timeline.summary?.created_at)
+  let latest = ''
+  let latestTs = 0
+  for (const item of candidates) {
+    if (!item) continue
+    const ts = Date.parse(item)
+    if (Number.isNaN(ts)) continue
+    if (ts >= latestTs) {
+      latestTs = ts
+      latest = item
+    }
+  }
+  return latest
+}
+
 function renderCommandOutputBody(command: Pick<CommandExecution, 'output' | 'error' | 'status'>): string {
   const output = (command.output || '').trim()
   if (output) return output
@@ -3573,7 +3932,7 @@ function resolveActiveFlowStepId(steps: ServiceTraceStep[]): string | undefined 
   return steps[steps.length - 1].id
 }
 
-function buildFlowLanes(steps: ServiceTraceStep[]): FlowLane[] {
+function buildFlowLanes(steps: ServiceTraceStep[], mode: FlowLayoutMode): FlowLane[] {
   const laneOrder = ['user', 'plan', 'policy', 'execute', 'evidence', 'summary', 'control', 'other']
   const labels: Record<string, string> = {
     user: '用户输入',
@@ -3585,19 +3944,52 @@ function buildFlowLanes(steps: ServiceTraceStep[]): FlowLane[] {
     control: '会话控制',
     other: '其他',
   }
-  const lanes = new Map<string, ServiceTraceStep[]>()
-  for (const key of laneOrder) lanes.set(key, [])
-  const ordered = [...steps].sort((a, b) => a.seq_no - b.seq_no)
-  for (const step of ordered) {
-    const key = traceLaneKey(step.step_type)
-    const list = lanes.get(key) || []
-    list.push(step)
-    lanes.set(key, list)
+  if (steps.length === 0) {
+    return laneOrder.map((key) => ({
+      key,
+      label: labels[key] || key,
+      steps: [],
+      realCount: 0,
+    }))
   }
+
+  const ordered = [...steps].sort((a, b) => a.seq_no - b.seq_no)
+  const lanes = new Map<string, Array<ServiceTraceStep | null>>()
+  for (const key of laneOrder) lanes.set(key, [])
+
+  if (mode === 'stair') {
+    // Strict stair mode: step N occupies row N.
+    for (const step of ordered) {
+      const laneKey = traceLaneKey(step.step_type)
+      for (const key of laneOrder) {
+        const column = lanes.get(key)
+        if (!column) continue
+        column.push(key === laneKey ? step : null)
+      }
+    }
+  } else {
+    // Compact mode: stack steps tightly inside each lane (no placeholders).
+    const grouped = new Map<string, ServiceTraceStep[]>()
+    for (const key of laneOrder) grouped.set(key, [])
+    for (const step of ordered) {
+      const laneKey = traceLaneKey(step.step_type)
+      const list = grouped.get(laneKey) || []
+      list.push(step)
+      grouped.set(laneKey, list)
+    }
+    for (const key of laneOrder) {
+      const column = lanes.get(key)
+      if (!column) continue
+      const items = grouped.get(key) || []
+      for (const item of items) column.push(item)
+    }
+  }
+
   return laneOrder.map((key) => ({
     key,
     label: labels[key] || key,
     steps: lanes.get(key) || [],
+    realCount: (lanes.get(key) || []).filter((item) => item !== null).length,
   }))
 }
 
@@ -3654,6 +4046,29 @@ function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '-'
   if (ms < 1000) return `${ms} ms`
   return `${(ms / 1000).toFixed(2)} s`
+}
+
+function computeTracePlaybackDelay(current: ServiceTraceStep, next: ServiceTraceStep): number {
+  const currentDuration = typeof current.duration_ms === 'number' ? current.duration_ms : undefined
+  if (typeof currentDuration === 'number') {
+    if (currentDuration <= 0) return 320
+    return Math.max(420, Math.min(3600, Math.round(currentDuration)))
+  }
+
+  const nextDuration = typeof next.duration_ms === 'number' ? next.duration_ms : undefined
+  if (typeof nextDuration === 'number') {
+    if (nextDuration <= 0) return 320
+    return Math.max(420, Math.min(3600, Math.round(nextDuration)))
+  }
+
+  const currentStarted = Date.parse(String(current.started_at || ''))
+  const nextStarted = Date.parse(String(next.started_at || ''))
+  if (!Number.isNaN(currentStarted) && !Number.isNaN(nextStarted) && nextStarted > currentStarted) {
+    const delta = nextStarted - currentStarted
+    return Math.max(420, Math.min(3600, delta))
+  }
+
+  return 900
 }
 
 function traceTypeLabel(stepType: string): string {

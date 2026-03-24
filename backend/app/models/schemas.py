@@ -152,6 +152,8 @@ class CommandExecution(BaseModel):
     capability_state: Optional[str] = None
     capability_reason: Optional[str] = None
     capability_rule_id: Optional[str] = None
+    constraint_source: Optional[str] = None
+    constraint_reason: Optional[str] = None
 
 
 class Evidence(BaseModel):

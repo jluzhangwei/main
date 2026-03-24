@@ -113,7 +113,7 @@ def use_scripted_diagnoser():
     routes.orchestrator.deepseek_diagnoser = original
 
 
-def _create_session(automation_level: str = "assisted") -> str:
+def _create_session(automation_level: str = "assisted", operation_mode: str = "diagnosis") -> str:
     payload = {
         "device": {
             "host": "192.168.0.88",
@@ -121,6 +121,7 @@ def _create_session(automation_level: str = "assisted") -> str:
             "vendor": "huawei_like",
         },
         "automation_level": automation_level,
+        "operation_mode": operation_mode,
     }
     response = client.post("/v1/sessions", json=payload)
     assert response.status_code == 200
@@ -172,7 +173,7 @@ def test_read_only_session_blocks_risky_execution_but_keeps_read_only_steps():
 
 
 def test_assisted_session_requires_confirmation_for_non_whitelisted_high_risk_commands():
-    session_id = _create_session("assisted")
+    session_id = _create_session("assisted", "config")
     body = _stream_message(session_id, "请自动修复接口故障")
 
     assert "command_pending_confirmation" in body
@@ -186,7 +187,7 @@ def test_assisted_session_requires_confirmation_for_non_whitelisted_high_risk_co
 
 
 def test_full_auto_session_executes_without_confirmation():
-    session_id = _create_session("full_auto")
+    session_id = _create_session("full_auto", "config")
     body = _stream_message(session_id, "请自动修复接口故障")
 
     assert "command_pending_confirmation" not in body

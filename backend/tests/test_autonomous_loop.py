@@ -408,9 +408,11 @@ async def test_autonomous_loop_bootstrap_then_ai_command_then_final_summary():
         events.append(event)
 
     commands = store.list_commands(session.id)
-    assert len(commands) == 2
+    assert len(commands) == 4
     assert commands[0].command == "display version"
-    assert commands[1].command == "show ip interface brief"
+    assert commands[1].command == "display clock"
+    assert commands[2].command == "display users"
+    assert commands[3].command == "show ip interface brief"
 
     summary = store.get_summary(session.id)
     assert summary is not None
@@ -647,7 +649,7 @@ async def test_recheck_request_reexecutes_previous_command_once():
     async for _ in orchestrator.stream_message(session.id, "检查up的端口"):
         pass
     first_count = len(store.list_commands(session.id))
-    assert first_count == 2
+    assert first_count == 4
 
     async for _ in orchestrator.stream_message(session.id, "再检查一次"):
         pass
@@ -681,7 +683,7 @@ async def test_normal_followup_also_reexecutes_duplicate_command():
     async for _ in orchestrator.stream_message(session.id, "检查up的端口"):
         pass
     first_count = len(store.list_commands(session.id))
-    assert first_count == 2
+    assert first_count == 4
 
     async for _ in orchestrator.stream_message(session.id, "继续"):
         pass
@@ -736,7 +738,7 @@ async def test_failed_command_result_is_fed_back_to_ai_and_loop_continues(monkey
         pass
 
     commands = store.list_commands(session.id)
-    assert len(commands) == 4
+    assert len(commands) == 6
     assert commands[0].status == CommandStatus.succeeded
     assert all(item.status == CommandStatus.failed for item in commands[1:])
     assert all("simulated command failure" in (item.error or "") for item in commands[1:])
@@ -772,10 +774,12 @@ async def test_batch_commands_from_single_ai_step_are_executed_in_order():
         pass
 
     commands = store.list_commands(session.id)
-    assert len(commands) == 3
+    assert len(commands) == 5
     assert commands[0].command == "display version"
-    assert commands[1].command == "show ip interface brief"
-    assert commands[2].command == "show ip route"
+    assert commands[1].command == "display clock"
+    assert commands[2].command == "display users"
+    assert commands[3].command == "show ip interface brief"
+    assert commands[4].command == "show ip route"
     assert all(cmd.status == CommandStatus.succeeded for cmd in commands)
 
 
@@ -815,14 +819,14 @@ async def test_batch_executes_without_confirmation_when_commands_are_whitelisted
         events.append(event)
 
     commands = store.list_commands(session.id)
-    assert len(commands) == 4
-    assert commands[1].command == "show ip interface brief"
-    assert commands[1].status == CommandStatus.succeeded
-    assert commands[2].command == "configure terminal"
-    assert commands[2].status == CommandStatus.succeeded
-    assert commands[3].command == "show ip route"
-    assert commands[3].status == CommandStatus.succeeded
-    assert commands[2].batch_id == commands[3].batch_id
+    assert len(commands) == 6
+    target = [item for item in commands if item.command in {"show ip interface brief", "configure terminal", "show ip route"}]
+    assert len(target) == 3
+    by_command = {item.command: item for item in target}
+    assert by_command["show ip interface brief"].status == CommandStatus.succeeded
+    assert by_command["configure terminal"].status == CommandStatus.succeeded
+    assert by_command["show ip route"].status == CommandStatus.succeeded
+    assert by_command["configure terminal"].batch_id == by_command["show ip route"].batch_id
     assert all("command_pending_confirmation" not in event for event in events)
 
 
@@ -851,13 +855,15 @@ async def test_batch_with_mixed_rules_requires_single_confirmation_then_executes
         pass
 
     commands = store.list_commands(session.id)
-    assert len(commands) == 4
-    assert commands[0].status == CommandStatus.succeeded
-    assert commands[1].status == CommandStatus.succeeded
-    assert all(item.status == CommandStatus.pending_confirm for item in commands[2:])
-    assert len({item.batch_id for item in commands[2:]}) == 1
+    assert len(commands) == 6
+    baseline = commands[:3]
+    planned = commands[3:]
+    assert all(item.status == CommandStatus.succeeded for item in baseline)
+    assert planned[0].status == CommandStatus.succeeded
+    assert all(item.status == CommandStatus.pending_confirm for item in planned[1:])
+    assert len({item.batch_id for item in planned[1:]}) == 1
 
-    approved = await orchestrator.confirm_command(session.id, commands[2].id, ConfirmCommandRequest(approved=True))
+    approved = await orchestrator.confirm_command(session.id, planned[1].id, ConfirmCommandRequest(approved=True))
     assert approved.status == CommandStatus.succeeded
 
     commands_after = store.list_commands(session.id)
@@ -909,9 +915,8 @@ async def test_batch_blocked_command_does_not_block_other_commands_in_same_group
         pass
 
     commands = store.list_commands(session.id)
-    assert len(commands) == 3
-    assert commands[0].status == CommandStatus.succeeded
-    assert commands[1].command == "show ip route"
-    assert commands[1].status == CommandStatus.blocked
-    assert commands[2].command == "show ip interface brief"
-    assert commands[2].status == CommandStatus.succeeded
+    assert len(commands) == 5
+    blocked = [item for item in commands if item.command == "show ip route"]
+    allowed = [item for item in commands if item.command == "show ip interface brief"]
+    assert blocked and blocked[0].status == CommandStatus.blocked
+    assert allowed and allowed[0].status == CommandStatus.succeeded

@@ -316,6 +316,9 @@ class InMemoryStore:
     def register_command_capability_hit(self, rule_id: str) -> CommandCapabilityRule | None:
         return self.command_capability_store.register_hit(rule_id)
 
+    def set_command_capability_rule_enabled(self, rule_id: str, enabled: bool) -> CommandCapabilityRule | None:
+        return self.command_capability_store.set_enabled(rule_id, enabled)
+
     def learn_command_rewrite(
         self,
         *,
