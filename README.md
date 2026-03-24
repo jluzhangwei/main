@@ -11,6 +11,10 @@
 - 高风险命令确认弹窗与审计时间线
 - 会话导出（Markdown）
 
+## 用户文档
+
+- 图文用户说明书（中文）：[`docs/USER_GUIDE.zh-CN.md`](docs/USER_GUIDE.zh-CN.md)
+
 ## 快速启动
 
 ### 后端
