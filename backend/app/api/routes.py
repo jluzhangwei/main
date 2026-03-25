@@ -853,3 +853,24 @@ async def get_command_profiles_v2(
         status="ok",
     )
     return payload
+
+
+@router_v2.get("/security/permission-templates")
+async def get_permission_templates_v2(
+    actor: ApiKeyRecord = Depends(require_v2_permission("policy.write")),
+):
+    templates = {
+        "viewer": ["job.read"],
+        "operator": ["job.read", "job.write"],
+        "approver": ["job.read", "command.approve"],
+        "auditor": ["job.read", "audit.read"],
+        "repair_operator": ["job.read", "job.write", "command.execute"],
+        "platform_admin": ["*"],
+    }
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="security.permission_templates",
+        resource="security:permission_templates",
+        status="ok",
+    )
+    return {"templates": templates}

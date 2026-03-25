@@ -447,3 +447,23 @@ def test_v2_audit_filters_and_export_formats():
     pdf_payload = pdf_report.json()
     assert pdf_payload["filename"] == "audit-report.pdf"
     assert "content" in pdf_payload
+
+
+def test_v2_permission_templates_endpoint():
+    admin_key = _bootstrap_admin_key()
+    ok = client.get("/v2/security/permission-templates", headers=_auth(admin_key))
+    assert ok.status_code == 200, ok.text
+    payload = ok.json()
+    assert "templates" in payload
+    assert payload["templates"]["platform_admin"] == ["*"]
+
+    # no permission key should be denied
+    operator = client.post(
+        "/v2/keys",
+        json={"name": "operator-no-policy", "permissions": ["job.read"]},
+        headers=_auth(admin_key),
+    )
+    assert operator.status_code == 200
+    operator_key = operator.json()["api_key"]
+    denied = client.get("/v2/security/permission-templates", headers=_auth(operator_key))
+    assert denied.status_code == 403

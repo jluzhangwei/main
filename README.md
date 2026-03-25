@@ -19,6 +19,8 @@
 
 - 图文用户说明书（中文）：[`docs/USER_GUIDE.zh-CN.md`](docs/USER_GUIDE.zh-CN.md)
 - V3 运维说明（多设备任务编排）：[`docs/V3_OPERATIONS.zh-CN.md`](docs/V3_OPERATIONS.zh-CN.md)
+- V3 对外 API 接入说明：[`docs/V3_API_EXTERNAL.zh-CN.md`](docs/V3_API_EXTERNAL.zh-CN.md)
+- V4 预研计划：[`docs/V4_RESEARCH_PLAN.zh-CN.md`](docs/V4_RESEARCH_PLAN.zh-CN.md)
 
 ## 快速启动
 
@@ -75,6 +77,7 @@ docker compose up --build
 - `GET /v2/audit/logs`
 - `GET /v2/audit/reports`
 - `GET /v2/command-profiles`
+- `GET /v2/security/permission-templates`
 
 ## v2 快速调用示例
 
@@ -163,4 +166,15 @@ python scripts/run_device_diag.py
 cd backend
 . .venv/bin/activate
 python scripts/v2_stress_jobs.py --base-url http://127.0.0.1:8000 --api-key <ADMIN_KEY> --jobs 30 --device-count 8
+```
+
+## V3 回归脚本
+
+```bash
+cd backend
+. .venv/bin/activate
+python scripts/v3_regression_runner.py \
+  --base-url http://127.0.0.1:8000 \
+  --api-key <ADMIN_KEY> \
+  --scenario scripts/scenarios/multi_device_rca.sample.json
 ```

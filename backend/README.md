@@ -1,4 +1,4 @@
-# NetOps AI V1 Backend
+# NetOps AI Backend (V1 + V2 + V3)
 
 ## Run
 
@@ -10,6 +10,29 @@ uvicorn app.main:app --reload --port 8000
 
 ```bash
 pytest -q
+```
+
+## V2/V3 Tools
+
+### Stress test for multi-device jobs
+
+```bash
+python scripts/v2_stress_jobs.py --base-url http://127.0.0.1:8000 --api-key <ADMIN_KEY> --jobs 30 --device-count 8
+```
+
+### Scenario regression runner
+
+```bash
+python scripts/v3_regression_runner.py \
+  --base-url http://127.0.0.1:8000 \
+  --api-key <ADMIN_KEY> \
+  --scenario scripts/scenarios/multi_device_rca.sample.json
+```
+
+### Audit export helper
+
+```bash
+python scripts/export_audit_report.py --base-url http://127.0.0.1:8000 --api-key <AUDIT_KEY> --format csv
 ```
 
 ## One-off Device Diagnosis

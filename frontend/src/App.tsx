@@ -31,6 +31,7 @@ import {
   v2DeleteApiKey,
   v2GetAuditLogs,
   v2GetCommandProfiles,
+  v2GetPermissionTemplates,
   v2GetJobTimeline,
   v2ListApiKeys,
   v2QueryJobs,
@@ -203,7 +204,7 @@ type V3JobCreateForm = {
   name: string
   problem: string
   mode: 'diagnosis' | 'inspection' | 'repair'
-  topology_mode: 'hybrid' | 'external_only' | 'auto_discovery_only'
+  topology_mode: 'hybrid' | 'external' | 'auto'
   max_gap_seconds: number
   max_device_concurrency: number
   execution_policy: 'stop_on_failure' | 'continue_on_failure' | 'rollback_template'
@@ -302,6 +303,7 @@ function App() {
   const [v3AuditLoading, setV3AuditLoading] = useState(false)
   const [v3CommandProfiles, setV3CommandProfiles] = useState<Array<Record<string, unknown>>>([])
   const [v3ProfilesLoading, setV3ProfilesLoading] = useState(false)
+  const [v3PermissionTemplates, setV3PermissionTemplates] = useState<Record<string, string[]>>({})
   const [v3TopologyEditor, setV3TopologyEditor] = useState('[]')
   const [v3RcaWeights, setV3RcaWeights] = useState<V3RcaWeightsInput>({
     anomaly: 0.3,
@@ -788,6 +790,7 @@ function App() {
     void refreshV3ApiKeys()
     void refreshV3AuditLogs()
     void refreshV3CommandProfiles()
+    void refreshV3PermissionTemplates()
   }, [activePage, v3ApiKeyInput])
 
   useEffect(() => {
@@ -1261,6 +1264,23 @@ function App() {
       antMessage.error((error as Error).message || '加载命令能力画像失败')
     } finally {
       setV3ProfilesLoading(false)
+    }
+  }
+
+  async function refreshV3PermissionTemplates() {
+    let key = ''
+    try {
+      key = ensureV3ApiKey()
+    } catch {
+      setV3PermissionTemplates({})
+      return
+    }
+    try {
+      const payload = await v2GetPermissionTemplates(key)
+      setV3PermissionTemplates(payload.templates || {})
+    } catch (error) {
+      setV3PermissionTemplates({})
+      antMessage.error((error as Error).message || '加载权限模板失败')
     }
   }
 
@@ -2935,6 +2955,9 @@ function App() {
                     <Button size="small" loading={v3ApiKeyLoading} onClick={() => void refreshV3ApiKeys()}>
                       刷新 Key
                     </Button>
+                    <Button size="small" onClick={() => void refreshV3PermissionTemplates()}>
+                      刷新权限模板
+                    </Button>
                   </div>
                 </div>
                 <div className="v3-grid-2">
@@ -2972,6 +2995,21 @@ function App() {
                   >
                     创建 Key
                   </Button>
+                </div>
+                <div className="v3-template-box">
+                  <span className="muted">最小权限模板</span>
+                  {Object.keys(v3PermissionTemplates).length === 0 ? (
+                    <div className="muted">-</div>
+                  ) : (
+                    <div className="v3-template-list">
+                      {Object.entries(v3PermissionTemplates).map(([name, perms]) => (
+                        <div key={name} className="v3-template-item">
+                          <strong>{name}</strong>
+                          <code>{perms.join(', ')}</code>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 {v3LastCreatedSecret && (
                   <div className="v3-secret-box">
@@ -3070,8 +3108,8 @@ function App() {
                     value={v3JobForm.topology_mode}
                     options={[
                       { value: 'hybrid', label: 'hybrid' },
-                      { value: 'external_only', label: 'external_only' },
-                      { value: 'auto_discovery_only', label: 'auto_discovery_only' },
+                      { value: 'external', label: 'external' },
+                      { value: 'auto', label: 'auto' },
                     ]}
                     onChange={(value) => setV3JobForm((prev) => ({ ...prev, topology_mode: value }))}
                   />

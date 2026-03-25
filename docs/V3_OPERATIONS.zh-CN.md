@@ -127,8 +127,33 @@ python scripts/v2_stress_jobs.py \
 - 任务状态分布
 - 平均耗时 / P50 / 最大耗时
 
-## 8. 回归检查建议
+## 8. 多设备回归脚本
+
+脚本：`backend/scripts/v3_regression_runner.py`
+
+```bash
+cd backend
+. .venv/bin/activate
+python scripts/v3_regression_runner.py \
+  --base-url http://127.0.0.1:8000 \
+  --api-key <ADMIN_KEY> \
+  --scenario scripts/scenarios/multi_device_rca.sample.json
+```
+
+## 9. 审计报表导出脚本
+
+脚本：`backend/scripts/export_audit_report.py`
+
+```bash
+cd backend
+. .venv/bin/activate
+python scripts/export_audit_report.py \
+  --base-url http://127.0.0.1:8000 \
+  --api-key <AUDIT_KEY> \
+  --format csv
+```
+
+## 10. 回归检查建议
 
 - 后端：`cd backend && ./.venv/bin/pytest -q`
 - 前端：`cd frontend && npm run build`
-

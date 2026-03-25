@@ -1,0 +1,45 @@
+{
+  "name": "multi-device-rca-sample",
+  "problem": "前后 5 分钟内多台设备出现异常，请定位根因设备并给出传播链",
+  "mode": "diagnosis",
+  "topology_mode": "hybrid",
+  "max_gap_seconds": 300,
+  "max_device_concurrency": 20,
+  "execution_policy": "stop_on_failure",
+  "devices": [
+    {
+      "host": "192.168.0.88",
+      "protocol": "ssh",
+      "username": "zhangwei",
+      "password": "Huawei@123"
+    },
+    {
+      "host": "192.168.0.101",
+      "protocol": "ssh",
+      "username": "zhangwei",
+      "password": "Admin@123"
+    },
+    {
+      "host": "192.168.0.102",
+      "protocol": "ssh",
+      "username": "zhangwei",
+      "password": "Admin@123"
+    }
+  ],
+  "topology_edges": [
+    {
+      "source": "192.168.0.88",
+      "target": "192.168.0.101",
+      "kind": "uplink",
+      "confidence": 0.9,
+      "reason": "manual seed"
+    },
+    {
+      "source": "192.168.0.88",
+      "target": "192.168.0.102",
+      "kind": "uplink",
+      "confidence": 0.9,
+      "reason": "manual seed"
+    }
+  ]
+}

@@ -356,3 +356,7 @@ export type V2JobTimeline = {
   }
   events: V2JobEvent[]
 }
+
+export type V2PermissionTemplates = {
+  templates: Record<string, string[]>
+}

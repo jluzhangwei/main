@@ -20,6 +20,7 @@ import type {
   V2JobListResponse,
   V2JobSummary,
   V2JobTimeline,
+  V2PermissionTemplates,
 } from '../types'
 
 const headers = {
@@ -676,6 +677,16 @@ export async function v2GetCommandProfiles(apiKey: string): Promise<Array<Record
   })
   if (!res.ok) {
     throw new Error('Failed to get command profiles')
+  }
+  return res.json()
+}
+
+export async function v2GetPermissionTemplates(apiKey: string): Promise<V2PermissionTemplates> {
+  const res = await fetch('/v2/security/permission-templates', {
+    headers: v2Headers(apiKey),
+  })
+  if (!res.ok) {
+    throw new Error('Failed to get permission templates')
   }
   return res.json()
 }
