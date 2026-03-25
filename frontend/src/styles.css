@@ -1264,6 +1264,11 @@ h6 {
   align-items: stretch;
 }
 
+.keyhub-layout {
+  grid-template-columns: minmax(420px, 1.1fr) minmax(420px, 1fr);
+  align-items: start;
+}
+
 .v3-card {
   min-height: 0;
   overflow: hidden;
@@ -1315,6 +1320,13 @@ h6 {
   line-height: 1.4;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.v3-secret-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
 }
 
 .v3-template-box {
@@ -2731,6 +2743,10 @@ h6 {
     grid-template-rows: auto;
   }
 
+  .keyhub-layout {
+    grid-template-columns: 1fr;
+  }
+
   .v3-grid-4 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2898,6 +2914,10 @@ h6 {
   }
 
   .v3-event-item summary {
+    grid-template-columns: 1fr;
+  }
+
+  .v3-secret-actions {
     grid-template-columns: 1fr;
   }
 

@@ -72,6 +72,7 @@ import type {
 type PageId =
   | 'workbench'
   | 'v3_jobs'
+  | 'third_party_keys'
   | 'control'
   | 'command_policy'
   | 'sessions'
@@ -108,6 +109,7 @@ type DeviceAuthRecord = {
 const NAV_ITEMS: Array<{ id: PageId; title: string }> = [
   { id: 'workbench', title: '诊断工作台' },
   { id: 'v3_jobs', title: 'V3 任务编排' },
+  { id: 'third_party_keys', title: '第三方 Key 服务' },
   { id: 'control', title: '连接控制' },
   { id: 'command_policy', title: '命令执行控制' },
   { id: 'sessions', title: '会话历史' },
@@ -791,7 +793,7 @@ function App() {
   }, [commands])
 
   useEffect(() => {
-    if (activePage !== 'v3_jobs') return
+    if (activePage !== 'v3_jobs' && activePage !== 'third_party_keys') return
     void refreshV3Jobs()
     void refreshV3ApiKeys()
     void refreshV3AuditLogs()
@@ -1255,6 +1257,29 @@ function App() {
       .split(/[\n,; ]+/)
       .map((item) => item.trim())
       .filter(Boolean)
+  }
+
+  async function handleCopyText(value: string, successMessage = '已复制') {
+    const text = String(value || '').trim()
+    if (!text) {
+      antMessage.info('无可复制内容')
+      return
+    }
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+      } else {
+        const el = document.createElement('textarea')
+        el.value = text
+        document.body.appendChild(el)
+        el.select()
+        document.execCommand('copy')
+        document.body.removeChild(el)
+      }
+      antMessage.success(successMessage)
+    } catch {
+      antMessage.error('复制失败，请手动复制')
+    }
   }
 
   async function handleCreateMultiDeviceJobFromControl() {
@@ -2933,102 +2958,31 @@ function App() {
               <div className="panel-card v3-card">
                 <div className="policy-overview-head">
                   <div>
-                    <h3>V3 API Key 与权限</h3>
-                    <p className="muted">支持多 Key + 权限标签（轻量 RBAC），用于外部 API 调用与审批控制。</p>
+                    <h3>V3 协同任务说明</h3>
+                    <p className="muted">此页面专注任务编排与执行。第三方 API Key 的创建、共享和说明已独立到“第三方 Key 服务”页面。</p>
                   </div>
                   <div className="policy-actions">
-                    <Button size="small" loading={v3ApiKeyLoading} onClick={() => void refreshV3ApiKeys()}>
-                      刷新 Key
-                    </Button>
-                    <Button size="small" onClick={() => void refreshV3PermissionTemplates()}>
-                      刷新权限模板
+                    <Button size="small" onClick={() => setActivePage('third_party_keys')}>
+                      打开第三方 Key 服务页
                     </Button>
                   </div>
-                </div>
-                <div className="v3-grid-2">
-                  <Input
-                    size="small"
-                    value={v3ApiKeyInput}
-                    onChange={(event) => setV3ApiKeyInput(event.target.value)}
-                    placeholder="当前使用 API Key（X-API-Key）"
-                  />
-                  <Input
-                    size="small"
-                    value={v3BootstrapApiKey}
-                    onChange={(event) => setV3BootstrapApiKey(event.target.value)}
-                    placeholder="Bootstrap Admin Key（首次可留空）"
-                  />
-                </div>
-                <div className="v3-grid-3">
-                  <Input
-                    size="small"
-                    value={v3ApiKeyName}
-                    onChange={(event) => setV3ApiKeyName(event.target.value)}
-                    placeholder="新 Key 名称"
-                  />
-                  <Input
-                    size="small"
-                    value={v3ApiKeyPermissions}
-                    onChange={(event) => setV3ApiKeyPermissions(event.target.value)}
-                    placeholder="权限标签，逗号分隔"
-                  />
-                  <Button
-                    size="small"
-                    type="primary"
-                    loading={v3ApiKeyLoading}
-                    onClick={() => void handleV3CreateApiKey()}
-                  >
-                    创建 Key
-                  </Button>
                 </div>
                 <div className="v3-template-box">
-                  <span className="muted">最小权限模板</span>
-                  {Object.keys(v3PermissionTemplates).length === 0 ? (
-                    <div className="muted">-</div>
-                  ) : (
-                    <div className="v3-template-list">
-                      {Object.entries(v3PermissionTemplates).map(([name, perms]) => (
-                        <div key={name} className="v3-template-item">
-                          <strong>{name}</strong>
-                          <code>{perms.join(', ')}</code>
-                        </div>
-                      ))}
+                  <span className="muted">页面职责</span>
+                  <div className="v3-template-list">
+                    <div className="v3-template-item">
+                      <strong>这里做什么</strong>
+                      <code>创建多设备任务、查看时间线、审批命令组、观察 RCA 结果。</code>
                     </div>
-                  )}
-                </div>
-                {v3LastCreatedSecret && (
-                  <div className="v3-secret-box">
-                    <span className="muted">最近创建密钥（仅展示一次，请立即保存）</span>
-                    <code>{v3LastCreatedSecret}</code>
-                  </div>
-                )}
-                <div className="policy-rule-table v3-table">
-                  <div className="policy-rule-row policy-rule-head v3-key-head">
-                    <span>ID</span>
-                    <span>名称 / 权限</span>
-                    <span>状态 / 操作</span>
-                  </div>
-                  {v3ApiKeys.length === 0 && <div className="policy-empty muted">暂无 API Key</div>}
-                  {v3ApiKeys.map((item) => (
-                    <div key={item.id} className="policy-rule-row v3-key-row">
-                      <span>
-                        <code>{item.id.slice(0, 8)}...</code>
-                      </span>
-                      <span className="v3-col-stack">
-                        <strong>{item.name}</strong>
-                        <code>{item.permissions.join(', ') || '*'}</code>
-                        <span className="muted">{item.key_prefix}</span>
-                      </span>
-                      <span className="v3-row-actions">
-                        <Switch
-                          size="small"
-                          checked={item.enabled}
-                          onChange={(checked) => void handleV3ToggleApiKey(item.id, checked)}
-                        />
-                        <Button size="small" danger onClick={() => void handleV3DeleteApiKey(item.id)}>删除</Button>
-                      </span>
+                    <div className="v3-template-item">
+                      <strong>这里不做什么</strong>
+                      <code>不在本页管理第三方密钥，避免和任务操作混杂。</code>
                     </div>
-                  ))}
+                    <div className="v3-template-item">
+                      <strong>调用说明</strong>
+                      <code>内置 UI 支持免填 Key 调用；第三方系统请使用专门 API Key。</code>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -3460,6 +3414,143 @@ function App() {
             </div>
           )}
 
+          {activePage === 'third_party_keys' && (
+            <div className="page-grid keyhub-layout">
+              <div className="panel-card v3-card">
+                <div className="policy-overview-head">
+                  <div>
+                    <h3>第三方 Key 服务中心</h3>
+                    <p className="muted">在这里创建、查看、启停和共享给第三方系统的 API Key，并查看最小权限模板。</p>
+                  </div>
+                  <div className="policy-actions">
+                    <Button size="small" loading={v3ApiKeyLoading} onClick={() => void refreshV3ApiKeys()}>
+                      刷新 Key
+                    </Button>
+                    <Button size="small" onClick={() => void refreshV3PermissionTemplates()}>
+                      刷新权限模板
+                    </Button>
+                  </div>
+                </div>
+                <div className="v3-grid-3">
+                  <Input
+                    size="small"
+                    value={v3ApiKeyName}
+                    onChange={(event) => setV3ApiKeyName(event.target.value)}
+                    placeholder="新 Key 名称（例如：noc-operator）"
+                  />
+                  <Input
+                    size="small"
+                    value={v3ApiKeyPermissions}
+                    onChange={(event) => setV3ApiKeyPermissions(event.target.value)}
+                    placeholder="权限标签，逗号分隔（如 job.read,job.write）"
+                  />
+                  <Button
+                    size="small"
+                    type="primary"
+                    loading={v3ApiKeyLoading}
+                    onClick={() => void handleV3CreateApiKey()}
+                  >
+                    创建第三方 Key
+                  </Button>
+                </div>
+                <div className="v3-template-box">
+                  <span className="muted">最小权限模板</span>
+                  {Object.keys(v3PermissionTemplates).length === 0 ? (
+                    <div className="muted">-</div>
+                  ) : (
+                    <div className="v3-template-list">
+                      {Object.entries(v3PermissionTemplates).map(([name, perms]) => (
+                        <div key={name} className="v3-template-item">
+                          <strong>{name}</strong>
+                          <code>{perms.join(', ')}</code>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {v3LastCreatedSecret && (
+                  <div className="v3-secret-box">
+                    <span className="muted">最新创建的 Key（仅展示一次，请复制给第三方）</span>
+                    <div className="v3-secret-actions">
+                      <code>{v3LastCreatedSecret}</code>
+                      <Button size="small" onClick={() => void handleCopyText(v3LastCreatedSecret, 'Key 已复制')}>
+                        复制 Key
+                      </Button>
+                    </div>
+                  </div>
+                )}
+                <div className="policy-rule-table v3-table">
+                  <div className="policy-rule-row policy-rule-head v3-key-head">
+                    <span>ID</span>
+                    <span>名称 / 权限</span>
+                    <span>状态 / 操作</span>
+                  </div>
+                  {v3ApiKeys.length === 0 && <div className="policy-empty muted">暂无 API Key</div>}
+                  {v3ApiKeys.map((item) => (
+                    <div key={item.id} className="policy-rule-row v3-key-row">
+                      <span>
+                        <code>{item.id.slice(0, 8)}...</code>
+                      </span>
+                      <span className="v3-col-stack">
+                        <strong>{item.name}</strong>
+                        <code>{item.permissions.join(', ') || '*'}</code>
+                        <span className="muted">{item.key_prefix}</span>
+                      </span>
+                      <span className="v3-row-actions">
+                        <Button
+                          size="small"
+                          onClick={() => void handleCopyText(item.key_prefix, 'Key 前缀已复制')}
+                        >
+                          复制前缀
+                        </Button>
+                        <Switch
+                          size="small"
+                          checked={item.enabled}
+                          onChange={(checked) => void handleV3ToggleApiKey(item.id, checked)}
+                        />
+                        <Button size="small" danger onClick={() => void handleV3DeleteApiKey(item.id)}>删除</Button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="panel-card v3-card">
+                <h3>第三方接入说明</h3>
+                <div className="v3-template-box">
+                  <div className="v3-template-item">
+                    <strong>服务地址</strong>
+                    <code>POST /v2/jobs, GET /v2/jobs/query, GET /v2/jobs/{'{jobId}'}/timeline</code>
+                  </div>
+                  <div className="v3-template-item">
+                    <strong>鉴权方式</strong>
+                    <code>X-API-Key: {'<YOUR_KEY>'}</code>
+                  </div>
+                  <div className="v3-template-item">
+                    <strong>建议</strong>
+                    <code>按系统/团队分配独立 Key，权限最小化，定期轮换。</code>
+                  </div>
+                </div>
+                <pre className="detail-pre">{`curl -sS -X POST 'http://127.0.0.1:8000/v2/jobs' \\
+  -H 'X-API-Key: <YOUR_KEY>' \\
+  -H 'Content-Type: application/json' \\
+  -d '{
+    "problem":"多设备异常关联分析",
+    "mode":"diagnosis",
+    "devices":[{"host":"192.168.0.88","protocol":"ssh","username":"***","password":"***"}]
+  }'`}</pre>
+                <div className="policy-actions">
+                  <Button size="small" onClick={() => setActivePage('v3_jobs')}>
+                    打开 V3 任务编排
+                  </Button>
+                  <Button size="small" onClick={() => setActivePage('control')}>
+                    返回连接控制
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {activePage === 'control' && (
             <div className="page-grid control-layout">
               <div className="panel-card">
@@ -3500,12 +3591,6 @@ function App() {
                         用一个任务同时检查多台设备，自动做时间关联与根因分析；支持后续审批执行。
                       </p>
                       <div className="control-v3-grid">
-                        <Input
-                          size="small"
-                          value={v3ApiKeyInput}
-                          onChange={(event) => setV3ApiKeyInput(event.target.value)}
-                          placeholder="V3 API Key（可选，留空走内置 UI 通道）"
-                        />
                         <Select
                           size="small"
                           value={controlV3Mode}
@@ -3516,6 +3601,9 @@ function App() {
                           ]}
                           onChange={(value) => setControlV3Mode(value)}
                         />
+                        <Button size="small" onClick={() => setActivePage('third_party_keys')}>
+                          打开第三方 Key 服务页
+                        </Button>
                       </div>
                       <Input
                         size="small"
@@ -5386,6 +5474,7 @@ function traceStatusClass(status: string): string {
 function renderNavIcon(page: PageId): string {
   if (page === 'workbench') return '◫'
   if (page === 'v3_jobs') return '⬢'
+  if (page === 'third_party_keys') return '⌖'
   if (page === 'control') return '⌘'
   if (page === 'command_policy') return '☑'
   if (page === 'sessions') return '☷'
