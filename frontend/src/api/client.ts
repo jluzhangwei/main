@@ -382,10 +382,12 @@ export async function resetRiskPolicy(): Promise<RiskPolicy> {
   return res.json()
 }
 
-function v2Headers(apiKey: string, extra?: Record<string, string>): HeadersInit {
+function v2Headers(apiKey?: string, extra?: Record<string, string>): HeadersInit {
+  const token = String(apiKey || '').trim()
   return {
     ...headers,
-    'X-API-Key': apiKey,
+    ...(token ? { 'X-API-Key': token } : {}),
+    'X-Internal-UI': '1',
     ...(extra || {}),
   }
 }
@@ -396,9 +398,7 @@ export async function v2CreateApiKey(input: {
   bootstrapApiKey?: string
   expiresAt?: string
 }): Promise<V2ApiKeyCreateResponse> {
-  const h: HeadersInit = input.bootstrapApiKey
-    ? v2Headers(input.bootstrapApiKey)
-    : headers
+  const h: HeadersInit = v2Headers(input.bootstrapApiKey)
   const res = await fetch('/v2/keys', {
     method: 'POST',
     headers: h,

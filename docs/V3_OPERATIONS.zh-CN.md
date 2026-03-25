@@ -20,6 +20,8 @@
 - `policy.write`：管理 API Key
 - `audit.read`：读取审计日志与报表
 
+说明：内置 Web UI 默认可使用受信任通道调用 `/v2`（无需手工输入 API Key）；第三方系统接入建议始终使用 API Key。
+
 ## 3. API Key 生命周期
 
 ### 3.1 首次引导

@@ -261,6 +261,13 @@ const V3_DEFAULT_JOB_FORM: V3JobCreateForm = {
 function App() {
   const [automationLevel, setAutomationLevel] = useState<AutomationLevel>('assisted')
   const [operationMode, setOperationMode] = useState<OperationMode>('diagnosis')
+  const [controlTaskScope, setControlTaskScope] = useState<'single' | 'multi'>('single')
+  const [controlV3Problem, setControlV3Problem] = useState('请做多设备协同检查并定位根因')
+  const [controlV3Hosts, setControlV3Hosts] = useState('')
+  const [controlV3Username, setControlV3Username] = useState('')
+  const [controlV3Password, setControlV3Password] = useState('')
+  const [controlV3Mode, setControlV3Mode] = useState<'diagnosis' | 'inspection' | 'repair'>('diagnosis')
+  const [controlV3Creating, setControlV3Creating] = useState(false)
   const [session, setSession] = useState<SessionResponse | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [commands, setCommands] = useState<CommandExecution[]>([])
@@ -785,7 +792,6 @@ function App() {
 
   useEffect(() => {
     if (activePage !== 'v3_jobs') return
-    if (!v3ApiKeyInput.trim()) return
     void refreshV3Jobs()
     void refreshV3ApiKeys()
     void refreshV3AuditLogs()
@@ -794,7 +800,7 @@ function App() {
   }, [activePage, v3ApiKeyInput])
 
   useEffect(() => {
-    if (!v3SelectedJobId || !v3ApiKeyInput.trim()) return
+    if (!v3SelectedJobId) return
     void refreshV3Timeline(v3SelectedJobId)
   }, [v3SelectedJobId, v3ApiKeyInput])
 
@@ -1136,23 +1142,12 @@ function App() {
       .filter(Boolean)
   }
 
-  function ensureV3ApiKey(): string {
-    const key = v3ApiKeyInput.trim()
-    if (!key) {
-      throw new Error('请先输入 V3 API Key')
-    }
-    return key
+  function resolveV3ApiKey(): string {
+    return v3ApiKeyInput.trim()
   }
 
   async function refreshV3Jobs() {
-    let key = ''
-    try {
-      key = ensureV3ApiKey()
-    } catch {
-      setV3Jobs([])
-      setV3JobsTotal(0)
-      return
-    }
+    const key = resolveV3ApiKey()
     setV3JobsLoading(true)
     try {
       const payload = await v2QueryJobs(key, {
@@ -1180,12 +1175,7 @@ function App() {
   async function refreshV3Timeline(jobId: string, silent = true) {
     const id = String(jobId || '').trim()
     if (!id) return
-    let key = ''
-    try {
-      key = ensureV3ApiKey()
-    } catch {
-      return
-    }
+    const key = resolveV3ApiKey()
     setV3TimelineLoading(true)
     try {
       const timeline = await v2GetJobTimeline(key, id)
@@ -1208,13 +1198,7 @@ function App() {
   }
 
   async function refreshV3ApiKeys() {
-    let key = ''
-    try {
-      key = ensureV3ApiKey()
-    } catch {
-      setV3ApiKeys([])
-      return
-    }
+    const key = resolveV3ApiKey()
     setV3ApiKeyLoading(true)
     try {
       const payload = await v2ListApiKeys(key)
@@ -1228,13 +1212,7 @@ function App() {
   }
 
   async function refreshV3AuditLogs() {
-    let key = ''
-    try {
-      key = ensureV3ApiKey()
-    } catch {
-      setV3AuditLogs([])
-      return
-    }
+    const key = resolveV3ApiKey()
     setV3AuditLoading(true)
     try {
       const payload = await v2GetAuditLogs(key, { limit: 100, offset: 0 })
@@ -1248,13 +1226,7 @@ function App() {
   }
 
   async function refreshV3CommandProfiles() {
-    let key = ''
-    try {
-      key = ensureV3ApiKey()
-    } catch {
-      setV3CommandProfiles([])
-      return
-    }
+    const key = resolveV3ApiKey()
     setV3ProfilesLoading(true)
     try {
       const payload = await v2GetCommandProfiles(key)
@@ -1268,19 +1240,68 @@ function App() {
   }
 
   async function refreshV3PermissionTemplates() {
-    let key = ''
-    try {
-      key = ensureV3ApiKey()
-    } catch {
-      setV3PermissionTemplates({})
-      return
-    }
+    const key = resolveV3ApiKey()
     try {
       const payload = await v2GetPermissionTemplates(key)
       setV3PermissionTemplates(payload.templates || {})
     } catch (error) {
       setV3PermissionTemplates({})
       antMessage.error((error as Error).message || '加载权限模板失败')
+    }
+  }
+
+  function parseControlHostList(raw: string): string[] {
+    return String(raw || '')
+      .split(/[\n,; ]+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+  }
+
+  async function handleCreateMultiDeviceJobFromControl() {
+    const key = resolveV3ApiKey()
+    const problem = controlV3Problem.trim()
+    if (!problem) {
+      antMessage.warning('请填写协同任务问题描述')
+      return
+    }
+    const hosts = parseControlHostList(controlV3Hosts)
+    if (hosts.length === 0) {
+      antMessage.warning('请至少输入一个设备地址')
+      return
+    }
+    const username = controlV3Username.trim()
+    const password = controlV3Password.trim()
+    if (!username || !password) {
+      antMessage.warning('请填写多设备统一用户名和密码')
+      return
+    }
+    const devices = hosts.map((host) => ({
+      host,
+      protocol: 'ssh',
+      username,
+      password,
+    }))
+    setControlV3Creating(true)
+    try {
+      const created = await v2CreateJob(key, {
+        name: `control-multi-${Date.now()}`,
+        problem,
+        mode: controlV3Mode,
+        topology_mode: 'hybrid',
+        max_gap_seconds: 300,
+        max_device_concurrency: 20,
+        execution_policy: 'stop_on_failure',
+        devices,
+      }, `control-multi-${Date.now()}`)
+      setV3SelectedJobId(created.id)
+      await refreshV3Jobs()
+      await refreshV3Timeline(created.id, false)
+      antMessage.success(`协同任务已创建: ${created.id.slice(0, 8)}...`)
+      setActivePage('v3_jobs')
+    } catch (error) {
+      antMessage.error((error as Error).message || '创建协同任务失败')
+    } finally {
+      setControlV3Creating(false)
     }
   }
 
@@ -1316,11 +1337,7 @@ function App() {
   }
 
   async function handleV3DeleteApiKey(keyId: string) {
-    const key = v3ApiKeyInput.trim()
-    if (!key) {
-      antMessage.warning('请先输入管理员 API Key')
-      return
-    }
+    const key = resolveV3ApiKey()
     if (!window.confirm('确认删除该 API Key 吗？')) return
     setV3ApiKeyLoading(true)
     try {
@@ -1335,11 +1352,7 @@ function App() {
   }
 
   async function handleV3ToggleApiKey(keyId: string, enabled: boolean) {
-    const key = v3ApiKeyInput.trim()
-    if (!key) {
-      antMessage.warning('请先输入管理员 API Key')
-      return
-    }
+    const key = resolveV3ApiKey()
     setV3ApiKeyLoading(true)
     try {
       await v2UpdateApiKey(key, keyId, {
@@ -1355,11 +1368,7 @@ function App() {
   }
 
   async function handleV3CreateJob() {
-    const key = v3ApiKeyInput.trim()
-    if (!key) {
-      antMessage.warning('请先输入 V3 API Key')
-      return
-    }
+    const key = resolveV3ApiKey()
     let devices: Array<Record<string, unknown>> = []
     let topologyEdges: Array<Record<string, unknown>> = []
     try {
@@ -1417,11 +1426,7 @@ function App() {
 
   async function handleV3CancelSelectedJob() {
     if (!v3SelectedJobId) return
-    const key = v3ApiKeyInput.trim()
-    if (!key) {
-      antMessage.warning('请先输入 V3 API Key')
-      return
-    }
+    const key = resolveV3ApiKey()
     setV3ActionLoading(true)
     try {
       await v2CancelJob(key, v3SelectedJobId, 'manual_stop')
@@ -1440,11 +1445,7 @@ function App() {
       antMessage.info('请选择待审批命令组')
       return
     }
-    const key = v3ApiKeyInput.trim()
-    if (!key) {
-      antMessage.warning('请先输入 V3 API Key')
-      return
-    }
+    const key = resolveV3ApiKey()
     setV3ActionLoading(true)
     try {
       await v2ApproveActionGroupsBatch(key, v3SelectedJobId, v3SelectedActionIds, 'batch-approve-from-ui')
@@ -1463,11 +1464,7 @@ function App() {
       antMessage.info('请选择待审批命令组')
       return
     }
-    const key = v3ApiKeyInput.trim()
-    if (!key) {
-      antMessage.warning('请先输入 V3 API Key')
-      return
-    }
+    const key = resolveV3ApiKey()
     setV3ActionLoading(true)
     try {
       await v2RejectActionGroupsBatch(key, v3SelectedJobId, v3SelectedActionIds, 'batch-reject-from-ui')
@@ -1486,11 +1483,7 @@ function App() {
       antMessage.warning('请先选择任务')
       return
     }
-    const key = v3ApiKeyInput.trim()
-    if (!key) {
-      antMessage.warning('请先输入 V3 API Key')
-      return
-    }
+    const key = resolveV3ApiKey()
     v3EventAbortRef.current?.abort()
     const controller = new AbortController()
     v3EventAbortRef.current = controller
@@ -1550,11 +1543,7 @@ function App() {
       antMessage.warning('请先选择任务')
       return
     }
-    const key = v3ApiKeyInput.trim()
-    if (!key) {
-      antMessage.warning('请先输入 V3 API Key')
-      return
-    }
+    const key = resolveV3ApiKey()
     let edges: Array<{ source: string; target: string; kind?: string; confidence?: number; reason?: string }> = []
     try {
       const parsed = JSON.parse(v3TopologyEditor || '[]')
@@ -1584,11 +1573,7 @@ function App() {
       antMessage.warning('请先选择任务')
       return
     }
-    const key = v3ApiKeyInput.trim()
-    if (!key) {
-      antMessage.warning('请先输入 V3 API Key')
-      return
-    }
+    const key = resolveV3ApiKey()
     setV3ActionLoading(true)
     try {
       await v2UpdateRcaWeights(key, v3SelectedJobId, {
@@ -3479,17 +3464,101 @@ function App() {
             <div className="page-grid control-layout">
               <div className="panel-card">
                 <h3>连接控制</h3>
-                <p className="muted">会话创建、任务模式、设备连接、命令执行控制等级设置放在此页面。</p>
-                <div className="control-card-stack">
-                  <AutomationLevelSelector className="control-card-tight" value={automationLevel} onChange={setAutomationLevel} />
-                  <TaskModeSelector className="control-card-tight" value={operationMode} onChange={setOperationMode} />
-                  <DeviceForm
-                    className="control-card-tight"
-                    automationLevel={automationLevel}
-                    operationMode={operationMode}
-                    onCreate={handleCreateSession}
-                  />
+                <p className="muted">单设备会话与多设备协同任务已合并在一个入口中。</p>
+                <div className="control-scope-toggle">
+                  <Button
+                    size="small"
+                    type={controlTaskScope === 'single' ? 'primary' : 'default'}
+                    onClick={() => setControlTaskScope('single')}
+                  >
+                    单设备会话（V1）
+                  </Button>
+                  <Button
+                    size="small"
+                    type={controlTaskScope === 'multi' ? 'primary' : 'default'}
+                    onClick={() => setControlTaskScope('multi')}
+                  >
+                    多设备协同（V3）
+                  </Button>
                 </div>
+                {controlTaskScope === 'single' ? (
+                  <div className="control-card-stack">
+                    <AutomationLevelSelector className="control-card-tight" value={automationLevel} onChange={setAutomationLevel} />
+                    <TaskModeSelector className="control-card-tight" value={operationMode} onChange={setOperationMode} />
+                    <DeviceForm
+                      className="control-card-tight"
+                      automationLevel={automationLevel}
+                      operationMode={operationMode}
+                      onCreate={handleCreateSession}
+                    />
+                  </div>
+                ) : (
+                  <div className="control-card-stack control-multi-stack">
+                    <div className="panel-card control-card-tight">
+                      <div className="mode-detail-title">多设备协同任务（V3）</div>
+                      <p className="muted mode-detail-desc">
+                        用一个任务同时检查多台设备，自动做时间关联与根因分析；支持后续审批执行。
+                      </p>
+                      <div className="control-v3-grid">
+                        <Input
+                          size="small"
+                          value={v3ApiKeyInput}
+                          onChange={(event) => setV3ApiKeyInput(event.target.value)}
+                          placeholder="V3 API Key（可选，留空走内置 UI 通道）"
+                        />
+                        <Select
+                          size="small"
+                          value={controlV3Mode}
+                          options={[
+                            { value: 'diagnosis', label: '诊断' },
+                            { value: 'inspection', label: '巡检' },
+                            { value: 'repair', label: '修复' },
+                          ]}
+                          onChange={(value) => setControlV3Mode(value)}
+                        />
+                      </div>
+                      <Input
+                        size="small"
+                        value={controlV3Problem}
+                        onChange={(event) => setControlV3Problem(event.target.value)}
+                        placeholder="问题描述（例：同时间窗多设备异常，定位根因）"
+                      />
+                      <Input.TextArea
+                        rows={3}
+                        value={controlV3Hosts}
+                        onChange={(event) => setControlV3Hosts(event.target.value)}
+                        placeholder="设备地址列表（逗号/空格/换行分隔）&#10;例如：192.168.0.88, 192.168.0.101, 192.168.0.102"
+                      />
+                      <div className="control-v3-grid">
+                        <Input
+                          size="small"
+                          value={controlV3Username}
+                          onChange={(event) => setControlV3Username(event.target.value)}
+                          placeholder="统一用户名"
+                        />
+                        <Input.Password
+                          size="small"
+                          value={controlV3Password}
+                          onChange={(event) => setControlV3Password(event.target.value)}
+                          placeholder="统一密码"
+                        />
+                      </div>
+                      <div className="policy-actions">
+                        <Button
+                          size="small"
+                          type="primary"
+                          loading={controlV3Creating}
+                          onClick={() => void handleCreateMultiDeviceJobFromControl()}
+                        >
+                          创建协同任务
+                        </Button>
+                        <Button size="small" onClick={() => setActivePage('v3_jobs')}>
+                          打开 V3 任务编排
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="panel-card">
                 <h3>连接状态</h3>
@@ -3497,6 +3566,9 @@ function App() {
                 <div className="kv"><span>会话模式</span><strong>{session?.operation_mode ? operationModeLabel(session.operation_mode) : '-'}</strong></div>
                 <div className="kv"><span>命令执行控制等级</span><strong>{automationLabel(automationLevel)}</strong></div>
                 <div className="kv"><span>LLM</span><strong>{llmStatus?.enabled ? '已启用' : '未启用'}</strong></div>
+                <div className="kv"><span>协同任务 ID</span><strong>{v3SelectedJobSummary?.id || '-'}</strong></div>
+                <div className="kv"><span>协同任务阶段</span><strong>{v3SelectedJobSummary ? `${v3SelectedJobSummary.status} / ${v3SelectedJobSummary.phase}` : '-'}</strong></div>
+                <div className="kv"><span>待审批命令组</span><strong>{v3SelectedJobSummary?.pending_action_groups ?? '-'}</strong></div>
                 <p className="muted section-tip">更多连接策略、凭据托管、设备模板能力预留到后续迭代。</p>
               </div>
             </div>

@@ -1609,6 +1609,24 @@ h6 {
   max-width: 960px;
 }
 
+.control-scope-toggle {
+  margin-top: 8px;
+  margin-bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.control-multi-stack {
+  max-width: 980px;
+}
+
+.control-v3-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .control-card-tight {
   padding: 6px 8px;
 }
@@ -1656,6 +1674,10 @@ h6 {
   }
 
   .device-inline-fields.device-inline-fields-4 {
+    grid-template-columns: 1fr;
+  }
+
+  .control-v3-grid {
     grid-template-columns: 1fr;
   }
 }

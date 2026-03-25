@@ -143,6 +143,12 @@ curl -sS -H 'X-API-Key: <YOUR_API_KEY>' \
 - `policy.write`: 管理 API Key / 策略
 - `audit.read`: 审计日志与报表读取
 
+说明：内置前端 UI 默认可走受信任通道访问 `/v2`（可不填 API Key）。如需严格要求所有调用都使用 API Key，可设置：
+
+```bash
+export NETOPS_UI_TRUSTED_V2_BYPASS=false
+```
+
 ## 单次设备诊断
 
 使用后端脚本可以直接对真实设备做一次排障诊断，密码只通过环境变量传入，不要写进仓库。

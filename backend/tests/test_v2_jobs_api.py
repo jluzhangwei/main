@@ -467,3 +467,21 @@ def test_v2_permission_templates_endpoint():
     operator_key = operator.json()["api_key"]
     denied = client.get("/v2/security/permission-templates", headers=_auth(operator_key))
     assert denied.status_code == 403
+
+
+def test_v2_internal_ui_header_can_bypass_api_key_for_local_ui():
+    payload = {
+        "name": "ui-bypass-job",
+        "problem": "ui local diagnostics",
+        "mode": "diagnosis",
+        "devices": [{"host": "192.0.2.10", "protocol": "api"}],
+    }
+    created = client.post(
+        "/v2/jobs",
+        json=payload,
+        headers={"X-Internal-UI": "1"},
+    )
+    assert created.status_code == 200, created.text
+    job_id = created.json()["id"]
+    got = client.get(f"/v2/jobs/{job_id}", headers={"X-Internal-UI": "1"})
+    assert got.status_code == 200, got.text

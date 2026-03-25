@@ -7,6 +7,7 @@ import os
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
+from app.config import settings
 from app.models.schemas import (
     ApiKeyCreateRequest,
     ApiKeyCreateResponse,
@@ -292,12 +293,26 @@ def _extract_api_key_token(x_api_key: str | None, authorization: str | None) -> 
     return None
 
 
+def _is_truthy_header(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 async def _require_v2_permission(
     permission: str,
     x_api_key: str | None,
     authorization: str | None,
+    x_internal_ui: str | None,
 ) -> ApiKeyRecord:
     token = _extract_api_key_token(x_api_key, authorization)
+    if not token and settings.ui_trusted_v2_bypass and _is_truthy_header(x_internal_ui):
+        return ApiKeyRecord(
+            id="internal-ui",
+            name="internal-ui",
+            key_prefix="internal-ui",
+            key_hash="",
+            permissions=["*"],
+            enabled=True,
+        )
     try:
         actor = await orchestrator_v2.authenticate(token)
     except PermissionError as exc:
@@ -326,8 +341,9 @@ def require_v2_permission(permission: str):
     async def _dep(
         x_api_key: str | None = Header(default=None, alias="X-API-Key"),
         authorization: str | None = Header(default=None, alias="Authorization"),
+        x_internal_ui: str | None = Header(default=None, alias="X-Internal-UI"),
     ) -> ApiKeyRecord:
-        return await _require_v2_permission(permission, x_api_key, authorization)
+        return await _require_v2_permission(permission, x_api_key, authorization, x_internal_ui)
 
     return _dep
 
@@ -682,10 +698,11 @@ async def create_api_key_v2(
     req: ApiKeyCreateRequest,
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
     authorization: str | None = Header(default=None, alias="Authorization"),
+    x_internal_ui: str | None = Header(default=None, alias="X-Internal-UI"),
 ) -> ApiKeyCreateResponse:
     actor: ApiKeyRecord | None = None
     if await orchestrator_v2.key_count() > 0:
-        actor = await _require_v2_permission("policy.write", x_api_key, authorization)
+        actor = await _require_v2_permission("policy.write", x_api_key, authorization, x_internal_ui)
 
     try:
         payload = await orchestrator_v2.create_api_key(req)

@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     postgres_dsn: str = "postgresql+asyncpg://netops:netops@postgres:5432/netops"
     redis_url: str = "redis://redis:6379/0"
     model_provider: str = "cloud_api"
+    ui_trusted_v2_bypass: bool = True
 
     class Config:
         env_prefix = "NETOPS_"
