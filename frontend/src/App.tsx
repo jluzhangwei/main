@@ -275,13 +275,6 @@ const V3_DEFAULT_JOB_FORM: V3JobCreateForm = {
 function App() {
   const [automationLevel, setAutomationLevel] = useState<AutomationLevel>('assisted')
   const [operationMode, setOperationMode] = useState<OperationMode>('diagnosis')
-  const [controlTaskScope, setControlTaskScope] = useState<'single' | 'multi'>('single')
-  const [controlV3Problem, setControlV3Problem] = useState('请做多设备协同检查并定位根因')
-  const [controlV3Hosts, setControlV3Hosts] = useState('')
-  const [controlV3Username, setControlV3Username] = useState('')
-  const [controlV3Password, setControlV3Password] = useState('')
-  const [controlV3Mode, setControlV3Mode] = useState<'diagnosis' | 'inspection' | 'repair'>('diagnosis')
-  const [controlV3Creating, setControlV3Creating] = useState(false)
   const [session, setSession] = useState<SessionResponse | null>(null)
   const [sessionRuntimeKind, setSessionRuntimeKind] = useState<'single' | 'multi'>('single')
   const [multiSessionConfig, setMultiSessionConfig] = useState<MultiSessionConfig | null>(null)
@@ -1292,48 +1285,6 @@ function App() {
       antMessage.success(successMessage)
     } catch {
       antMessage.error('复制失败，请手动复制')
-    }
-  }
-
-  async function handleCreateMultiDeviceJobFromControl() {
-    const problem = controlV3Problem.trim()
-    if (!problem) {
-      antMessage.warning('请填写协同任务问题描述')
-      return
-    }
-    const hosts = parseControlHostList(controlV3Hosts)
-    if (hosts.length === 0) {
-      antMessage.warning('请至少输入一个设备地址')
-      return
-    }
-    const username = controlV3Username.trim()
-    const password = controlV3Password.trim()
-    if (!username || !password) {
-      antMessage.warning('请填写多设备统一用户名和密码')
-      return
-    }
-    const mappedMode: OperationMode = controlV3Mode === 'repair'
-      ? 'config'
-      : controlV3Mode === 'inspection'
-        ? 'query'
-        : 'diagnosis'
-    setControlV3Creating(true)
-    try {
-      await handleCreateSession({
-        host: hosts.join(', '),
-        protocol: 'ssh',
-        operation_mode: mappedMode,
-        username,
-        password,
-        automation_level: automationLevel,
-      })
-      setDraftInput(problem)
-      setControlTaskScope('single')
-      antMessage.success('协同会话已就绪，请在工作台发送问题开始并行诊断')
-    } catch (error) {
-      antMessage.error((error as Error).message || '创建协同会话失败')
-    } finally {
-      setControlV3Creating(false)
     }
   }
 
@@ -3829,98 +3780,17 @@ function App() {
             <div className="page-grid control-layout">
               <div className="panel-card">
                 <h3>连接控制</h3>
-                <p className="muted">单设备与多设备都从这里进入，后端自动分流执行。</p>
-                <div className="control-scope-toggle">
-                  <Button
-                    size="small"
-                    type={controlTaskScope === 'single' ? 'primary' : 'default'}
-                    onClick={() => setControlTaskScope('single')}
-                  >
-                    单设备会话（V1）
-                  </Button>
-                  <Button
-                    size="small"
-                    type={controlTaskScope === 'multi' ? 'primary' : 'default'}
-                    onClick={() => setControlTaskScope('multi')}
-                  >
-                    多设备协同（V3）
-                  </Button>
+                <p className="muted">统一入口：输入一个地址=单设备，多地址（逗号/空格/换行分隔）=多设备协同。</p>
+                <div className="control-card-stack">
+                  <AutomationLevelSelector className="control-card-tight" value={automationLevel} onChange={setAutomationLevel} />
+                  <TaskModeSelector className="control-card-tight" value={operationMode} onChange={setOperationMode} />
+                  <DeviceForm
+                    className="control-card-tight"
+                    automationLevel={automationLevel}
+                    operationMode={operationMode}
+                    onCreate={handleCreateSession}
+                  />
                 </div>
-                {controlTaskScope === 'single' ? (
-                  <div className="control-card-stack">
-                    <AutomationLevelSelector className="control-card-tight" value={automationLevel} onChange={setAutomationLevel} />
-                    <TaskModeSelector className="control-card-tight" value={operationMode} onChange={setOperationMode} />
-                    <DeviceForm
-                      className="control-card-tight"
-                      automationLevel={automationLevel}
-                      operationMode={operationMode}
-                      onCreate={handleCreateSession}
-                    />
-                  </div>
-                ) : (
-                  <div className="control-card-stack control-multi-stack">
-                    <div className="panel-card control-card-tight">
-                      <div className="mode-detail-title">多设备协同会话</div>
-                      <p className="muted mode-detail-desc">
-                        输入多台设备后，工作台会在你发送问题时自动并行探测并汇总根因；确认交互保持与单设备一致。
-                      </p>
-                      <div className="control-v3-grid">
-                        <Select
-                          size="small"
-                          value={controlV3Mode}
-                          options={[
-                            { value: 'diagnosis', label: '诊断' },
-                            { value: 'inspection', label: '巡检' },
-                            { value: 'repair', label: '修复' },
-                          ]}
-                          onChange={(value) => setControlV3Mode(value)}
-                        />
-                        <Button size="small" onClick={() => setActivePage('third_party_keys')}>
-                          打开第三方 Key 服务页
-                        </Button>
-                      </div>
-                      <Input
-                        size="small"
-                        value={controlV3Problem}
-                        onChange={(event) => setControlV3Problem(event.target.value)}
-                        placeholder="问题描述（例：同时间窗多设备异常，定位根因）"
-                      />
-                      <Input.TextArea
-                        rows={3}
-                        value={controlV3Hosts}
-                        onChange={(event) => setControlV3Hosts(event.target.value)}
-                        placeholder="设备地址列表（逗号/空格/换行分隔）&#10;例如：192.168.0.88, 192.168.0.101, 192.168.0.102"
-                      />
-                      <div className="control-v3-grid">
-                        <Input
-                          size="small"
-                          value={controlV3Username}
-                          onChange={(event) => setControlV3Username(event.target.value)}
-                          placeholder="统一用户名"
-                        />
-                        <Input.Password
-                          size="small"
-                          value={controlV3Password}
-                          onChange={(event) => setControlV3Password(event.target.value)}
-                          placeholder="统一密码"
-                        />
-                      </div>
-                      <div className="policy-actions">
-                        <Button
-                          size="small"
-                          type="primary"
-                          loading={controlV3Creating}
-                          onClick={() => void handleCreateMultiDeviceJobFromControl()}
-                        >
-                          创建协同会话
-                        </Button>
-                        <Button size="small" onClick={() => setActivePage('workbench')}>
-                          打开工作台
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                )}
               </div>
               <div className="panel-card">
                 <h3>连接状态</h3>
