@@ -24,6 +24,7 @@ from app.models.schemas import (
     JobActionDecisionRequest,
     JobActionDecisionResponse,
     JobCreateRequest,
+    JobMode,
     JobReportResponse,
     JobResponse,
     JobStatus,
@@ -327,6 +328,16 @@ async def create_job_v2(
     req: JobCreateRequest,
     actor: ApiKeyRecord = Depends(require_v2_permission("job.write")),
 ) -> JobResponse:
+    if req.mode == JobMode.repair and not orchestrator_v2.has_permission(actor, "command.execute"):
+        await orchestrator_v2.append_audit(
+            actor=actor,
+            action="auth.check",
+            resource="permission:command.execute",
+            status="denied",
+            detail="repair mode requires command.execute",
+        )
+        raise HTTPException(status_code=403, detail="forbidden: missing permission 'command.execute' for repair mode")
+
     try:
         created = await orchestrator_v2.create_job(req)
     except ValueError as exc:
@@ -339,6 +350,26 @@ async def create_job_v2(
         status="ok",
     )
     return created
+
+
+@router_v2.post("/jobs/{job_id}/cancel", response_model=JobResponse)
+async def cancel_job_v2(
+    job_id: str,
+    reason: str | None = Query(default=None),
+    actor: ApiKeyRecord = Depends(require_v2_permission("job.write")),
+) -> JobResponse:
+    try:
+        payload = await orchestrator_v2.cancel_job(job_id, reason=reason, actor_name=actor.name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="job.cancel",
+        resource=f"job:{job_id}",
+        status="ok",
+        detail=reason,
+    )
+    return payload
 
 
 @router_v2.get("/jobs", response_model=list[JobResponse])

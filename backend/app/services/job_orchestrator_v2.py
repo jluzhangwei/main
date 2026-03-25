@@ -294,6 +294,38 @@ class JobV2Orchestrator:
                 raise KeyError(job_id)
             return JobTimelineResponse(job=self._public_job(job), events=list(self._events.get(job_id, [])))
 
+    async def cancel_job(self, job_id: str, *, reason: str | None = None, actor_name: str | None = None) -> JobResponse:
+        close_needed = False
+        async with self._state_lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            if not self._terminal(job.status):
+                job.status = JobStatus.cancelled
+                job.phase = JobPhase.conclude
+                job.error = (reason or "").strip() or None
+                job.completed_at = now_utc()
+                job.updated_at = now_utc()
+                self._append_event(
+                    job,
+                    "job_cancelled",
+                    {
+                        "reason": reason,
+                        "actor": actor_name,
+                    },
+                )
+                self._save_state()
+                close_needed = True
+            summary = self._job_summary(job)
+
+        task = self._tasks.get(job_id)
+        if task is not None and not task.done():
+            task.cancel()
+
+        if close_needed:
+            await self._close_job_adapters(job_id)
+        return summary
+
     async def list_events_since(self, job_id: str, from_seq: int = 0) -> tuple[list[JobEvent], JobStatus]:
         async with self._state_lock:
             job = self._jobs.get(job_id)
@@ -446,6 +478,18 @@ class JobV2Orchestrator:
             await self._correlate_phase(job_id)
             await self._plan_phase(job_id)
             await self._resume_job_execution(job_id)
+        except asyncio.CancelledError:
+            async with self._state_lock:
+                job = self._jobs.get(job_id)
+                if job and not self._terminal(job.status):
+                    job.status = JobStatus.cancelled
+                    job.phase = JobPhase.conclude
+                    job.completed_at = now_utc()
+                    job.updated_at = now_utc()
+                    self._append_event(job, "job_cancelled", {"reason": "task_cancelled"})
+                    self._save_state()
+            await self._close_job_adapters(job_id)
+            raise
         except Exception as exc:
             async with self._state_lock:
                 job = self._jobs.get(job_id)
@@ -666,6 +710,18 @@ class JobV2Orchestrator:
                             "reason": command.error,
                         },
                     )
+                    self._append_event(
+                        job,
+                        "capability_decision",
+                        {
+                            "device_id": device_id,
+                            "command_id": command.id,
+                            "decision": "block_hit",
+                            "rule_id": rule.id,
+                            "command": command.command,
+                            "reason": command.error,
+                        },
+                    )
                     self._touch_command_profile(device.version_signature, command_text, success=False, error=command.error)
                     self._save_state()
                     return command
@@ -673,6 +729,18 @@ class JobV2Orchestrator:
                     command_to_run = rule.rewrite_to
                     capability_state = "rewrite"
                     capability_reason = rule.reason_text or "rewritten by capability rule"
+                    self._append_event(
+                        job,
+                        "capability_decision",
+                        {
+                            "device_id": device_id,
+                            "command_id": command.id,
+                            "decision": "rewrite_hit",
+                            "rule_id": rule.id,
+                            "from": command.command,
+                            "to": command_to_run,
+                        },
+                    )
 
         try:
             output = await adapter.run_command(command_to_run)
@@ -777,6 +845,21 @@ class JobV2Orchestrator:
             return 2.0
         return 1.0
 
+    def _risk_rank(self, level: RiskLevel) -> int:
+        if level == RiskLevel.high:
+            return 3
+        if level == RiskLevel.medium:
+            return 2
+        return 1
+
+    def _max_risk_level(self, commands: list[str]) -> RiskLevel:
+        best = RiskLevel.low
+        for command in commands:
+            level = self.risk_engine.classify(command)
+            if self._risk_rank(level) > self._risk_rank(best):
+                best = level
+        return best
+
     def _touch_command_profile(
         self,
         version_signature: str | None,
@@ -817,7 +900,7 @@ class JobV2Orchestrator:
         retry_to = str(last_meta.get("retry_to") or "").strip() if isinstance(last_meta, dict) else ""
 
         if retry_used and retry_to and retry_to.lower() != command.command.lower():
-            self.store.command_capability_store.learn_rewrite(
+            learned = self.store.command_capability_store.learn_rewrite(
                 host=device.host,
                 protocol=device.protocol,
                 device_type=device.device_type,
@@ -827,10 +910,24 @@ class JobV2Orchestrator:
                 rewrite_to=retry_to,
                 reason_text=(command.error or "auto learned from retry-success")[:300],
             )
+            if learned is not None:
+                self._append_event(
+                    job,
+                    "capability_decision",
+                    {
+                        "device_id": device.id,
+                        "command_id": command.id,
+                        "decision": "learned_update",
+                        "action": "rewrite",
+                        "rule_id": learned.id,
+                        "from": command.command,
+                        "to": retry_to,
+                    },
+                )
             return
 
         if command.status == JobCommandStatus.failed or category == "command_error":
-            self.store.command_capability_store.learn_block(
+            learned = self.store.command_capability_store.learn_block(
                 host=device.host,
                 protocol=device.protocol,
                 device_type=device.device_type,
@@ -839,6 +936,19 @@ class JobV2Orchestrator:
                 failed_command=command.command,
                 reason_text=(command.error or "auto learned from syntax failure")[:300],
             )
+            if learned is not None:
+                self._append_event(
+                    job,
+                    "capability_decision",
+                    {
+                        "device_id": device.id,
+                        "command_id": command.id,
+                        "decision": "learned_update",
+                        "action": "block",
+                        "rule_id": learned.id,
+                        "command": command.command,
+                    },
+                )
 
     def _apply_incidents_from_evidence(self, job: Job, device: JobDevice, evidence: JobEvidence) -> None:
         parsed = evidence.parsed_data if isinstance(evidence.parsed_data, dict) else {}
@@ -1150,20 +1260,22 @@ class JobV2Orchestrator:
 
                 for iface in interfaces:
                     commands = self._repair_commands_for_device(root_device, iface)
+                    risk_level = self._max_risk_level(commands)
+                    requires_approval = risk_level in {RiskLevel.medium, RiskLevel.high}
                     action_groups.append(
                         JobActionGroup(
                             job_id=job.id,
                             device_id=root_device.id,
                             title=f"修复接口 {iface}",
                             commands=commands,
-                            risk_level=RiskLevel.high,
-                            requires_approval=True,
-                            status=JobActionGroupStatus.pending_approval,
+                            risk_level=risk_level,
+                            requires_approval=requires_approval,
+                            status=JobActionGroupStatus.pending_approval if requires_approval else JobActionGroupStatus.approved,
                         )
                     )
 
             job.action_groups = action_groups
-            if action_groups:
+            if action_groups and any(item.status == JobActionGroupStatus.pending_approval for item in action_groups):
                 job.phase = JobPhase.approve
                 job.status = JobStatus.waiting_approval
             self._append_event(
@@ -1172,6 +1284,7 @@ class JobV2Orchestrator:
                 {
                     "action_group_count": len(action_groups),
                     "pending_approval": len([item for item in action_groups if item.status == JobActionGroupStatus.pending_approval]),
+                    "auto_approved": len([item for item in action_groups if item.status == JobActionGroupStatus.approved]),
                 },
             )
             self._save_state()
@@ -1198,6 +1311,8 @@ class JobV2Orchestrator:
         async with self._state_lock:
             job = self._jobs.get(job_id)
             if not job:
+                return
+            if job.status == JobStatus.cancelled:
                 return
             if job.mode != JobMode.repair:
                 job.phase = JobPhase.conclude
@@ -1235,6 +1350,10 @@ class JobV2Orchestrator:
             self._save_state()
 
         for group in approved:
+            async with self._state_lock:
+                current = self._jobs.get(job_id)
+                if current is None or current.status == JobStatus.cancelled:
+                    return
             await self._execute_action_group(job_id, group.id)
 
         async with self._state_lock:
@@ -1293,6 +1412,10 @@ class JobV2Orchestrator:
 
         failed = False
         for idx, command_text in enumerate(commands, start=1):
+            async with self._state_lock:
+                job = self._jobs.get(job_id)
+                if job is None or job.status == JobStatus.cancelled:
+                    return
             result = await self._run_device_command(
                 job_id,
                 device_id,
@@ -1349,12 +1472,47 @@ class JobV2Orchestrator:
             lines.append(f"- Recommendation: {job.rca_result.recommendation}")
             lines.append("")
 
+        lines.append("## Correlation")
+        lines.append("")
+        lines.append(f"- Incident Count: {len(job.incidents)}")
+        lines.append(f"- Cluster Count: {len(job.clusters)}")
+        lines.append(f"- Causal Edge Count: {len(job.causal_edges)}")
+        lines.append("")
+        if job.clusters:
+            lines.append("### Clusters")
+            for cluster in job.clusters:
+                lines.append(
+                    f"- {cluster.id}: incidents={cluster.incident_count}, devices={len(cluster.device_ids)}, "
+                    f"window={cluster.start_at.isoformat()} -> {cluster.end_at.isoformat()}"
+                )
+            lines.append("")
+        if job.causal_edges:
+            lines.append("### Causal Edges")
+            for edge in job.causal_edges:
+                lines.append(
+                    f"- {edge.source_device_id} -> {edge.target_device_id} | "
+                    f"kind={edge.kind} | confidence={edge.confidence:.2f} | reason={edge.reason or '-'}"
+                )
+            lines.append("")
+
         lines.append("## Action Groups")
         lines.append("")
         for item in job.action_groups:
-            lines.append(f"- {item.title} | device={item.device_id} | status={item.status.value} | risk={item.risk_level.value}")
+            lines.append(
+                f"- {item.title} | device={item.device_id} | status={item.status.value} | "
+                f"risk={item.risk_level.value} | requires_approval={item.requires_approval}"
+            )
             for command in item.commands:
                 lines.append(f"  - `{command}`")
+        lines.append("")
+
+        lines.append("## Command Results")
+        lines.append("")
+        for command in job.command_results:
+            lines.append(
+                f"- step={command.step_no} device={command.device_id} status={command.status.value} "
+                f"risk={command.risk_level.value} command=`{command.command}`"
+            )
         lines.append("")
 
         lines.append("## Timeline Events")
@@ -1492,4 +1650,3 @@ class JobV2Orchestrator:
     async def list_command_profiles(self) -> list[CommandProfile]:
         async with self._state_lock:
             return sorted(self._command_profiles.values(), key=lambda item: item.updated_at, reverse=True)
-

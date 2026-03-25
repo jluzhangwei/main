@@ -95,6 +95,18 @@ def test_v2_key_bootstrap_and_permission_checks():
     no_audit = client.get("/v2/audit/logs", headers=_auth(operator_key))
     assert no_audit.status_code == 403
 
+    # Repair mode requires command.execute permission.
+    repair_denied = client.post(
+        "/v2/jobs",
+        json={
+            "problem": "repair down interface",
+            "mode": "repair",
+            "devices": [{"host": "192.0.2.11", "protocol": "api"}],
+        },
+        headers=_auth(operator_key),
+    )
+    assert repair_denied.status_code == 403
+
 
 def test_v2_job_timeline_events_and_report():
     admin_key = _bootstrap_admin_key()
@@ -143,3 +155,18 @@ def test_v2_keys_and_audit_endpoints():
     deleted = client.delete(f"/v2/keys/{auditor['id']}", headers=_auth(admin_key))
     assert deleted.status_code == 200
     assert deleted.json()["deleted"] is True
+
+
+def test_v2_cancel_job_endpoint(monkeypatch):
+    admin_key = _bootstrap_admin_key()
+    monkeypatch.setattr(
+        routes.orchestrator_v2,
+        "_baseline_collect_commands",
+        lambda: [(f"step-{i}", "show version") for i in range(60)],
+    )
+
+    job_id = _create_job(admin_key)
+    cancelled = client.post(f"/v2/jobs/{job_id}/cancel?reason=manual-stop", headers=_auth(admin_key))
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["id"] == job_id
+    assert cancelled.json()["status"] in {"cancelled", "completed"}

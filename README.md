@@ -64,6 +64,7 @@ docker compose up --build
 - `POST /v2/jobs`
 - `GET /v2/jobs`
 - `GET /v2/jobs/{jobId}`
+- `POST /v2/jobs/{jobId}/cancel`
 - `GET /v2/jobs/{jobId}/events` (SSE)
 - `POST /v2/jobs/{jobId}/actions/{actionGroupId}/approve`
 - `POST /v2/jobs/{jobId}/actions/{actionGroupId}/reject`
@@ -122,10 +123,10 @@ curl -sS -H 'X-API-Key: <YOUR_API_KEY>' \
 
 - `job.read`: 读取任务、时间线、报告、事件
 - `job.write`: 创建任务
+- `command.execute`: 运行修复类任务（`mode=repair` 需此权限）
 - `command.approve`: 审批/拒绝命令组
 - `policy.write`: 管理 API Key / 策略
 - `audit.read`: 审计日志与报表读取
-- `command.execute`: 预留给后续执行面增强
 
 ## 单次设备诊断
 
