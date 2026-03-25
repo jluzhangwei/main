@@ -63,6 +63,7 @@ docker compose up --build
 - `DELETE /v2/keys/{id}`
 - `POST /v2/jobs`
 - `GET /v2/jobs`
+- `GET /v2/jobs/query`（分页与过滤）
 - `GET /v2/jobs/{jobId}`
 - `POST /v2/jobs/{jobId}/cancel`
 - `GET /v2/jobs/{jobId}/events` (SSE)
@@ -89,6 +90,7 @@ curl -sS -X POST 'http://127.0.0.1:8000/v2/keys' \
 ```bash
 curl -sS -X POST 'http://127.0.0.1:8000/v2/jobs' \
   -H 'X-API-Key: <YOUR_API_KEY>' \
+  -H 'Idempotency-Key: job-20260325-rca-001' \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "跨设备故障分析",
@@ -97,6 +99,8 @@ curl -sS -X POST 'http://127.0.0.1:8000/v2/jobs' \
     "max_gap_seconds": 300,
     "topology_mode": "hybrid",
     "max_device_concurrency": 20,
+    "webhook_url": "http://your-system.example.com/netops/events",
+    "webhook_events": ["job_completed","job_failed","job_cancelled","action_group_completed"],
     "devices": [
       {"host":"192.168.0.88","protocol":"ssh","username":"zhangwei","password":"Huawei@123"},
       {"host":"192.168.0.101","protocol":"ssh","username":"zhangwei","password":"Admin@123"},
@@ -117,6 +121,13 @@ curl -N -H 'X-API-Key: <YOUR_API_KEY>' \
 ```bash
 curl -sS -H 'X-API-Key: <YOUR_API_KEY>' \
   'http://127.0.0.1:8000/v2/jobs/<JOB_ID>/report?format=markdown'
+
+### 5) 分页查询任务
+
+```bash
+curl -sS -H 'X-API-Key: <YOUR_API_KEY>' \
+  'http://127.0.0.1:8000/v2/jobs/query?offset=0&limit=20&status=completed'
+```
 ```
 
 ## 权限标签建议

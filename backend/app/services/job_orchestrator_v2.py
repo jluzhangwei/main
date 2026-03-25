@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+import httpx
+
 from app.models.schemas import (
     ApiKeyCreateRequest,
     ApiKeyCreateResponse,
@@ -68,6 +70,8 @@ class JobV2Orchestrator:
         self._keys: dict[str, ApiKeyRecord] = {}
         self._audit_logs: list[AuditLog] = []
         self._command_profiles: dict[str, CommandProfile] = {}
+        self._idempotency_index: dict[str, str] = {}
+        self._webhook_tasks: set[asyncio.Task] = set()
 
         self._state_lock = asyncio.Lock()
         self._state_path = self._resolve_state_path()
@@ -147,12 +151,22 @@ class JobV2Orchestrator:
                 if parsed:
                     self._events[job_id] = parsed
 
+        raw_idempotency = payload.get("idempotency_index")
+        if isinstance(raw_idempotency, dict):
+            for key, job_id in raw_idempotency.items():
+                k = str(key or "").strip()
+                v = str(job_id or "").strip()
+                if not k or not v:
+                    continue
+                self._idempotency_index[k] = v
+
     def _save_state(self) -> None:
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
                 "jobs": [self._job_for_persistence(item).model_dump(mode="json") for item in self._jobs.values()],
                 "events": {jid: [e.model_dump(mode="json") for e in rows] for jid, rows in self._events.items()},
+                "idempotency_index": dict(self._idempotency_index),
                 "api_keys": [item.model_dump(mode="json") for item in self._keys.values()],
                 "audit_logs": [item.model_dump(mode="json") for item in self._audit_logs[-5000:]],
                 "command_profiles": [item.model_dump(mode="json") for item in self._command_profiles.values()],
@@ -208,7 +222,51 @@ class JobV2Orchestrator:
         rows = self._events[job.id]
         event = JobEvent(job_id=job.id, seq_no=len(rows) + 1, event_type=event_type, payload=payload)
         rows.append(event)
+        self._dispatch_webhook(job, event)
         return event
+
+    def _normalize_idempotency_key(self, key: str | None, actor_key_id: str | None) -> str | None:
+        raw = str(key or "").strip()
+        if not raw:
+            return None
+        actor = str(actor_key_id or "anonymous").strip() or "anonymous"
+        return f"{actor}::{raw}"
+
+    def _should_emit_webhook(self, job: Job, event_type: str) -> bool:
+        url = str(job.webhook_url or "").strip()
+        if not url:
+            return False
+        selected = [str(item or "").strip() for item in job.webhook_events if str(item or "").strip()]
+        if not selected:
+            return True
+        return event_type in selected or "*" in selected
+
+    def _dispatch_webhook(self, job: Job, event: JobEvent) -> None:
+        if not self._should_emit_webhook(job, event.event_type):
+            return
+        task = asyncio.create_task(self._emit_webhook_event(job, event), name=f"v2-webhook-{job.id}-{event.seq_no}")
+        self._webhook_tasks.add(task)
+
+        def _cleanup(done: asyncio.Task) -> None:
+            self._webhook_tasks.discard(done)
+
+        task.add_done_callback(_cleanup)
+
+    async def _emit_webhook_event(self, job: Job, event: JobEvent) -> None:
+        url = str(job.webhook_url or "").strip()
+        if not url:
+            return
+        payload = {
+            "job_id": job.id,
+            "job_status": job.status.value,
+            "job_phase": job.phase.value,
+            "event": event.model_dump(mode="json"),
+        }
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.post(url, json=payload)
+        except Exception:
+            return
 
     def _terminal(self, status: JobStatus) -> bool:
         return status in {JobStatus.completed, JobStatus.failed, JobStatus.cancelled}
@@ -219,9 +277,23 @@ class JobV2Orchestrator:
                 return item
         return None
 
-    async def create_job(self, req: JobCreateRequest) -> JobResponse:
+    async def create_job(
+        self,
+        req: JobCreateRequest,
+        *,
+        idempotency_key: str | None = None,
+        actor_key_id: str | None = None,
+    ) -> JobResponse:
         if not req.devices:
             raise ValueError("at least one device is required")
+
+        normalized_idempotency = self._normalize_idempotency_key(idempotency_key, actor_key_id)
+        if normalized_idempotency:
+            async with self._state_lock:
+                existing_id = self._idempotency_index.get(normalized_idempotency)
+                existing_job = self._jobs.get(existing_id or "")
+                if existing_job is not None:
+                    return self._job_summary(existing_job)
 
         devices = [
             JobDevice(
@@ -251,6 +323,10 @@ class JobV2Orchestrator:
             topology_mode=req.topology_mode,
             max_gap_seconds=max(30, int(req.max_gap_seconds or 300)),
             max_device_concurrency=max(1, int(req.max_device_concurrency or 20)),
+            idempotency_key=normalized_idempotency,
+            requester_key_id=actor_key_id,
+            webhook_url=(req.webhook_url or "").strip() or None,
+            webhook_events=[str(item).strip() for item in req.webhook_events if str(item).strip()],
             window_start=req.window_start,
             window_end=req.window_end,
             devices=devices,
@@ -259,6 +335,8 @@ class JobV2Orchestrator:
 
         async with self._state_lock:
             self._jobs[job.id] = job
+            if normalized_idempotency:
+                self._idempotency_index[normalized_idempotency] = job.id
             self._append_event(
                 job,
                 "job_created",
@@ -275,10 +353,25 @@ class JobV2Orchestrator:
         self._tasks[job.id] = task
         return self._job_summary(job)
 
-    async def list_jobs(self) -> list[JobResponse]:
+    async def list_jobs(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        status: JobStatus | None = None,
+        mode: JobMode | None = None,
+    ) -> tuple[list[JobResponse], int]:
         async with self._state_lock:
             rows = sorted(self._jobs.values(), key=lambda item: item.created_at, reverse=True)
-            return [self._job_summary(item) for item in rows]
+            if status is not None:
+                rows = [item for item in rows if item.status == status]
+            if mode is not None:
+                rows = [item for item in rows if item.mode == mode]
+            total = len(rows)
+            start = max(0, int(offset))
+            end = start + max(1, min(500, int(limit)))
+            sliced = rows[start:end]
+            return [self._job_summary(item) for item in sliced], total
 
     async def get_job(self, job_id: str) -> JobResponse:
         async with self._state_lock:

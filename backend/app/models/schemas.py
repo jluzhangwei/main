@@ -445,6 +445,8 @@ class JobCreateRequest(BaseModel):
     topology_mode: TopologyMode = TopologyMode.hybrid
     topology_edges: list[JobTopologyEdge] = Field(default_factory=list)
     max_device_concurrency: int = 20
+    webhook_url: Optional[str] = None
+    webhook_events: list[str] = Field(default_factory=list)
 
 
 class JobDevice(BaseModel):
@@ -586,6 +588,10 @@ class Job(BaseModel):
     topology_mode: TopologyMode = TopologyMode.hybrid
     max_gap_seconds: int = 300
     max_device_concurrency: int = 20
+    idempotency_key: Optional[str] = None
+    requester_key_id: Optional[str] = None
+    webhook_url: Optional[str] = None
+    webhook_events: list[str] = Field(default_factory=list)
     window_start: Optional[datetime] = None
     window_end: Optional[datetime] = None
     devices: list[JobDevice] = Field(default_factory=list)
@@ -619,6 +625,13 @@ class JobResponse(BaseModel):
     command_count: int
     pending_action_groups: int = 0
     root_device_id: Optional[str] = None
+
+
+class JobListResponse(BaseModel):
+    total: int
+    offset: int
+    limit: int
+    items: list[JobResponse] = Field(default_factory=list)
 
 
 class JobTimelineResponse(BaseModel):

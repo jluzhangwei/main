@@ -12,8 +12,11 @@ from app.main import app
 client = TestClient(app)
 
 
-def _auth(api_key: str) -> dict[str, str]:
-    return {"X-API-Key": api_key}
+def _auth(api_key: str, *, idempotency_key: str | None = None) -> dict[str, str]:
+    headers = {"X-API-Key": api_key}
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    return headers
 
 
 def _bootstrap_admin_key() -> str:
@@ -25,7 +28,14 @@ def _bootstrap_admin_key() -> str:
     return payload["api_key"]
 
 
-def _create_job(api_key: str, mode: str = "diagnosis") -> str:
+def _create_job(
+    api_key: str,
+    mode: str = "diagnosis",
+    *,
+    idempotency_key: str | None = None,
+    webhook_url: str | None = None,
+    webhook_events: list[str] | None = None,
+) -> str:
     payload = {
         "name": "v2-test-job",
         "problem": "check interfaces and root cause",
@@ -40,7 +50,11 @@ def _create_job(api_key: str, mode: str = "diagnosis") -> str:
         "max_gap_seconds": 300,
         "topology_mode": "hybrid",
     }
-    resp = client.post("/v2/jobs", json=payload, headers=_auth(api_key))
+    if webhook_url:
+        payload["webhook_url"] = webhook_url
+    if webhook_events:
+        payload["webhook_events"] = webhook_events
+    resp = client.post("/v2/jobs", json=payload, headers=_auth(api_key, idempotency_key=idempotency_key))
     assert resp.status_code == 200, resp.text
     return resp.json()["id"]
 
@@ -170,3 +184,43 @@ def test_v2_cancel_job_endpoint(monkeypatch):
     assert cancelled.status_code == 200, cancelled.text
     assert cancelled.json()["id"] == job_id
     assert cancelled.json()["status"] in {"cancelled", "completed"}
+
+
+def test_v2_idempotency_key_returns_same_job():
+    admin_key = _bootstrap_admin_key()
+    key = "same-request-001"
+    job_a = _create_job(admin_key, idempotency_key=key)
+    job_b = _create_job(admin_key, idempotency_key=key)
+    assert job_a == job_b
+
+
+def test_v2_query_jobs_supports_pagination_and_total():
+    admin_key = _bootstrap_admin_key()
+    _create_job(admin_key, idempotency_key="query-job-1")
+    _create_job(admin_key, idempotency_key="query-job-2")
+
+    query = client.get("/v2/jobs/query?offset=0&limit=1", headers=_auth(admin_key))
+    assert query.status_code == 200, query.text
+    payload = query.json()
+    assert payload["total"] >= 2
+    assert payload["offset"] == 0
+    assert payload["limit"] == 1
+    assert len(payload["items"]) == 1
+
+
+def test_v2_webhook_dispatch_on_selected_events(monkeypatch):
+    admin_key = _bootstrap_admin_key()
+    captured: list[str] = []
+
+    async def _fake_emit(job, event):
+        captured.append(event.event_type)
+
+    monkeypatch.setattr(routes.orchestrator_v2, "_emit_webhook_event", _fake_emit)
+    _create_job(
+        admin_key,
+        idempotency_key="webhook-job-1",
+        webhook_url="http://example.invalid/callback",
+        webhook_events=["job_created"],
+    )
+    time.sleep(0.05)
+    assert "job_created" in captured

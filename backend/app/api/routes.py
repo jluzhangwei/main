@@ -24,6 +24,7 @@ from app.models.schemas import (
     JobActionDecisionRequest,
     JobActionDecisionResponse,
     JobCreateRequest,
+    JobListResponse,
     JobMode,
     JobReportResponse,
     JobResponse,
@@ -327,6 +328,7 @@ def require_v2_permission(permission: str):
 async def create_job_v2(
     req: JobCreateRequest,
     actor: ApiKeyRecord = Depends(require_v2_permission("job.write")),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> JobResponse:
     if req.mode == JobMode.repair and not orchestrator_v2.has_permission(actor, "command.execute"):
         await orchestrator_v2.append_audit(
@@ -339,7 +341,11 @@ async def create_job_v2(
         raise HTTPException(status_code=403, detail="forbidden: missing permission 'command.execute' for repair mode")
 
     try:
-        created = await orchestrator_v2.create_job(req)
+        created = await orchestrator_v2.create_job(
+            req,
+            idempotency_key=idempotency_key,
+            actor_key_id=actor.id,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -374,16 +380,48 @@ async def cancel_job_v2(
 
 @router_v2.get("/jobs", response_model=list[JobResponse])
 async def list_jobs_v2(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
+    status: JobStatus | None = Query(default=None),
+    mode: JobMode | None = Query(default=None),
     actor: ApiKeyRecord = Depends(require_v2_permission("job.read")),
 ) -> list[JobResponse]:
-    rows = await orchestrator_v2.list_jobs()
+    rows, _ = await orchestrator_v2.list_jobs(
+        offset=offset,
+        limit=limit,
+        status=status,
+        mode=mode,
+    )
     await orchestrator_v2.append_audit(
         actor=actor,
         action="job.list",
-        resource="job:*",
+        resource=f"job:*?offset={offset}&limit={limit}",
         status="ok",
     )
     return rows
+
+
+@router_v2.get("/jobs/query", response_model=JobListResponse)
+async def query_jobs_v2(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
+    status: JobStatus | None = Query(default=None),
+    mode: JobMode | None = Query(default=None),
+    actor: ApiKeyRecord = Depends(require_v2_permission("job.read")),
+) -> JobListResponse:
+    rows, total = await orchestrator_v2.list_jobs(
+        offset=offset,
+        limit=limit,
+        status=status,
+        mode=mode,
+    )
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="job.query",
+        resource=f"job:*?offset={offset}&limit={limit}",
+        status="ok",
+    )
+    return JobListResponse(total=total, offset=offset, limit=limit, items=rows)
 
 
 @router_v2.get("/jobs/{job_id}", response_model=JobResponse)
