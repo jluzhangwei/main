@@ -27,11 +27,24 @@ const headers = {
   'Content-Type': 'application/json',
 }
 
-const API_BASE = String(
-  (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL ?? '',
-)
-  .trim()
-  .replace(/\/+$/, '')
+function resolveApiBase(): string {
+  const envBase = String(
+    (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL ?? '',
+  )
+    .trim()
+    .replace(/\/+$/, '')
+  if (envBase) return envBase
+
+  // Dev server (5173) fallback: use same hostname with backend port 8000.
+  if (typeof window !== 'undefined' && window.location.port === '5173') {
+    const protocol = window.location.protocol === 'https:' ? 'https' : 'http'
+    const host = window.location.hostname
+    return `${protocol}://${host}:8000`
+  }
+  return ''
+}
+
+const API_BASE = resolveApiBase()
 
 function apiUrl(path: string): string {
   if (!API_BASE) return path
