@@ -108,7 +108,6 @@ type DeviceAuthRecord = {
 }
 const NAV_ITEMS: Array<{ id: PageId; title: string }> = [
   { id: 'workbench', title: '诊断工作台' },
-  { id: 'v3_jobs', title: 'V3 任务编排' },
   { id: 'third_party_keys', title: '第三方 Key 服务' },
   { id: 'control', title: '连接控制' },
   { id: 'command_policy', title: '命令执行控制' },
@@ -810,11 +809,8 @@ function App() {
   }, [commands])
 
   useEffect(() => {
-    if (activePage !== 'v3_jobs' && activePage !== 'third_party_keys') return
-    void refreshV3Jobs()
+    if (activePage !== 'third_party_keys') return
     void refreshV3ApiKeys()
-    void refreshV3AuditLogs()
-    void refreshV3CommandProfiles()
     void refreshV3PermissionTemplates()
   }, [activePage, v3ApiKeyInput])
 
@@ -1364,7 +1360,6 @@ function App() {
       setV3BootstrapApiKey('')
       antMessage.success('V3 API Key 创建成功')
       await refreshV3ApiKeys()
-      await refreshV3AuditLogs()
     } catch (error) {
       antMessage.error((error as Error).message || '创建 API Key 失败')
     } finally {
@@ -3819,8 +3814,8 @@ function App() {
     "devices":[{"host":"192.168.0.88","protocol":"ssh","username":"***","password":"***"}]
   }'`}</pre>
                 <div className="policy-actions">
-                  <Button size="small" onClick={() => setActivePage('v3_jobs')}>
-                    打开 V3 任务编排
+                  <Button size="small" onClick={() => setActivePage('workbench')}>
+                    返回工作台
                   </Button>
                   <Button size="small" onClick={() => setActivePage('control')}>
                     返回连接控制
