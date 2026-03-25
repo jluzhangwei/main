@@ -229,3 +229,130 @@ export type ServiceTrace = {
   session_id: string
   steps: ServiceTraceStep[]
 }
+
+export type JobMode = 'diagnosis' | 'inspection' | 'repair'
+export type JobStatus = 'queued' | 'running' | 'waiting_approval' | 'executing' | 'completed' | 'failed' | 'cancelled'
+export type JobPhase = 'collect' | 'correlate' | 'plan' | 'approve' | 'execute' | 'analyze' | 'conclude'
+
+export type V2ApiKey = {
+  id: string
+  name: string
+  key_prefix: string
+  permissions: string[]
+  enabled: boolean
+  disabled_reason?: string
+  expires_at?: string
+  created_at: string
+  last_used_at?: string
+}
+
+export type V2ApiKeyCreateResponse = V2ApiKey & {
+  api_key: string
+  rotated_from_id?: string
+}
+
+export type V2JobSummary = {
+  id: string
+  name?: string
+  problem: string
+  mode: JobMode
+  status: JobStatus
+  phase: JobPhase
+  created_at: string
+  started_at?: string
+  completed_at?: string
+  updated_at: string
+  device_count: number
+  command_count: number
+  pending_action_groups: number
+  root_device_id?: string
+}
+
+export type V2JobListResponse = {
+  total: number
+  offset: number
+  limit: number
+  items: V2JobSummary[]
+}
+
+export type V2JobActionGroup = {
+  id: string
+  job_id: string
+  device_id: string
+  title: string
+  commands: string[]
+  rollback_commands?: string[]
+  risk_level: 'low' | 'medium' | 'high'
+  requires_approval: boolean
+  status: 'pending_approval' | 'approved' | 'rejected' | 'running' | 'succeeded' | 'failed'
+  approve_reason?: string
+  reject_reason?: string
+  approved_by?: string
+  created_at: string
+  updated_at: string
+}
+
+export type V2JobCommandResult = {
+  id: string
+  job_id: string
+  device_id: string
+  action_group_id?: string
+  step_no: number
+  title: string
+  command: string
+  effective_command?: string
+  risk_level: 'low' | 'medium' | 'high'
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'blocked' | 'rejected'
+  output?: string
+  error?: string
+  capability_state?: string
+  capability_reason?: string
+  constraint_source?: string
+  constraint_reason?: string
+  created_at: string
+  started_at?: string
+  completed_at?: string
+  duration_ms?: number
+}
+
+export type V2JobEvent = {
+  id: string
+  job_id: string
+  seq_no: number
+  event_type: string
+  payload: Record<string, unknown>
+  created_at: string
+}
+
+export type V2JobTimeline = {
+  job: {
+    id: string
+    name?: string
+    problem: string
+    mode: JobMode
+    status: JobStatus
+    phase: JobPhase
+    execution_policy: 'stop_on_failure' | 'continue_on_failure' | 'rollback_template'
+    devices: Array<{
+      id: string
+      host: string
+      name?: string
+      status: string
+      vendor?: string
+      platform?: string
+      software_version?: string
+      version_signature?: string
+      last_error?: string
+    }>
+    action_groups: V2JobActionGroup[]
+    command_results: V2JobCommandResult[]
+    incidents: Array<Record<string, unknown>>
+    clusters: Array<Record<string, unknown>>
+    causal_edges: Array<Record<string, unknown>>
+    rca_result?: Record<string, unknown>
+    created_at: string
+    updated_at: string
+    completed_at?: string
+  }
+  events: V2JobEvent[]
+}

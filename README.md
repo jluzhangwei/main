@@ -18,6 +18,7 @@
 ## 用户文档
 
 - 图文用户说明书（中文）：[`docs/USER_GUIDE.zh-CN.md`](docs/USER_GUIDE.zh-CN.md)
+- V3 运维说明（多设备任务编排）：[`docs/V3_OPERATIONS.zh-CN.md`](docs/V3_OPERATIONS.zh-CN.md)
 
 ## 快速启动
 
@@ -121,13 +122,13 @@ curl -N -H 'X-API-Key: <YOUR_API_KEY>' \
 ```bash
 curl -sS -H 'X-API-Key: <YOUR_API_KEY>' \
   'http://127.0.0.1:8000/v2/jobs/<JOB_ID>/report?format=markdown'
+```
 
 ### 5) 分页查询任务
 
 ```bash
 curl -sS -H 'X-API-Key: <YOUR_API_KEY>' \
   'http://127.0.0.1:8000/v2/jobs/query?offset=0&limit=20&status=completed'
-```
 ```
 
 ## 权限标签建议
@@ -154,4 +155,12 @@ export VENDOR=huawei
 export AUTOMATION_LEVEL=assisted
 export DIAG_MESSAGE='请帮我诊断连通性、接口和路由问题'
 python scripts/run_device_diag.py
+```
+
+## V3 压测脚本
+
+```bash
+cd backend
+. .venv/bin/activate
+python scripts/v2_stress_jobs.py --base-url http://127.0.0.1:8000 --api-key <ADMIN_KEY> --jobs 30 --device-count 8
 ```

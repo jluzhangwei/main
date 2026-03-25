@@ -434,6 +434,14 @@ class JobTopologyEdge(BaseModel):
     reason: Optional[str] = None
 
 
+class RCAWeights(BaseModel):
+    anomaly: float = 1.0
+    timing: float = 1.0
+    topology: float = 1.0
+    change: float = 1.0
+    consistency: float = 1.0
+
+
 class JobCreateRequest(BaseModel):
     name: Optional[str] = None
     problem: str
@@ -445,6 +453,8 @@ class JobCreateRequest(BaseModel):
     topology_mode: TopologyMode = TopologyMode.hybrid
     topology_edges: list[JobTopologyEdge] = Field(default_factory=list)
     max_device_concurrency: int = 20
+    execution_policy: Literal["stop_on_failure", "continue_on_failure", "rollback_template"] = "stop_on_failure"
+    rca_weights: RCAWeights = Field(default_factory=RCAWeights)
     webhook_url: Optional[str] = None
     webhook_events: list[str] = Field(default_factory=list)
 
@@ -561,6 +571,7 @@ class JobActionGroup(BaseModel):
     commands: list[str] = Field(default_factory=list)
     risk_level: RiskLevel = RiskLevel.low
     requires_approval: bool = False
+    rollback_commands: list[str] = Field(default_factory=list)
     status: JobActionGroupStatus = JobActionGroupStatus.pending_approval
     approve_reason: Optional[str] = None
     reject_reason: Optional[str] = None
@@ -588,6 +599,8 @@ class Job(BaseModel):
     topology_mode: TopologyMode = TopologyMode.hybrid
     max_gap_seconds: int = 300
     max_device_concurrency: int = 20
+    execution_policy: Literal["stop_on_failure", "continue_on_failure", "rollback_template"] = "stop_on_failure"
+    rca_weights: RCAWeights = Field(default_factory=RCAWeights)
     idempotency_key: Optional[str] = None
     requester_key_id: Optional[str] = None
     webhook_url: Optional[str] = None
@@ -643,6 +656,19 @@ class JobActionDecisionRequest(BaseModel):
     reason: Optional[str] = None
 
 
+class JobBulkActionDecisionRequest(BaseModel):
+    action_group_ids: list[str] = Field(default_factory=list)
+    reason: Optional[str] = None
+
+
+class JobBulkActionDecisionResponse(BaseModel):
+    job_id: str
+    total: int
+    updated: int
+    skipped: int
+    results: list[JobActionDecisionResponse] = Field(default_factory=list)
+
+
 class JobActionDecisionResponse(BaseModel):
     job_id: str
     action_group_id: str
@@ -656,9 +682,19 @@ class JobReportResponse(BaseModel):
     content: str
 
 
+class JobTopologyUpdateRequest(BaseModel):
+    edges: list[JobTopologyEdge] = Field(default_factory=list)
+    replace: bool = False
+
+
+class JobRCAWeightsUpdateRequest(BaseModel):
+    rca_weights: RCAWeights
+
+
 class ApiKeyCreateRequest(BaseModel):
     name: str
     permissions: list[str] = Field(default_factory=list)
+    expires_at: Optional[datetime] = None
 
 
 class ApiKeyListItem(BaseModel):
@@ -667,6 +703,8 @@ class ApiKeyListItem(BaseModel):
     key_prefix: str
     permissions: list[str] = Field(default_factory=list)
     enabled: bool = True
+    disabled_reason: Optional[str] = None
+    expires_at: Optional[datetime] = None
     created_at: datetime
     last_used_at: Optional[datetime] = None
 
@@ -682,8 +720,33 @@ class ApiKeyRecord(BaseModel):
     key_hash: str
     permissions: list[str] = Field(default_factory=list)
     enabled: bool = True
+    disabled_reason: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    rotated_from_id: Optional[str] = None
     created_at: datetime = Field(default_factory=now_utc)
     last_used_at: Optional[datetime] = None
+
+
+class ApiKeyUpdateRequest(BaseModel):
+    enabled: Optional[bool] = None
+    disabled_reason: Optional[str] = None
+    expires_at: Optional[datetime] = None
+
+
+class ApiKeyRotateRequest(BaseModel):
+    name: Optional[str] = None
+    permissions: Optional[list[str]] = None
+    expires_at: Optional[datetime] = None
+
+
+class ApiKeyRotateResponse(ApiKeyCreateResponse):
+    rotated_from_id: str
+
+
+class AuditLogExportResponse(BaseModel):
+    filename: str
+    mime_type: str
+    content: str
 
 
 class AuditLog(BaseModel):

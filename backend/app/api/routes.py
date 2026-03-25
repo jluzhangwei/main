@@ -12,7 +12,11 @@ from app.models.schemas import (
     ApiKeyCreateResponse,
     ApiKeyListItem,
     ApiKeyRecord,
+    ApiKeyRotateRequest,
+    ApiKeyRotateResponse,
+    ApiKeyUpdateRequest,
     AuditLog,
+    AuditLogExportResponse,
     CommandCapabilityResetRequest,
     CommandCapabilityResetResponse,
     CommandCapabilityRule,
@@ -23,12 +27,16 @@ from app.models.schemas import (
     ExportRequest,
     JobActionDecisionRequest,
     JobActionDecisionResponse,
+    JobBulkActionDecisionRequest,
+    JobBulkActionDecisionResponse,
     JobCreateRequest,
     JobListResponse,
     JobMode,
+    JobRCAWeightsUpdateRequest,
     JobReportResponse,
     JobResponse,
     JobStatus,
+    JobTopologyUpdateRequest,
     JobTimelineResponse,
     LLMConfigRequest,
     LLMConfigResponse,
@@ -504,6 +512,39 @@ async def approve_action_group_v2(
         raise HTTPException(status_code=404, detail="Job or action group not found") from exc
 
 
+@router_v2.post("/jobs/{job_id}/actions/approve-batch", response_model=JobBulkActionDecisionResponse)
+async def approve_action_groups_batch_v2(
+    job_id: str,
+    req: JobBulkActionDecisionRequest,
+    actor: ApiKeyRecord = Depends(require_v2_permission("command.approve")),
+) -> JobBulkActionDecisionResponse:
+    if not req.action_group_ids:
+        raise HTTPException(status_code=400, detail="action_group_ids is required")
+    results = await orchestrator_v2.bulk_approve_action_groups(
+        job_id,
+        req.action_group_ids,
+        actor_key_id=actor.id,
+        actor_name=actor.name,
+        reason=req.reason,
+    )
+    updated = len(results)
+    skipped = max(0, len(req.action_group_ids) - updated)
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="job.action_group.approve_batch",
+        resource=f"job:{job_id}",
+        status="ok",
+        detail=f"updated={updated},skipped={skipped}",
+    )
+    return JobBulkActionDecisionResponse(
+        job_id=job_id,
+        total=len(req.action_group_ids),
+        updated=updated,
+        skipped=skipped,
+        results=results,
+    )
+
+
 @router_v2.post("/jobs/{job_id}/actions/{action_group_id}/reject", response_model=JobActionDecisionResponse)
 async def reject_action_group_v2(
     job_id: str,
@@ -523,6 +564,39 @@ async def reject_action_group_v2(
         raise HTTPException(status_code=404, detail="Job or action group not found") from exc
 
 
+@router_v2.post("/jobs/{job_id}/actions/reject-batch", response_model=JobBulkActionDecisionResponse)
+async def reject_action_groups_batch_v2(
+    job_id: str,
+    req: JobBulkActionDecisionRequest,
+    actor: ApiKeyRecord = Depends(require_v2_permission("command.approve")),
+) -> JobBulkActionDecisionResponse:
+    if not req.action_group_ids:
+        raise HTTPException(status_code=400, detail="action_group_ids is required")
+    results = await orchestrator_v2.bulk_reject_action_groups(
+        job_id,
+        req.action_group_ids,
+        actor_key_id=actor.id,
+        actor_name=actor.name,
+        reason=req.reason,
+    )
+    updated = len(results)
+    skipped = max(0, len(req.action_group_ids) - updated)
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="job.action_group.reject_batch",
+        resource=f"job:{job_id}",
+        status="ok",
+        detail=f"updated={updated},skipped={skipped}",
+    )
+    return JobBulkActionDecisionResponse(
+        job_id=job_id,
+        total=len(req.action_group_ids),
+        updated=updated,
+        skipped=skipped,
+        results=results,
+    )
+
+
 @router_v2.get("/jobs/{job_id}/timeline", response_model=JobTimelineResponse)
 async def get_job_timeline_v2(
     job_id: str,
@@ -535,6 +609,45 @@ async def get_job_timeline_v2(
     await orchestrator_v2.append_audit(
         actor=actor,
         action="job.timeline",
+        resource=f"job:{job_id}",
+        status="ok",
+    )
+    return payload
+
+
+@router_v2.put("/jobs/{job_id}/topology", response_model=JobResponse)
+async def update_job_topology_v2(
+    job_id: str,
+    req: JobTopologyUpdateRequest,
+    actor: ApiKeyRecord = Depends(require_v2_permission("job.write")),
+) -> JobResponse:
+    try:
+        payload = await orchestrator_v2.update_job_topology(job_id, req.edges, replace=req.replace)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="job.topology.update",
+        resource=f"job:{job_id}",
+        status="ok",
+        detail=f"replace={req.replace},edges={len(req.edges)}",
+    )
+    return payload
+
+
+@router_v2.put("/jobs/{job_id}/rca-weights", response_model=JobResponse)
+async def update_job_rca_weights_v2(
+    job_id: str,
+    req: JobRCAWeightsUpdateRequest,
+    actor: ApiKeyRecord = Depends(require_v2_permission("job.write")),
+) -> JobResponse:
+    try:
+        payload = await orchestrator_v2.update_job_rca_weights(job_id, req.rca_weights)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="job.rca_weights.update",
         resource=f"job:{job_id}",
         status="ok",
     )
@@ -619,11 +732,83 @@ async def delete_api_key_v2(
     return {"deleted": True}
 
 
+@router_v2.patch("/keys/{key_id}", response_model=ApiKeyListItem)
+async def update_api_key_v2(
+    key_id: str,
+    req: ApiKeyUpdateRequest,
+    actor: ApiKeyRecord = Depends(require_v2_permission("policy.write")),
+) -> ApiKeyListItem:
+    try:
+        payload = await orchestrator_v2.update_api_key(
+            key_id,
+            enabled=req.enabled,
+            disabled_reason=req.disabled_reason,
+            expires_at=req.expires_at,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="API key not found") from exc
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="key.update",
+        resource=f"key:{key_id}",
+        status="ok",
+    )
+    return payload
+
+
+@router_v2.post("/keys/{key_id}/rotate", response_model=ApiKeyRotateResponse)
+async def rotate_api_key_v2(
+    key_id: str,
+    req: ApiKeyRotateRequest,
+    actor: ApiKeyRecord = Depends(require_v2_permission("policy.write")),
+) -> ApiKeyRotateResponse:
+    try:
+        payload = await orchestrator_v2.rotate_api_key(
+            key_id,
+            name=req.name,
+            permissions=req.permissions,
+            expires_at=req.expires_at,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="API key not found") from exc
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="key.rotate",
+        resource=f"key:{key_id}",
+        status="ok",
+        detail=f"to={payload.id}",
+    )
+    return ApiKeyRotateResponse(
+        id=payload.id,
+        name=payload.name,
+        key_prefix=payload.key_prefix,
+        permissions=payload.permissions,
+        enabled=payload.enabled,
+        disabled_reason=payload.disabled_reason,
+        expires_at=payload.expires_at,
+        created_at=payload.created_at,
+        last_used_at=payload.last_used_at,
+        api_key=payload.api_key,
+        rotated_from_id=key_id,
+    )
+
+
 @router_v2.get("/audit/logs", response_model=list[AuditLog])
 async def get_audit_logs_v2(
+    action: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    actor_key_id: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
     actor: ApiKeyRecord = Depends(require_v2_permission("audit.read")),
 ) -> list[AuditLog]:
-    payload = await orchestrator_v2.list_audit_logs()
+    payload = await orchestrator_v2.list_audit_logs(
+        action=action,
+        status=status,
+        actor_key_id=actor_key_id,
+        limit=limit,
+        offset=offset,
+    )
     await orchestrator_v2.append_audit(
         actor=actor,
         action="audit.logs",
@@ -635,9 +820,18 @@ async def get_audit_logs_v2(
 
 @router_v2.get("/audit/reports")
 async def get_audit_report_v2(
+    format: str = Query(default="json"),
+    action: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    actor_key_id: str | None = Query(default=None),
     actor: ApiKeyRecord = Depends(require_v2_permission("audit.read")),
 ):
-    payload = await orchestrator_v2.audit_report()
+    payload = await orchestrator_v2.audit_report(
+        action=action,
+        status=status,
+        actor_key_id=actor_key_id,
+        format=format,
+    )
     await orchestrator_v2.append_audit(
         actor=actor,
         action="audit.report",

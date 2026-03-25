@@ -42,6 +42,7 @@ from app.models.schemas import (
     JobStatus,
     JobTimelineResponse,
     JobTopologyEdge,
+    RCAWeights,
     RCAResult,
     RiskLevel,
     Session,
@@ -323,6 +324,8 @@ class JobV2Orchestrator:
             topology_mode=req.topology_mode,
             max_gap_seconds=max(30, int(req.max_gap_seconds or 300)),
             max_device_concurrency=max(1, int(req.max_device_concurrency or 20)),
+            execution_policy=req.execution_policy,
+            rca_weights=req.rca_weights,
             idempotency_key=normalized_idempotency,
             requester_key_id=actor_key_id,
             webhook_url=(req.webhook_url or "").strip() or None,
@@ -386,6 +389,55 @@ class JobV2Orchestrator:
             if not job:
                 raise KeyError(job_id)
             return JobTimelineResponse(job=self._public_job(job), events=list(self._events.get(job_id, [])))
+
+    async def update_job_topology(self, job_id: str, edges: list[JobTopologyEdge], *, replace: bool = False) -> JobResponse:
+        async with self._state_lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            if replace:
+                job.external_topology_edges = []
+            existing = {
+                (item.source.strip().lower(), item.target.strip().lower(), item.kind.strip().lower())
+                for item in job.external_topology_edges
+            }
+            appended = 0
+            for edge in edges:
+                key = (edge.source.strip().lower(), edge.target.strip().lower(), edge.kind.strip().lower())
+                if key in existing:
+                    continue
+                job.external_topology_edges.append(edge)
+                existing.add(key)
+                appended += 1
+            job.updated_at = now_utc()
+            self._append_event(
+                job,
+                "topology_updated",
+                {
+                    "replace": replace,
+                    "append_count": appended,
+                    "total_edges": len(job.external_topology_edges),
+                },
+            )
+            self._save_state()
+            return self._job_summary(job)
+
+    async def update_job_rca_weights(self, job_id: str, weights: RCAWeights) -> JobResponse:
+        async with self._state_lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            job.rca_weights = weights
+            job.updated_at = now_utc()
+            self._append_event(
+                job,
+                "rca_weights_updated",
+                {
+                    "weights": weights.model_dump(mode="json"),
+                },
+            )
+            self._save_state()
+            return self._job_summary(job)
 
     async def cancel_job(self, job_id: str, *, reason: str | None = None, actor_name: str | None = None) -> JobResponse:
         close_needed = False
@@ -491,6 +543,31 @@ class JobV2Orchestrator:
             message="Action group approved",
         )
 
+    async def bulk_approve_action_groups(
+        self,
+        job_id: str,
+        action_group_ids: list[str],
+        *,
+        actor_key_id: str,
+        actor_name: str,
+        reason: str | None = None,
+    ) -> list[JobActionDecisionResponse]:
+        results: list[JobActionDecisionResponse] = []
+        for action_group_id in action_group_ids:
+            try:
+                results.append(
+                    await self.approve_action_group(
+                        job_id,
+                        action_group_id,
+                        actor_key_id=actor_key_id,
+                        actor_name=actor_name,
+                        reason=reason,
+                    )
+                )
+            except KeyError:
+                continue
+        return results
+
     async def reject_action_group(
         self,
         job_id: str,
@@ -553,6 +630,31 @@ class JobV2Orchestrator:
             status=JobActionGroupStatus.rejected,
             message="Action group rejected",
         )
+
+    async def bulk_reject_action_groups(
+        self,
+        job_id: str,
+        action_group_ids: list[str],
+        *,
+        actor_key_id: str,
+        actor_name: str,
+        reason: str | None = None,
+    ) -> list[JobActionDecisionResponse]:
+        results: list[JobActionDecisionResponse] = []
+        for action_group_id in action_group_ids:
+            try:
+                results.append(
+                    await self.reject_action_group(
+                        job_id,
+                        action_group_id,
+                        actor_key_id=actor_key_id,
+                        actor_name=actor_name,
+                        reason=reason,
+                    )
+                )
+            except KeyError:
+                continue
+        return results
 
     async def _run_job(self, job_id: str) -> None:
         try:
@@ -1265,12 +1367,29 @@ class JobV2Orchestrator:
                         propagation[edge.source_device_id] += 1.0
 
         score_map: dict[str, float] = {}
+        weights = job.rca_weights or RCAWeights()
+        change_counts: dict[str, int] = defaultdict(int)
+        for command in job.command_results:
+            if command.status in {JobCommandStatus.failed, JobCommandStatus.blocked, JobCommandStatus.rejected}:
+                continue
+            if command.risk_level in {RiskLevel.medium, RiskLevel.high}:
+                change_counts[command.device_id] += 1
         for device_id, rows in incidents_by_device.items():
             anomaly_score = sum(self._severity_weight(item.severity) for item in rows)
             early_bonus = max(0.0, 2.0 - float(order_rank.get(device_id, 0)) * 0.3)
-            upstream_bonus = float(outdegree.get(device_id, 0)) * 0.8
-            propagation_bonus = float(propagation.get(device_id, 0)) * 1.2
-            score_map[device_id] = anomaly_score + early_bonus + upstream_bonus + propagation_bonus
+            upstream_bonus = float(outdegree.get(device_id, 0)) * 0.8 + float(propagation.get(device_id, 0)) * 1.2
+            change_bonus = min(3.0, float(change_counts.get(device_id, 0)) * 0.5)
+            consistency = max(
+                0.0,
+                float(len(rows)) - float(len([item for item in rows if item.category == "command_error"])) * 0.4,
+            )
+            score_map[device_id] = (
+                weights.anomaly * anomaly_score
+                + weights.timing * early_bonus
+                + weights.topology * upstream_bonus
+                + weights.change * change_bonus
+                + weights.consistency * consistency
+            )
 
         if not score_map:
             job.rca_result = RCAResult(
@@ -1352,7 +1471,7 @@ class JobV2Orchestrator:
                             interfaces.append(name)
 
                 for iface in interfaces:
-                    commands = self._repair_commands_for_device(root_device, iface)
+                    commands, rollback_commands = self._repair_commands_for_device(root_device, iface)
                     risk_level = self._max_risk_level(commands)
                     requires_approval = risk_level in {RiskLevel.medium, RiskLevel.high}
                     action_groups.append(
@@ -1363,6 +1482,7 @@ class JobV2Orchestrator:
                             commands=commands,
                             risk_level=risk_level,
                             requires_approval=requires_approval,
+                            rollback_commands=rollback_commands,
                             status=JobActionGroupStatus.pending_approval if requires_approval else JobActionGroupStatus.approved,
                         )
                     )
@@ -1382,23 +1502,41 @@ class JobV2Orchestrator:
             )
             self._save_state()
 
-    def _repair_commands_for_device(self, device: JobDevice, interface_name: str) -> list[str]:
+    def _repair_commands_for_device(self, device: JobDevice, interface_name: str) -> tuple[list[str], list[str]]:
         vendor = str(device.vendor or "").strip().lower()
         if "huawei" in vendor:
-            return [
-                "system-view",
+            return (
+                [
+                    "system-view",
+                    f"interface {interface_name}",
+                    "undo shutdown",
+                    "return",
+                    "save",
+                ],
+                [
+                    "system-view",
+                    f"interface {interface_name}",
+                    "shutdown",
+                    "return",
+                    "save",
+                ],
+            )
+        return (
+            [
+                "configure terminal",
                 f"interface {interface_name}",
-                "undo shutdown",
-                "return",
-                "save",
-            ]
-        return [
-            "configure terminal",
-            f"interface {interface_name}",
-            "no shutdown",
-            "end",
-            "write memory",
-        ]
+                "no shutdown",
+                "end",
+                "write memory",
+            ],
+            [
+                "configure terminal",
+                f"interface {interface_name}",
+                "shutdown",
+                "end",
+                "write memory",
+            ],
+        )
 
     async def _resume_job_execution(self, job_id: str) -> None:
         async with self._state_lock:
@@ -1504,6 +1642,7 @@ class JobV2Orchestrator:
             self._save_state()
 
         failed = False
+        rollback_needed = False
         for idx, command_text in enumerate(commands, start=1):
             async with self._state_lock:
                 job = self._jobs.get(job_id)
@@ -1519,7 +1658,23 @@ class JobV2Orchestrator:
             )
             if result.status in {JobCommandStatus.failed, JobCommandStatus.blocked, JobCommandStatus.rejected}:
                 failed = True
+                if job.execution_policy == "continue_on_failure":
+                    continue
+                if job.execution_policy == "rollback_template":
+                    rollback_needed = True
+                    break
                 break
+
+        if failed and rollback_needed and action.rollback_commands:
+            for ridx, rollback in enumerate(action.rollback_commands, start=1):
+                await self._run_device_command(
+                    job_id,
+                    device_id,
+                    title=f"执行回滚命令 {ridx}",
+                    command_text=rollback,
+                    step_no=1000 + ridx,
+                    action_group_id=action_group_id,
+                )
 
         async with self._state_lock:
             job = self._jobs[job_id]
@@ -1634,6 +1789,7 @@ class JobV2Orchestrator:
             key_prefix=raw_key[:12],
             key_hash=hashlib.sha256(raw_key.encode("utf-8")).hexdigest(),
             permissions=permissions,
+            expires_at=req.expires_at,
         )
         async with self._state_lock:
             self._keys[record.id] = record
@@ -1644,6 +1800,8 @@ class JobV2Orchestrator:
             key_prefix=record.key_prefix,
             permissions=list(record.permissions),
             enabled=record.enabled,
+            disabled_reason=record.disabled_reason,
+            expires_at=record.expires_at,
             created_at=record.created_at,
             last_used_at=record.last_used_at,
             api_key=raw_key,
@@ -1659,11 +1817,71 @@ class JobV2Orchestrator:
                     key_prefix=item.key_prefix,
                     permissions=list(item.permissions),
                     enabled=item.enabled,
+                    disabled_reason=item.disabled_reason,
+                    expires_at=item.expires_at,
                     created_at=item.created_at,
                     last_used_at=item.last_used_at,
                 )
                 for item in rows
             ]
+
+    async def update_api_key(self, key_id: str, *, enabled: bool | None, disabled_reason: str | None, expires_at: datetime | None) -> ApiKeyListItem:
+        async with self._state_lock:
+            record = self._keys.get(key_id)
+            if record is None:
+                raise KeyError(key_id)
+            if enabled is not None:
+                record.enabled = bool(enabled)
+            if disabled_reason is not None:
+                record.disabled_reason = (disabled_reason or "").strip() or None
+            if expires_at is not None:
+                record.expires_at = expires_at
+            self._save_state()
+            return ApiKeyListItem(
+                id=record.id,
+                name=record.name,
+                key_prefix=record.key_prefix,
+                permissions=list(record.permissions),
+                enabled=record.enabled,
+                disabled_reason=record.disabled_reason,
+                expires_at=record.expires_at,
+                created_at=record.created_at,
+                last_used_at=record.last_used_at,
+            )
+
+    async def rotate_api_key(self, key_id: str, *, name: str | None, permissions: list[str] | None, expires_at: datetime | None) -> ApiKeyCreateResponse:
+        async with self._state_lock:
+            old = self._keys.get(key_id)
+            if old is None:
+                raise KeyError(key_id)
+            old.enabled = False
+            old.disabled_reason = "rotated"
+
+            raw_key = f"na3_{secrets.token_urlsafe(30)}"
+            new_record = ApiKeyRecord(
+                name=(name or old.name).strip() or old.name,
+                key_prefix=raw_key[:12],
+                key_hash=hashlib.sha256(raw_key.encode("utf-8")).hexdigest(),
+                permissions=[item.strip() for item in (permissions or old.permissions) if str(item).strip()] or ["*"],
+                enabled=True,
+                expires_at=expires_at if expires_at is not None else old.expires_at,
+                rotated_from_id=old.id,
+            )
+            self._keys[new_record.id] = new_record
+            self._save_state()
+
+            return ApiKeyCreateResponse(
+                id=new_record.id,
+                name=new_record.name,
+                key_prefix=new_record.key_prefix,
+                permissions=list(new_record.permissions),
+                enabled=new_record.enabled,
+                disabled_reason=new_record.disabled_reason,
+                expires_at=new_record.expires_at,
+                created_at=new_record.created_at,
+                last_used_at=new_record.last_used_at,
+                api_key=raw_key,
+            )
 
     async def delete_api_key(self, key_id: str) -> bool:
         async with self._state_lock:
@@ -1688,6 +1906,8 @@ class JobV2Orchestrator:
                 if not record.enabled:
                     continue
                 if record.key_hash != hashed:
+                    continue
+                if record.expires_at and record.expires_at <= now_utc():
                     continue
                 record.last_used_at = now_utc()
                 self._save_state()
@@ -1721,24 +1941,86 @@ class JobV2Orchestrator:
                 self._audit_logs = self._audit_logs[-5000:]
             self._save_state()
 
-    async def list_audit_logs(self) -> list[AuditLog]:
+    async def list_audit_logs(
+        self,
+        *,
+        action: str | None = None,
+        status: str | None = None,
+        actor_key_id: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[AuditLog]:
         async with self._state_lock:
-            return list(self._audit_logs)
+            rows = list(self._audit_logs)
+        if action:
+            rows = [item for item in rows if item.action == action]
+        if status:
+            rows = [item for item in rows if item.status == status]
+        if actor_key_id:
+            rows = [item for item in rows if item.actor_key_id == actor_key_id]
+        start = max(0, int(offset))
+        end = start + max(1, min(5000, int(limit)))
+        return rows[start:end]
 
-    async def audit_report(self) -> dict[str, Any]:
-        logs = await self.list_audit_logs()
+    async def audit_report(
+        self,
+        *,
+        action: str | None = None,
+        status: str | None = None,
+        actor_key_id: str | None = None,
+        format: str = "json",
+    ) -> dict[str, Any]:
+        logs = await self.list_audit_logs(action=action, status=status, actor_key_id=actor_key_id, limit=5000, offset=0)
         total = len(logs)
         by_action: dict[str, int] = defaultdict(int)
         by_status: dict[str, int] = defaultdict(int)
         for item in logs:
             by_action[item.action] += 1
             by_status[item.status] += 1
-        return {
+        base = {
             "total": total,
             "by_action": dict(sorted(by_action.items(), key=lambda kv: kv[0])),
             "by_status": dict(sorted(by_status.items(), key=lambda kv: kv[0])),
             "latest": [item.model_dump(mode="json") for item in logs[-100:]],
         }
+        fmt = (format or "json").strip().lower()
+        if fmt == "json":
+            return base
+        if fmt == "csv":
+            headers = ["ts", "actor_key_id", "actor_name", "action", "resource", "status", "detail"]
+            rows = [",".join(headers)]
+            for item in logs:
+                row = [
+                    item.ts.isoformat(),
+                    str(item.actor_key_id or ""),
+                    str(item.actor_name or ""),
+                    str(item.action or ""),
+                    str(item.resource or ""),
+                    str(item.status or ""),
+                    str((item.detail or "").replace(",", " ")),
+                ]
+                rows.append(",".join(row))
+            return {
+                "filename": "audit-report.csv",
+                "mime_type": "text/csv",
+                "content": "\n".join(rows),
+                **base,
+            }
+        if fmt == "pdf":
+            lines = ["Audit Report", ""]
+            lines.append(f"Total: {total}")
+            lines.append("")
+            for item in logs[-200:]:
+                lines.append(
+                    f"{item.ts.isoformat()} | {item.status.upper()} | {item.action} | {item.resource} | actor={item.actor_name or '-'} | {item.detail or ''}"
+                )
+            return {
+                "filename": "audit-report.pdf",
+                "mime_type": "application/pdf",
+                "content": "\n".join(lines),
+                **base,
+            }
+        return base
 
     async def list_command_profiles(self) -> list[CommandProfile]:
         async with self._state_lock:
