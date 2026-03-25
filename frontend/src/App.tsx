@@ -202,6 +202,19 @@ type SendOptions = {
   }
 }
 
+type MultiSessionConfig = {
+  hosts: string[]
+  protocol: 'ssh' | 'telnet' | 'api'
+  operation_mode: OperationMode
+  username?: string
+  password?: string
+  jump_host?: string
+  jump_port?: number
+  jump_username?: string
+  jump_password?: string
+  api_token?: string
+}
+
 type V3JobCreateForm = {
   name: string
   problem: string
@@ -271,6 +284,9 @@ function App() {
   const [controlV3Mode, setControlV3Mode] = useState<'diagnosis' | 'inspection' | 'repair'>('diagnosis')
   const [controlV3Creating, setControlV3Creating] = useState(false)
   const [session, setSession] = useState<SessionResponse | null>(null)
+  const [sessionRuntimeKind, setSessionRuntimeKind] = useState<'single' | 'multi'>('single')
+  const [multiSessionConfig, setMultiSessionConfig] = useState<MultiSessionConfig | null>(null)
+  const [multiSessionActiveJobId, setMultiSessionActiveJobId] = useState<string | undefined>(undefined)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [commands, setCommands] = useState<CommandExecution[]>([])
   const [evidences, setEvidences] = useState<Evidence[]>([])
@@ -400,6 +416,7 @@ function App() {
   const tracePlaybackTimerRef = useRef<number | null>(null)
   const terminalGridRef = useRef<HTMLDivElement | null>(null)
   const streamAbortRef = useRef<AbortController | null>(null)
+  const multiJobAbortRef = useRef<{ aborted: boolean; jobId?: string } | null>(null)
 
   const sessionReady = useMemo(() => Boolean(session?.id), [session])
   const commandDisplayRows = useMemo(() => groupCommandsForDisplay(commands), [commands])
@@ -1283,7 +1300,6 @@ function App() {
   }
 
   async function handleCreateMultiDeviceJobFromControl() {
-    const key = resolveV3ApiKey()
     const problem = controlV3Problem.trim()
     if (!problem) {
       antMessage.warning('请填写协同任务问题描述')
@@ -1300,31 +1316,26 @@ function App() {
       antMessage.warning('请填写多设备统一用户名和密码')
       return
     }
-    const devices = hosts.map((host) => ({
-      host,
-      protocol: 'ssh',
-      username,
-      password,
-    }))
+    const mappedMode: OperationMode = controlV3Mode === 'repair'
+      ? 'config'
+      : controlV3Mode === 'inspection'
+        ? 'query'
+        : 'diagnosis'
     setControlV3Creating(true)
     try {
-      const created = await v2CreateJob(key, {
-        name: `control-multi-${Date.now()}`,
-        problem,
-        mode: controlV3Mode,
-        topology_mode: 'hybrid',
-        max_gap_seconds: 300,
-        max_device_concurrency: 20,
-        execution_policy: 'stop_on_failure',
-        devices,
-      }, `control-multi-${Date.now()}`)
-      setV3SelectedJobId(created.id)
-      await refreshV3Jobs()
-      await refreshV3Timeline(created.id, false)
-      antMessage.success(`协同任务已创建: ${created.id.slice(0, 8)}...`)
-      setActivePage('v3_jobs')
+      await handleCreateSession({
+        host: hosts.join(', '),
+        protocol: 'ssh',
+        operation_mode: mappedMode,
+        username,
+        password,
+        automation_level: automationLevel,
+      })
+      setDraftInput(problem)
+      setControlTaskScope('single')
+      antMessage.success('协同会话已就绪，请在工作台发送问题开始并行诊断')
     } catch (error) {
-      antMessage.error((error as Error).message || '创建协同任务失败')
+      antMessage.error((error as Error).message || '创建协同会话失败')
     } finally {
       setControlV3Creating(false)
     }
@@ -1632,6 +1643,9 @@ function App() {
         created_at: data.session.created_at,
       }
       setSession(restoredSession)
+      setSessionRuntimeKind('single')
+      setMultiSessionConfig(null)
+      setMultiSessionActiveJobId(undefined)
       setAutomationLevel(restoredSession.automation_level)
       setOperationMode(restoredSession.operation_mode)
       setMessages(data.messages)
@@ -1671,7 +1685,62 @@ function App() {
     automation_level: AutomationLevel
   }) {
     try {
-      cacheDeviceAuth(payload.host, {
+      const hosts = parseControlHostList(payload.host)
+      const normalizedHosts = hosts.length > 0 ? hosts : [String(payload.host || '').trim()].filter(Boolean)
+      if (normalizedHosts.length > 1) {
+        for (const host of normalizedHosts) {
+          cacheDeviceAuth(host, {
+            username: payload.username,
+            password: payload.password,
+            jump_host: payload.jump_host,
+            jump_port: payload.jump_port,
+            jump_username: payload.jump_username,
+            jump_password: payload.jump_password,
+            api_token: payload.api_token,
+          })
+        }
+        const virtualSessionId = `multi-${Date.now()}`
+        const virtualSession: SessionResponse = {
+          id: virtualSessionId,
+          automation_level: payload.automation_level,
+          operation_mode: payload.operation_mode,
+          status: 'open',
+          created_at: new Date().toISOString(),
+        }
+        setSession(virtualSession)
+        setSessionRuntimeKind('multi')
+        setMultiSessionConfig({
+          hosts: normalizedHosts,
+          protocol: payload.protocol,
+          operation_mode: payload.operation_mode,
+          username: payload.username,
+          password: payload.password,
+          jump_host: payload.jump_host,
+          jump_port: payload.jump_port,
+          jump_username: payload.jump_username,
+          jump_password: payload.jump_password,
+          api_token: payload.api_token,
+        })
+        setMultiSessionActiveJobId(undefined)
+        setAutomationLevel(virtualSession.automation_level)
+        setOperationMode(virtualSession.operation_mode)
+        setMessages([])
+        setCommands([])
+        setEvidences([])
+        setSummary(undefined)
+        setContinueExecutionState(null)
+        setTraceSteps([])
+        setSessionDeviceAddress(normalizedHosts.join(', '))
+        setSessionDeviceName(`多设备(${normalizedHosts.length})`)
+        setSessionVersionSignature('')
+        setDraftInput('')
+        antMessage.success(`多设备会话已创建 (${normalizedHosts.length} 台)`)
+        setActivePage('workbench')
+        return
+      }
+
+      const host = normalizedHosts[0] || String(payload.host || '').trim()
+      cacheDeviceAuth(host, {
         username: payload.username,
         password: payload.password,
         jump_host: payload.jump_host,
@@ -1680,8 +1749,14 @@ function App() {
         jump_password: payload.jump_password,
         api_token: payload.api_token,
       })
-      const resp = await createSession(payload)
+      const resp = await createSession({
+        ...payload,
+        host,
+      })
       setSession(resp)
+      setSessionRuntimeKind('single')
+      setMultiSessionConfig(null)
+      setMultiSessionActiveJobId(undefined)
       setAutomationLevel(resp.automation_level)
       setOperationMode(resp.operation_mode)
       setMessages([])
@@ -1690,7 +1765,7 @@ function App() {
       setSummary(undefined)
       setContinueExecutionState(null)
       setTraceSteps([])
-      setSessionDeviceAddress(payload.host)
+      setSessionDeviceAddress(host)
       setSessionDeviceName('-')
       setSessionVersionSignature('')
       setDraftInput('')
@@ -2165,9 +2240,148 @@ function App() {
     }
   }
 
+  function toV2JobMode(mode: OperationMode): 'diagnosis' | 'inspection' | 'repair' {
+    if (mode === 'query') return 'inspection'
+    if (mode === 'config') return 'repair'
+    return 'diagnosis'
+  }
+
+  function buildMultiProblemStatement(userContent: string): string {
+    const recent = messages.slice(-8).map((item) => `${item.role === 'user' ? '用户' : item.role === 'assistant' ? 'AI' : '系统'}: ${item.content}`)
+    const summaryHint = summary ? `上轮结论: ${renderSummaryBrief(summary)}` : ''
+    const contextBlock = [summaryHint, ...recent].filter(Boolean).join('\n')
+    if (!contextBlock) return userContent
+    return `当前用户请求: ${userContent}\n\n会话上下文:\n${contextBlock}`
+  }
+
+  function buildMultiSessionDevices(config: MultiSessionConfig): Array<Record<string, unknown>> {
+    return config.hosts.map((host) => ({
+      host,
+      protocol: config.protocol,
+      username: config.username,
+      password: config.password,
+      jump_host: config.jump_host,
+      jump_port: config.jump_port,
+      jump_username: config.jump_username,
+      jump_password: config.jump_password,
+      api_token: config.api_token,
+    }))
+  }
+
+  async function monitorMultiJobUntilPauseOrDone(jobId: string): Promise<'pending' | 'done' | 'stopped'> {
+    const key = resolveV3ApiKey()
+    let rounds = 0
+    while (rounds < 240) {
+      if (multiJobAbortRef.current?.aborted) {
+        return 'stopped'
+      }
+      const timeline = await v2GetJobTimeline(key, jobId)
+      setV3Timeline(timeline)
+      setV3SelectedJobId(jobId)
+      const mapped = mapV2TimelineToWorkbenchCommands(timeline, session?.id || jobId)
+      setCommands(mapped)
+      if (mapped.length > 0) {
+        setSelectedCommandId(mapped[mapped.length - 1].id)
+        setSelectedActivityKey(`cmd:${mapped[mapped.length - 1].id}`)
+      }
+
+      const pendingGroups = (timeline.job.action_groups || []).filter((item) => item.status === 'pending_approval')
+      if (pendingGroups.length > 0) {
+        const pendingSummary = buildPendingApprovalSummary(timeline)
+        setSummary(pendingSummary)
+        setMessages((prev) => {
+          const markerId = `multi-pending-${jobId}`
+          if (prev.some((item) => item.id === markerId)) return prev
+          return [
+            ...prev,
+            {
+              id: markerId,
+              role: 'assistant',
+              content: `已生成 ${pendingGroups.length} 组待确认命令，请在卡片中确认后继续执行。`,
+              created_at: new Date().toISOString(),
+            },
+          ]
+        })
+        setSelectedActivityKey('summary:latest')
+        return 'pending'
+      }
+
+      if (timeline.job.status === 'completed' || timeline.job.status === 'failed' || timeline.job.status === 'cancelled') {
+        const finalSummary = buildSummaryFromV2Timeline(timeline)
+        setSummary(finalSummary)
+        setMessages((prev) => {
+          const markerId = `multi-final-${jobId}`
+          if (prev.some((item) => item.id === markerId)) return prev
+          return [
+            ...prev,
+            {
+              id: markerId,
+              role: 'assistant',
+              content: renderSummaryBrief(finalSummary),
+              created_at: new Date().toISOString(),
+            },
+          ]
+        })
+        setSelectedActivityKey('summary:latest')
+        return 'done'
+      }
+      rounds += 1
+      await sleepMs(1200)
+    }
+    return 'stopped'
+  }
+
+  async function handleSendMulti(content: string) {
+    if (!session?.id || !multiSessionConfig) {
+      antMessage.warning('请先创建多设备会话')
+      return
+    }
+    const userMessage: ChatMessage = {
+      id: `local-user-${Date.now()}`,
+      role: 'user',
+      content,
+      created_at: new Date().toISOString(),
+    }
+    setMessages((prev) => [...prev, userMessage])
+    setSelectedActivityKey(`msg:${userMessage.id}`)
+    setBusy(true)
+    setContinueExecutionState(null)
+    try {
+      const key = resolveV3ApiKey()
+      const created = await v2CreateJob(
+        key,
+        {
+          name: `workbench-multi-${Date.now()}`,
+          problem: buildMultiProblemStatement(content),
+          mode: toV2JobMode(multiSessionConfig.operation_mode),
+          topology_mode: 'hybrid',
+          max_gap_seconds: 300,
+          max_device_concurrency: Math.min(50, Math.max(2, multiSessionConfig.hosts.length)),
+          execution_policy: 'stop_on_failure',
+          devices: buildMultiSessionDevices(multiSessionConfig),
+        },
+        `workbench-multi-${Date.now()}`,
+      )
+      setMultiSessionActiveJobId(created.id)
+      multiJobAbortRef.current = { aborted: false, jobId: created.id }
+      await monitorMultiJobUntilPauseOrDone(created.id)
+      await refreshV3Jobs()
+    } catch (error) {
+      antMessage.error((error as Error).message || '多设备任务执行失败')
+    } finally {
+      setBusy(false)
+      multiJobAbortRef.current = null
+    }
+  }
+
   async function handleSend(content: string, options?: SendOptions) {
     if (!session?.id) {
       antMessage.warning('请先在连接控制创建会话')
+      return
+    }
+
+    if (sessionRuntimeKind === 'multi') {
+      await handleSendMulti(content)
       return
     }
 
@@ -2261,6 +2475,34 @@ function App() {
 
   async function handleStopCurrentSession() {
     if (!session?.id) return
+    if (sessionRuntimeKind === 'multi') {
+      setStoppingSession(true)
+      try {
+        if (multiJobAbortRef.current) {
+          multiJobAbortRef.current.aborted = true
+        }
+        if (multiSessionActiveJobId) {
+          const key = resolveV3ApiKey()
+          await v2CancelJob(key, multiSessionActiveJobId, 'manual_stop')
+        }
+        setBusy(false)
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `multi-stop-${Date.now()}`,
+            role: 'system',
+            content: '多设备任务已手动停止。',
+            created_at: new Date().toISOString(),
+          },
+        ])
+        antMessage.success('当前多设备任务已停止')
+      } catch (error) {
+        antMessage.error((error as Error).message || '停止多设备任务失败')
+      } finally {
+        setStoppingSession(false)
+      }
+      return
+    }
     setStoppingSession(true)
     try {
       streamAbortRef.current?.abort()
@@ -2401,6 +2643,35 @@ function App() {
 
   async function handleConfirmCommandInline(commandId: string, approved: boolean) {
     if (!session?.id) return
+    const v2ActionGroupId = parseV2ActionGroupCommandId(commandId)
+    if (v2ActionGroupId && multiSessionActiveJobId) {
+      setConfirmingCommandId(commandId)
+      setBusy(true)
+      try {
+        const key = resolveV3ApiKey()
+        multiJobAbortRef.current = { aborted: false, jobId: multiSessionActiveJobId }
+        const actionIds = (pendingConfirmMeta?.commands || [])
+          .map((item) => parseV2ActionGroupCommandId(item.id))
+          .filter((item): item is string => Boolean(item))
+        const targetIds = actionIds.length > 0 ? actionIds : [v2ActionGroupId]
+        if (approved) {
+          await v2ApproveActionGroupsBatch(key, multiSessionActiveJobId, targetIds, 'workbench-confirm')
+          await monitorMultiJobUntilPauseOrDone(multiSessionActiveJobId)
+          antMessage.success(targetIds.length > 1 ? '已确认并执行命令组' : '已确认执行命令组')
+        } else {
+          await v2RejectActionGroupsBatch(key, multiSessionActiveJobId, targetIds, 'workbench-reject')
+          await monitorMultiJobUntilPauseOrDone(multiSessionActiveJobId)
+          antMessage.info(targetIds.length > 1 ? '已拒绝命令组' : '已拒绝命令组')
+        }
+      } catch (error) {
+        antMessage.error((error as Error).message || '命令组确认失败')
+      } finally {
+        multiJobAbortRef.current = null
+        setConfirmingCommandId(undefined)
+        setBusy(false)
+      }
+      return
+    }
     setConfirmingCommandId(commandId)
     try {
       await confirmCommand(session.id, commandId, approved)
@@ -2818,7 +3089,15 @@ function App() {
                         <Button
                           danger
                           onClick={() => void handleStopCurrentSession()}
-                          disabled={!sessionReady || sessionStopped || (!busy && !stoppingSession)}
+                          disabled={
+                            !sessionReady
+                            || sessionStopped
+                            || (
+                              !busy
+                              && !stoppingSession
+                              && !(sessionRuntimeKind === 'multi' && !!multiSessionActiveJobId)
+                            )
+                          }
                           loading={stoppingSession}
                         >
                           {sessionStopped ? '已停止' : '停止'}
@@ -3555,7 +3834,7 @@ function App() {
             <div className="page-grid control-layout">
               <div className="panel-card">
                 <h3>连接控制</h3>
-                <p className="muted">单设备会话与多设备协同任务已合并在一个入口中。</p>
+                <p className="muted">单设备与多设备都从这里进入，后端自动分流执行。</p>
                 <div className="control-scope-toggle">
                   <Button
                     size="small"
@@ -3586,9 +3865,9 @@ function App() {
                 ) : (
                   <div className="control-card-stack control-multi-stack">
                     <div className="panel-card control-card-tight">
-                      <div className="mode-detail-title">多设备协同任务（V3）</div>
+                      <div className="mode-detail-title">多设备协同会话</div>
                       <p className="muted mode-detail-desc">
-                        用一个任务同时检查多台设备，自动做时间关联与根因分析；支持后续审批执行。
+                        输入多台设备后，工作台会在你发送问题时自动并行探测并汇总根因；确认交互保持与单设备一致。
                       </p>
                       <div className="control-v3-grid">
                         <Select
@@ -3638,10 +3917,10 @@ function App() {
                           loading={controlV3Creating}
                           onClick={() => void handleCreateMultiDeviceJobFromControl()}
                         >
-                          创建协同任务
+                          创建协同会话
                         </Button>
-                        <Button size="small" onClick={() => setActivePage('v3_jobs')}>
-                          打开 V3 任务编排
+                        <Button size="small" onClick={() => setActivePage('workbench')}>
+                          打开工作台
                         </Button>
                       </div>
                     </div>
@@ -4894,6 +5173,152 @@ function computeSessionLastUpdatedAt(timeline: Timeline | null): string {
     }
   }
   return latest
+}
+
+function sleepMs(ms: number): Promise<void> {
+  const timeout = Math.max(0, Number(ms) || 0)
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, timeout)
+  })
+}
+
+function parseV2ActionGroupCommandId(commandId: string): string | undefined {
+  const value = String(commandId || '').trim()
+  if (!value.startsWith('v2ag:')) return undefined
+  return value.slice(5).trim() || undefined
+}
+
+function mapV2TimelineToWorkbenchCommands(timeline: V2JobTimeline, sessionId: string): CommandExecution[] {
+  const deviceHostById = new Map<string, string>()
+  for (const device of timeline.job.devices || []) {
+    const host = String(device.host || device.id || '-').trim() || '-'
+    deviceHostById.set(String(device.id), host)
+  }
+
+  const rows: CommandExecution[] = []
+  const baseCommands = [...(timeline.job.command_results || [])].sort((a, b) => {
+    const byStep = (a.step_no || 0) - (b.step_no || 0)
+    if (byStep !== 0) return byStep
+    return Date.parse(String(a.created_at || '')) - Date.parse(String(b.created_at || ''))
+  })
+  for (const item of baseCommands) {
+    const hostLabel = deviceHostById.get(String(item.device_id)) || String(item.device_id || '-')
+    rows.push({
+      id: `v2cmd:${item.id}`,
+      session_id: sessionId,
+      step_no: Number(item.step_no || 0),
+      title: `[${hostLabel}] ${item.title}`,
+      command: item.command,
+      risk_level: item.risk_level,
+      status: item.status,
+      requires_confirmation: false,
+      output: item.output,
+      error: item.error,
+      created_at: item.created_at,
+      started_at: item.started_at,
+      completed_at: item.completed_at,
+      duration_ms: item.duration_ms,
+      original_command: item.command,
+      effective_command: item.effective_command,
+      capability_state: item.capability_state,
+      capability_reason: item.capability_reason,
+      constraint_source: item.constraint_source,
+      constraint_reason: item.constraint_reason,
+    })
+  }
+
+  const pendingGroups = (timeline.job.action_groups || []).filter((item) => item.status === 'pending_approval')
+  if (pendingGroups.length > 0) {
+    const maxStep = rows.reduce((max, item) => Math.max(max, Number(item.step_no || 0)), 0)
+    const batchId = `v2pending:${timeline.job.id}`
+    pendingGroups.forEach((group, index) => {
+      const hostLabel = deviceHostById.get(String(group.device_id)) || String(group.device_id || '-')
+      rows.push({
+        id: `v2ag:${group.id}`,
+        session_id: sessionId,
+        step_no: maxStep + index + 1,
+        title: `[${hostLabel}] ${group.title}`,
+        command: group.commands.join(' ; '),
+        risk_level: group.risk_level,
+        status: 'pending_confirm',
+        requires_confirmation: true,
+        error: `命令组待确认后执行（${group.commands.length} 条）`,
+        created_at: group.created_at,
+        batch_id: batchId,
+        batch_index: index + 1,
+        batch_total: pendingGroups.length,
+        constraint_source: 'v2_group_approval',
+        constraint_reason: 'Action group pending approval',
+      })
+    })
+  }
+
+  return rows.sort((a, b) => Number(a.step_no || 0) - Number(b.step_no || 0))
+}
+
+function buildPendingApprovalSummary(timeline: V2JobTimeline): DiagnosisSummary {
+  const pendingGroups = (timeline.job.action_groups || []).filter((item) => item.status === 'pending_approval')
+  const commandCount = pendingGroups.reduce((sum, item) => sum + item.commands.length, 0)
+  return {
+    mode: 'config',
+    root_cause: 'AI 已完成多设备并行探测，并生成待确认命令组。',
+    impact_scope: `当前共有 ${pendingGroups.length} 个待审批命令组，涉及 ${commandCount} 条命令。`,
+    recommendation: '建议执行待确认命令组以继续修复闭环。',
+    follow_up_action: '建议执行',
+    confidence: 0.8,
+  }
+}
+
+function buildSummaryFromV2Timeline(timeline: V2JobTimeline): DiagnosisSummary {
+  const mode = timeline.job.mode
+  const rca = (timeline.job.rca_result || {}) as Record<string, unknown>
+  const rcaSummary = String(rca.summary || '').trim()
+  const recommendation = String(rca.recommendation || '').trim()
+  const confidenceRaw = Number(rca.confidence)
+  const confidence = Number.isFinite(confidenceRaw) ? confidenceRaw : undefined
+
+  if (timeline.job.status === 'failed' || timeline.job.status === 'cancelled') {
+    const errorText = String((timeline.job as { error?: string }).error || '').trim()
+    return {
+      mode: 'error',
+      root_cause: errorText || '多设备任务执行失败',
+      impact_scope: '未能完成所有设备的证据采集与汇总。',
+      recommendation: '请检查设备连接、账号权限与任务参数后重试。',
+      confidence: 0,
+    }
+  }
+
+  if (mode === 'inspection') {
+    return {
+      mode: 'query',
+      root_cause: rcaSummary || '多设备查询已完成',
+      impact_scope: `共采集设备 ${timeline.job.devices.length} 台`,
+      recommendation: recommendation || '已完成',
+      query_result: rcaSummary || `任务完成，命令执行 ${timeline.job.command_results.length} 条。`,
+      follow_up_action: recommendation || '已完成',
+      confidence,
+    }
+  }
+
+  if (mode === 'repair') {
+    return {
+      mode: 'config',
+      root_cause: rcaSummary || '多设备修复流程已执行完成',
+      impact_scope: `涉及设备 ${timeline.job.devices.length} 台`,
+      recommendation: recommendation || '已完成',
+      query_result: rcaSummary || '命令组执行完成，请复核关键业务路径。',
+      follow_up_action: recommendation || '已完成',
+      confidence,
+    }
+  }
+
+  return {
+    mode: 'diagnosis',
+    root_cause: rcaSummary || '多设备根因分析已完成',
+    impact_scope: `涉及设备 ${timeline.job.devices.length} 台，事件聚类 ${timeline.job.clusters.length} 组。`,
+    recommendation: recommendation || '已完成',
+    confidence,
+  }
 }
 
 function renderCommandOutputBody(command: Pick<CommandExecution, 'output' | 'error' | 'status'>): string {

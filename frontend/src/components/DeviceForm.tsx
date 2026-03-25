@@ -67,13 +67,19 @@ export function DeviceForm({ automationLevel, operationMode, className, onCreate
                 validator: async (_, value) => {
                   const normalized = String(value || '').trim()
                   if (!normalized) return
-                  if (ipv4Pattern.test(normalized) || hostnamePattern.test(normalized)) return
-                  throw new Error('设备地址格式无效，请输入完整 IPv4 或主机名')
+                  const hosts = normalized
+                    .split(/[\n,; ]+/)
+                    .map((item) => item.trim())
+                    .filter(Boolean)
+                  if (hosts.length === 0) return
+                  const invalid = hosts.find((item) => !(ipv4Pattern.test(item) || hostnamePattern.test(item)))
+                  if (!invalid) return
+                  throw new Error(`设备地址格式无效: ${invalid}`)
                 },
               },
             ]}
           >
-            <Input placeholder="例如 10.0.0.1" />
+            <Input placeholder="例如 10.0.0.1 或 10.0.0.1,10.0.0.2" />
           </Form.Item>
           <Form.Item label="用户名" name="username" rules={[{ required: true, message: '请输入用户名' }]}>
             <Input placeholder="输入设备 SSH 用户名" />
@@ -134,7 +140,10 @@ export function DeviceForm({ automationLevel, operationMode, className, onCreate
         <Button htmlType="submit" type="primary" block>
           创建会话
         </Button>
-        <p className="muted mode-hint">当前任务模式：{operationMode === 'diagnosis' ? '诊断排障' : operationMode === 'query' ? '状态查询' : '⚠️ 配置变更'}</p>
+        <p className="muted mode-hint">
+          当前任务模式：{operationMode === 'diagnosis' ? '诊断排障' : operationMode === 'query' ? '状态查询' : '⚠️ 配置变更'}。
+          设备地址支持多台，系统将自动并行执行并汇总。
+        </p>
       </Form>
     </div>
   )
