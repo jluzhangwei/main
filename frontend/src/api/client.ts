@@ -27,6 +27,50 @@ const headers = {
   'Content-Type': 'application/json',
 }
 
+const API_BASE = String(
+  (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL ?? '',
+)
+  .trim()
+  .replace(/\/+$/, '')
+
+function apiUrl(path: string): string {
+  if (!API_BASE) return path
+  return `${API_BASE}${path}`
+}
+
+function htmlHint(text: string): string {
+  const preview = text.trim().slice(0, 120).replace(/\s+/g, ' ')
+  if (preview.toLowerCase().startsWith('<!doctype') || preview.toLowerCase().startsWith('<html')) {
+    return '接口返回了 HTML 页面（非 JSON），请确认后端 /v2 服务已启动并且前端代理/网关未把 API 路由回退到 index.html。'
+  }
+  return `接口返回非 JSON 数据: ${preview || '(empty)'}`
+}
+
+async function parseJsonResponse<T>(res: Response, message: string): Promise<T> {
+  const body = await res.text()
+  let parsed: unknown = null
+  if (body.trim()) {
+    try {
+      parsed = JSON.parse(body)
+    } catch {
+      parsed = null
+    }
+  }
+
+  if (!res.ok) {
+    const detail =
+      parsed && typeof parsed === 'object' && 'detail' in parsed
+        ? String((parsed as { detail?: unknown }).detail ?? '')
+        : body.trim().slice(0, 200).replace(/\s+/g, ' ')
+    throw new Error(detail ? `${message}: ${detail}` : message)
+  }
+
+  if (parsed !== null) {
+    return parsed as T
+  }
+  throw new Error(`${message}: ${htmlHint(body)}`)
+}
+
 export async function createSession(input: {
   host: string
   protocol: 'ssh' | 'telnet' | 'api'
@@ -399,7 +443,7 @@ export async function v2CreateApiKey(input: {
   expiresAt?: string
 }): Promise<V2ApiKeyCreateResponse> {
   const h: HeadersInit = v2Headers(input.bootstrapApiKey)
-  const res = await fetch('/v2/keys', {
+  const res = await fetch(apiUrl('/v2/keys'), {
     method: 'POST',
     headers: h,
     body: JSON.stringify({
@@ -408,20 +452,14 @@ export async function v2CreateApiKey(input: {
       expires_at: input.expiresAt,
     }),
   })
-  if (!res.ok) {
-    throw new Error('Failed to create API key')
-  }
-  return res.json()
+  return parseJsonResponse<V2ApiKeyCreateResponse>(res, 'Failed to create API key')
 }
 
 export async function v2ListApiKeys(apiKey: string): Promise<V2ApiKey[]> {
-  const res = await fetch('/v2/keys', {
+  const res = await fetch(apiUrl('/v2/keys'), {
     headers: v2Headers(apiKey),
   })
-  if (!res.ok) {
-    throw new Error('Failed to list API keys')
-  }
-  return res.json()
+  return parseJsonResponse<V2ApiKey[]>(res, 'Failed to list API keys')
 }
 
 export async function v2UpdateApiKey(apiKey: string, keyId: string, payload: {
@@ -429,15 +467,12 @@ export async function v2UpdateApiKey(apiKey: string, keyId: string, payload: {
   disabled_reason?: string
   expires_at?: string
 }): Promise<V2ApiKey> {
-  const res = await fetch(`/v2/keys/${keyId}`, {
+  const res = await fetch(apiUrl(`/v2/keys/${keyId}`), {
     method: 'PATCH',
     headers: v2Headers(apiKey),
     body: JSON.stringify(payload),
   })
-  if (!res.ok) {
-    throw new Error('Failed to update API key')
-  }
-  return res.json()
+  return parseJsonResponse<V2ApiKey>(res, 'Failed to update API key')
 }
 
 export async function v2RotateApiKey(apiKey: string, keyId: string, payload?: {
@@ -445,37 +480,29 @@ export async function v2RotateApiKey(apiKey: string, keyId: string, payload?: {
   permissions?: string[]
   expires_at?: string
 }): Promise<V2ApiKeyCreateResponse> {
-  const res = await fetch(`/v2/keys/${keyId}/rotate`, {
+  const res = await fetch(apiUrl(`/v2/keys/${keyId}/rotate`), {
     method: 'POST',
     headers: v2Headers(apiKey),
     body: JSON.stringify(payload || {}),
   })
-  if (!res.ok) {
-    throw new Error('Failed to rotate API key')
-  }
-  return res.json()
+  return parseJsonResponse<V2ApiKeyCreateResponse>(res, 'Failed to rotate API key')
 }
 
 export async function v2DeleteApiKey(apiKey: string, keyId: string): Promise<void> {
-  const res = await fetch(`/v2/keys/${keyId}`, {
+  const res = await fetch(apiUrl(`/v2/keys/${keyId}`), {
     method: 'DELETE',
     headers: v2Headers(apiKey),
   })
-  if (!res.ok) {
-    throw new Error('Failed to delete API key')
-  }
+  await parseJsonResponse<Record<string, unknown>>(res, 'Failed to delete API key')
 }
 
 export async function v2CreateJob(apiKey: string, payload: Record<string, unknown>, idempotencyKey?: string): Promise<V2JobSummary> {
-  const res = await fetch('/v2/jobs', {
+  const res = await fetch(apiUrl('/v2/jobs'), {
     method: 'POST',
     headers: v2Headers(apiKey, idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined),
     body: JSON.stringify(payload),
   })
-  if (!res.ok) {
-    throw new Error('Failed to create v2 job')
-  }
-  return res.json()
+  return parseJsonResponse<V2JobSummary>(res, 'Failed to create v2 job')
 }
 
 export async function v2ListJobs(apiKey: string, query?: {
@@ -489,13 +516,10 @@ export async function v2ListJobs(apiKey: string, query?: {
   if (query?.limit !== undefined) params.set('limit', String(query.limit))
   if (query?.status) params.set('status', query.status)
   if (query?.mode) params.set('mode', query.mode)
-  const res = await fetch(`/v2/jobs${params.toString() ? `?${params.toString()}` : ''}`, {
+  const res = await fetch(apiUrl(`/v2/jobs${params.toString() ? `?${params.toString()}` : ''}`), {
     headers: v2Headers(apiKey),
   })
-  if (!res.ok) {
-    throw new Error('Failed to list v2 jobs')
-  }
-  return res.json()
+  return parseJsonResponse<V2JobSummary[]>(res, 'Failed to list v2 jobs')
 }
 
 export async function v2QueryJobs(apiKey: string, query?: {
@@ -509,104 +533,81 @@ export async function v2QueryJobs(apiKey: string, query?: {
   if (query?.limit !== undefined) params.set('limit', String(query.limit))
   if (query?.status) params.set('status', query.status)
   if (query?.mode) params.set('mode', query.mode)
-  const res = await fetch(`/v2/jobs/query${params.toString() ? `?${params.toString()}` : ''}`, {
+  const res = await fetch(apiUrl(`/v2/jobs/query${params.toString() ? `?${params.toString()}` : ''}`), {
     headers: v2Headers(apiKey),
   })
-  if (!res.ok) {
-    throw new Error('Failed to query v2 jobs')
-  }
-  return res.json()
+  return parseJsonResponse<V2JobListResponse>(res, 'Failed to query v2 jobs')
 }
 
 export async function v2GetJob(apiKey: string, jobId: string): Promise<V2JobSummary> {
-  const res = await fetch(`/v2/jobs/${jobId}`, {
+  const res = await fetch(apiUrl(`/v2/jobs/${jobId}`), {
     headers: v2Headers(apiKey),
   })
-  if (!res.ok) {
-    throw new Error('Failed to get v2 job')
-  }
-  return res.json()
+  return parseJsonResponse<V2JobSummary>(res, 'Failed to get v2 job')
 }
 
 export async function v2GetJobTimeline(apiKey: string, jobId: string): Promise<V2JobTimeline> {
-  const res = await fetch(`/v2/jobs/${jobId}/timeline`, {
+  const res = await fetch(apiUrl(`/v2/jobs/${jobId}/timeline`), {
     headers: v2Headers(apiKey),
   })
-  if (!res.ok) {
-    throw new Error('Failed to get v2 job timeline')
-  }
-  return res.json()
+  return parseJsonResponse<V2JobTimeline>(res, 'Failed to get v2 job timeline')
 }
 
 export async function v2CancelJob(apiKey: string, jobId: string, reason?: string): Promise<V2JobSummary> {
   const query = reason ? `?reason=${encodeURIComponent(reason)}` : ''
-  const res = await fetch(`/v2/jobs/${jobId}/cancel${query}`, {
+  const res = await fetch(apiUrl(`/v2/jobs/${jobId}/cancel${query}`), {
     method: 'POST',
     headers: v2Headers(apiKey),
   })
-  if (!res.ok) {
-    throw new Error('Failed to cancel v2 job')
-  }
-  return res.json()
+  return parseJsonResponse<V2JobSummary>(res, 'Failed to cancel v2 job')
 }
 
 export async function v2ApproveActionGroup(apiKey: string, jobId: string, actionGroupId: string, reason?: string): Promise<void> {
-  const res = await fetch(`/v2/jobs/${jobId}/actions/${actionGroupId}/approve`, {
+  const res = await fetch(apiUrl(`/v2/jobs/${jobId}/actions/${actionGroupId}/approve`), {
     method: 'POST',
     headers: v2Headers(apiKey),
     body: JSON.stringify({ reason }),
   })
-  if (!res.ok) {
-    throw new Error('Failed to approve action group')
-  }
+  await parseJsonResponse<Record<string, unknown>>(res, 'Failed to approve action group')
 }
 
 export async function v2RejectActionGroup(apiKey: string, jobId: string, actionGroupId: string, reason?: string): Promise<void> {
-  const res = await fetch(`/v2/jobs/${jobId}/actions/${actionGroupId}/reject`, {
+  const res = await fetch(apiUrl(`/v2/jobs/${jobId}/actions/${actionGroupId}/reject`), {
     method: 'POST',
     headers: v2Headers(apiKey),
     body: JSON.stringify({ reason }),
   })
-  if (!res.ok) {
-    throw new Error('Failed to reject action group')
-  }
+  await parseJsonResponse<Record<string, unknown>>(res, 'Failed to reject action group')
 }
 
 export async function v2ApproveActionGroupsBatch(apiKey: string, jobId: string, actionGroupIds: string[], reason?: string): Promise<void> {
-  const res = await fetch(`/v2/jobs/${jobId}/actions/approve-batch`, {
+  const res = await fetch(apiUrl(`/v2/jobs/${jobId}/actions/approve-batch`), {
     method: 'POST',
     headers: v2Headers(apiKey),
     body: JSON.stringify({ action_group_ids: actionGroupIds, reason }),
   })
-  if (!res.ok) {
-    throw new Error('Failed to batch approve action groups')
-  }
+  await parseJsonResponse<Record<string, unknown>>(res, 'Failed to batch approve action groups')
 }
 
 export async function v2RejectActionGroupsBatch(apiKey: string, jobId: string, actionGroupIds: string[], reason?: string): Promise<void> {
-  const res = await fetch(`/v2/jobs/${jobId}/actions/reject-batch`, {
+  const res = await fetch(apiUrl(`/v2/jobs/${jobId}/actions/reject-batch`), {
     method: 'POST',
     headers: v2Headers(apiKey),
     body: JSON.stringify({ action_group_ids: actionGroupIds, reason }),
   })
-  if (!res.ok) {
-    throw new Error('Failed to batch reject action groups')
-  }
+  await parseJsonResponse<Record<string, unknown>>(res, 'Failed to batch reject action groups')
 }
 
 export async function v2UpdateTopology(apiKey: string, jobId: string, payload: {
   edges: Array<{ source: string; target: string; kind?: string; confidence?: number; reason?: string }>
   replace?: boolean
 }): Promise<V2JobSummary> {
-  const res = await fetch(`/v2/jobs/${jobId}/topology`, {
+  const res = await fetch(apiUrl(`/v2/jobs/${jobId}/topology`), {
     method: 'PUT',
     headers: v2Headers(apiKey),
     body: JSON.stringify(payload),
   })
-  if (!res.ok) {
-    throw new Error('Failed to update job topology')
-  }
-  return res.json()
+  return parseJsonResponse<V2JobSummary>(res, 'Failed to update job topology')
 }
 
 export async function v2UpdateRcaWeights(apiKey: string, jobId: string, payload: {
@@ -618,15 +619,12 @@ export async function v2UpdateRcaWeights(apiKey: string, jobId: string, payload:
     consistency: number
   }
 }): Promise<V2JobSummary> {
-  const res = await fetch(`/v2/jobs/${jobId}/rca-weights`, {
+  const res = await fetch(apiUrl(`/v2/jobs/${jobId}/rca-weights`), {
     method: 'PUT',
     headers: v2Headers(apiKey),
     body: JSON.stringify(payload),
   })
-  if (!res.ok) {
-    throw new Error('Failed to update rca weights')
-  }
-  return res.json()
+  return parseJsonResponse<V2JobSummary>(res, 'Failed to update rca weights')
 }
 
 export async function v2GetAuditLogs(apiKey: string, query?: {
@@ -642,13 +640,10 @@ export async function v2GetAuditLogs(apiKey: string, query?: {
   if (query?.actor_key_id) params.set('actor_key_id', query.actor_key_id)
   if (query?.limit !== undefined) params.set('limit', String(query.limit))
   if (query?.offset !== undefined) params.set('offset', String(query.offset))
-  const res = await fetch(`/v2/audit/logs${params.toString() ? `?${params.toString()}` : ''}`, {
+  const res = await fetch(apiUrl(`/v2/audit/logs${params.toString() ? `?${params.toString()}` : ''}`), {
     headers: v2Headers(apiKey),
   })
-  if (!res.ok) {
-    throw new Error('Failed to get audit logs')
-  }
-  return res.json()
+  return parseJsonResponse<Array<Record<string, unknown>>>(res, 'Failed to get audit logs')
 }
 
 export async function v2GetAuditReport(apiKey: string, query?: {
@@ -662,33 +657,24 @@ export async function v2GetAuditReport(apiKey: string, query?: {
   if (query?.action) params.set('action', query.action)
   if (query?.status) params.set('status', query.status)
   if (query?.actor_key_id) params.set('actor_key_id', query.actor_key_id)
-  const res = await fetch(`/v2/audit/reports${params.toString() ? `?${params.toString()}` : ''}`, {
+  const res = await fetch(apiUrl(`/v2/audit/reports${params.toString() ? `?${params.toString()}` : ''}`), {
     headers: v2Headers(apiKey),
   })
-  if (!res.ok) {
-    throw new Error('Failed to get audit report')
-  }
-  return res.json()
+  return parseJsonResponse<Record<string, unknown>>(res, 'Failed to get audit report')
 }
 
 export async function v2GetCommandProfiles(apiKey: string): Promise<Array<Record<string, unknown>>> {
-  const res = await fetch('/v2/command-profiles', {
+  const res = await fetch(apiUrl('/v2/command-profiles'), {
     headers: v2Headers(apiKey),
   })
-  if (!res.ok) {
-    throw new Error('Failed to get command profiles')
-  }
-  return res.json()
+  return parseJsonResponse<Array<Record<string, unknown>>>(res, 'Failed to get command profiles')
 }
 
 export async function v2GetPermissionTemplates(apiKey: string): Promise<V2PermissionTemplates> {
-  const res = await fetch('/v2/security/permission-templates', {
+  const res = await fetch(apiUrl('/v2/security/permission-templates'), {
     headers: v2Headers(apiKey),
   })
-  if (!res.ok) {
-    throw new Error('Failed to get permission templates')
-  }
-  return res.json()
+  return parseJsonResponse<V2PermissionTemplates>(res, 'Failed to get permission templates')
 }
 
 export async function v2StreamJobEvents(
@@ -698,7 +684,7 @@ export async function v2StreamJobEvents(
   onEvent: (event: string, payload: Record<string, unknown>) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const res = await fetch(`/v2/jobs/${jobId}/events?from_seq=${fromSeq}`, {
+  const res = await fetch(apiUrl(`/v2/jobs/${jobId}/events?from_seq=${fromSeq}`), {
     headers: v2Headers(apiKey),
     signal,
   })
