@@ -531,6 +531,8 @@
       <div class="row inline">
         <button id="exportPng">导出 PNG</button>
         <button id="exportLinkSummary">导出链路汇总</button>
+        <button id="exportMermaid">导出 Mermaid</button>
+        <button id="copyMermaid">复制 Mermaid</button>
       </div>
       <div class="row inline">
         <button id="exportSession">导出会话</button>
@@ -1007,6 +1009,8 @@
       btn_import_state: '导入状态',
       btn_export_png: '导出 PNG',
       btn_export_link_summary: '导出链路汇总',
+      btn_export_mermaid: '导出 Mermaid',
+      btn_copy_mermaid: '复制 Mermaid',
       btn_export_session: '导出会话',
       btn_import_session: '导入会话',
       cleanup_group_title: '清理与分享',
@@ -1119,6 +1123,8 @@
       btn_import_state: 'Load State',
       btn_export_png: 'Export PNG',
       btn_export_link_summary: 'Export Link Summary',
+      btn_export_mermaid: 'Export Mermaid',
+      btn_copy_mermaid: 'Copy Mermaid',
       btn_export_session: 'Export Session',
       btn_import_session: 'Import Session',
       cleanup_group_title: 'Cleanup & Sharing',
@@ -1331,6 +1337,8 @@
     setText('importServerState', 'btn_import_state');
     setText('exportPng', 'btn_export_png');
     setText('exportLinkSummary', 'btn_export_link_summary');
+    setText('exportMermaid', 'btn_export_mermaid');
+    setText('copyMermaid', 'btn_copy_mermaid');
     setText('exportSession', 'btn_export_session');
     setText('importSessionBtn', 'btn_import_session');
     setText('clearTempDataBtn', 'btn_clear_temp_data');
@@ -4520,6 +4528,87 @@
     setOK(`链路汇总已导出：${rows.length} 条链路明细。`);
   }
 
+  function escapeMermaidText(value) {
+    return String(value == null ? '' : value)
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\r?\n/g, '<br/>');
+  }
+
+  function mermaidNodeId(node) {
+    return `n_${String(node?.id?.() || '').replace(/[^A-Za-z0-9_]/g, '_')}`;
+  }
+
+  function currentMermaidDirection() {
+    const mode = String(($('layoutMode')?.value || 'layer')).trim().toLowerCase();
+    return mode === 'layer' ? 'TB' : 'LR';
+  }
+
+  function currentVisibleEdgeMermaidLabel(edge) {
+    const parts = [];
+    const portText = formatEdgePortLabel(edge);
+    const utilText = formatEdgeUtilText(edge);
+    if (portText) parts.push(portText);
+    if (!!$('utilLabelEnabled')?.checked && utilText) parts.push(utilText);
+    return parts.join('<br/>');
+  }
+
+  function currentVisibleNodeMermaidLabel(node) {
+    const mode = String(($('nodeLabelMode')?.value || 'full')).trim().toLowerCase();
+    if (mode === 'none') return String(node?.data('label') || node?.id?.() || '').trim();
+    if (mode === 'short') return String(node?.data('short') || node?.data('label') || node?.id?.() || '').trim();
+    if (mode === 'full_ip') return String(node?.data('labelIp') || node?.data('label') || node?.id?.() || '').trim();
+    return String(node?.data('label') || node?.id?.() || '').trim();
+  }
+
+  function exportVisibleMermaid() {
+    const content = buildVisibleMermaidText();
+    if (!content) return;
+    const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+    download(`lldp-topology-${ts}.mmd`, content, 'text/plain;charset=utf-8');
+    if (cy) {
+      const visibleNodes = cy.nodes(':visible');
+      const visibleEdges = cy.edges(':visible');
+      setOK(`Mermaid 已导出：节点 ${visibleNodes.length}，链路 ${visibleEdges.length}。`);
+    } else {
+      setOK('Mermaid 已导出。');
+    }
+  }
+
+  function buildVisibleMermaidText() {
+    if (!cy) {
+      setErr('请先生成拓扑，再导出 Mermaid');
+      return '';
+    }
+    const visibleNodes = cy.nodes(':visible');
+    const visibleEdges = cy.edges(':visible');
+    if (!visibleNodes.length) {
+      setErr('当前没有可见节点可导出');
+      return '';
+    }
+    const lines = [];
+    lines.push(`flowchart ${currentMermaidDirection()}`);
+    lines.push(`%% Exported at ${new Date().toISOString()}`);
+
+    visibleNodes.forEach((node) => {
+      const nodeId = mermaidNodeId(node);
+      const label = currentVisibleNodeMermaidLabel(node);
+      lines.push(`    ${nodeId}["${escapeMermaidText(label)}"]`);
+    });
+
+    visibleEdges.forEach((edge) => {
+      const srcId = mermaidNodeId(edge.source());
+      const tgtId = mermaidNodeId(edge.target());
+      const label = currentVisibleEdgeMermaidLabel(edge);
+      if (label) {
+        lines.push(`    ${srcId} ---|"${escapeMermaidText(label)}"| ${tgtId}`);
+      } else {
+        lines.push(`    ${srcId} --- ${tgtId}`);
+      }
+    });
+    return lines.join('\n');
+  }
+
   function formatEdgeUtilText(edge) {
     const showTxRx = !!$('utilShowTxRx')?.checked;
     const showBandwidth = !!$('utilShowBandwidth')?.checked;
@@ -6705,6 +6794,32 @@
       exportLinkSummaryCsv();
     } catch (e) {
       setErr(`导出链路汇总失败：${String(e && e.message ? e.message : e)}`);
+    }
+  });
+  $('exportMermaid').addEventListener('click', () => {
+    try {
+      exportVisibleMermaid();
+    } catch (e) {
+      setErr(`导出 Mermaid 失败：${String(e && e.message ? e.message : e)}`);
+    }
+  });
+  $('copyMermaid').addEventListener('click', async () => {
+    try {
+      const content = buildVisibleMermaidText();
+      if (!content) return;
+      if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+        throw new Error('当前浏览器不支持剪贴板写入');
+      }
+      await navigator.clipboard.writeText(content);
+      if (cy) {
+        const visibleNodes = cy.nodes(':visible');
+        const visibleEdges = cy.edges(':visible');
+        setOK(`Mermaid 已复制到剪贴板：节点 ${visibleNodes.length}，链路 ${visibleEdges.length}。`);
+      } else {
+        setOK('Mermaid 已复制到剪贴板。');
+      }
+    } catch (e) {
+      setErr(`复制 Mermaid 失败：${String(e && e.message ? e.message : e)}`);
     }
   });
 
