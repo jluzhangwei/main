@@ -46,12 +46,15 @@ is_running_pid() {
 start_detached() {
   local log_file="$1"
   shift
+  local pid=""
   if command_exists setsid; then
     nohup setsid "$@" >"$log_file" 2>&1 < /dev/null &
   else
     nohup "$@" >"$log_file" 2>&1 < /dev/null &
   fi
-  echo $!
+  pid="$!"
+  disown "$pid" 2>/dev/null || true
+  echo "$pid"
 }
 
 wait_port_up() {
@@ -112,10 +115,9 @@ start_backend() {
 
   ensure_backend_env
   echo "[backend] starting on :$BACKEND_PORT ..."
-  (
-    cd "$BACKEND_DIR"
-    start_detached "$BACKEND_LOG" ./.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" >"$BACKEND_PID_FILE"
-  )
+  pushd "$BACKEND_DIR" >/dev/null
+  start_detached "$BACKEND_LOG" ./.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" >"$BACKEND_PID_FILE"
+  popd >/dev/null
 
   if wait_port_up "$BACKEND_PORT" 30; then
     echo "[backend] started."
@@ -136,10 +138,9 @@ start_frontend() {
 
   ensure_frontend_env
   echo "[frontend] starting on :$FRONTEND_PORT ..."
-  (
-    cd "$FRONTEND_DIR"
-    start_detached "$FRONTEND_LOG" npm run dev -- --host 0.0.0.0 --port "$FRONTEND_PORT" >"$FRONTEND_PID_FILE"
-  )
+  pushd "$FRONTEND_DIR" >/dev/null
+  start_detached "$FRONTEND_LOG" npm run dev -- --host 0.0.0.0 --port "$FRONTEND_PORT" >"$FRONTEND_PID_FILE"
+  popd >/dev/null
 
   if wait_port_up "$FRONTEND_PORT" 30; then
     echo "[frontend] started."

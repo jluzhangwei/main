@@ -53,6 +53,21 @@ BASELINE_CONTEXT_RULES = (
     "仅在证据不足或状态可能变化时，再追加必要复核命令。"
 )
 
+VENDOR_COMMAND_FAMILY_RULES = (
+    "当会话中已识别厂商/平台/版本（如厂商不为unknown，或存在版本指纹）时，必须遵循命令家族一致性。"
+    "Huawei/华为设备优先使用display家族命令；Arista/Cisco-like设备优先使用show家族命令。"
+    "除非为会话控制命令（如enable/terminal length/screen-length）或已明确说明兼容探测原因，禁止跨家族盲试。"
+    "若出现一次“命令不识别/参数错误”且可判断为家族不匹配，下一轮必须切换到同厂商等效命令，不要重复原家族。"
+    "禁止在相邻两轮中反复 show/display 来回切换；仅在证据表明当前家族不可用时才切换，并在reason说明原因。"
+)
+
+HISTORY_FORENSICS_RULES = (
+    "当用户问题包含“上次/历史/曾经/闪断/flap/间歇”这类历史性故障诉求时："
+    "下一轮命令必须优先包含历史取证命令（设备日志、告警、协议邻接变化记录），不能只看当前瞬时状态。"
+    "若协议相关（如OSPF/BGP），应优先给出协议事件日志与邻接变化证据采集命令。"
+    "若日志命令不可用或无记录，必须在reason中明确说明“日志证据不足/不可得”，再给出替代取证路径。"
+)
+
 MODE_SCOPE_RULES = (
     "你必须严格遵守会话模式边界（字段“会话模式”）："
     "当会话模式为query或diagnosis时，只能输出采集/查询类命令，禁止输出配置变更类命令。"
@@ -84,6 +99,8 @@ NEXT_STEP_SYSTEM_PROMPT_WITH_HISTORY = (
     f"{ACTION_MARKER_RULES}"
     f"{MINIMAL_CHANGE_RULES}"
     f"{BASELINE_CONTEXT_RULES}"
+    f"{VENDOR_COMMAND_FAMILY_RULES}"
+    f"{HISTORY_FORENSICS_RULES}"
 )
 
 NEXT_STEP_SYSTEM_PROMPT = (
@@ -108,6 +125,8 @@ NEXT_STEP_SYSTEM_PROMPT = (
     f"{ACTION_MARKER_RULES}"
     f"{MINIMAL_CHANGE_RULES}"
     f"{BASELINE_CONTEXT_RULES}"
+    f"{VENDOR_COMMAND_FAMILY_RULES}"
+    f"{HISTORY_FORENSICS_RULES}"
 )
 
 PRIMARY_SUMMARY_SYSTEM_PROMPT = (
@@ -137,9 +156,12 @@ REWRITE_SYSTEM_PROMPT = (
 class DeepSeekDiagnoser:
     def __init__(self) -> None:
         self.default_base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip().rstrip("/")
+        self.default_nvidia_base_url = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1").strip().rstrip("/")
         self.default_model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip()
         self.api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+        self.nvidia_api_key = os.getenv("NVIDIA_API_KEY", "").strip()
         self.base_url = self.default_base_url
+        self.nvidia_base_url = self.default_nvidia_base_url
         self.model = self.default_model
         self.failover_enabled = os.getenv("NETOPS_MODEL_FAILOVER_ENABLED", "1").strip().lower() in {"1", "true", "yes"}
         self.batch_execution_enabled = (
@@ -162,13 +184,15 @@ class DeepSeekDiagnoser:
 
     @property
     def enabled(self) -> bool:
-        return bool(self.api_key)
+        return bool(self.api_key or self.nvidia_api_key)
 
     def configure(
         self,
         *,
         api_key: Optional[str] = None,
+        nvidia_api_key: Optional[str] = None,
         base_url: Optional[str] = None,
+        nvidia_base_url: Optional[str] = None,
         model: Optional[str] = None,
         failover_enabled: Optional[bool] = None,
         model_candidates: Optional[list[str]] = None,
@@ -176,8 +200,12 @@ class DeepSeekDiagnoser:
     ) -> None:
         if api_key is not None:
             self.api_key = api_key.strip()
+        if nvidia_api_key is not None:
+            self.nvidia_api_key = nvidia_api_key.strip()
         if base_url:
             self.base_url = base_url.strip().rstrip("/")
+        if nvidia_base_url:
+            self.nvidia_base_url = nvidia_base_url.strip().rstrip("/")
         if model:
             self.model = model.strip()
         if failover_enabled is not None:
@@ -194,7 +222,9 @@ class DeepSeekDiagnoser:
 
     def delete_saved_config(self) -> None:
         self.api_key = ""
+        self.nvidia_api_key = ""
         self.base_url = self.default_base_url
+        self.nvidia_base_url = self.default_nvidia_base_url
         self.model = self.default_model
         self.active_model = self.default_model
         self.last_error = None
@@ -210,11 +240,13 @@ class DeepSeekDiagnoser:
         return {
             "enabled": self.enabled,
             "base_url": self.base_url,
+            "nvidia_base_url": self.nvidia_base_url,
             "model": self.model,
             "active_model": self.active_model or self.model,
             "failover_enabled": self.failover_enabled,
             "batch_execution_enabled": self.batch_execution_enabled,
             "model_candidates": list(self.model_candidates),
+            "nvidia_enabled": bool(self.nvidia_api_key),
             "last_error": self.last_error,
             "last_error_code": self.last_error_code,
             "unavailable_reason": self._unavailable_reason(),
@@ -225,11 +257,13 @@ class DeepSeekDiagnoser:
         return {
             "enabled": self.enabled,
             "base_url": self.base_url,
+            "nvidia_base_url": self.nvidia_base_url,
             "model": self.model,
             "active_model": self.active_model or self.model,
             "failover_enabled": self.failover_enabled,
             "batch_execution_enabled": self.batch_execution_enabled,
             "model_candidates": list(self.model_candidates),
+            "nvidia_enabled": bool(self.nvidia_api_key),
             "last_error": self.last_error,
             "last_error_code": self.last_error_code,
             "prompts": {
@@ -262,7 +296,9 @@ class DeepSeekDiagnoser:
     def _save_config(self) -> None:
         payload = {
             "api_key": self.api_key,
+            "nvidia_api_key": self.nvidia_api_key,
             "base_url": self.base_url,
+            "nvidia_base_url": self.nvidia_base_url,
             "model": self.model,
             "failover_enabled": self.failover_enabled,
             "batch_execution_enabled": self.batch_execution_enabled,
@@ -298,15 +334,21 @@ class DeepSeekDiagnoser:
 
     def _apply_loaded_config(self, data: dict[str, Any]) -> None:
         api_key = str(data.get("api_key", "")).strip()
+        nvidia_api_key = str(data.get("nvidia_api_key", "")).strip()
         base_url = str(data.get("base_url", "")).strip().rstrip("/")
+        nvidia_base_url = str(data.get("nvidia_base_url", "")).strip().rstrip("/")
         model = str(data.get("model", "")).strip()
         failover_enabled = data.get("failover_enabled")
         batch_execution_enabled = data.get("batch_execution_enabled")
         candidates = data.get("model_candidates")
         if api_key:
             self.api_key = api_key
+        if nvidia_api_key:
+            self.nvidia_api_key = nvidia_api_key
         if base_url:
             self.base_url = base_url
+        if nvidia_base_url:
+            self.nvidia_base_url = nvidia_base_url
         if model:
             self.model = model
         if isinstance(failover_enabled, bool):
@@ -367,71 +409,102 @@ class DeepSeekDiagnoser:
         max_iterations: int,
         conversation_history: Optional[list[dict[str, str]]] = None,
     ) -> Optional[dict[str, Any]]:
-        if not self.enabled:
-            return None
+        plan, _ = await self.propose_next_step_with_debug(
+            session=session,
+            user_problem=user_problem,
+            commands=commands,
+            evidences=evidences,
+            iteration=iteration,
+            max_iterations=max_iterations,
+            conversation_history=conversation_history,
+        )
+        return plan
 
-        if conversation_history:
-            content = await self._chat_completion_messages(
-                system_prompt=self._next_step_prompt(with_history=True),
-                messages=conversation_history,
-            )
-            if not content:
-                return None
-            parsed = self._parse_json_object(content)
-            if not parsed:
-                return None
-            decision = str(parsed.get("decision", "")).strip().lower()
-            if decision not in {"run_command", "final"}:
-                return None
-            parsed["decision"] = decision
-            return parsed
-
-        payload = {
-            "session": {
-                "id": session.id,
-                "vendor": session.device.vendor,
-                "protocol": session.device.protocol.value,
-            },
-            "user_problem": user_problem,
+    async def propose_next_step_with_debug(
+        self,
+        *,
+        session: Session,
+        user_problem: str,
+        commands: list[CommandExecution],
+        evidences: list[Evidence],
+        iteration: int,
+        max_iterations: int,
+        conversation_history: Optional[list[dict[str, str]]] = None,
+    ) -> tuple[Optional[dict[str, Any]], dict[str, Any]]:
+        debug: dict[str, Any] = {
             "iteration": iteration,
             "max_iterations": max_iterations,
-            "commands": [
-                {
-                    "step_no": cmd.step_no,
-                    "title": cmd.title,
-                    "command": cmd.command,
-                    "status": cmd.status.value,
-                    "output": (cmd.output or "")[:2500],
-                    "error": cmd.error,
-                }
-                for cmd in commands
-            ],
-            "evidences": [
-                {
-                    "category": evidence.category,
-                    "conclusion": evidence.conclusion,
-                    "raw_output": evidence.raw_output[:2500],
-                    "parsed_data": evidence.parsed_data,
-                }
-                for evidence in evidences
-            ],
+            "with_history": bool(conversation_history),
         }
+        if not self.enabled:
+            debug["error"] = "llm_disabled"
+            return None, debug
+
+        if conversation_history:
+            system_prompt = self._next_step_prompt(with_history=True)
+            history = self._normalize_history_messages(conversation_history)
+            debug["system_prompt"] = self._clip_trace_text(system_prompt, 200000)
+            debug["request_messages"] = [
+                {
+                    "role": item.get("role", ""),
+                    "content": self._clip_trace_text(item.get("content", ""), 200000),
+                }
+                for item in [{"role": "system", "content": system_prompt}, *history]
+            ]
+            content = await self._chat_completion_messages(
+                system_prompt=system_prompt,
+                messages=history,
+            )
+            debug["raw_response"] = self._clip_trace_text(content, 200000)
+            if not content:
+                debug["error"] = "empty_response"
+                return None, debug
+            parsed = self._parse_json_object(content)
+            if not parsed:
+                debug["error"] = "unparseable_json"
+                return None, debug
+            decision = str(parsed.get("decision", "")).strip().lower()
+            if decision not in {"run_command", "final"}:
+                debug["error"] = f"invalid_decision:{decision}"
+                debug["parsed_response"] = parsed
+                return None, debug
+            parsed["decision"] = decision
+            debug["parsed_response"] = parsed
+            return parsed, debug
+
+        payload = self._build_next_step_payload(
+            session=session,
+            user_problem=user_problem,
+            commands=commands,
+            evidences=evidences,
+            iteration=iteration,
+            max_iterations=max_iterations,
+        )
+        system_prompt = self._next_step_prompt(with_history=False)
+        debug["system_prompt"] = self._clip_trace_text(system_prompt, 200000)
+        debug["request_payload"] = payload
 
         content = await self._chat_completion(
-            system_prompt=self._next_step_prompt(with_history=False),
+            system_prompt=system_prompt,
             user_payload=payload,
         )
+        debug["raw_response"] = self._clip_trace_text(content, 200000)
         if not content:
-            return None
+            debug["error"] = "empty_response"
+            return None, debug
         parsed = self._parse_json_object(content)
         if not parsed:
-            return None
+            debug["error"] = "unparseable_json"
+            return None, debug
 
         decision = str(parsed.get("decision", "")).strip().lower()
         if decision not in {"run_command", "final"}:
-            return None
+            debug["error"] = f"invalid_decision:{decision}"
+            debug["parsed_response"] = parsed
+            return None, debug
         parsed["decision"] = decision
-        return parsed
+        debug["parsed_response"] = parsed
+        return parsed, debug
 
     def _build_payload(
         self,
@@ -471,6 +544,47 @@ class DeepSeekDiagnoser:
                 "请给出根因、影响范围、建议。"
                 "只能依据证据，不得增加未出现的假设。"
             ),
+        }
+
+    def _build_next_step_payload(
+        self,
+        *,
+        session: Session,
+        user_problem: str,
+        commands: list[CommandExecution],
+        evidences: list[Evidence],
+        iteration: int,
+        max_iterations: int,
+    ) -> dict[str, Any]:
+        return {
+            "session": {
+                "id": session.id,
+                "vendor": session.device.vendor,
+                "protocol": session.device.protocol.value,
+            },
+            "user_problem": user_problem,
+            "iteration": iteration,
+            "max_iterations": max_iterations,
+            "commands": [
+                {
+                    "step_no": cmd.step_no,
+                    "title": cmd.title,
+                    "command": cmd.command,
+                    "status": cmd.status.value,
+                    "output": (cmd.output or "")[:2500],
+                    "error": cmd.error,
+                }
+                for cmd in commands
+            ],
+            "evidences": [
+                {
+                    "category": evidence.category,
+                    "conclusion": evidence.conclusion,
+                    "raw_output": evidence.raw_output[:2500],
+                    "parsed_data": evidence.parsed_data,
+                }
+                for evidence in evidences
+            ],
         }
 
     async def _run_primary(self, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
@@ -561,13 +675,7 @@ class DeepSeekDiagnoser:
         return self._extract_content(data)
 
     async def _chat_completion_messages(self, *, system_prompt: str, messages: list[dict[str, str]]) -> str:
-        history = []
-        for item in messages:
-            role = str(item.get("role", "")).strip()
-            content = str(item.get("content", "")).strip()
-            if role not in {"user", "assistant"} or not content:
-                continue
-            history.append({"role": role, "content": content})
+        history = self._normalize_history_messages(messages)
 
         request_body = {
             "model": self.model,
@@ -584,6 +692,24 @@ class DeepSeekDiagnoser:
         if not data:
             return ""
         return self._extract_content(data)
+
+    def _normalize_history_messages(self, messages: list[dict[str, str]]) -> list[dict[str, str]]:
+        history = []
+        for item in messages:
+            role = str(item.get("role", "")).strip()
+            content = str(item.get("content", "")).strip()
+            if role not in {"user", "assistant"} or not content:
+                continue
+            history.append({"role": role, "content": content})
+        return history
+
+    def _clip_trace_text(self, value: Any, limit: int) -> str:
+        text = str(value or "")
+        if limit <= 0:
+            return text
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit]}...(truncated,{len(text)} chars)"
 
     async def _post_json(self, request_body: dict[str, Any]) -> Optional[dict[str, Any]]:
         requested = str(request_body.get("model") or self.model).strip() or self.default_model
@@ -628,12 +754,16 @@ class DeepSeekDiagnoser:
         self, request_body: dict[str, Any]
     ) -> tuple[Optional[dict[str, Any]], Optional[str], Optional[str]]:
         model = str(request_body.get("model") or "").strip()
+        request_base_url = self._resolve_request_base_url(model=model)
+        request_api_key = self._resolve_request_api_key(model=model, base_url=request_base_url)
+        if not request_api_key:
+            return None, f"[{model}] missing api key", "api_key_missing"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 resp = await client.post(
-                    f"{self.base_url}/chat/completions",
+                    f"{request_base_url}/chat/completions",
                     headers={
-                        "Authorization": f"Bearer {self.api_key}",
+                        "Authorization": f"Bearer {request_api_key}",
                         "Content-Type": "application/json",
                     },
                     json=request_body,
@@ -672,6 +802,55 @@ class DeepSeekDiagnoser:
     def _candidate_model_order(self, preferred: str) -> list[str]:
         fallback_defaults = ["deepseek-chat", "deepseek-reasoner"]
         return self._normalize_model_candidates([preferred, *self.model_candidates, *fallback_defaults])
+
+    def _resolve_request_base_url(self, *, model: str) -> str:
+        model_text = str(model or "").strip().lower()
+        configured = str(self.base_url or "").strip().rstrip("/")
+        configured_nvidia = str(self.nvidia_base_url or "").strip().rstrip("/")
+
+        # NVIDIA catalog models are usually provider-prefixed, e.g. deepseek-ai/deepseek-r1.
+        if self._is_nvidia_model(model_text):
+            return configured_nvidia or self.default_nvidia_base_url
+
+        # DeepSeek models should always hit DeepSeek-compatible endpoint.
+        if model_text.startswith("deepseek"):
+            if configured and "nvidia.com" not in configured.lower():
+                return configured
+            return self.default_base_url
+
+        # Keep user-configured endpoint for unknown model families.
+        if configured:
+            return configured
+        return self.default_base_url
+
+    def _resolve_request_api_key(self, *, model: str, base_url: str) -> str:
+        model_text = str(model or "").strip().lower()
+        current_base_url = str(base_url or "").strip().lower()
+        if "nvidia.com" in current_base_url:
+            return self.nvidia_api_key
+        if model_text.startswith("deepseek") and self.api_key:
+            return self.api_key
+        if self.api_key:
+            return self.api_key
+        if self.nvidia_api_key:
+            return self.nvidia_api_key
+        return ""
+
+    def _is_nvidia_model(self, model_text: str) -> bool:
+        if not model_text:
+            return False
+        if "/" in model_text:
+            return True
+        return model_text.startswith(
+            (
+                "meta/",
+                "nvidia/",
+                "mistralai/",
+                "qwen/",
+                "microsoft/",
+                "google/",
+            )
+        )
 
     def _unavailable_reason(self) -> Optional[str]:
         if not self.enabled:
