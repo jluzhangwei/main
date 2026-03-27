@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import secrets
 from collections import defaultdict
 from datetime import datetime
@@ -17,6 +18,9 @@ from app.models.schemas import (
     ApiKeyCreateResponse,
     ApiKeyListItem,
     ApiKeyRecord,
+    CommandExecution,
+    CommandStatus,
+    Evidence,
     AuditLog,
     AutomationLevel,
     CausalEdge,
@@ -45,12 +49,14 @@ from app.models.schemas import (
     RCAWeights,
     RCAResult,
     RiskLevel,
+    OperationMode,
     Session,
     TopologyMode,
     make_id,
     now_utc,
 )
 from app.services.adapters import build_adapter
+from app.services.deepseek_diagnoser import DeepSeekDiagnoser
 from app.services.parsers import parse_command_output
 from app.services.risk_engine import RiskEngine
 from app.services.store import InMemoryStore
@@ -63,6 +69,7 @@ class JobV2Orchestrator:
         self.store = store
         self.allow_simulation = allow_simulation
         self.risk_engine = RiskEngine()
+        self.deepseek_diagnoser = DeepSeekDiagnoser()
 
         self._jobs: dict[str, Job] = {}
         self._events: dict[str, list[JobEvent]] = defaultdict(list)
@@ -226,6 +233,208 @@ class JobV2Orchestrator:
         self._dispatch_webhook(job, event)
         return event
 
+    def _sanitize_trace_text(self, text: str) -> str:
+        if not text:
+            return text
+        sanitized = text
+        patterns = [
+            (
+                re.compile(
+                    r"(?i)\b(username|user|account|login|password|passwd|pwd|token|api[_-]?key|secret)\b\s*[:=：]?\s*([^\s,;，。]+)"
+                ),
+                r"\1 [REDACTED]",
+            ),
+            (
+                re.compile(r"(账号|用户名|密码|口令|令牌|密钥)\s*[:：]?\s*([^\s,;，。]+)", re.IGNORECASE),
+                r"\1 [REDACTED]",
+            ),
+        ]
+        for pattern, replacement in patterns:
+            sanitized = pattern.sub(replacement, sanitized)
+        return sanitized
+
+    def _clip_trace_text(self, value: Any, limit: int = 200000) -> str:
+        text = str(value or "")
+        if limit <= 0 or len(text) <= limit:
+            return text
+        return f"{text[:limit]}...(truncated,{len(text)} chars)"
+
+    def _compact_trace_payload(
+        self,
+        payload: Any,
+        *,
+        depth: int = 0,
+        max_depth: int = 10,
+        max_items: int = 200,
+        text_limit: int = 200000,
+    ) -> Any:
+        if depth >= max_depth:
+            return "<max-depth>"
+        if isinstance(payload, str):
+            return self._clip_trace_text(self._sanitize_trace_text(payload), text_limit)
+        if isinstance(payload, (int, float, bool)) or payload is None:
+            return payload
+        if isinstance(payload, dict):
+            out: dict[str, Any] = {}
+            for idx, (key, value) in enumerate(payload.items()):
+                if idx >= max_items:
+                    out["__truncated_items__"] = len(payload) - max_items
+                    break
+                out[str(key)] = self._compact_trace_payload(
+                    value,
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                    max_items=max_items,
+                    text_limit=text_limit,
+                )
+            return out
+        if isinstance(payload, list):
+            out_list = []
+            for idx, item in enumerate(payload):
+                if idx >= max_items:
+                    out_list.append({"__truncated_items__": len(payload) - max_items})
+                    break
+                out_list.append(
+                    self._compact_trace_payload(
+                        item,
+                        depth=depth + 1,
+                        max_depth=max_depth,
+                        max_items=max_items,
+                        text_limit=text_limit,
+                    )
+                )
+            return out_list
+        return self._clip_trace_text(self._sanitize_trace_text(str(payload)), text_limit)
+
+    def _job_command_trace_record(self, command: JobCommandResult, *, include_output: bool) -> dict[str, Any]:
+        record: dict[str, Any] = {
+            "id": command.id,
+            "step_no": command.step_no,
+            "title": command.title,
+            "command": command.command,
+            "original_command": command.command,
+            "effective_command": command.effective_command or command.command,
+            "risk_level": command.risk_level.value,
+            "status": command.status.value,
+            "constraint_source": command.constraint_source or "",
+            "constraint_reason": command.constraint_reason or "",
+            "capability_state": command.capability_state or "",
+            "capability_reason": command.capability_reason or "",
+            "started_at": command.started_at.isoformat() if command.started_at else None,
+            "completed_at": command.completed_at.isoformat() if command.completed_at else None,
+            "duration_ms": command.duration_ms,
+            "error": command.error or "",
+        }
+        if include_output:
+            record["output"] = command.output or ""
+        return record
+
+    def _job_device_trace_record(self, device: JobDevice) -> dict[str, Any]:
+        return {
+            "id": device.id,
+            "host": device.host,
+            "name": device.name or "",
+            "vendor": device.vendor or "",
+            "platform": device.platform or "",
+            "software_version": device.software_version or "",
+            "version_signature": device.version_signature or "",
+            "status": device.status,
+        }
+
+    def _append_trace_event(
+        self,
+        job: Job,
+        step_type: str,
+        title: str,
+        *,
+        status: str = "succeeded",
+        detail: str = "",
+        detail_payload: dict[str, Any] | None = None,
+        command: JobCommandResult | None = None,
+        device: JobDevice | None = None,
+        started_at: datetime | None = None,
+        completed_at: datetime | None = None,
+        duration_ms: int | None = None,
+    ) -> JobEvent:
+        payload: dict[str, Any] = {
+            "title": title,
+            "status": status,
+            "detail": self._clip_trace_text(self._sanitize_trace_text(detail), 12000),
+            "detail_payload": self._compact_trace_payload(detail_payload or {}, max_depth=10, max_items=500, text_limit=200000),
+        }
+        if command is not None:
+            payload["command_id"] = command.id
+            payload["step_no"] = command.step_no
+        if device is not None:
+            payload["device_id"] = device.id
+            payload["device_host"] = device.host
+        if started_at is not None:
+            payload["started_at"] = started_at.isoformat()
+        if completed_at is not None:
+            payload["completed_at"] = completed_at.isoformat()
+        if duration_ms is not None:
+            payload["duration_ms"] = duration_ms
+        return self._append_event(job, step_type, payload)
+
+    def _build_llm_request_payload(self, debug: dict[str, Any], *, device: JobDevice | None = None) -> dict[str, Any]:
+        source = debug if isinstance(debug, dict) else {}
+        payload: dict[str, Any] = {}
+        for key in ("iteration", "max_iterations", "with_history", "system_prompt", "request_messages", "request_payload"):
+            if source.get(key) is not None:
+                payload[key] = source.get(key)
+        if device is not None:
+            payload["device"] = self._job_device_trace_record(device)
+        return self._compact_trace_payload(payload, max_depth=10, max_items=500, text_limit=200000)
+
+    def _build_llm_response_payload(
+        self,
+        debug: dict[str, Any],
+        parsed_plan: dict[str, Any] | None,
+        *,
+        device: JobDevice | None = None,
+    ) -> dict[str, Any]:
+        source = debug if isinstance(debug, dict) else {}
+        llm_payload: dict[str, Any] = {}
+        for key in ("raw_response", "parsed_response", "error"):
+            if source.get(key) is not None:
+                llm_payload[key] = source.get(key)
+        if parsed_plan is not None:
+            llm_payload["parsed_response"] = parsed_plan
+        payload: dict[str, Any] = {
+            "llm": llm_payload,
+            "ai_response_parsed": parsed_plan,
+        }
+        if device is not None:
+            payload["device"] = self._job_device_trace_record(device)
+        return self._compact_trace_payload(payload, max_depth=10, max_items=500, text_limit=200000)
+
+    def _build_llm_plan_payload(
+        self,
+        *,
+        job: Job,
+        device: JobDevice,
+        user_problem: str,
+        debug: dict[str, Any],
+        parsed_plan: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        return self._compact_trace_payload(
+            {
+                "device": self._job_device_trace_record(device),
+                "job": {
+                    "id": job.id,
+                    "problem": job.problem,
+                    "mode": job.mode.value,
+                    "phase": job.phase.value,
+                },
+                "user_problem": user_problem,
+                "to_ai": debug,
+                "ai_response_parsed": parsed_plan,
+            },
+            max_depth=10,
+            max_items=500,
+            text_limit=200000,
+        )
+
     def _normalize_idempotency_key(self, key: str | None, actor_key_id: str | None) -> str | None:
         raw = str(key or "").strip()
         if not raw:
@@ -340,6 +549,32 @@ class JobV2Orchestrator:
             self._jobs[job.id] = job
             if normalized_idempotency:
                 self._idempotency_index[normalized_idempotency] = job.id
+            self._append_trace_event(
+                job,
+                "user_input",
+                "接收用户请求",
+                status="succeeded",
+                detail=req.problem[:280],
+                detail_payload={
+                    "user_input": req.problem,
+                    "device_count": len(job.devices),
+                    "mode": job.mode.value,
+                    "topology_mode": job.topology_mode.value,
+                },
+            )
+            self._append_trace_event(
+                job,
+                "session_control",
+                "创建多设备任务",
+                status="succeeded",
+                detail=f"devices={len(job.devices)}; mode={job.mode.value}; topology={job.topology_mode.value}",
+                detail_payload={
+                    "job_id": job.id,
+                    "device_hosts": [item.host for item in job.devices],
+                    "mode": job.mode.value,
+                    "topology_mode": job.topology_mode.value,
+                },
+            )
             self._append_event(
                 job,
                 "job_created",
@@ -726,12 +961,33 @@ class JobV2Orchestrator:
                 return
             device.status = "collecting"
             device.last_error = None
+            self._append_trace_event(
+                job,
+                "session_control",
+                f"[{device.host}] 开始设备采集",
+                status="running",
+                detail="phase=collect",
+                detail_payload={"device": self._job_device_trace_record(device), "phase": "collect"},
+                device=device,
+            )
             self._append_event(job, "device_collect_started", {"device_id": device.id, "host": device.host})
             self._save_state()
 
         try:
-            adapter = await self._get_adapter(job_id, device_id)
-            for step_no, (title, command_text) in enumerate(self._baseline_collect_commands(), start=1):
+            await self._get_adapter(job_id, device_id)
+            collect_commands = self._baseline_collect_commands()
+            if self._is_history_problem(job.problem):
+                collect_commands.extend(self._history_collect_commands(job.problem))
+            for title, command_text in collect_commands:
+                normalized_cmd = " ".join(str(command_text or "").strip().lower().split())
+                if "version" not in normalized_cmd:
+                    async with self._state_lock:
+                        current_job = self._jobs[job_id]
+                        current_device = self._find_device(current_job, device_id)
+                        current_vendor = (current_device.vendor if current_device else "") or ""
+                    if self._should_skip_collect_command_by_vendor(current_vendor, normalized_cmd):
+                        continue
+                step_no = await self._allocate_next_step_no(job_id)
                 await self._run_device_command(
                     job_id,
                     device_id,
@@ -739,7 +995,10 @@ class JobV2Orchestrator:
                     command_text=command_text,
                     step_no=step_no,
                     action_group_id=None,
+                    phase="collect",
                 )
+
+            await self._collect_device_with_llm(job_id, device_id)
 
             async with self._state_lock:
                 job = self._jobs[job_id]
@@ -747,6 +1006,15 @@ class JobV2Orchestrator:
                 if device:
                     device.status = "collected"
                     device.last_error = None
+                    self._append_trace_event(
+                        job,
+                        "session_control",
+                        f"[{device.host}] 设备采集完成",
+                        status="succeeded",
+                        detail="phase=collect",
+                        detail_payload={"device": self._job_device_trace_record(device), "phase": "collect"},
+                        device=device,
+                    )
                 self._append_event(job, "device_collect_completed", {"device_id": device_id})
                 self._save_state()
         except Exception as exc:
@@ -756,6 +1024,19 @@ class JobV2Orchestrator:
                 if device:
                     device.status = "failed"
                     device.last_error = str(exc)
+                    self._append_trace_event(
+                        job,
+                        "session_control",
+                        f"[{device.host}] 设备采集失败",
+                        status="failed",
+                        detail=str(exc)[:280],
+                        detail_payload={
+                            "device": self._job_device_trace_record(device),
+                            "phase": "collect",
+                            "error": str(exc),
+                        },
+                        device=device,
+                    )
                 self._append_event(job, "device_collect_failed", {"device_id": device_id, "error": str(exc)[:260]})
                 self._save_state()
 
@@ -777,6 +1058,449 @@ class JobV2Orchestrator:
             ("权限探测兼容", "display users"),
         ]
 
+    def _is_history_problem(self, problem: str) -> bool:
+        lowered = str(problem or "").strip().lower()
+        if not lowered:
+            return False
+        keywords = (
+            "上次",
+            "历史",
+            "曾经",
+            "闪断",
+            "抖动",
+            "间歇",
+            "flap",
+            "flapping",
+            "history",
+            "last",
+            "intermittent",
+        )
+        return any(token in lowered for token in keywords)
+
+    def _history_collect_commands(self, problem: str) -> list[tuple[str, str]]:
+        lowered = str(problem or "").strip().lower()
+        commands: list[tuple[str, str]] = [
+            ("历史日志采集兼容", "display logbuffer"),
+            ("历史日志采集", "show logging | last 200"),
+            ("历史告警采集兼容", "display alarm active"),
+        ]
+        if "ospf" in lowered:
+            commands.extend(
+                [
+                    ("OSPF事件日志兼容", "display logbuffer | include OSPF|DOWN|UP"),
+                    ("OSPF事件日志", "show logging | include OSPF|ADJ|DOWN|UP"),
+                    ("OSPF邻接补采", "display ospf peer"),
+                ]
+            )
+        return commands
+
+    def _should_skip_collect_command_by_vendor(self, vendor: str, normalized_command: str) -> bool:
+        normalized_vendor = str(vendor or "").strip().lower()
+        cmd = " ".join(str(normalized_command or "").strip().lower().split())
+        if not normalized_vendor or not cmd:
+            return False
+        if "huawei" in normalized_vendor and cmd.startswith("show "):
+            return True
+        if ("arista" in normalized_vendor or "cisco" in normalized_vendor) and cmd.startswith("display "):
+            return True
+        return False
+
+    async def _allocate_next_step_no(self, job_id: str) -> int:
+        async with self._state_lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return 1
+            if not job.command_results:
+                return 1
+            return max(int(item.step_no or 0) for item in job.command_results) + 1
+
+    async def _collect_device_with_llm(self, job_id: str, device_id: str) -> None:
+        if not self.deepseek_diagnoser.enabled:
+            return
+        max_rounds = max(1, int(os.getenv("V2_COLLECT_LLM_MAX_ROUNDS", "3")))
+        max_commands_per_round = max(1, int(os.getenv("V2_COLLECT_LLM_MAX_COMMANDS_PER_ROUND", "4")))
+        repeated_guard: dict[str, int] = {}
+
+        for round_no in range(1, max_rounds + 1):
+            async with self._state_lock:
+                job = self._jobs.get(job_id)
+                if job is None:
+                    return
+                device = self._find_device(job, device_id)
+                if device is None:
+                    return
+                commands = self._build_llm_device_commands(job, device_id)
+                evidences = self._build_llm_device_evidences(job, device_id)
+                session = self._build_llm_device_session(job, device)
+                user_problem = f"{job.problem}\n目标设备: {device.host}"
+                self._append_trace_event(
+                    job,
+                    "context_snapshot",
+                    f"[{device.host}] 会话上下文快照（第 {round_no} 轮）",
+                    status="succeeded",
+                    detail=f"iteration={round_no}; commands={len(commands)}; evidences={len(evidences)}",
+                    detail_payload={
+                        "iteration": round_no,
+                        "device": self._job_device_trace_record(device),
+                        "counts": {
+                            "commands": len(commands),
+                            "evidences": len(evidences),
+                        },
+                        "latest_command": self._job_command_trace_record(commands[-1], include_output=True) if commands else None,
+                        "latest_evidence": evidences[-1].model_dump(mode="json") if evidences else None,
+                    },
+                    device=device,
+                )
+                self._save_state()
+
+            llm_started_at = now_utc()
+            try:
+                plan, plan_debug = await self.deepseek_diagnoser.propose_next_step_with_debug(
+                    session=session,
+                    user_problem=user_problem,
+                    commands=commands,
+                    evidences=evidences,
+                    iteration=round_no,
+                    max_iterations=max_rounds,
+                )
+            except Exception as exc:
+                llm_finished_at = now_utc()
+                async with self._state_lock:
+                    job = self._jobs.get(job_id)
+                    device = self._find_device(job, device_id) if job else None
+                    if job is not None and device is not None:
+                        self._append_trace_event(
+                            job,
+                            "llm_request",
+                            f"[{device.host}] 提交给 AI（第 {round_no} 轮）",
+                            status="failed",
+                            detail="request_exception",
+                            detail_payload={
+                                "iteration": round_no,
+                                "device": self._job_device_trace_record(device),
+                                "error": str(exc),
+                            },
+                            device=device,
+                            started_at=llm_started_at,
+                            completed_at=llm_finished_at,
+                            duration_ms=max(0, int((llm_finished_at - llm_started_at).total_seconds() * 1000)),
+                        )
+                        self._append_trace_event(
+                            job,
+                            "llm_response",
+                            f"[{device.host}] AI 原始回复（第 {round_no} 轮）",
+                            status="failed",
+                            detail=str(exc)[:280],
+                            detail_payload={"llm": {"error": str(exc)}, "device": self._job_device_trace_record(device)},
+                            device=device,
+                            started_at=llm_finished_at,
+                            completed_at=llm_finished_at,
+                            duration_ms=0,
+                        )
+                        self._append_trace_event(
+                            job,
+                            "llm_plan",
+                            f"[{device.host}] LLM 规划第 {round_no} 轮",
+                            status="failed",
+                            detail=str(exc)[:280],
+                            detail_payload={
+                                "device": self._job_device_trace_record(device),
+                                "user_problem": user_problem,
+                                "to_ai": {"error": str(exc)},
+                                "ai_response_parsed": None,
+                            },
+                            device=device,
+                            started_at=llm_started_at,
+                            completed_at=llm_finished_at,
+                            duration_ms=max(0, int((llm_finished_at - llm_started_at).total_seconds() * 1000)),
+                        )
+                        self._save_state()
+                return
+            llm_finished_at = now_utc()
+            async with self._state_lock:
+                job = self._jobs.get(job_id)
+                device = self._find_device(job, device_id) if job else None
+                if job is not None and device is not None:
+                    llm_duration = max(0, int((llm_finished_at - llm_started_at).total_seconds() * 1000))
+                    self._append_trace_event(
+                        job,
+                        "llm_request",
+                        f"[{device.host}] 提交给 AI（第 {round_no} 轮）",
+                        status="succeeded",
+                        detail="request_submitted",
+                        detail_payload=self._build_llm_request_payload(plan_debug, device=device),
+                        device=device,
+                        started_at=llm_started_at,
+                        completed_at=llm_started_at,
+                        duration_ms=0,
+                    )
+                    if not plan:
+                        self._append_trace_event(
+                            job,
+                            "llm_response",
+                            f"[{device.host}] AI 原始回复（第 {round_no} 轮）",
+                            status="failed",
+                            detail=str(plan_debug.get("error") or "LLM未返回可解析计划")[:280],
+                            detail_payload=self._build_llm_response_payload(plan_debug, None, device=device),
+                            device=device,
+                            started_at=llm_finished_at,
+                            completed_at=llm_finished_at,
+                            duration_ms=0,
+                        )
+                        self._append_trace_event(
+                            job,
+                            "llm_plan",
+                            f"[{device.host}] LLM 规划第 {round_no} 轮",
+                            status="failed",
+                            detail=str(plan_debug.get("error") or "LLM未返回可解析计划")[:280],
+                            detail_payload=self._build_llm_plan_payload(
+                                job=job,
+                                device=device,
+                                user_problem=user_problem,
+                                debug=plan_debug,
+                                parsed_plan=None,
+                            ),
+                            device=device,
+                            started_at=llm_started_at,
+                            completed_at=llm_finished_at,
+                            duration_ms=llm_duration,
+                        )
+                        self._save_state()
+                    else:
+                        decision_text = str(plan.get("decision", "")).strip() or "-"
+                        self._append_trace_event(
+                            job,
+                            "llm_response",
+                            f"[{device.host}] AI 原始回复（第 {round_no} 轮）",
+                            status="succeeded",
+                            detail=f"decision={decision_text}",
+                            detail_payload=self._build_llm_response_payload(plan_debug, plan, device=device),
+                            device=device,
+                            started_at=llm_finished_at,
+                            completed_at=llm_finished_at,
+                            duration_ms=0,
+                        )
+                        self._append_trace_event(
+                            job,
+                            "llm_plan",
+                            f"[{device.host}] LLM 规划第 {round_no} 轮",
+                            status="succeeded",
+                            detail=f"decision={decision_text}",
+                            detail_payload=self._build_llm_plan_payload(
+                                job=job,
+                                device=device,
+                                user_problem=user_problem,
+                                debug=plan_debug,
+                                parsed_plan=plan,
+                            ),
+                            device=device,
+                            started_at=llm_started_at,
+                            completed_at=llm_finished_at,
+                            duration_ms=llm_duration,
+                        )
+                        self._save_state()
+            if not plan:
+                return
+
+            decision = str(plan.get("decision", "")).strip().lower()
+            if decision == "final":
+                return
+
+            next_step = await self._allocate_next_step_no(job_id)
+            planned = self._extract_plan_commands(plan, next_step_no=next_step)
+            if not planned:
+                return
+
+            executed_any = False
+            for title, command_text in planned[:max_commands_per_round]:
+                normalized = " ".join(str(command_text or "").strip().lower().split())
+                if not normalized:
+                    continue
+                if repeated_guard.get(normalized, 0) >= 2:
+                    continue
+                repeated_guard[normalized] = repeated_guard.get(normalized, 0) + 1
+                step_no = await self._allocate_next_step_no(job_id)
+                await self._run_device_command(
+                    job_id,
+                    device_id,
+                    title=title,
+                    command_text=command_text,
+                    step_no=step_no,
+                    action_group_id=None,
+                    phase="collect",
+                )
+                executed_any = True
+
+            if not executed_any:
+                return
+
+    def _build_llm_device_session(self, job: Job, device: JobDevice) -> Session:
+        if job.mode == JobMode.inspection:
+            operation_mode = OperationMode.query
+        elif job.mode == JobMode.repair:
+            operation_mode = OperationMode.config
+        else:
+            operation_mode = OperationMode.diagnosis
+        return Session(
+            device=DeviceTarget(
+                host=device.host,
+                name=device.name,
+                port=device.port,
+                vendor=device.vendor,
+                protocol=device.protocol,
+                username=device.username,
+                password=device.password,
+                jump_host=device.jump_host,
+                jump_port=device.jump_port,
+                jump_username=device.jump_username,
+                jump_password=device.jump_password,
+                api_token=device.api_token,
+                device_type=device.device_type,
+                platform=device.platform,
+                software_version=device.software_version,
+                version_signature=device.version_signature,
+            ),
+            automation_level=AutomationLevel.assisted,
+            operation_mode=operation_mode,
+        )
+
+    def _build_llm_device_commands(self, job: Job, device_id: str) -> list[CommandExecution]:
+        rows: list[CommandExecution] = []
+        device = self._find_device(job, device_id)
+        adapter_type = device.protocol if device else DeviceProtocol.ssh
+        for item in sorted(job.command_results, key=lambda row: (row.step_no, row.created_at)):
+            if item.device_id != device_id:
+                continue
+            try:
+                rows.append(
+                    CommandExecution(
+                        id=item.id,
+                        session_id=job.id,
+                        step_no=item.step_no,
+                        title=item.title,
+                        command=item.command,
+                        adapter_type=adapter_type,
+                        risk_level=item.risk_level,
+                        status=CommandStatus(item.status.value),
+                        output=item.output,
+                        error=item.error,
+                        created_at=item.created_at,
+                        started_at=item.started_at,
+                        completed_at=item.completed_at,
+                        duration_ms=item.duration_ms,
+                        original_command=item.command,
+                        effective_command=item.effective_command,
+                    )
+                )
+            except Exception:
+                continue
+        return rows
+
+    def _build_llm_device_evidences(self, job: Job, device_id: str) -> list[Evidence]:
+        rows: list[Evidence] = []
+        for item in sorted(job.evidences, key=lambda row: row.created_at):
+            if item.device_id != device_id:
+                continue
+            try:
+                rows.append(
+                    Evidence(
+                        id=item.id,
+                        session_id=job.id,
+                        command_id=item.command_id,
+                        category=item.category,
+                        raw_output=item.raw_output,
+                        parsed_data=item.parsed_data,
+                        conclusion=item.conclusion,
+                        created_at=item.created_at,
+                    )
+                )
+            except Exception:
+                continue
+        return rows
+
+    def _extract_plan_commands(self, plan: dict[str, Any], *, next_step_no: int) -> list[tuple[str, str]]:
+        base_title = str(plan.get("title", "")).strip()
+        raw_commands = plan.get("commands")
+        parsed: list[tuple[str, str]] = []
+
+        if isinstance(raw_commands, list):
+            for idx, item in enumerate(raw_commands, start=1):
+                command_text = ""
+                title = ""
+                if isinstance(item, str):
+                    command_text = item.strip()
+                elif isinstance(item, dict):
+                    command_text = str(item.get("command", "")).strip()
+                    title = str(item.get("title", "")).strip()
+
+                if not command_text:
+                    continue
+                expanded = self._split_compound_commands(command_text)
+                for sub_idx, sub_command in enumerate(expanded, start=1):
+                    current_title = title
+                    if not current_title:
+                        if base_title and len(raw_commands) > 1:
+                            current_title = f"{base_title}#{idx}"
+                        else:
+                            current_title = base_title or f"LLM诊断步骤{next_step_no + len(parsed)}"
+                    if len(expanded) > 1:
+                        current_title = f"{current_title}.{sub_idx}"
+                    parsed.append((current_title, sub_command))
+
+        if parsed:
+            return parsed
+
+        single_command = str(plan.get("command", "")).strip()
+        if not single_command:
+            return []
+        title = base_title or f"LLM诊断步骤{next_step_no}"
+        expanded_single = self._split_compound_commands(single_command)
+        if len(expanded_single) <= 1:
+            return [(title, single_command)]
+        return [(f"{title}.{idx}", cmd) for idx, cmd in enumerate(expanded_single, start=1)]
+
+    def _split_compound_commands(self, command_text: str) -> list[str]:
+        text = str(command_text or "").strip()
+        if not text:
+            return []
+        out: list[str] = []
+        for line in text.splitlines():
+            current = line.strip()
+            if not current:
+                continue
+            if ";" in current:
+                for part in current.split(";"):
+                    chunk = part.strip()
+                    if chunk:
+                        out.append(chunk)
+            else:
+                out.append(current)
+        return out or [text]
+
+    def _is_write_like_command(self, command_text: str) -> bool:
+        normalized = " ".join(str(command_text or "").strip().lower().split())
+        if not normalized:
+            return False
+        write_patterns = (
+            "configure terminal",
+            "system-view",
+            "interface ",
+            "shutdown",
+            "undo shutdown",
+            "no shutdown",
+            "write memory",
+            "save",
+            "commit",
+            "set ",
+            "delete ",
+            "rollback",
+            "reload",
+            "reboot",
+        )
+        if normalized in {"enable", "terminal length 0"}:
+            return False
+        return any(normalized.startswith(pattern) for pattern in write_patterns)
+
     async def _get_adapter(self, job_id: str, device_id: str):
         async with self._state_lock:
             job = self._jobs[job_id]
@@ -786,7 +1510,38 @@ class JobV2Orchestrator:
             existing = self._adapters[job_id].get(device_id)
 
         if existing is not None:
-            await existing.connect()
+            try:
+                await existing.connect()
+            except Exception as exc:
+                async with self._state_lock:
+                    current_job = self._jobs.get(job_id)
+                    current_device = self._find_device(current_job, device_id) if current_job else None
+                    if current_job and current_device:
+                        self._append_trace_event(
+                            current_job,
+                            "session_adapter",
+                            f"[{current_device.host}] 复用设备连接失败",
+                            status="failed",
+                            detail=str(exc)[:280],
+                            detail_payload={"device": self._job_device_trace_record(current_device), "mode": "reuse", "error": str(exc)},
+                            device=current_device,
+                        )
+                        self._save_state()
+                raise
+            async with self._state_lock:
+                current_job = self._jobs.get(job_id)
+                current_device = self._find_device(current_job, device_id) if current_job else None
+                if current_job and current_device:
+                    self._append_trace_event(
+                        current_job,
+                        "session_adapter",
+                        f"[{current_device.host}] 复用设备连接",
+                        status="succeeded",
+                        detail="mode=reuse",
+                        detail_payload={"device": self._job_device_trace_record(current_device), "mode": "reuse"},
+                        device=current_device,
+                    )
+                    self._save_state()
             return existing
 
         session = Session(
@@ -811,10 +1566,40 @@ class JobV2Orchestrator:
             automation_level=AutomationLevel.assisted,
         )
         adapter = build_adapter(session, allow_simulation=self.allow_simulation)
-        await adapter.connect()
+        try:
+            await adapter.connect()
+        except Exception as exc:
+            async with self._state_lock:
+                current_job = self._jobs.get(job_id)
+                current_device = self._find_device(current_job, device_id) if current_job else None
+                if current_job and current_device:
+                    self._append_trace_event(
+                        current_job,
+                        "session_adapter",
+                        f"[{current_device.host}] 建立设备连接失败",
+                        status="failed",
+                        detail=str(exc)[:280],
+                        detail_payload={"device": self._job_device_trace_record(current_device), "mode": "create", "error": str(exc)},
+                        device=current_device,
+                    )
+                    self._save_state()
+            raise
 
         async with self._state_lock:
             self._adapters[job_id][device_id] = adapter
+            current_job = self._jobs.get(job_id)
+            current_device = self._find_device(current_job, device_id) if current_job else None
+            if current_job and current_device:
+                self._append_trace_event(
+                    current_job,
+                    "session_adapter",
+                    f"[{current_device.host}] 建立设备连接",
+                    status="succeeded",
+                    detail="mode=create",
+                    detail_payload={"device": self._job_device_trace_record(current_device), "mode": "create"},
+                    device=current_device,
+                )
+                self._save_state()
         return adapter
 
     async def _close_job_adapters(self, job_id: str) -> None:
@@ -834,9 +1619,8 @@ class JobV2Orchestrator:
         command_text: str,
         step_no: int,
         action_group_id: str | None,
+        phase: str = "collect",
     ) -> JobCommandResult:
-        adapter = await self._get_adapter(job_id, device_id)
-
         async with self._state_lock:
             job = self._jobs[job_id]
             device = self._find_device(job, device_id)
@@ -865,6 +1649,75 @@ class JobV2Orchestrator:
                     "command": command_text,
                 },
             )
+            self._append_trace_event(
+                job,
+                "policy_decision",
+                "执行前策略判定",
+                status="succeeded",
+                detail=f"decision=allow; phase={phase}; risk={risk_level.value}; source=v2_direct_allow",
+                detail_payload={
+                    "decision": "allow",
+                    "phase": phase,
+                    "risk_level": risk_level.value,
+                    "source": "v2_direct_allow",
+                    "command": self._job_command_trace_record(command, include_output=False),
+                },
+                command=command,
+                device=device,
+                started_at=command.started_at,
+            )
+
+            if phase == "collect" and self._is_write_like_command(command_text):
+                command.status = JobCommandStatus.blocked
+                command.error = "Collect phase is read-only; write/config command blocked."
+                command.constraint_source = "mode_scope_block"
+                command.constraint_reason = "collect_read_only_scope"
+                command.completed_at = now_utc()
+                if command.started_at:
+                    command.duration_ms = max(0, int((command.completed_at - command.started_at).total_seconds() * 1000))
+                self._append_event(
+                    job,
+                    "command_blocked",
+                    {
+                        "command_id": command.id,
+                        "device_id": device_id,
+                        "phase": phase,
+                        "reason": command.error,
+                    },
+                )
+                self._append_trace_event(
+                    job,
+                    "scope_decision",
+                    "执行前会话范围判定",
+                    status="blocked",
+                    detail="decision=blocked; phase=collect; reason=collect_read_only_scope",
+                    detail_payload={
+                        "decision": "blocked",
+                        "phase": phase,
+                        "reason": "collect_read_only_scope",
+                        "command": self._job_command_trace_record(command, include_output=False),
+                    },
+                    command=command,
+                    device=device,
+                    started_at=command.started_at,
+                    completed_at=command.completed_at,
+                    duration_ms=command.duration_ms,
+                )
+                self._append_trace_event(
+                    job,
+                    "command_execution",
+                    f"设备执行命令 #{command.step_no}: {title}",
+                    status="blocked",
+                    detail=command.error,
+                    detail_payload={"command": self._job_command_trace_record(command, include_output=False)},
+                    command=command,
+                    device=device,
+                    started_at=command.started_at,
+                    completed_at=command.completed_at,
+                    duration_ms=command.duration_ms,
+                )
+                self._save_state()
+                return command
             self._save_state()
 
         command_to_run = command_text
@@ -905,17 +1758,36 @@ class JobV2Orchestrator:
                             "reason": command.error,
                         },
                     )
-                    self._append_event(
+                    self._append_trace_event(
                         job,
                         "capability_decision",
-                        {
-                            "device_id": device_id,
-                            "command_id": command.id,
+                        "执行前命令能力判定（阻断）",
+                        status="blocked",
+                        detail=f"decision=block_hit; rule_id={rule.id}; reason={command.error}",
+                        detail_payload={
                             "decision": "block_hit",
                             "rule_id": rule.id,
-                            "command": command.command,
                             "reason": command.error,
+                            "command": self._job_command_trace_record(command, include_output=False),
                         },
+                        command=command,
+                        device=device,
+                        started_at=command.started_at,
+                        completed_at=command.completed_at,
+                        duration_ms=command.duration_ms,
+                    )
+                    self._append_trace_event(
+                        job,
+                        "command_execution",
+                        f"设备执行命令 #{command.step_no}: {title}",
+                        status="blocked",
+                        detail=command.error,
+                        detail_payload={"command": self._job_command_trace_record(command, include_output=False)},
+                        command=command,
+                        device=device,
+                        started_at=command.started_at,
+                        completed_at=command.completed_at,
+                        duration_ms=command.duration_ms,
                     )
                     self._touch_command_profile(device.version_signature, command_text, success=False, error=command.error)
                     self._save_state()
@@ -924,19 +1796,25 @@ class JobV2Orchestrator:
                     command_to_run = rule.rewrite_to
                     capability_state = "rewrite"
                     capability_reason = rule.reason_text or "rewritten by capability rule"
-                    self._append_event(
+                    self._append_trace_event(
                         job,
                         "capability_decision",
-                        {
-                            "device_id": device_id,
-                            "command_id": command.id,
+                        "执行前命令能力判定（改写）",
+                        status="succeeded",
+                        detail=f"decision=rewrite_hit; rule_id={rule.id}; from={command.command}; to={command_to_run}",
+                        detail_payload={
                             "decision": "rewrite_hit",
                             "rule_id": rule.id,
                             "from": command.command,
                             "to": command_to_run,
+                            "command": self._job_command_trace_record(command, include_output=False),
                         },
+                        command=command,
+                        device=device,
+                        started_at=command.started_at,
                     )
 
+        adapter = await self._get_adapter(job_id, device_id)
         try:
             output = await adapter.run_command(command_to_run)
             finished_at = now_utc()
@@ -960,6 +1838,19 @@ class JobV2Orchestrator:
                         "device_id": device_id,
                         "error": command.error[:300],
                     },
+                )
+                self._append_trace_event(
+                    job,
+                    "command_execution",
+                    f"设备执行命令 #{command.step_no}: {title}",
+                    status="failed",
+                    detail=(command.error or "")[:280],
+                    detail_payload={"command": self._job_command_trace_record(command, include_output=False)},
+                    command=command,
+                    device=device,
+                    started_at=command.started_at,
+                    completed_at=command.completed_at,
+                    duration_ms=command.duration_ms,
                 )
                 self._touch_command_profile(device.version_signature, command_text, success=False, error=command.error)
                 self._save_state()
@@ -1009,6 +1900,40 @@ class JobV2Orchestrator:
                     "category": category,
                     "conclusion": conclusion[:220],
                 },
+            )
+            self._append_trace_event(
+                job,
+                "command_execution",
+                f"设备执行命令 #{command.step_no}: {title}",
+                status="succeeded",
+                detail=(command.effective_command or command.command)[:280],
+                detail_payload={"command": self._job_command_trace_record(command, include_output=True)},
+                command=command,
+                device=device,
+                started_at=command.started_at,
+                completed_at=command.completed_at,
+                duration_ms=command.duration_ms,
+            )
+            self._append_trace_event(
+                job,
+                "evidence_parse",
+                "证据解析",
+                status="succeeded",
+                detail=f"category={category}; conclusion={str(conclusion)[:180]}",
+                detail_payload={
+                    "command": self._job_command_trace_record(command, include_output=False),
+                    "parser_result": {
+                        "category": category,
+                        "conclusion": conclusion,
+                        "parsed_data": parsed_data,
+                    },
+                    "evidence": evidence.model_dump(mode="json"),
+                },
+                command=command,
+                device=device,
+                started_at=command.completed_at or finished_at,
+                completed_at=command.completed_at or finished_at,
+                duration_ms=0,
             )
             self._save_state()
 
@@ -1221,6 +2146,51 @@ class JobV2Orchestrator:
                 )
             )
 
+        if evidence.category == "protocol":
+            flap_count = int(parsed.get("ospf_flap_log_count") or 0)
+            non_full_count = int(parsed.get("non_full_count") or 0)
+            neighbor_count = int(parsed.get("neighbor_count") or 0)
+
+            if flap_count > 0:
+                job.incidents.append(
+                    IncidentEvent(
+                        job_id=job.id,
+                        device_id=device.id,
+                        timestamp=now_ts,
+                        severity="high",
+                        category="protocol",
+                        title="ospf_flap_history",
+                        detail=evidence.conclusion[:240],
+                        evidence_id=evidence.id,
+                    )
+                )
+            elif non_full_count > 0:
+                job.incidents.append(
+                    IncidentEvent(
+                        job_id=job.id,
+                        device_id=device.id,
+                        timestamp=now_ts,
+                        severity="medium",
+                        category="protocol",
+                        title="ospf_neighbor_not_full",
+                        detail=evidence.conclusion[:240],
+                        evidence_id=evidence.id,
+                    )
+                )
+            elif neighbor_count == 0 and ("ospf" in (evidence.conclusion or "").lower()):
+                job.incidents.append(
+                    IncidentEvent(
+                        job_id=job.id,
+                        device_id=device.id,
+                        timestamp=now_ts,
+                        severity="medium",
+                        category="protocol",
+                        title="ospf_neighbor_missing",
+                        detail=evidence.conclusion[:240],
+                        evidence_id=evidence.id,
+                    )
+                )
+
     def _collect_topology_hints(self, job: Job, device: JobDevice, command: str, output: str) -> None:
         lowered_cmd = command.strip().lower()
         if "lldp" not in lowered_cmd and "ospf" not in lowered_cmd and "isis" not in lowered_cmd and "bgp" not in lowered_cmd:
@@ -1302,12 +2272,36 @@ class JobV2Orchestrator:
             )
             self._save_state()
 
+        await self._llm_refine_rca(job_id)
+
     def _resolve_causal_graph_and_root(self, job: Job) -> None:
+        prefer_zh = self._prefer_chinese_output(job.problem)
+        focus = self._infer_problem_focus(job.problem)
         if not job.incidents:
+            base_root_cause = (
+                "未采集到可用于根因判断的异常证据。"
+                if prefer_zh
+                else "No actionable incident evidence was captured."
+            )
+            base_impact_scope = (
+                f"当前涉及设备 {len(job.devices)} 台，但证据为空。"
+                if prefer_zh
+                else f"{len(job.devices)} devices in scope, but evidence set is empty."
+            )
             job.rca_result = RCAResult(
                 job_id=job.id,
-                summary="No incident evidence captured within the selected window.",
-                recommendation="Expand time window or add more devices and rerun collection.",
+                root_cause=base_root_cause,
+                impact_scope=base_impact_scope,
+                summary=(
+                    "在所选时间窗内未采集到可用于根因判断的异常证据。"
+                    if prefer_zh
+                    else "No incident evidence captured within the selected window."
+                ),
+                recommendation=(
+                    "建议扩大时间窗或补充设备范围后重试，并优先采集历史日志与协议邻接变化证据。"
+                    if prefer_zh
+                    else "Expand time window or add more devices and rerun collection."
+                ),
                 confidence=0.0,
             )
             return
@@ -1369,12 +2363,15 @@ class JobV2Orchestrator:
         score_map: dict[str, float] = {}
         weights = job.rca_weights or RCAWeights()
         change_counts: dict[str, int] = defaultdict(int)
+        relevant_incident_total = 0
         for command in job.command_results:
             if command.status in {JobCommandStatus.failed, JobCommandStatus.blocked, JobCommandStatus.rejected}:
                 continue
             if command.risk_level in {RiskLevel.medium, RiskLevel.high}:
                 change_counts[command.device_id] += 1
         for device_id, rows in incidents_by_device.items():
+            relevant_rows = [item for item in rows if self._incident_matches_focus(item, focus)]
+            relevant_incident_total += len(relevant_rows)
             anomaly_score = sum(self._severity_weight(item.severity) for item in rows)
             early_bonus = max(0.0, 2.0 - float(order_rank.get(device_id, 0)) * 0.3)
             upstream_bonus = float(outdegree.get(device_id, 0)) * 0.8 + float(propagation.get(device_id, 0)) * 1.2
@@ -1383,19 +2380,37 @@ class JobV2Orchestrator:
                 0.0,
                 float(len(rows)) - float(len([item for item in rows if item.category == "command_error"])) * 0.4,
             )
+            relevance_bonus = min(3.0, float(len(relevant_rows)) * 0.8)
             score_map[device_id] = (
                 weights.anomaly * anomaly_score
                 + weights.timing * early_bonus
                 + weights.topology * upstream_bonus
                 + weights.change * change_bonus
                 + weights.consistency * consistency
+                + relevance_bonus
             )
 
         if not score_map:
+            base_root_cause = (
+                "异常证据不足，无法稳定排序根因设备。"
+                if prefer_zh
+                else "Insufficient clustered incidents to rank a root device."
+            )
+            base_impact_scope = self._build_impact_scope_text(job, scoped_device_ids, prefer_zh)
             job.rca_result = RCAResult(
                 job_id=job.id,
-                summary="Unable to score root cause due to insufficient clustered incidents.",
-                recommendation="Collect additional protocol and interface evidence.",
+                root_cause=base_root_cause,
+                impact_scope=base_impact_scope,
+                summary=(
+                    "聚类异常证据不足，暂时无法稳定计算根因排序。"
+                    if prefer_zh
+                    else "Unable to score root cause due to insufficient clustered incidents."
+                ),
+                recommendation=(
+                    "建议补充协议邻接、接口状态与历史日志证据后再次分析。"
+                    if prefer_zh
+                    else "Collect additional protocol and interface evidence."
+                ),
                 confidence=0.1,
             )
             return
@@ -1408,22 +2423,92 @@ class JobV2Orchestrator:
 
         root_device = devices_by_id.get(root_device_id)
         impacted = sorted(scoped_device_ids)
-        summary = (
-            f"Root cause candidate is {root_device.host if root_device else root_device_id}; "
-            f"correlated {len(job.incidents)} incidents across {len(scoped_device_ids)} devices within {job.max_gap_seconds}s window."
-        )
-        recommendation = "Prioritize remediation on the root candidate first, then validate downstream devices along causal edges."
+        low_confidence = confidence < 0.55
+        protocol_focus_without_evidence = focus in {"ospf", "bgp"} and relevant_incident_total == 0
+        uncertain = protocol_focus_without_evidence or (low_confidence and not edges)
+
+        if uncertain:
+            if prefer_zh:
+                missing_reason = (
+                    "当前证据未形成协议级根因链（缺少直接邻接抖动/日志证据）。"
+                    if protocol_focus_without_evidence
+                    else "当前证据区分度不足（置信度较低且缺少传播拓扑证据）。"
+                )
+                root_cause_text = f"不确定。{missing_reason}"
+                summary = (
+                    f"暂无法确认唯一根因。{missing_reason}"
+                    f" 在 {job.max_gap_seconds} 秒时间窗内仅形成 {len(job.incidents)} 条异常关联，"
+                    f"涉及 {len(scoped_device_ids)} 台设备。"
+                )
+                recommendation = (
+                    "建议补采协议历史日志（如 OSPF 邻接 down/up 记录）、告警时间线与链路拓扑关系，"
+                    "再进行根因排序。"
+                )
+            else:
+                root_cause_text = (
+                    "Uncertain root cause. Evidence does not form a stable protocol-level or topology-backed causal chain."
+                )
+                summary = (
+                    "Unable to confirm a single root cause: evidence is insufficient to form a protocol-level causal chain "
+                    "or confidence is too low without topology propagation support."
+                )
+                recommendation = "Collect protocol history logs, alarm timeline, and topology evidence, then rerun RCA."
+            impact_scope_text = self._build_impact_scope_text(job, scoped_device_ids, prefer_zh)
+            score_breakdown = {
+                str(device_id): float(score)
+                for device_id, score in sorted(score_map.items(), key=lambda item: item[1], reverse=True)
+            }
+            score_breakdown["meta_relevant_incidents"] = float(relevant_incident_total)
+            job.rca_result = RCAResult(
+                job_id=job.id,
+                root_device_id=None,
+                root_device_name=None,
+                root_device_host=None,
+                root_cause=root_cause_text,
+                impact_scope=impact_scope_text,
+                confidence=min(confidence, 0.49),
+                score_breakdown=score_breakdown,
+                impacted_device_ids=impacted,
+                causal_edges=edges,
+                summary=summary,
+                recommendation=recommendation,
+            )
+            return
+
+        if prefer_zh:
+            root_host = root_device.host if root_device else root_device_id
+            root_cause_text = self._build_root_cause_text(job, root_device_id, root_device, incidents_by_device, prefer_zh)
+            impact_scope_text = self._build_impact_scope_text(job, scoped_device_ids, prefer_zh)
+            summary = (
+                f"根因候选设备为 {root_host}；"
+                f"在 {job.max_gap_seconds} 秒时间窗内关联到 {len(job.incidents)} 条异常，涉及 {len(scoped_device_ids)} 台设备。"
+            )
+            if edges:
+                recommendation = "建议优先处置根因候选设备，并按因果链路依次校验受影响设备。"
+            else:
+                recommendation = "建议优先处置根因候选设备，并补充拓扑/邻接关系证据以提高传播链路可信度。"
+        else:
+            root_cause_text = self._build_root_cause_text(job, root_device_id, root_device, incidents_by_device, prefer_zh)
+            impact_scope_text = self._build_impact_scope_text(job, scoped_device_ids, prefer_zh)
+            summary = (
+                f"Root cause candidate is {root_device.host if root_device else root_device_id}; "
+                f"correlated {len(job.incidents)} incidents across {len(scoped_device_ids)} devices within {job.max_gap_seconds}s window."
+            )
+            recommendation = "Prioritize remediation on the root candidate first, then validate downstream devices along causal edges."
 
         score_breakdown = {
             str(device_id): float(score)
             for device_id, score in sorted(score_map.items(), key=lambda item: item[1], reverse=True)
         }
+        score_breakdown["meta_relevant_incidents"] = float(relevant_incident_total)
 
         job.rca_result = RCAResult(
             job_id=job.id,
             root_device_id=root_device_id,
             root_device_name=root_device.name if root_device else None,
             root_device_host=root_device.host if root_device else None,
+            root_cause=root_cause_text,
+            impact_scope=impact_scope_text,
             confidence=confidence,
             score_breakdown=score_breakdown,
             impacted_device_ids=impacted,
@@ -1431,6 +2516,43 @@ class JobV2Orchestrator:
             summary=summary,
             recommendation=recommendation,
         )
+
+    def _prefer_chinese_output(self, problem: str) -> bool:
+        return any("\u4e00" <= ch <= "\u9fff" for ch in str(problem or ""))
+
+    def _infer_problem_focus(self, problem: str) -> str:
+        lowered = str(problem or "").strip().lower()
+        if not lowered:
+            return "generic"
+        if "ospf" in lowered:
+            return "ospf"
+        if "bgp" in lowered:
+            return "bgp"
+        if any(token in lowered for token in ("接口", "port", "interface", "链路", "link")):
+            return "interface"
+        if any(token in lowered for token in ("路由", "routing", "route", "下一跳", "next-hop")):
+            return "routing"
+        return "generic"
+
+    def _incident_matches_focus(self, incident: IncidentEvent, focus: str) -> bool:
+        if focus == "generic":
+            return True
+        text = " ".join(
+            [
+                str(incident.category or ""),
+                str(incident.title or ""),
+                str(incident.detail or ""),
+            ]
+        ).lower()
+        if focus == "ospf":
+            return "ospf" in text
+        if focus == "bgp":
+            return "bgp" in text
+        if focus == "interface":
+            return incident.category == "interface" or "interface" in text or "接口" in text
+        if focus == "routing":
+            return incident.category == "routing" or "route" in text or "路由" in text
+        return True
 
     def _resolve_device_ref(self, value: str, by_host: dict[str, JobDevice], by_name: dict[str, JobDevice]) -> Optional[JobDevice]:
         key = str(value or "").strip().lower()
@@ -1441,6 +2563,424 @@ class JobV2Orchestrator:
         if key in by_name:
             return by_name[key]
         return None
+
+    def _build_root_cause_text(
+        self,
+        job: Job,
+        root_device_id: str,
+        root_device: JobDevice | None,
+        incidents_by_device: dict[str, list[IncidentEvent]],
+        prefer_zh: bool,
+    ) -> str:
+        rows = incidents_by_device.get(root_device_id, [])
+        if not rows:
+            if prefer_zh:
+                return f"根因设备候选为 {root_device.host if root_device else root_device_id}，但缺少该设备的直接异常明细。"
+            return f"Root device candidate is {root_device.host if root_device else root_device_id}, but direct incident details are missing."
+
+        title_count: dict[str, int] = defaultdict(int)
+        detail_snippets: list[str] = []
+        for item in rows:
+            label = self._incident_title_label(item.title, prefer_zh)
+            title_count[label] += 1
+            detail = str(item.detail or "").strip()
+            if detail and len(detail_snippets) < 2:
+                detail_snippets.append(detail[:120])
+
+        top_titles = sorted(title_count.items(), key=lambda pair: pair[1], reverse=True)[:2]
+        title_text = "、".join(f"{name}x{count}" for name, count in top_titles) if prefer_zh else ", ".join(f"{name}x{count}" for name, count in top_titles)
+        detail_text = "；".join(detail_snippets) if prefer_zh else "; ".join(detail_snippets)
+        host = root_device.host if root_device else root_device_id
+        if prefer_zh:
+            if detail_text:
+                return f"{host} 最早且最集中出现异常，主要表现为 {title_text}。关键证据: {detail_text}。"
+            return f"{host} 最早且最集中出现异常，主要表现为 {title_text}。"
+        if detail_text:
+            return f"{host} is the earliest and densest anomaly source, mainly {title_text}. Key evidence: {detail_text}."
+        return f"{host} is the earliest and densest anomaly source, mainly {title_text}."
+
+    def _build_impact_scope_text(self, job: Job, scoped_device_ids: set[str], prefer_zh: bool) -> str:
+        id_to_host = {item.id: item.host for item in job.devices}
+        hosts = [id_to_host[item] for item in sorted(scoped_device_ids) if item in id_to_host]
+        host_text = ", ".join(hosts[:8]) if hosts else "-"
+        if len(hosts) > 8:
+            host_text = f"{host_text} ...(+{len(hosts) - 8})"
+        if prefer_zh:
+            return (
+                f"影响设备 {len(scoped_device_ids)} 台（{host_text}），"
+                f"事件聚类 {len(job.clusters)} 组，时间关联窗口 {job.max_gap_seconds} 秒。"
+            )
+        return (
+            f"Impacted devices: {len(scoped_device_ids)} ({host_text}), "
+            f"clusters: {len(job.clusters)}, time window: {job.max_gap_seconds}s."
+        )
+
+    def _incident_title_label(self, title: str, prefer_zh: bool) -> str:
+        key = str(title or "").strip().lower()
+        labels_zh = {
+            "interface_admin_down": "管理性关闭接口",
+            "interface_down": "接口down",
+            "missing_default_route": "默认路由缺失",
+            "packet_loss": "高丢包",
+            "command_error": "命令失败",
+            "ospf_flap_history": "OSPF历史抖动",
+            "ospf_neighbor_not_full": "OSPF邻接非Full",
+            "ospf_neighbor_missing": "OSPF邻接缺失",
+        }
+        labels_en = {
+            "interface_admin_down": "admin-down interface",
+            "interface_down": "interface down",
+            "missing_default_route": "missing default route",
+            "packet_loss": "packet loss",
+            "command_error": "command error",
+            "ospf_flap_history": "OSPF flap history",
+            "ospf_neighbor_not_full": "OSPF non-full adjacency",
+            "ospf_neighbor_missing": "OSPF missing adjacency",
+        }
+        return (labels_zh if prefer_zh else labels_en).get(key, key or ("未知异常" if prefer_zh else "unknown incident"))
+
+    async def _llm_refine_rca(self, job_id: str) -> None:
+        if not self.deepseek_diagnoser.enabled:
+            return
+
+        async with self._state_lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return
+            payload = self._build_llm_rca_payload(job)
+            prefer_zh = self._prefer_chinese_output(job.problem)
+            representative = job.devices[0] if job.devices else None
+            if representative is not None:
+                self._append_trace_event(
+                    job,
+                    "context_snapshot",
+                    "多设备 RCA 上下文快照",
+                    status="succeeded",
+                    detail=f"devices={len(job.devices)}; incidents={len(job.incidents)}; evidences={len(job.evidences)}; commands={len(job.command_results)}",
+                    detail_payload={
+                        "counts": {
+                            "devices": len(job.devices),
+                            "incidents": len(job.incidents),
+                            "evidences": len(job.evidences),
+                            "commands": len(job.command_results),
+                        },
+                        "job": {
+                            "id": job.id,
+                            "problem": job.problem,
+                            "mode": job.mode.value,
+                            "phase": job.phase.value,
+                        },
+                        "payload_preview": payload,
+                    },
+                    device=representative,
+                )
+                self._save_state()
+
+        system_prompt = (
+            "你是网络运维RCA助手。"
+            "请严格基于给定多设备证据包输出JSON，不得编造证据。"
+            "如果证据不足，必须明确写“证据不足/不确定”。"
+            "输出字段: summary, recommendation, confidence, root_device_host, root_cause, impact_scope。"
+            "confidence 范围 0~1。"
+        )
+        if not prefer_zh:
+            system_prompt = (
+                "You are a network RCA assistant. "
+                "Return strict JSON based only on provided multi-device evidence. "
+                "If evidence is insufficient, explicitly say uncertain/insufficient evidence. "
+                "Fields: summary, recommendation, confidence, root_device_host, root_cause, impact_scope. "
+                "confidence must be between 0 and 1."
+            )
+
+        llm_started_at = now_utc()
+        try:
+            content = await self.deepseek_diagnoser._chat_completion(
+                system_prompt=system_prompt,
+                user_payload=payload,
+            )
+        except Exception as exc:
+            llm_finished_at = now_utc()
+            async with self._state_lock:
+                job = self._jobs.get(job_id)
+                representative = job.devices[0] if job and job.devices else None
+                if job is not None:
+                    request_payload = self._compact_trace_payload(
+                        {"system_prompt": system_prompt, "request_payload": payload},
+                        max_depth=10,
+                        max_items=500,
+                        text_limit=200000,
+                    )
+                    self._append_trace_event(
+                        job,
+                        "llm_request",
+                        "提交给 AI（多设备 RCA）",
+                        status="failed",
+                        detail="request_exception",
+                        detail_payload=request_payload,
+                        device=representative,
+                        started_at=llm_started_at,
+                        completed_at=llm_started_at,
+                        duration_ms=0,
+                    )
+                    self._append_trace_event(
+                        job,
+                        "llm_response",
+                        "AI 原始回复（多设备 RCA）",
+                        status="failed",
+                        detail=str(exc)[:280],
+                        detail_payload={"llm": {"error": str(exc)}},
+                        device=representative,
+                        started_at=llm_finished_at,
+                        completed_at=llm_finished_at,
+                        duration_ms=0,
+                    )
+                    self._save_state()
+            return
+        llm_finished_at = now_utc()
+        async with self._state_lock:
+            job = self._jobs.get(job_id)
+            representative = job.devices[0] if job and job.devices else None
+            if job is not None:
+                request_payload = self._compact_trace_payload(
+                    {"system_prompt": system_prompt, "request_payload": payload},
+                    max_depth=10,
+                    max_items=500,
+                    text_limit=200000,
+                )
+                self._append_trace_event(
+                    job,
+                    "llm_request",
+                    "提交给 AI（多设备 RCA）",
+                    status="succeeded",
+                    detail="request_submitted",
+                    detail_payload=request_payload,
+                    device=representative,
+                    started_at=llm_started_at,
+                    completed_at=llm_started_at,
+                    duration_ms=0,
+                )
+        if not content:
+            async with self._state_lock:
+                job = self._jobs.get(job_id)
+                representative = job.devices[0] if job and job.devices else None
+                if job is not None:
+                    self._append_trace_event(
+                        job,
+                        "llm_response",
+                        "AI 原始回复（多设备 RCA）",
+                        status="failed",
+                        detail="empty_response",
+                        detail_payload={"llm": {"raw_response": "", "error": "empty_response"}},
+                        device=representative,
+                        started_at=llm_finished_at,
+                        completed_at=llm_finished_at,
+                        duration_ms=0,
+                    )
+                    self._save_state()
+            return
+        parsed = self.deepseek_diagnoser._parse_json_object(content)
+        async with self._state_lock:
+            job = self._jobs.get(job_id)
+            representative = job.devices[0] if job and job.devices else None
+            if job is not None:
+                self._append_trace_event(
+                    job,
+                    "llm_response",
+                    "AI 原始回复（多设备 RCA）",
+                    status="succeeded" if parsed else "failed",
+                    detail="decision=final" if parsed else "unparseable_json",
+                    detail_payload=self._compact_trace_payload(
+                        {
+                            "llm": {
+                                "raw_response": content,
+                                "parsed_response": parsed,
+                                "error": None if parsed else "unparseable_json",
+                            },
+                            "ai_response_parsed": parsed,
+                        },
+                        max_depth=10,
+                        max_items=500,
+                        text_limit=200000,
+                    ),
+                    device=representative,
+                    started_at=llm_finished_at,
+                    completed_at=llm_finished_at,
+                    duration_ms=0,
+                )
+                self._save_state()
+        if not parsed:
+            return
+
+        summary_text = str(parsed.get("summary") or "").strip()
+        recommendation_text = str(parsed.get("recommendation") or "").strip()
+        root_cause_text = str(parsed.get("root_cause") or "").strip()
+        impact_scope_text = str(parsed.get("impact_scope") or "").strip()
+        if not summary_text:
+            if root_cause_text and impact_scope_text:
+                summary_text = f"{root_cause_text} | {impact_scope_text}"
+            else:
+                summary_text = root_cause_text or impact_scope_text
+        if not summary_text or not recommendation_text:
+            return
+
+        confidence = self._normalize_llm_confidence(parsed.get("confidence"))
+        root_host = str(parsed.get("root_device_host") or "").strip().lower()
+
+        async with self._state_lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return
+            if job.rca_result is None:
+                job.rca_result = RCAResult(job_id=job.id)
+
+            job.rca_result.summary = summary_text
+            job.rca_result.recommendation = recommendation_text
+            if root_cause_text:
+                job.rca_result.root_cause = root_cause_text
+            if impact_scope_text:
+                job.rca_result.impact_scope = impact_scope_text
+            if confidence is not None:
+                job.rca_result.confidence = confidence
+
+            mapped = None
+            if root_host:
+                mapped = next((item for item in job.devices if item.host.strip().lower() == root_host), None)
+            if mapped is not None:
+                job.rca_result.root_device_id = mapped.id
+                job.rca_result.root_device_host = mapped.host
+                job.rca_result.root_device_name = mapped.name
+
+            job.updated_at = now_utc()
+            representative = job.devices[0] if job.devices else None
+            self._append_trace_event(
+                job,
+                "llm_final",
+                "多设备总结输出",
+                status="succeeded",
+                detail=f"confidence={job.rca_result.confidence}; root_device={job.rca_result.root_device_host or '-'}",
+                detail_payload={
+                    "final_summary": job.rca_result.model_dump(mode="json"),
+                    "ai_response_parsed": parsed,
+                },
+                device=representative,
+            )
+            self._append_event(
+                job,
+                "llm_rca_refined",
+                {
+                    "root_device_id": job.rca_result.root_device_id,
+                    "confidence": job.rca_result.confidence,
+                    "summary": summary_text[:220],
+                },
+            )
+            self._save_state()
+
+    def _build_llm_rca_payload(self, job: Job) -> dict[str, Any]:
+        incidents = sorted(job.incidents, key=lambda item: item.timestamp)
+        evidences = sorted(job.evidences, key=lambda item: item.created_at)
+        commands = sorted(job.command_results, key=lambda item: (item.step_no, item.created_at))
+        return {
+            "job": {
+                "id": job.id,
+                "mode": job.mode.value,
+                "problem": job.problem,
+                "max_gap_seconds": job.max_gap_seconds,
+                "topology_mode": job.topology_mode.value,
+                "time_window": {
+                    "start": job.window_start.isoformat() if job.window_start else None,
+                    "end": job.window_end.isoformat() if job.window_end else None,
+                },
+            },
+            "devices": [
+                {
+                    "id": item.id,
+                    "host": item.host,
+                    "name": item.name,
+                    "vendor": item.vendor,
+                    "platform": item.platform,
+                    "software_version": item.software_version,
+                    "version_signature": item.version_signature,
+                    "status": item.status,
+                }
+                for item in job.devices
+            ],
+            "incidents": [
+                {
+                    "device_id": item.device_id,
+                    "severity": item.severity,
+                    "category": item.category,
+                    "title": item.title,
+                    "detail": item.detail,
+                    "timestamp": item.timestamp.isoformat(),
+                }
+                for item in incidents[-180:]
+            ],
+            "clusters": [
+                {
+                    "start_at": item.start_at.isoformat(),
+                    "end_at": item.end_at.isoformat(),
+                    "device_ids": item.device_ids,
+                    "incident_count": item.incident_count,
+                }
+                for item in job.clusters[-60:]
+            ],
+            "causal_edges": [
+                {
+                    "source_device_id": item.source_device_id,
+                    "target_device_id": item.target_device_id,
+                    "kind": item.kind,
+                    "confidence": item.confidence,
+                    "reason": item.reason,
+                }
+                for item in job.causal_edges[-120:]
+            ],
+            "commands": [
+                {
+                    "device_id": item.device_id,
+                    "step_no": item.step_no,
+                    "title": item.title,
+                    "command": item.command,
+                    "effective_command": item.effective_command,
+                    "status": item.status.value,
+                    "risk_level": item.risk_level.value,
+                    "error": (item.error or "")[:260],
+                    "output": (item.output or "")[:1200],
+                }
+                for item in commands[-220:]
+            ],
+            "evidence_conclusions": [
+                {
+                    "device_id": item.device_id,
+                    "category": item.category,
+                    "conclusion": item.conclusion,
+                    "parsed_data": item.parsed_data,
+                }
+                for item in evidences[-180:]
+            ],
+            "deterministic_rca": (
+                {
+                    "root_device_id": job.rca_result.root_device_id if job.rca_result else None,
+                    "root_device_host": job.rca_result.root_device_host if job.rca_result else None,
+                    "root_cause": job.rca_result.root_cause if job.rca_result else None,
+                    "impact_scope": job.rca_result.impact_scope if job.rca_result else None,
+                    "confidence": job.rca_result.confidence if job.rca_result else None,
+                    "summary": job.rca_result.summary if job.rca_result else None,
+                    "recommendation": job.rca_result.recommendation if job.rca_result else None,
+                    "score_breakdown": job.rca_result.score_breakdown if job.rca_result else {},
+                }
+            ),
+        }
+
+    def _normalize_llm_confidence(self, value: Any) -> float | None:
+        try:
+            parsed = float(value)
+        except Exception:
+            return None
+        if parsed < 0:
+            return 0.0
+        if parsed > 1:
+            return 1.0
+        return parsed
 
     async def _plan_phase(self, job_id: str) -> None:
         async with self._state_lock:
@@ -1648,13 +3188,15 @@ class JobV2Orchestrator:
                 job = self._jobs.get(job_id)
                 if job is None or job.status == JobStatus.cancelled:
                     return
+            step_no = await self._allocate_next_step_no(job_id)
             result = await self._run_device_command(
                 job_id,
                 device_id,
                 title=f"执行修复命令 {idx}",
                 command_text=command_text,
-                step_no=idx,
+                step_no=step_no,
                 action_group_id=action_group_id,
+                phase="execute",
             )
             if result.status in {JobCommandStatus.failed, JobCommandStatus.blocked, JobCommandStatus.rejected}:
                 failed = True
@@ -1667,13 +3209,15 @@ class JobV2Orchestrator:
 
         if failed and rollback_needed and action.rollback_commands:
             for ridx, rollback in enumerate(action.rollback_commands, start=1):
+                step_no = await self._allocate_next_step_no(job_id)
                 await self._run_device_command(
                     job_id,
                     device_id,
                     title=f"执行回滚命令 {ridx}",
                     command_text=rollback,
-                    step_no=1000 + ridx,
+                    step_no=step_no,
                     action_group_id=action_group_id,
+                    phase="execute",
                 )
 
         async with self._state_lock:

@@ -64,6 +64,7 @@ import type {
   Timeline,
   V2ApiKey,
   V2JobActionGroup,
+  V2JobCommandResult,
   V2JobEvent,
   V2JobSummary,
   V2JobTimeline,
@@ -92,6 +93,23 @@ type PersistedUiState = {
   flowLayoutMode?: FlowLayoutMode
 }
 
+type HistorySessionItem = {
+  id: string
+  source_id: string
+  kind: 'single' | 'multi'
+  host: string
+  device_name?: string
+  protocol: 'ssh' | 'telnet' | 'api'
+  automation_level: AutomationLevel
+  operation_mode: OperationMode
+  status: string
+  created_at: string
+  updated_at?: string
+  problem?: string
+  device_count?: number
+  command_count?: number
+}
+
 const UI_STATE_KEY = 'netops_ui_prefs_v1'
 const DEVICE_AUTH_CACHE_KEY = 'netops_device_auth_cache_v1'
 const V2_API_KEY_CACHE_KEY = 'netops_v2_api_key_v1'
@@ -108,19 +126,20 @@ type DeviceAuthRecord = {
 }
 const NAV_ITEMS: Array<{ id: PageId; title: string }> = [
   { id: 'workbench', title: '诊断工作台' },
-  { id: 'third_party_keys', title: '第三方 Key 服务' },
   { id: 'control', title: '连接控制' },
   { id: 'command_policy', title: '命令执行控制' },
   { id: 'sessions', title: '会话历史' },
   { id: 'service_trace', title: '流程追踪' },
-  { id: 'learning', title: '知识学习' },
-  { id: 'lab', title: 'Lab 对抗' },
   { id: 'ai_settings', title: 'AI 设置' },
+  { id: 'learning', title: '知识学习' },
+  { id: 'third_party_keys', title: '第三方 Key 服务' },
+  { id: 'lab', title: 'Lab 对抗' },
 ]
 
 const MODEL_OPTIONS = [
   { value: 'deepseek-chat', label: 'DeepSeek Chat' },
   { value: 'deepseek-reasoner', label: 'DeepSeek Reasoner' },
+  { value: 'meta/llama-3.1-70b-instruct', label: 'NVIDIA Llama 3.1 70B' },
   { value: 'gpt-5.3-codex', label: 'GPT-5.3-Codex' },
   { value: 'gpt-5.4', label: 'GPT-5.4' },
 ]
@@ -155,6 +174,15 @@ type ActivityCard =
       preview: string
       summary: DiagnosisSummary
     }
+  | {
+      key: string
+      kind: 'trace'
+      createdAt: string
+      label: string
+      title: string
+      preview: string
+      trace: ServiceTraceStep
+    }
 
 type CommandDisplayRow = {
   key: string
@@ -170,20 +198,39 @@ type CommandDisplayRow = {
 type FlowLane = {
   key: string
   label: string
+  actor: string
   steps: Array<ServiceTraceStep | null>
   realCount: number
 }
 
 type FlowLayoutMode = 'compact' | 'stair'
 
+type TraceDetailSection = {
+  key: string
+  title: string
+  body: string
+}
+
+type ContinuePreviewItem = {
+  key: string
+  step_no: number
+  title: string
+  risk_level: CommandExecution['risk_level']
+  status: string
+  commandLines: string[]
+}
+
 type ContinuePreview = {
   source: 'pending' | 'none'
-  commands: string[]
+  items: ContinuePreviewItem[]
+  totalCommands: number
 }
 
 type ContinueExecutionCommand = {
   id: string
   step_no: number
+  title: string
+  risk_level: CommandExecution['risk_level']
   command: string
   status: string
 }
@@ -191,7 +238,7 @@ type ContinueExecutionCommand = {
 type ContinueExecutionState = {
   active: boolean
   baselineStepNo: number
-  plannedCommands: string[]
+  plannedCommands: ContinuePreviewItem[]
   observedCommands: ContinueExecutionCommand[]
 }
 
@@ -291,6 +338,7 @@ function App() {
   const [llmStatus, setLlmStatus] = useState<LLMStatus | null>(null)
   const [llmPromptPolicy, setLlmPromptPolicy] = useState<LLMPromptPolicy | null>(null)
   const [apiKeyInput, setApiKeyInput] = useState('')
+  const [nvidiaApiKeyInput, setNvidiaApiKeyInput] = useState('')
   const [llmModelInput, setLlmModelInput] = useState('deepseek-chat')
   const [llmFailoverEnabled, setLlmFailoverEnabled] = useState(true)
   const [llmBatchExecutionEnabled, setLlmBatchExecutionEnabled] = useState(true)
@@ -380,7 +428,7 @@ function App() {
   const [sessionDeviceAddress, setSessionDeviceAddress] = useState('')
   const [sessionDeviceName, setSessionDeviceName] = useState('')
   const [sessionVersionSignature, setSessionVersionSignature] = useState('')
-  const [sessionHistory, setSessionHistory] = useState<SessionListItem[]>([])
+  const [sessionHistory, setSessionHistory] = useState<HistorySessionItem[]>([])
   const [selectedHistorySessionId, setSelectedHistorySessionId] = useState<string | undefined>(undefined)
   const [selectedHistorySnapshot, setSelectedHistorySnapshot] = useState<Timeline | null>(null)
   const [historySnapshotLoading, setHistorySnapshotLoading] = useState(false)
@@ -420,7 +468,10 @@ function App() {
     () => buildContinuePreview(commands, summary),
     [commands, summary],
   )
-  const activityCards = useMemo(() => buildActivityCards(messages, commands, summary), [messages, commands, summary])
+  const activityCards = useMemo(
+    () => buildActivityCards(messages, commands, summary, traceSteps),
+    [messages, commands, summary, traceSteps],
+  )
 
   const selectedCommand = useMemo(() => {
     if (!selectedCommandId) return commands[commands.length - 1]
@@ -519,6 +570,7 @@ function App() {
   }, [pendingCommand, runningCommand, busy, commands, summary, sessionReady])
   const traceStats = useMemo(() => buildTraceStats(traceSteps), [traceSteps])
   const flowLanes = useMemo(() => buildFlowLanes(traceSteps, flowLayoutMode), [traceSteps, flowLayoutMode])
+  const traceLaneCounts = useMemo(() => buildTraceLaneCounts(traceSteps), [traceSteps])
   const flowRows = useMemo(() => {
     if (flowLayoutMode !== 'stair') return []
     const rowCount = flowLanes.reduce((max, lane) => Math.max(max, lane.steps.length), 0)
@@ -546,12 +598,16 @@ function App() {
     }
     return traceSteps[traceSteps.length - 1]
   }, [traceSteps, selectedTraceStepId, activeFlowStepId])
+  const selectedTraceDetailSections = useMemo(
+    () => (selectedTraceStep ? buildTraceDetailSections(selectedTraceStep) : []),
+    [selectedTraceStep],
+  )
   const activeFlowLaneKey = useMemo(() => {
     if (!selectedTraceStep) return undefined
     return traceLaneKey(selectedTraceStep.step_type)
   }, [selectedTraceStep])
   const sortedTraceSteps = useMemo(
-    () => [...traceSteps].sort((a, b) => a.seq_no - b.seq_no),
+    () => sortTraceStepsByOrder(traceSteps),
     [traceSteps],
   )
   const selectedTraceIndex = useMemo(() => {
@@ -577,6 +633,36 @@ function App() {
     () => sessionHistory.find((item) => item.id === selectedHistorySessionId),
     [sessionHistory, selectedHistorySessionId],
   )
+  const traceTargetSessionId = useMemo(() => {
+    if (selectedHistorySessionId && sessionHistory.some((item) => item.id === selectedHistorySessionId)) {
+      return selectedHistorySessionId
+    }
+    if (session?.id) return session.id
+    return sessionHistory[0]?.id
+  }, [selectedHistorySessionId, sessionHistory, session?.id])
+  const traceTargetHistoryItem = useMemo(
+    () => sessionHistory.find((item) => item.id === traceTargetSessionId),
+    [sessionHistory, traceTargetSessionId],
+  )
+  const traceSessionOptions = useMemo(() => {
+    const options: Array<{ value: string; label: string }> = []
+    const seen = new Set<string>()
+    for (const item of sessionHistory) {
+      if (!item.id || seen.has(item.id)) continue
+      seen.add(item.id)
+      const mode = operationModeLabel(item.operation_mode)
+      const kind = item.kind === 'multi' ? '多设备任务' : '单设备会话'
+      const label = `${kind} · ${item.host} · ${mode} · ${item.source_id.slice(0, 8)}...`
+      options.push({ value: item.id, label })
+    }
+    if (session?.id && !seen.has(session.id)) {
+      options.unshift({
+        value: session.id,
+        label: `当前会话 · ${sessionDeviceAddress || '-'} · ${operationModeLabel(session.operation_mode)} · ${session.id.slice(0, 8)}...`,
+      })
+    }
+    return options
+  }, [sessionHistory, session?.id, session?.operation_mode, sessionDeviceAddress])
   const selectedHistorySnapshotView = useMemo<Timeline | null>(() => {
     if (selectedHistorySnapshot && (!selectedHistorySessionId || selectedHistorySnapshot.session.id === selectedHistorySessionId)) {
       return selectedHistorySnapshot
@@ -829,6 +915,18 @@ function App() {
   }, [activePage])
 
   useEffect(() => {
+    if (activePage !== 'service_trace') return
+    if (session?.id) {
+      setSelectedHistorySessionId(session.id)
+    }
+  }, [activePage, session?.id])
+
+  useEffect(() => {
+    if (activePage !== 'service_trace') return
+    void refreshSessionHistory()
+  }, [activePage])
+
+  useEffect(() => {
     if (activityCards.length === 0) {
       setSelectedActivityKey(undefined)
       return
@@ -946,19 +1044,31 @@ function App() {
 
   useEffect(() => {
     if (activePage !== 'service_trace') return
-    if (!session?.id) return
-    void refreshServiceTrace(session.id)
-  }, [activePage, session?.id])
+    if (!traceTargetSessionId) return
+    void refreshServiceTraceForTarget(traceTargetSessionId, true)
+  }, [activePage, traceTargetSessionId])
 
   useEffect(() => {
     if (activePage !== 'service_trace') return
+    if (!traceTargetSessionId) return
+    if (traceTargetSessionId !== session?.id) return
+    if (!busy && !stoppingSession) return
+    const intervalId = window.setInterval(() => {
+      void refreshServiceTraceForTarget(traceTargetSessionId, true)
+    }, 900)
+    return () => window.clearInterval(intervalId)
+  }, [activePage, session?.id, traceTargetSessionId, busy, stoppingSession])
+
+  useEffect(() => {
+    if (activePage !== 'workbench') return
+    if (sessionRuntimeKind !== 'single') return
     if (!session?.id) return
     if (!busy && !stoppingSession) return
     const intervalId = window.setInterval(() => {
       void refreshServiceTrace(session.id)
-    }, 900)
+    }, 700)
     return () => window.clearInterval(intervalId)
-  }, [activePage, session?.id, busy, stoppingSession])
+  }, [activePage, session?.id, sessionRuntimeKind, busy, stoppingSession])
 
   useEffect(() => {
     return () => {
@@ -1122,8 +1232,14 @@ function App() {
   async function refreshSessionHistory() {
     setSessionsLoading(true)
     try {
-      const items = await listSessions()
-      setSessionHistory(items)
+      const [singleSessions, multiJobs] = await Promise.all([
+        listSessions().catch(() => [] as SessionListItem[]),
+        v2QueryJobs(resolveV3ApiKey(), {
+          offset: 0,
+          limit: 200,
+        }).then((payload) => payload.items).catch(() => [] as V2JobSummary[]),
+      ])
+      setSessionHistory(buildHistorySessionItems(singleSessions, multiJobs))
     } catch {
       setSessionHistory([])
     } finally {
@@ -1397,6 +1513,7 @@ function App() {
       )
       antMessage.success(`任务创建成功: ${created.id.slice(0, 8)}...`)
       await refreshV3Jobs()
+      await refreshSessionHistory()
       setV3SelectedJobId(created.id)
       await refreshV3Timeline(created.id, false)
     } catch (error) {
@@ -1413,6 +1530,7 @@ function App() {
     try {
       await v2CancelJob(key, v3SelectedJobId, 'manual_stop')
       await refreshV3Jobs()
+      await refreshSessionHistory()
       await refreshV3Timeline(v3SelectedJobId)
       antMessage.success('任务已取消')
     } catch (error) {
@@ -1433,6 +1551,7 @@ function App() {
       await v2ApproveActionGroupsBatch(key, v3SelectedJobId, v3SelectedActionIds, 'batch-approve-from-ui')
       await refreshV3Timeline(v3SelectedJobId, false)
       await refreshV3Jobs()
+      await refreshSessionHistory()
       antMessage.success('已批量通过命令组')
     } catch (error) {
       antMessage.error((error as Error).message || '批量审批失败')
@@ -1452,6 +1571,7 @@ function App() {
       await v2RejectActionGroupsBatch(key, v3SelectedJobId, v3SelectedActionIds, 'batch-reject-from-ui')
       await refreshV3Timeline(v3SelectedJobId, false)
       await refreshV3Jobs()
+      await refreshSessionHistory()
       antMessage.success('已批量拒绝命令组')
     } catch (error) {
       antMessage.error((error as Error).message || '批量拒绝失败')
@@ -1724,15 +1844,18 @@ function App() {
   }
 
   async function handleSaveApiKey() {
-    if (!apiKeyInput.trim()) {
-      antMessage.warning('请输入 API Key')
+    const primaryKey = apiKeyInput.trim()
+    const nvidiaKey = nvidiaApiKeyInput.trim()
+    if (!primaryKey && !nvidiaKey) {
+      antMessage.warning('请至少输入一个 API Key')
       return
     }
 
     setLlmSaving(true)
     try {
       const status = await configureLlm({
-        apiKey: apiKeyInput,
+        apiKey: primaryKey || undefined,
+        nvidiaApiKey: nvidiaKey || undefined,
         model: llmModelInput,
         failoverEnabled: llmFailoverEnabled,
         batchExecutionEnabled: llmBatchExecutionEnabled,
@@ -1747,6 +1870,7 @@ function App() {
       }
       await refreshPromptPolicy()
       setApiKeyInput('')
+      setNvidiaApiKeyInput('')
       antMessage.success(status.enabled ? '大模型已启用，Key 已保存到服务器' : '大模型已禁用')
     } catch (error) {
       antMessage.error((error as Error).message)
@@ -1798,6 +1922,7 @@ function App() {
       }
       await refreshPromptPolicy()
       setApiKeyInput('')
+      setNvidiaApiKeyInput('')
       antMessage.success('已删除服务器保存的 Key')
     } catch (error) {
       antMessage.error((error as Error).message)
@@ -2312,6 +2437,7 @@ function App() {
       multiJobAbortRef.current = { aborted: false, jobId: created.id }
       await monitorMultiJobUntilPauseOrDone(created.id)
       await refreshV3Jobs()
+      await refreshSessionHistory()
     } catch (error) {
       antMessage.error((error as Error).message || '多设备任务执行失败')
     } finally {
@@ -2466,6 +2592,11 @@ function App() {
   }
 
   async function handleRestoreSession(sessionId: string, hostHint?: string) {
+    const v2JobId = parseV2HistoryJobId(sessionId)
+    if (v2JobId) {
+      await handleRestoreV2HistoryJob(v2JobId)
+      return
+    }
     const ok = await hydrateSessionById(sessionId, true)
     if (ok) {
       const targetHost = (hostHint || sessionDeviceAddress || '').trim()
@@ -2499,6 +2630,48 @@ function App() {
     }
   }
 
+  async function handleRestoreV2HistoryJob(jobId: string) {
+    const key = resolveV3ApiKey()
+    try {
+      const timeline = await v2GetJobTimeline(key, jobId)
+      setV3Timeline(timeline)
+      setV3SelectedJobId(jobId)
+      const hosts = (timeline.job.devices || []).map((item) => String(item.host || '').trim()).filter(Boolean)
+      const operationMode = operationModeFromJobMode(timeline.job.mode)
+      const historySessionId = toV2HistorySessionId(jobId)
+      setSession({
+        id: historySessionId,
+        automation_level: 'assisted',
+        operation_mode: operationMode,
+        status: timeline.job.status === 'completed' || timeline.job.status === 'failed' || timeline.job.status === 'cancelled' ? 'closed' : 'open',
+        created_at: timeline.job.created_at,
+      })
+      setSessionRuntimeKind('multi')
+      setMultiSessionConfig({
+        hosts,
+        protocol: 'ssh',
+        operation_mode: operationMode,
+      })
+      setMultiSessionActiveJobId(jobId)
+      setAutomationLevel('assisted')
+      setOperationMode(operationMode)
+      setMessages(buildHistoryMessagesFromV2Timeline(timeline))
+      setCommands(mapV2TimelineToWorkbenchCommands(timeline, historySessionId))
+      setEvidences([])
+      setSummary(buildSummaryFromV2Timeline(timeline))
+      setContinueExecutionState(null)
+      setSessionDeviceAddress(hosts.join(', ') || '-')
+      setSessionDeviceName(`多设备(${hosts.length || timeline.job.devices.length || 0})`)
+      setSessionVersionSignature('')
+      setDraftInput('')
+      setResumedSessionId(historySessionId)
+      setActivePage('workbench')
+      antMessage.success('已恢复多设备历史任务')
+    } catch (error) {
+      antMessage.error((error as Error).message || '恢复多设备历史任务失败')
+    }
+  }
+
   function handleSelectHistorySession(sessionId: string) {
     if (!sessionId) return
     if (selectedHistorySessionId === sessionId) {
@@ -2511,6 +2684,7 @@ function App() {
   async function loadHistorySnapshot(sessionId: string, forceRefresh: boolean) {
     const target = String(sessionId || '').trim()
     if (!target) return
+    const v2JobId = parseV2HistoryJobId(target)
     const cached = historySnapshotCacheRef.current[target]
     if (cached && !forceRefresh) {
       setSelectedHistorySnapshot(cached)
@@ -2524,7 +2698,9 @@ function App() {
       setSelectedHistorySnapshot((prev) => (prev && prev.session.id === target ? prev : null))
     }
     try {
-      const data = await getTimeline(target)
+      const data = v2JobId
+        ? await buildTimelineSnapshotFromV2Job(v2JobId)
+        : await getTimeline(target)
       if (historySnapshotRequestRef.current !== requestId) return
       historySnapshotCacheRef.current[target] = data
       setSelectedHistorySnapshot(data)
@@ -2534,6 +2710,33 @@ function App() {
     } finally {
       if (historySnapshotRequestRef.current !== requestId) return
       setHistorySnapshotLoading(false)
+    }
+  }
+
+  async function buildTimelineSnapshotFromV2Job(jobId: string): Promise<Timeline> {
+    const key = resolveV3ApiKey()
+    const timeline = await v2GetJobTimeline(key, jobId)
+    const historySessionId = toV2HistorySessionId(jobId)
+    const hosts = (timeline.job.devices || []).map((item) => String(item.host || '').trim()).filter(Boolean)
+    const operationMode = operationModeFromJobMode(timeline.job.mode)
+    return {
+      session: {
+        id: historySessionId,
+        automation_level: 'assisted',
+        operation_mode: operationMode,
+        status: timeline.job.status === 'completed' || timeline.job.status === 'failed' || timeline.job.status === 'cancelled' ? 'closed' : 'open',
+        created_at: timeline.job.created_at,
+        device: {
+          host: hosts.join(', ') || '-',
+          name: `多设备(${hosts.length || timeline.job.devices.length || 0})`,
+          protocol: 'ssh',
+          version_signature: undefined,
+        },
+      },
+      messages: buildHistoryMessagesFromV2Timeline(timeline),
+      commands: mapV2TimelineToWorkbenchCommands(timeline, historySessionId),
+      evidences: [],
+      summary: buildSummaryFromV2Timeline(timeline),
     }
   }
 
@@ -2570,6 +2773,34 @@ function App() {
     try {
       const data = await getServiceTrace(sid)
       setTraceSteps(data.steps || [])
+    } finally {
+      setTraceLoading(false)
+    }
+  }
+
+  async function refreshServiceTraceForTarget(targetId?: string, silent = true) {
+    const sid = String(targetId || '').trim()
+    if (!sid) {
+      setTraceSteps([])
+      return
+    }
+    const v2JobId = parseV2HistoryJobId(sid)
+    setTraceLoading(true)
+    try {
+      if (!v2JobId) {
+        const data = await getServiceTrace(sid)
+        setTraceSteps(data.steps || [])
+        return
+      }
+      const key = resolveV3ApiKey()
+      const timeline = await v2GetJobTimeline(key, v2JobId)
+      const synthetic = buildServiceTraceStepsFromV2Timeline(timeline, sid)
+      setTraceSteps(synthetic)
+    } catch (error) {
+      setTraceSteps([])
+      if (!silent) {
+        antMessage.error((error as Error).message || '加载流程追踪失败')
+      }
     } finally {
       setTraceLoading(false)
     }
@@ -2637,7 +2868,7 @@ function App() {
   async function handleContinueFromCard() {
     if (!session?.id || busy) return
     const baselineStepNo = getMaxStepNo(commands)
-    const plannedCommands = continuePreview.commands
+    const plannedCommands = continuePreview.items
     setContinueExecutionState({
       active: true,
       baselineStepNo,
@@ -2648,6 +2879,14 @@ function App() {
       '请继续执行下一步，不要结束。基于当前会话和当前任务模式继续，必要时输出待执行命令组。',
       { continueExecution: { baselineStepNo } },
     )
+  }
+
+  async function handleContinuePrimaryAction() {
+    if (continuePreview.source === 'pending' && pendingConfirmMeta?.commandId) {
+      await handleConfirmCommandInline(pendingConfirmMeta.commandId, true)
+      return
+    }
+    await handleContinueFromCard()
   }
 
   function shouldShowContinueAction(summaryData: DiagnosisSummary): boolean {
@@ -2833,6 +3072,7 @@ function App() {
                         onClick={() => {
                           setSelectedActivityKey(item.key)
                           if (item.kind === 'command') setSelectedCommandId(item.command.id)
+                          if (item.kind === 'trace') setSelectedTraceStepId(item.trace.id)
                         }}
                         role="button"
                         tabIndex={0}
@@ -2841,6 +3081,7 @@ function App() {
                             event.preventDefault()
                             setSelectedActivityKey(item.key)
                             if (item.kind === 'command') setSelectedCommandId(item.command.id)
+                            if (item.kind === 'trace') setSelectedTraceStepId(item.trace.id)
                           }
                         }}
                       >
@@ -2860,9 +3101,15 @@ function App() {
                             )}
                           </div>
                         )}
+                        {item.kind === 'trace' && (
+                          <div className="activity-tags">
+                            <span className={`cmd-status ${traceStatusClass(item.trace.status)}`}>{item.trace.status}</span>
+                            <span className="risk-tag">{traceTypeLabel(item.trace.step_type)}</span>
+                          </div>
+                        )}
                         <div
                           className={`activity-preview ${item.kind === 'command' ? 'command-preview' : ''}`}
-                          title={item.kind === 'command' ? item.preview : undefined}
+                          title={item.kind === 'command' || item.kind === 'trace' ? item.preview : undefined}
                         >
                           {item.preview}
                         </div>
@@ -2923,10 +3170,22 @@ function App() {
                                     : '来源: 待继续后生成'}
                                 </span>
                               </div>
-                              {continuePreview.commands.length > 0 ? (
+                              {continuePreview.items.length > 0 ? (
                                 <div className="summary-plan-list">
-                                  {continuePreview.commands.map((commandText, index) => (
-                                    <code key={`${commandText}-${index}`}>{commandText}</code>
+                                  {continuePreview.items.map((entry) => (
+                                    <div key={entry.key} className="summary-plan-item">
+                                      <div className="summary-plan-item-meta">
+                                        <span>{`#${entry.step_no}`}</span>
+                                        <span>{truncateText(entry.title, 72)}</span>
+                                        <span>{riskLabel(entry.risk_level)}</span>
+                                        <span>{entry.status}</span>
+                                      </div>
+                                      <div className="summary-plan-item-cmds">
+                                        {entry.commandLines.map((commandText, index) => (
+                                          <code key={`${entry.key}-${index}`}>{commandText}</code>
+                                        ))}
+                                      </div>
+                                    </div>
                                   ))}
                                 </div>
                               ) : (
@@ -2937,11 +3196,17 @@ function App() {
                               <Button
                                 size="small"
                                 type="primary"
-                                loading={Boolean(continueExecutionState?.active)}
+                                loading={
+                                  continuePreview.source === 'pending' && pendingConfirmMeta?.commandId
+                                    ? confirmingCommandId === pendingConfirmMeta.commandId
+                                    : Boolean(continueExecutionState?.active)
+                                }
                                 disabled={!sessionReady || busy}
-                                onClick={() => void handleContinueFromCard()}
+                                onClick={() => void handleContinuePrimaryAction()}
                               >
-                                {continueExecutionState?.active ? '继续执行中...' : '继续执行'}
+                                {continuePreview.source === 'pending'
+                                  ? ((pendingConfirmMeta?.isBatch ?? false) ? '确认命令组并继续' : '确认执行并继续')
+                                  : (continueExecutionState?.active ? '继续执行中...' : '继续执行')}
                               </Button>
                               <Button
                                 size="small"
@@ -2966,14 +3231,33 @@ function App() {
                                     {continueExecutionState.observedCommands.map((entry) => (
                                       <div key={entry.id} className="summary-progress-item">
                                         <span className={`cmd-status ${statusClass(entry.status)}`}>{entry.status}</span>
-                                        <code>{`#${entry.step_no} ${entry.command}`}</code>
+                                        <div className="summary-progress-item-main">
+                                          <div className="summary-progress-item-meta">
+                                            <span>{`#${entry.step_no}`}</span>
+                                            <span>{truncateText(entry.title, 72)}</span>
+                                            <span>{riskLabel(entry.risk_level)}</span>
+                                          </div>
+                                          <code>{entry.command}</code>
+                                        </div>
                                       </div>
                                     ))}
                                   </div>
                                 ) : continueExecutionState.plannedCommands.length > 0 ? (
                                   <div className="summary-progress-planned">
-                                    {continueExecutionState.plannedCommands.map((entry, index) => (
-                                      <code key={`${entry}-${index}`}>{entry}</code>
+                                    {continueExecutionState.plannedCommands.map((entry) => (
+                                      <div key={entry.key} className="summary-progress-group">
+                                        <div className="summary-progress-group-meta">
+                                          <span>{`#${entry.step_no}`}</span>
+                                          <span>{truncateText(entry.title, 72)}</span>
+                                          <span>{riskLabel(entry.risk_level)}</span>
+                                          <span>{entry.status}</span>
+                                        </div>
+                                        <div className="summary-progress-group-cmds">
+                                          {entry.commandLines.map((commandText, index) => (
+                                            <code key={`${entry.key}-planned-${index}`}>{commandText}</code>
+                                          ))}
+                                        </div>
+                                      </div>
                                     ))}
                                   </div>
                                 ) : (
@@ -4213,8 +4497,8 @@ function App() {
               <div className="panel-card session-history-panel">
                 <div className="trace-head">
                   <div>
-                    <h3>历史会话</h3>
-                    <p className="muted">刷新页面后可从此列表恢复任意会话。</p>
+                    <h3>历史记录</h3>
+                    <p className="muted">包含单设备会话与多设备任务，刷新后可恢复。</p>
                   </div>
                   <Button size="small" onClick={() => void refreshSessionHistory()} disabled={sessionsLoading}>
                     {sessionsLoading ? '刷新中...' : '刷新'}
@@ -4231,18 +4515,24 @@ function App() {
                     >
                       <div className="session-history-open">
                         <div className="session-history-main">
-                          <strong>{item.host}</strong>
+                          <strong>{item.kind === 'multi' ? `多设备任务 · ${item.host}` : item.host}</strong>
                           <span>设备名称: {formatDeviceName(item.device_name)}</span>
                           <span>{operationModeLabel(item.operation_mode)} / {automationLabel(item.automation_level)}</span>
+                          {item.kind === 'multi' && (
+                            <span>{`设备数 ${item.device_count || 0} / 命令数 ${item.command_count || 0}`}</span>
+                          )}
+                          {item.kind === 'multi' && item.problem && (
+                            <span>{`问题: ${truncateText(item.problem, 80)}`}</span>
+                          )}
                         </div>
                         <div className="session-history-meta">
-                          <span>{item.id.slice(0, 8)}...</span>
+                          <span>{item.source_id.slice(0, 8)}...</span>
                           <span>{formatTime(item.created_at)}</span>
                         </div>
                       </div>
                       <div className="session-history-actions">
                         <Button size="small" type="primary" onClick={() => void handleRestoreSession(item.id, item.host)}>
-                          恢复
+                          {item.kind === 'multi' ? '恢复任务' : '恢复'}
                         </Button>
                       </div>
                     </div>
@@ -4252,12 +4542,12 @@ function App() {
               <div className="panel-card session-snapshot-panel">
                 <h3>当前会话快照</h3>
                 {historySnapshotLoading && <div className="muted">快照加载中...</div>}
-                <div className="kv"><span>已选会话</span><strong>{selectedHistorySessionId || session?.id || '-'}</strong></div>
+                <div className="kv"><span>已选会话</span><strong>{selectedHistoryItem?.source_id || selectedHistorySessionId || session?.id || '-'}</strong></div>
                 <div className="kv"><span>设备</span><strong>{selectedHistorySnapshotView?.session.device.host || selectedHistoryItem?.host || sessionDeviceAddress || '-'}</strong></div>
                 <div className="kv"><span>设备名称</span><strong>{formatDeviceName(selectedHistorySnapshotView?.session.device.name || selectedHistoryItem?.device_name || sessionDeviceName)}</strong></div>
                 <div className="kv"><span>模式</span><strong>{selectedHistorySnapshotView?.session.operation_mode ? operationModeLabel(selectedHistorySnapshotView.session.operation_mode) : (selectedHistoryItem?.operation_mode ? operationModeLabel(selectedHistoryItem.operation_mode) : '-')}</strong></div>
                 <div className="kv"><span>自动化等级</span><strong>{selectedHistorySnapshotView?.session.automation_level ? automationLabel(selectedHistorySnapshotView.session.automation_level) : (selectedHistoryItem?.automation_level ? automationLabel(selectedHistoryItem.automation_level) : '-')}</strong></div>
-                <div className="kv"><span>状态</span><strong>{selectedHistorySnapshotView?.session.status || selectedHistoryItem?.status || '-'}</strong></div>
+                <div className="kv"><span>状态</span><strong>{selectedHistoryItem?.kind === 'multi' ? (selectedHistoryItem.status || '-') : (selectedHistorySnapshotView?.session.status || selectedHistoryItem?.status || '-')}</strong></div>
                 <div className="kv"><span>创建时间</span><strong>{formatTime(selectedHistorySnapshotView?.session.created_at || selectedHistoryItem?.created_at || '')}</strong></div>
                 <div className="kv"><span>最近活动</span><strong>{formatTime(snapshotUpdatedAt || '')}</strong></div>
                 <div className="kv"><span>消息数</span><strong>{selectedHistorySnapshotView?.messages.length ?? 0}</strong></div>
@@ -4287,9 +4577,19 @@ function App() {
                     <h3>流程追踪</h3>
                     <p className="muted">展示完整业务流程、判定动作与实时激活节点。</p>
                   </div>
-                  <Button size="small" onClick={() => void refreshServiceTrace()} disabled={!sessionReady || traceLoading}>
-                    {traceLoading ? '刷新中...' : '刷新'}
-                  </Button>
+                  <div className="trace-head-actions">
+                    <Select
+                      size="small"
+                      style={{ minWidth: 360 }}
+                      placeholder="选择会话/多任务"
+                      value={traceTargetSessionId}
+                      options={traceSessionOptions}
+                      onChange={(value) => setSelectedHistorySessionId(String(value))}
+                    />
+                    <Button size="small" onClick={() => void refreshServiceTraceForTarget(traceTargetSessionId, false)} disabled={!traceTargetSessionId || traceLoading}>
+                      {traceLoading ? '刷新中...' : '刷新'}
+                    </Button>
+                  </div>
                 </div>
                 <div className="trace-stats">
                   <div className="trace-stat-card">
@@ -4306,8 +4606,8 @@ function App() {
                     <span className="muted">{traceStats.slowestDurationMs !== undefined ? formatDuration(traceStats.slowestDurationMs) : '-'}</span>
                   </div>
                   <div className="trace-stat-card">
-                    <span className="muted">当前会话</span>
-                    <strong>{session?.id ? `${session.id.slice(0, 8)}...` : '-'}</strong>
+                    <span className="muted">当前追踪源</span>
+                    <strong>{traceTargetHistoryItem?.source_id ? `${traceTargetHistoryItem.source_id.slice(0, 8)}...` : (traceTargetSessionId ? `${traceTargetSessionId.slice(0, 8)}...` : '-')}</strong>
                   </div>
                 </div>
               </div>
@@ -4368,8 +4668,11 @@ function App() {
                           key={`head-${lane.key}`}
                           className={`flow-lane-head-cell ${activeFlowLaneKey === lane.key ? 'active' : ''}`}
                         >
-                          <strong>{lane.label}</strong>
-                          <span>{lane.realCount} 步</span>
+                          <div className="flow-lane-head-main">
+                            <strong>{lane.label}</strong>
+                            <span className={`flow-actor-pill ${traceActorClass(lane.actor)}`}>{lane.actor}</span>
+                          </div>
+                          <span>{traceLaneCounts[lane.key] ?? lane.realCount} 步</span>
                         </div>
                       ))}
 
@@ -4396,13 +4699,18 @@ function App() {
                               className={`flow-node ${activeFlowStepId === step.id ? 'active' : ''} ${selectedTraceStep?.id === step.id ? 'selected' : ''} ${traceNodeRelationClass(step, selectedTraceStep)}`}
                               onClick={() => setSelectedTraceStepId(step.id)}
                               title={[
-                                `#${step.seq_no} ${step.title}`,
-                                `${traceTypeLabel(step.step_type)} · ${step.status}`,
+                                `#${step.seq_no} ${formatTraceStepTitle(step)}`,
+                                `${traceStepActorLabel(step.step_type)} · ${traceTypeLabel(step.step_type)} · ${step.status}`,
                                 traceConstraintLabel(step) ? `约束判定 · ${traceConstraintLabel(step)}` : '',
                               ].filter(Boolean).join('\n')}
                             >
                               <div className="flow-node-line">
-                                <div className="flow-node-title">#{step.seq_no} {step.title}</div>
+                                <div className="flow-node-title">
+                                  <span className={`flow-actor-pill ${traceActorClass(traceStepActorLabel(step.step_type))}`}>
+                                    {traceStepActorLabel(step.step_type)}
+                                  </span>
+                                  <span className="flow-node-title-text">#{step.seq_no} {formatTraceStepTitle(step)}</span>
+                                </div>
                                 <div className="flow-node-type">{traceTypeLabel(step.step_type)}</div>
                                 <div className="flow-node-constraint">{traceConstraintLabel(step) || '-'}</div>
                                 <span className={`trace-status compact ${traceStatusClass(step.status)}`}>{step.status}</span>
@@ -4421,8 +4729,11 @@ function App() {
                     {flowLanes.map((lane) => (
                       <section key={lane.key} className="flow-lane">
                         <div className={`flow-lane-head ${activeFlowLaneKey === lane.key ? 'active' : ''}`}>
-                          <strong>{lane.label}</strong>
-                          <span>{lane.realCount} 步</span>
+                          <div className="flow-lane-head-main">
+                            <strong>{lane.label}</strong>
+                            <span className={`flow-actor-pill ${traceActorClass(lane.actor)}`}>{lane.actor}</span>
+                          </div>
+                          <span>{traceLaneCounts[lane.key] ?? lane.realCount} 步</span>
                         </div>
                         <div className="flow-node-list">
                           {lane.realCount === 0 && <div className="flow-node flow-node-empty">待触发</div>}
@@ -4436,13 +4747,18 @@ function App() {
                                 className={`flow-node ${activeFlowStepId === step.id ? 'active' : ''} ${selectedTraceStep?.id === step.id ? 'selected' : ''} ${traceNodeRelationClass(step, selectedTraceStep)}`}
                                 onClick={() => setSelectedTraceStepId(step.id)}
                                 title={[
-                                  `#${step.seq_no} ${step.title}`,
-                                  `${traceTypeLabel(step.step_type)} · ${step.status}`,
+                                  `#${step.seq_no} ${formatTraceStepTitle(step)}`,
+                                  `${traceStepActorLabel(step.step_type)} · ${traceTypeLabel(step.step_type)} · ${step.status}`,
                                   traceConstraintLabel(step) ? `约束判定 · ${traceConstraintLabel(step)}` : '',
                                 ].filter(Boolean).join('\n')}
                               >
                                 <div className="flow-node-line">
-                                  <div className="flow-node-title">#{step.seq_no} {step.title}</div>
+                                  <div className="flow-node-title">
+                                    <span className={`flow-actor-pill ${traceActorClass(traceStepActorLabel(step.step_type))}`}>
+                                      {traceStepActorLabel(step.step_type)}
+                                    </span>
+                                    <span className="flow-node-title-text">#{step.seq_no} {formatTraceStepTitle(step)}</span>
+                                  </div>
                                   <div className="flow-node-type">{traceTypeLabel(step.step_type)}</div>
                                   <div className="flow-node-constraint">{traceConstraintLabel(step) || '-'}</div>
                                   <span className={`trace-status compact ${traceStatusClass(step.status)}`}>{step.status}</span>
@@ -4477,7 +4793,18 @@ function App() {
                         <div><span>结束</span><strong>{selectedTraceStep.completed_at ? formatTime(selectedTraceStep.completed_at) : '-'}</strong></div>
                         <div><span>耗时</span><strong>{selectedTraceStep.duration_ms !== undefined ? formatDuration(selectedTraceStep.duration_ms) : '-'}</strong></div>
                       </div>
-                      <pre className="flow-detail-text">{selectedTraceStep.detail || '(无详细信息)'}</pre>
+                      {selectedTraceDetailSections.length > 0 ? (
+                        <div className="flow-detail-sections">
+                          {selectedTraceDetailSections.map((section) => (
+                            <section key={section.key} className="flow-detail-section">
+                              <div className="flow-detail-section-title">{section.title}</div>
+                              <pre className="flow-detail-text">{section.body}</pre>
+                            </section>
+                          ))}
+                        </div>
+                      ) : (
+                        <pre className="flow-detail-text">{selectedTraceStep.detail || '(无详细信息)'}</pre>
+                      )}
                     </div>
                   ) : (
                     <div className="trace-empty muted">暂无选中节点</div>
@@ -4521,8 +4848,10 @@ function App() {
                         >
                           <span>{step.seq_no}</span>
                           <div className="trace-step-cell">
-                            <div className="trace-step-title">{step.title}</div>
-                            <div className="trace-step-meta">{traceTypeLabel(step.step_type)}</div>
+                            <div className="trace-step-title">{formatTraceStepTitle(step)}</div>
+                            <div className="trace-step-meta">
+                              {traceStepActorLabel(step.step_type)} · {traceTypeLabel(step.step_type)}
+                            </div>
                             {step.detail && <div className="trace-step-detail">{step.detail}</div>}
                             {width > 0 && (
                               <div className="trace-bar-wrap">
@@ -4696,6 +5025,7 @@ function App() {
                 <div className="kv"><span>状态</span><strong>{llmStatus?.enabled ? '已启用' : '未启用'}</strong></div>
                 <div className="kv"><span>主模型</span><strong>{llmStatus?.model || '-'}</strong></div>
                 <div className="kv"><span>当前生效模型</span><strong>{llmStatus?.active_model || llmStatus?.model || '-'}</strong></div>
+                <div className="kv"><span>NVIDIA Key</span><strong>{llmStatus?.nvidia_enabled ? '已配置' : '未配置'}</strong></div>
                 <div className="kv"><span>自动切换</span><strong>{llmFailoverEnabled ? '开启' : '关闭'}</strong></div>
                 <div className="kv"><span>批量执行提示</span><strong>{llmBatchExecutionEnabled ? '开启' : '关闭'}</strong></div>
                 <div className="policy-switch" style={{ marginTop: 8 }}>
@@ -4721,6 +5051,12 @@ function App() {
                   onChange={(event) => setApiKeyInput(event.target.value)}
                   placeholder="输入 DeepSeek API Key (sk-...)"
                 />
+                <Input.Password
+                  style={{ marginTop: 8 }}
+                  value={nvidiaApiKeyInput}
+                  onChange={(event) => setNvidiaApiKeyInput(event.target.value)}
+                  placeholder="输入 NVIDIA API Key"
+                />
                 <Select
                   style={{ marginTop: 8 }}
                   value={llmModelInput}
@@ -4742,6 +5078,7 @@ function App() {
                 <p className="muted">展示系统当前提供给 AI 的提示词模板（只读）。</p>
                 <div className="kv"><span>模型</span><strong>{llmPromptPolicy?.model || llmStatus?.model || '-'}</strong></div>
                 <div className="kv"><span>Base URL</span><strong>{llmPromptPolicy?.base_url || llmStatus?.base_url || '-'}</strong></div>
+                <div className="kv"><span>NVIDIA Base URL</span><strong>{llmPromptPolicy?.nvidia_base_url || llmStatus?.nvidia_base_url || '-'}</strong></div>
                 <div className="prompt-policy-list">
                   {llmPromptPolicy && Object.keys(llmPromptPolicy.prompts || {}).length > 0 ? (
                     Object.entries(llmPromptPolicy.prompts).map(([key, value]) => (
@@ -4836,7 +5173,7 @@ function resolveModelCandidates(currentModel: string, existing?: string[]): stri
   const preferred = (currentModel || '').trim()
   const seed = Array.isArray(existing) && existing.length > 0
     ? existing
-    : ['deepseek-chat', 'deepseek-reasoner']
+    : ['deepseek-chat', 'deepseek-reasoner', 'meta/llama-3.1-70b-instruct']
   const out: string[] = []
   const seen = new Set<string>()
   for (const item of [preferred, ...seed]) {
@@ -4861,11 +5198,24 @@ function buildActivityCards(
   messages: ChatMessage[],
   commands: CommandExecution[],
   summary?: DiagnosisSummary,
+  traceSteps: ServiceTraceStep[] = [],
 ): ActivityCard[] {
   const cards: Array<ActivityCard & { sortAt: number; sortIdx: number }> = []
+  const tracePlanIterations = new Set<number>()
+  for (const step of traceSteps) {
+    if (step.step_type !== 'llm_plan') continue
+    const iteration = extractTraceIteration(step.title)
+    if (iteration !== undefined) tracePlanIterations.add(iteration)
+  }
 
   for (let index = 0; index < messages.length; index += 1) {
     const msg = messages[index]
+    if (msg.role === 'assistant') {
+      const iteration = extractPlanIterationFromMessage(msg.content)
+      if (iteration !== undefined && tracePlanIterations.has(iteration)) {
+        continue
+      }
+    }
     cards.push({
       key: `msg:${msg.id}`,
       kind: 'message',
@@ -4899,6 +5249,23 @@ function buildActivityCards(
     })
   }
 
+  for (let index = 0; index < traceSteps.length; index += 1) {
+    const step = traceSteps[index]
+    if (!shouldDisplayTraceAsActivity(step)) continue
+    const createdAt = step.completed_at || step.started_at || ''
+    cards.push({
+      key: `trace:${step.id}`,
+      kind: 'trace',
+      createdAt,
+      label: activityTraceLabel(step),
+      title: activityTraceTitle(step),
+      preview: activityTracePreview(step),
+      trace: step,
+      sortAt: parseSortTime(createdAt, messages.length + commands.length + step.seq_no + index),
+      sortIdx: messages.length + commands.length + step.seq_no + index,
+    })
+  }
+
   if (summary) {
     const createdAt = summary.created_at || ''
     cards.push({
@@ -4925,6 +5292,10 @@ function buildActivityCards(
 function renderActivityDetail(activity: ActivityCard): string {
   if (activity.kind === 'message') {
     return activity.message.content
+  }
+
+  if (activity.kind === 'trace') {
+    return renderTraceActivityDetail(activity.trace)
   }
 
   if (activity.kind === 'command') {
@@ -4988,6 +5359,76 @@ function summarizeCommandRow(row: CommandDisplayRow): string {
   return row.commandText
 }
 
+function shouldDisplayTraceAsActivity(step: ServiceTraceStep): boolean {
+  return [
+    'ai_context_submit',
+    'context_snapshot',
+    'llm_request',
+    'llm_response',
+    'llm_plan',
+    'llm_status',
+    'plan_decision',
+    'plan_parse',
+    'loop_control',
+    'policy_decision',
+    'capability_decision',
+    'scope_decision',
+    'evidence_parse',
+    'session_control',
+    'session_adapter',
+    'orchestrator_error',
+  ].includes(step.step_type)
+}
+
+function activityTraceLabel(step: ServiceTraceStep): string {
+  if (step.step_type === 'llm_request' || step.step_type === 'llm_response' || step.step_type === 'llm_plan') return 'AI'
+  if (step.step_type === 'evidence_parse' || step.step_type === 'command_execution') return '设备'
+  return '系统'
+}
+
+function activityTraceTitle(step: ServiceTraceStep): string {
+  return formatTraceStepTitle(step)
+}
+
+function activityTracePreview(step: ServiceTraceStep): string {
+  const sections = buildTraceDetailSections(step)
+  for (const section of sections) {
+    const text = String(section.body || '').trim()
+    if (text) return truncateText(text.replace(/\n+/g, ' | '), 220)
+  }
+  return truncateText(String(step.detail || step.title || '').replace(/\n+/g, ' | '), 220)
+}
+
+function renderTraceActivityDetail(step: ServiceTraceStep): string {
+  const sections = buildTraceDetailSections(step)
+  const blocks = [
+    `标题: ${step.title}`,
+    `状态: ${step.status}`,
+    `类型: ${traceTypeLabel(step.step_type)}`,
+    step.duration_ms !== undefined ? `耗时: ${formatDuration(step.duration_ms)}` : '',
+  ].filter(Boolean)
+  for (const section of sections) {
+    const body = String(section.body || '').trim()
+    if (!body) continue
+    blocks.push(`${section.title}:\n${body}`)
+  }
+  return blocks.join('\n\n')
+}
+
+function extractTraceIteration(title: string): number | undefined {
+  const matched = String(title || '').match(/第\s*(\d+)\s*轮/)
+  if (!matched) return undefined
+  const value = Number(matched[1])
+  return Number.isFinite(value) ? value : undefined
+}
+
+function extractPlanIterationFromMessage(content: string): number | undefined {
+  const matched = String(content || '').match(/^AI\s*规划（第\s*(\d+)\s*轮）/m)
+  if (!matched) return undefined
+  const value = Number(matched[1])
+  return Number.isFinite(value) ? value : undefined
+}
+
 function extractLatestMessageByRole(messages: ChatMessage[], role: ChatMessage['role']): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
@@ -5044,6 +5485,87 @@ function sleepMs(ms: number): Promise<void> {
   const timeout = Math.max(0, Number(ms) || 0)
   return new Promise((resolve) => {
     window.setTimeout(resolve, timeout)
+  })
+}
+
+function toV2HistorySessionId(jobId: string): string {
+  return `v2job:${String(jobId || '').trim()}`
+}
+
+function parseV2HistoryJobId(historyId: string): string | undefined {
+  const value = String(historyId || '').trim()
+  if (!value.startsWith('v2job:')) return undefined
+  return value.slice('v2job:'.length).trim() || undefined
+}
+
+function operationModeFromJobMode(mode: string): OperationMode {
+  if (mode === 'inspection') return 'query'
+  if (mode === 'repair') return 'config'
+  return 'diagnosis'
+}
+
+function buildHistoryMessagesFromV2Timeline(timeline: V2JobTimeline): ChatMessage[] {
+  const messages: ChatMessage[] = []
+  const problem = String(timeline.job.problem || '').trim()
+  if (problem) {
+    messages.push({
+      id: `v2msg:user:${timeline.job.id}`,
+      role: 'user',
+      content: problem,
+      created_at: timeline.job.created_at,
+    })
+  }
+  const summary = buildSummaryFromV2Timeline(timeline)
+  const summaryText = renderSummaryBrief(summary).trim()
+  if (summaryText) {
+    messages.push({
+      id: `v2msg:assistant:${timeline.job.id}`,
+      role: 'assistant',
+      content: summaryText,
+      created_at: timeline.job.completed_at || timeline.job.updated_at || timeline.job.created_at,
+    })
+  }
+  return messages
+}
+
+function buildHistorySessionItems(
+  sessions: SessionListItem[],
+  jobs: V2JobSummary[],
+): HistorySessionItem[] {
+  const sessionItems: HistorySessionItem[] = sessions.map((item) => ({
+    id: item.id,
+    source_id: item.id,
+    kind: 'single',
+    host: item.host,
+    device_name: item.device_name,
+    protocol: item.protocol,
+    automation_level: item.automation_level,
+    operation_mode: item.operation_mode,
+    status: item.status,
+    created_at: item.created_at,
+  }))
+  const jobItems: HistorySessionItem[] = jobs.map((job) => ({
+    id: toV2HistorySessionId(job.id),
+    source_id: job.id,
+    kind: 'multi',
+    host: `多设备(${job.device_count})`,
+    device_name: `任务 ${job.id.slice(0, 8)}...`,
+    protocol: 'ssh',
+    automation_level: 'assisted',
+    operation_mode: operationModeFromJobMode(job.mode),
+    status: job.status,
+    created_at: job.created_at,
+    updated_at: job.updated_at,
+    problem: job.problem,
+    device_count: job.device_count,
+    command_count: job.command_count,
+  }))
+  return [...sessionItems, ...jobItems].sort((left, right) => {
+    const l = Date.parse(String(left.created_at || ''))
+    const r = Date.parse(String(right.created_at || ''))
+    const lt = Number.isFinite(l) ? l : 0
+    const rt = Number.isFinite(r) ? r : 0
+    return rt - lt
   })
 }
 
@@ -5121,6 +5643,514 @@ function mapV2TimelineToWorkbenchCommands(timeline: V2JobTimeline, sessionId: st
   return rows.sort((a, b) => Number(a.step_no || 0) - Number(b.step_no || 0))
 }
 
+function buildServiceTraceStepsFromV2Timeline(timeline: V2JobTimeline, sessionId: string): ServiceTraceStep[] {
+  const steps: ServiceTraceStep[] = []
+  const startedAt = timeline.job.created_at || new Date().toISOString()
+  const orderedEvents = [...(timeline.events || [])].sort((a, b) => Number(a.seq_no || 0) - Number(b.seq_no || 0))
+  const nativeCommandIds = new Set<string>()
+  const nativeEvidenceCommandIds = new Set<string>()
+
+  for (const event of orderedEvents) {
+    const native = buildNativeTraceStepFromV2Event(event, sessionId)
+    if (!native) continue
+    steps.push(native)
+    if (native.command_id && native.step_type === 'command_execution') nativeCommandIds.add(native.command_id)
+    if (native.command_id && native.step_type === 'evidence_parse') nativeEvidenceCommandIds.add(native.command_id)
+  }
+
+  for (const event of orderedEvents) {
+    const legacy = buildLegacyTraceStepsFromV2Event(event, timeline, sessionId, nativeCommandIds, nativeEvidenceCommandIds)
+    if (!legacy.length) continue
+    steps.push(...legacy)
+  }
+
+  const problem = String(timeline.job.problem || '').trim()
+  if (problem && !steps.some((step) => step.step_type === 'user_input')) {
+    steps.push({
+      id: `v2trace:${sessionId}:user`,
+      session_id: sessionId,
+      seq_no: 1,
+      step_type: 'user_input',
+      title: '接收用户请求',
+      status: 'succeeded',
+      started_at: startedAt,
+      completed_at: startedAt,
+      duration_ms: 0,
+      detail: problem.slice(0, 280),
+      detail_payload: {
+        user_input: problem,
+        source: 'v2_job_problem',
+      },
+    })
+  }
+
+  const summary = buildSummaryFromV2Timeline(timeline)
+  const summaryText = renderSummaryBrief(summary).trim()
+  if (summaryText && !steps.some((step) => step.step_type === 'llm_final')) {
+    const endedAt = timeline.job.completed_at || timeline.job.updated_at || startedAt
+    const summaryStatus = timeline.job.status === 'failed' || timeline.job.status === 'cancelled' ? 'failed' : 'succeeded'
+    steps.push({
+      id: `v2trace:${sessionId}:summary`,
+      session_id: sessionId,
+      seq_no: Math.max(0, ...steps.map((item) => Number(item.seq_no || 0))) + 1,
+      step_type: 'llm_final',
+      title: '任务总结输出',
+      status: summaryStatus,
+      started_at: endedAt,
+      completed_at: endedAt,
+      duration_ms: 0,
+      detail: summaryText.slice(0, 280),
+      detail_payload: {
+        ai_response_parsed: summary,
+        final_summary: summary,
+        source: 'v2_job_summary',
+      },
+    })
+  }
+
+  return dedupeTraceSteps(sortTraceStepsByOrder(steps))
+}
+
+function buildNativeTraceStepFromV2Event(event: V2JobEvent, sessionId: string): ServiceTraceStep | null {
+  if (!V2_NATIVE_TRACE_EVENT_TYPES.has(String(event.event_type || ''))) return null
+  const payload = isTraceRecord(event.payload) ? event.payload : {}
+  const fallback = buildLegacyTraceFallbackMeta(event)
+  const detailPayload = v2TraceDetailPayload(payload, event)
+  const title = String(payload.title || fallback.title || event.event_type).trim()
+  const status = String(payload.status || fallback.status || 'succeeded').trim() || 'succeeded'
+  const startedAt = String(payload.started_at || event.created_at || '').trim() || event.created_at
+  const completedAt = String(payload.completed_at || event.created_at || '').trim() || event.created_at
+  const durationRaw = Number(payload.duration_ms)
+  const commandId = String(payload.command_id || fallback.command_id || '').trim() || undefined
+  const detail = String(payload.detail || fallback.detail || '').trim() || undefined
+  return {
+    id: `v2trace:${sessionId}:evt:${event.id}`,
+    session_id: sessionId,
+    seq_no: Number(event.seq_no || 0),
+    step_type: String(event.event_type || ''),
+    title,
+    status,
+    started_at: startedAt,
+    completed_at: completedAt,
+    duration_ms: Number.isFinite(durationRaw) ? durationRaw : undefined,
+    command_id: commandId,
+    detail,
+    detail_payload: detailPayload,
+  }
+}
+
+function buildLegacyTraceStepsFromV2Event(
+  event: V2JobEvent,
+  timeline: V2JobTimeline,
+  sessionId: string,
+  nativeCommandIds: Set<string>,
+  nativeEvidenceCommandIds: Set<string>,
+): ServiceTraceStep[] {
+  const payload = isTraceRecord(event.payload) ? event.payload : {}
+  const seqBase = Number(event.seq_no || 0) * 10
+  const commandResults = new Map<string, V2JobCommandResult>()
+  for (const item of timeline.job.command_results || []) commandResults.set(String(item.id), item)
+  const deviceMap = new Map<string, { host: string; name?: string }>()
+  for (const device of timeline.job.devices || []) deviceMap.set(String(device.id), { host: String(device.host || device.id || '-'), name: device.name })
+  const commandId = String(payload.command_id || '').trim()
+  const command = commandResults.get(commandId)
+  const deviceId = String(payload.device_id || command?.device_id || '').trim()
+  const deviceHost = deviceMap.get(deviceId)?.host || String(payload.host || payload.device_host || deviceId || '-')
+  const createdAt = String(event.created_at || timeline.job.updated_at || timeline.job.created_at || new Date().toISOString())
+
+  switch (String(event.event_type || '')) {
+    case 'job_created':
+      return [
+        {
+          id: `v2trace:${sessionId}:legacy:${event.id}`,
+          session_id: sessionId,
+          seq_no: seqBase,
+          step_type: 'session_control',
+          title: '创建多设备任务',
+          status: 'succeeded',
+          started_at: createdAt,
+          completed_at: createdAt,
+          duration_ms: 0,
+          detail: `devices=${String(payload.device_count || (timeline.job.devices || []).length)}; mode=${String(payload.mode || timeline.job.mode || '')}`,
+          detail_payload: payload,
+        },
+      ]
+    case 'phase_changed':
+      return [
+        {
+          id: `v2trace:${sessionId}:legacy:${event.id}`,
+          session_id: sessionId,
+          seq_no: seqBase,
+          step_type: 'session_control',
+          title: `阶段切换：${formatV2PhaseLabel(String(payload.phase || ''))}`,
+          status: String(payload.status || 'succeeded'),
+          started_at: createdAt,
+          completed_at: createdAt,
+          duration_ms: 0,
+          detail: `phase=${String(payload.phase || '')}; status=${String(payload.status || '')}`,
+          detail_payload: payload,
+        },
+      ]
+    case 'device_collect_started':
+      return [
+        {
+          id: `v2trace:${sessionId}:legacy:${event.id}`,
+          session_id: sessionId,
+          seq_no: seqBase,
+          step_type: 'session_control',
+          title: `[${deviceHost}] 开始设备采集`,
+          status: 'running',
+          started_at: createdAt,
+          completed_at: createdAt,
+          duration_ms: 0,
+          detail: 'phase=collect',
+          detail_payload: payload,
+        },
+      ]
+    case 'device_collect_completed':
+      return [
+        {
+          id: `v2trace:${sessionId}:legacy:${event.id}`,
+          session_id: sessionId,
+          seq_no: seqBase,
+          step_type: 'session_control',
+          title: `[${deviceHost}] 设备采集完成`,
+          status: 'succeeded',
+          started_at: createdAt,
+          completed_at: createdAt,
+          duration_ms: 0,
+          detail: 'phase=collect',
+          detail_payload: payload,
+        },
+      ]
+    case 'device_collect_failed':
+      return [
+        {
+          id: `v2trace:${sessionId}:legacy:${event.id}`,
+          session_id: sessionId,
+          seq_no: seqBase,
+          step_type: 'session_control',
+          title: `[${deviceHost}] 设备采集失败`,
+          status: 'failed',
+          started_at: createdAt,
+          completed_at: createdAt,
+          duration_ms: 0,
+          detail: String(payload.error || 'device_collect_failed').slice(0, 280),
+          detail_payload: payload,
+        },
+      ]
+    case 'command_started':
+      if (!command || nativeCommandIds.has(commandId)) return []
+      return [
+        buildSyntheticV2CommandTraceStep(sessionId, seqBase, command, deviceHost, 'running'),
+      ]
+    case 'command_completed': {
+      if (!command) return []
+      const rows: ServiceTraceStep[] = []
+      if (!nativeCommandIds.has(commandId)) {
+        rows.push(buildSyntheticV2CommandTraceStep(sessionId, seqBase, command, deviceHost, command.status || 'succeeded'))
+      }
+      if (!nativeEvidenceCommandIds.has(commandId) && (payload.category || payload.conclusion)) {
+        rows.push({
+          id: `v2trace:${sessionId}:legacy:${event.id}:evidence`,
+          session_id: sessionId,
+          seq_no: seqBase + 1,
+          step_type: 'evidence_parse',
+          title: '证据解析',
+          status: 'succeeded',
+          started_at: command.completed_at || command.created_at || createdAt,
+          completed_at: command.completed_at || command.created_at || createdAt,
+          duration_ms: 0,
+          command_id: `v2cmd:${command.id}`,
+          detail: `category=${String(payload.category || '-')}; conclusion=${String(payload.conclusion || '').slice(0, 180)}`,
+          detail_payload: {
+            command: buildV2TraceCommandPayload(command),
+            parser_result: {
+              category: payload.category,
+              conclusion: payload.conclusion,
+            },
+          },
+        })
+      }
+      return rows
+    }
+    case 'command_failed':
+      if (!command || nativeCommandIds.has(commandId)) return []
+      return [
+        buildSyntheticV2CommandTraceStep(sessionId, seqBase, command, deviceHost, 'failed'),
+      ]
+    case 'command_blocked':
+      return [
+        {
+          id: `v2trace:${sessionId}:legacy:${event.id}`,
+          session_id: sessionId,
+          seq_no: seqBase,
+          step_type: 'policy_decision',
+          title: '命令被策略阻断',
+          status: 'blocked',
+          started_at: createdAt,
+          completed_at: createdAt,
+          duration_ms: 0,
+          command_id: command ? `v2cmd:${command.id}` : undefined,
+          detail: String(payload.reason || 'blocked').slice(0, 280),
+          detail_payload: {
+            ...payload,
+            command: command ? buildV2TraceCommandPayload(command) : undefined,
+          },
+        },
+      ]
+    case 'correlate_completed':
+      return [
+        {
+          id: `v2trace:${sessionId}:legacy:${event.id}`,
+          session_id: sessionId,
+          seq_no: seqBase,
+          step_type: 'evidence_parse',
+          title: '多设备关联分析完成',
+          status: 'succeeded',
+          started_at: createdAt,
+          completed_at: createdAt,
+          duration_ms: 0,
+          detail: `clusters=${String(payload.cluster_count || 0)}; incidents=${String(payload.incident_count || 0)}; root_device=${String(payload.root_device_id || '-')}`,
+          detail_payload: payload,
+        },
+      ]
+    case 'llm_rca_refined':
+      return [
+        {
+          id: `v2trace:${sessionId}:legacy:${event.id}`,
+          session_id: sessionId,
+          seq_no: seqBase,
+          step_type: 'llm_response',
+          title: 'AI RCA 精炼回复',
+          status: 'succeeded',
+          started_at: createdAt,
+          completed_at: createdAt,
+          duration_ms: 0,
+          detail: String(payload.summary || '').slice(0, 220),
+          detail_payload: {
+            ai_response_parsed: {
+              summary: payload.summary,
+              confidence: payload.confidence,
+              root_device_id: payload.root_device_id,
+            },
+            llm: {
+              parsed_response: payload,
+            },
+          },
+        },
+      ]
+    case 'plan_completed':
+      return [
+        {
+          id: `v2trace:${sessionId}:legacy:${event.id}`,
+          session_id: sessionId,
+          seq_no: seqBase,
+          step_type: 'plan_decision',
+          title: '修复计划生成完成',
+          status: 'succeeded',
+          started_at: createdAt,
+          completed_at: createdAt,
+          duration_ms: 0,
+          detail: `action_groups=${String(payload.action_group_count || 0)}; pending=${String(payload.pending_approval || 0)}; auto_approved=${String(payload.auto_approved || 0)}`,
+          detail_payload: payload,
+        },
+      ]
+    case 'action_group_started':
+      return [
+        {
+          id: `v2trace:${sessionId}:legacy:${event.id}`,
+          session_id: sessionId,
+          seq_no: seqBase,
+          step_type: 'session_control',
+          title: `[${deviceHost}] 开始执行命令组`,
+          status: 'running',
+          started_at: createdAt,
+          completed_at: createdAt,
+          duration_ms: 0,
+          detail: `command_count=${String(payload.command_count || 0)}`,
+          detail_payload: payload,
+        },
+      ]
+    case 'action_group_completed':
+      return [
+        {
+          id: `v2trace:${sessionId}:legacy:${event.id}`,
+          session_id: sessionId,
+          seq_no: seqBase,
+          step_type: 'session_control',
+          title: `[${deviceHost}] 命令组执行完成`,
+          status: String(payload.status || 'succeeded'),
+          started_at: createdAt,
+          completed_at: createdAt,
+          duration_ms: 0,
+          detail: `status=${String(payload.status || '')}`,
+          detail_payload: payload,
+        },
+      ]
+    case 'job_completed':
+      return [
+        {
+          id: `v2trace:${sessionId}:legacy:${event.id}`,
+          session_id: sessionId,
+          seq_no: seqBase,
+          step_type: 'session_control',
+          title: '多设备任务完成',
+          status: 'succeeded',
+          started_at: createdAt,
+          completed_at: createdAt,
+          duration_ms: 0,
+          detail: `mode=${String(payload.mode || timeline.job.mode || '')}`,
+          detail_payload: payload,
+        },
+      ]
+    case 'job_failed':
+    case 'job_cancelled':
+      return [
+        {
+          id: `v2trace:${sessionId}:legacy:${event.id}`,
+          session_id: sessionId,
+          seq_no: seqBase,
+          step_type: 'session_control',
+          title: event.event_type === 'job_failed' ? '多设备任务失败' : '多设备任务已取消',
+          status: event.event_type === 'job_failed' ? 'failed' : 'stopped',
+          started_at: createdAt,
+          completed_at: createdAt,
+          duration_ms: 0,
+          detail: String(payload.error || payload.reason || event.event_type).slice(0, 280),
+          detail_payload: payload,
+        },
+      ]
+    default:
+      return []
+  }
+}
+
+const V2_NATIVE_TRACE_EVENT_TYPES = new Set([
+  'user_input',
+  'context_snapshot',
+  'ai_context_submit',
+  'llm_request',
+  'llm_response',
+  'llm_plan',
+  'llm_status',
+  'plan_decision',
+  'plan_parse',
+  'loop_control',
+  'policy_decision',
+  'capability_decision',
+  'scope_decision',
+  'evidence_parse',
+  'command_execution',
+  'command_confirm_execution',
+  'llm_final',
+  'session_control',
+  'session_adapter',
+  'orchestrator_error',
+])
+
+function buildLegacyTraceFallbackMeta(event: V2JobEvent): { title?: string; status?: string; detail?: string; command_id?: string } {
+  const payload = isTraceRecord(event.payload) ? event.payload : {}
+  if (event.event_type === 'capability_decision') {
+    const decision = String(payload.decision || '').trim()
+    const reason = String(payload.reason || payload.action || '').trim()
+    const title =
+      decision === 'rewrite_hit'
+        ? '执行前命令能力判定（改写）'
+        : decision === 'block_hit'
+          ? '执行前命令能力判定（阻断）'
+          : '执行前命令能力判定'
+    return {
+      title,
+      status: decision === 'block_hit' ? 'blocked' : 'succeeded',
+      detail: `decision=${decision || '-'}; ${reason ? `reason=${reason}` : ''}`.trim(),
+      command_id: String(payload.command_id || '').trim() || undefined,
+    }
+  }
+  return {}
+}
+
+function v2TraceDetailPayload(payload: Record<string, unknown>, event: V2JobEvent): Record<string, unknown> {
+  if (isTraceRecord(payload.detail_payload)) return payload.detail_payload
+  const raw: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(payload)) {
+    if (['title', 'status', 'detail', 'started_at', 'completed_at', 'duration_ms', 'command_id', 'step_no', 'device_id', 'device_host'].includes(key)) continue
+    raw[key] = value
+  }
+  if (Object.keys(raw).length > 0) return raw
+  return { event_payload: event.payload }
+}
+
+function buildSyntheticV2CommandTraceStep(
+  sessionId: string,
+  seqNo: number,
+  command: V2JobCommandResult,
+  deviceHost: string,
+  status: string,
+): ServiceTraceStep {
+  return {
+    id: `v2trace:${sessionId}:legacy:cmd:${command.id}:${status}`,
+    session_id: sessionId,
+    seq_no: seqNo,
+    step_type: 'command_execution',
+    title: `执行命令 #${command.step_no}: [${deviceHost}] ${command.title}`,
+    status,
+    started_at: command.started_at || command.created_at,
+    completed_at: command.completed_at || command.started_at || command.created_at,
+    duration_ms: command.duration_ms ?? 0,
+    command_id: `v2cmd:${command.id}`,
+    detail: command.command.slice(0, 280),
+    detail_payload: {
+      command: buildV2TraceCommandPayload(command),
+    },
+  }
+}
+
+function buildV2TraceCommandPayload(command: V2JobCommandResult): Record<string, unknown> {
+  return {
+    id: `v2cmd:${command.id}`,
+    step_no: command.step_no,
+    title: command.title,
+    command: command.command,
+    original_command: command.command,
+    effective_command: command.effective_command || command.command,
+    status: command.status,
+    risk_level: command.risk_level,
+    requires_confirmation: false,
+    error: command.error || '',
+    output: command.output || '',
+    constraint_source: command.constraint_source || '',
+    constraint_reason: command.constraint_reason || '',
+    capability_state: command.capability_state || '',
+    capability_reason: command.capability_reason || '',
+  }
+}
+
+function formatV2PhaseLabel(phase: string): string {
+  const labels: Record<string, string> = {
+    collect: '采集',
+    correlate: '关联',
+    plan: '规划',
+    approve: '审批',
+    execute: '执行',
+    analyze: '分析',
+    conclude: '总结',
+  }
+  return labels[phase] || phase || '-'
+}
+
+function dedupeTraceSteps(steps: ServiceTraceStep[]): ServiceTraceStep[] {
+  const seen = new Set<string>()
+  const rows: ServiceTraceStep[] = []
+  for (const step of steps) {
+    const key = `${step.id}::${step.step_type}::${step.seq_no}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    rows.push(step)
+  }
+  return rows
+}
+
 function buildPendingApprovalSummary(timeline: V2JobTimeline): DiagnosisSummary {
   const pendingGroups = (timeline.job.action_groups || []).filter((item) => item.status === 'pending_approval')
   const commandCount = pendingGroups.reduce((sum, item) => sum + item.commands.length, 0)
@@ -5138,6 +6168,8 @@ function buildSummaryFromV2Timeline(timeline: V2JobTimeline): DiagnosisSummary {
   const mode = timeline.job.mode
   const rca = (timeline.job.rca_result || {}) as Record<string, unknown>
   const rcaSummary = String(rca.summary || '').trim()
+  const rcaRootCause = String(rca.root_cause || '').trim()
+  const rcaImpactScope = String(rca.impact_scope || '').trim()
   const recommendation = String(rca.recommendation || '').trim()
   const confidenceRaw = Number(rca.confidence)
   const confidence = Number.isFinite(confidenceRaw) ? confidenceRaw : undefined
@@ -5154,24 +6186,28 @@ function buildSummaryFromV2Timeline(timeline: V2JobTimeline): DiagnosisSummary {
   }
 
   if (mode === 'inspection') {
+    const queryText = rcaRootCause || rcaSummary
+    const impactText = rcaImpactScope || `共采集设备 ${timeline.job.devices.length} 台`
     return {
       mode: 'query',
-      root_cause: rcaSummary || '多设备查询已完成',
-      impact_scope: `共采集设备 ${timeline.job.devices.length} 台`,
+      root_cause: queryText || '多设备查询已完成',
+      impact_scope: impactText,
       recommendation: recommendation || '已完成',
-      query_result: rcaSummary || `任务完成，命令执行 ${timeline.job.command_results.length} 条。`,
+      query_result: queryText || `任务完成，命令执行 ${timeline.job.command_results.length} 条。`,
       follow_up_action: recommendation || '已完成',
       confidence,
     }
   }
 
   if (mode === 'repair') {
+    const resultText = rcaRootCause || rcaSummary
+    const impactText = rcaImpactScope || `涉及设备 ${timeline.job.devices.length} 台`
     return {
       mode: 'config',
-      root_cause: rcaSummary || '多设备修复流程已执行完成',
-      impact_scope: `涉及设备 ${timeline.job.devices.length} 台`,
+      root_cause: resultText || '多设备修复流程已执行完成',
+      impact_scope: impactText,
       recommendation: recommendation || '已完成',
-      query_result: rcaSummary || '命令组执行完成，请复核关键业务路径。',
+      query_result: resultText || '命令组执行完成，请复核关键业务路径。',
       follow_up_action: recommendation || '已完成',
       confidence,
     }
@@ -5179,8 +6215,8 @@ function buildSummaryFromV2Timeline(timeline: V2JobTimeline): DiagnosisSummary {
 
   return {
     mode: 'diagnosis',
-    root_cause: rcaSummary || '多设备根因分析已完成',
-    impact_scope: `涉及设备 ${timeline.job.devices.length} 台，事件聚类 ${timeline.job.clusters.length} 组。`,
+    root_cause: rcaRootCause || rcaSummary || '多设备根因分析已完成',
+    impact_scope: rcaImpactScope || `涉及设备 ${timeline.job.devices.length} 台，事件聚类 ${timeline.job.clusters.length} 组。`,
     recommendation: recommendation || '已完成',
     confidence,
   }
@@ -5309,16 +6345,39 @@ function getMaxStepNo(commands: CommandExecution[]): number {
 function buildContinuePreview(commands: CommandExecution[], summary?: DiagnosisSummary): ContinuePreview {
   void summary
   const pendingCommands = resolveLatestPendingCommands(commands)
+  const previewItems = buildContinuePreviewItems(pendingCommands)
   if (pendingCommands.length > 0) {
     return {
       source: 'pending',
-      commands: pendingCommands.map((item) => `#${item.step_no} ${item.command}`),
+      items: previewItems,
+      totalCommands: previewItems.reduce((sum, item) => sum + item.commandLines.length, 0),
     }
   }
   return {
     source: 'none',
-    commands: [],
+    items: [],
+    totalCommands: 0,
   }
+}
+
+function buildContinuePreviewItems(commands: CommandExecution[]): ContinuePreviewItem[] {
+  const ordered = [...commands].sort((a, b) => a.step_no - b.step_no)
+  return ordered.map((item) => ({
+    key: item.id,
+    step_no: item.step_no,
+    title: item.title,
+    risk_level: item.risk_level,
+    status: item.status,
+    commandLines: splitContinueCommandLines(item.command),
+  }))
+}
+
+function splitContinueCommandLines(value: string): string[] {
+  const raw = String(value || '').trim()
+  if (!raw) return ['(空命令)']
+  const pieces = raw.split(/\s*;\s*/).map((item) => item.trim()).filter(Boolean)
+  if (pieces.length > 1) return pieces
+  return [raw]
 }
 
 function resolveLatestPendingCommands(commands: CommandExecution[]): CommandExecution[] {
@@ -5349,6 +6408,8 @@ function upsertContinueExecutionState(
   const nextCommand: ContinueExecutionCommand = {
     id: command.id,
     step_no: command.step_no,
+    title: command.title,
+    risk_level: command.risk_level,
     command: command.command,
     status: command.status,
   }
@@ -5577,7 +6638,7 @@ function buildTraceStats(steps: ServiceTraceStep[]): {
     if (step.duration_ms >= maxDuration) {
       maxDuration = step.duration_ms
       slowestDuration = step.duration_ms
-      slowestTitle = step.title
+      slowestTitle = formatTraceStepTitle(step)
     }
   }
   return {
@@ -5589,37 +6650,114 @@ function buildTraceStats(steps: ServiceTraceStep[]): {
   }
 }
 
+function formatTraceStepTitle(step: ServiceTraceStep): string {
+  const raw = String(step.title || '').trim()
+  if (!raw) return traceTypeLabel(step.step_type)
+  let text = raw
+
+  text = text.replace(/^LLM 规划第\s*(\d+)\s*轮$/, '第$1轮规划')
+  text = text.replace(/^提交给 AI（第\s*(\d+)\s*轮）$/, '第$1轮提交')
+  text = text.replace(/^AI 原始回复（第\s*(\d+)\s*轮）$/, '第$1轮回复')
+  text = text.replace(/^\[([^\]]+)\]\s*LLM 规划第\s*(\d+)\s*轮$/, '[$1] 第$2轮规划')
+  text = text.replace(/^\[([^\]]+)\]\s*提交给 AI（第\s*(\d+)\s*轮）$/, '[$1] 第$2轮提交')
+  text = text.replace(/^\[([^\]]+)\]\s*AI 原始回复（第\s*(\d+)\s*轮）$/, '[$1] 第$2轮回复')
+  text = text.replace(/^系统提交上下文（AI计划第\s*(\d+)\s*轮）$/, '第$1轮上下文写入')
+  text = text.replace(/^会话上下文快照（第\s*(\d+)\s*轮）$/, '第$1轮上下文快照')
+  text = text.replace(/^\[([^\]]+)\]\s*会话上下文快照（第\s*(\d+)\s*轮）$/, '[$1] 第$2轮上下文快照')
+  text = text.replace(/^系统提交上下文（会话头）$/, '会话初始化上下文')
+  text = text.replace(/^系统提交上下文（命令结果 #(\d+)）$/, '命令结果写入 #$1')
+  text = text.replace(/^系统提交上下文（基线汇总）$/, '基线汇总写入')
+
+  text = text.replace(/^执行前策略判定$/, '命令安全与风险判定')
+  text = text.replace(/^执行前会话范围判定$/, '会话模式范围校验')
+  text = text.replace(/^执行前命令能力判定（改写）$/, '命令可用性判定（自动改写）')
+  text = text.replace(/^执行前命令能力判定（阻断）$/, '命令可用性判定（命中阻断）')
+  text = text.replace(/^执行前命令能力判定（跳过权限阻断）$/, '命令可用性判定（跳过权限阻断）')
+  text = text.replace(/^执行前命令能力判定（跳过上下文阻断）$/, '命令可用性判定（跳过上下文阻断）')
+
+  text = text.replace(/^会话控制：设备连接会话创建$/, '建立设备连接')
+  text = text.replace(/^会话控制：设备连接会话关闭$/, '关闭设备连接')
+  text = text.replace(/^会话控制：执行前终止$/, '执行前已停止')
+  text = text.replace(/^会话控制：命令等待确认$/, '等待人工确认')
+  text = text.replace(/^会话控制：设备连接失败$/, '设备连接失败')
+  text = text.replace(/^会话控制：批量执行前终止$/, '命令组执行前已停止')
+  text = text.replace(/^会话控制：命令组全部被拦截$/, '命令组全部被策略拦截')
+  text = text.replace(/^会话控制：命令组预检查失败$/, '命令组预检查失败')
+  text = text.replace(/^会话控制：命令组等待确认$/, '命令组等待人工确认')
+  text = text.replace(/^会话控制：命令组设备连接失败$/, '命令组设备连接失败')
+
+  text = text.replace(/^设备执行命令组预检查 \((\d+) 条\)$/, '批量命令预检查执行（$1条）')
+  text = text.replace(/^设备执行命令组 \((\d+) 条\)$/, '批量命令执行（$1条）')
+  text = text.replace(/^设备执行命令 #(\d+):\s*/, '命令执行 #$1: ')
+
+  text = text.replace('基线探针/版本识别', '基线采集：版本识别')
+  text = text.replace('基线画像/设备时钟', '基线采集：设备时间')
+  text = text.replace('基线画像/会话权限', '基线采集：权限级别')
+
+  return text
+}
+
+function traceStepOrderTime(step: ServiceTraceStep): number {
+  const started = Date.parse(String(step.started_at || ''))
+  if (!Number.isNaN(started)) return started
+  const completed = Date.parse(String(step.completed_at || ''))
+  if (!Number.isNaN(completed)) return completed
+  return Number.MAX_SAFE_INTEGER
+}
+
+function traceStepOrderSeq(step: ServiceTraceStep): number {
+  const seq = Number(step.seq_no)
+  if (Number.isFinite(seq) && seq > 0) return seq
+  return Number.MAX_SAFE_INTEGER
+}
+
+function sortTraceStepsByOrder(steps: ServiceTraceStep[]): ServiceTraceStep[] {
+  return [...steps].sort((left, right) => {
+    const seqDiff = traceStepOrderSeq(left) - traceStepOrderSeq(right)
+    if (seqDiff !== 0) return seqDiff
+    const timeDiff = traceStepOrderTime(left) - traceStepOrderTime(right)
+    if (timeDiff !== 0) return timeDiff
+    const leftId = String(left.id || '')
+    const rightId = String(right.id || '')
+    return leftId.localeCompare(rightId)
+  })
+}
+
 function resolveActiveFlowStepId(steps: ServiceTraceStep[]): string | undefined {
   if (steps.length === 0) return undefined
-  const running = [...steps].reverse().find((step) => step.status === 'running')
+  const ordered = sortTraceStepsByOrder(steps)
+  const running = [...ordered].reverse().find((step) => step.status === 'running')
   if (running) return running.id
-  const pending = [...steps].reverse().find((step) => step.status === 'pending_confirm')
+  const pending = [...ordered].reverse().find((step) => step.status === 'pending_confirm')
   if (pending) return pending.id
-  return steps[steps.length - 1].id
+  return ordered[ordered.length - 1].id
 }
 
 function buildFlowLanes(steps: ServiceTraceStep[], mode: FlowLayoutMode): FlowLane[] {
-  const laneOrder = ['user', 'plan', 'policy', 'execute', 'evidence', 'summary', 'control', 'other']
+  const laneOrder = ['user', 'context', 'ai_submit', 'ai_feedback', 'plan', 'policy', 'control', 'execute', 'evidence', 'summary']
   const labels: Record<string, string> = {
     user: '用户输入',
-    plan: 'AI 规划',
+    context: '上下文构建',
+    ai_submit: '提交给AI',
+    ai_feedback: 'AI反馈',
+    plan: '规划决策',
     policy: '策略判定',
     execute: '设备执行',
     evidence: '证据处理',
     summary: '总结输出',
     control: '会话控制',
-    other: '其他',
   }
   if (steps.length === 0) {
     return laneOrder.map((key) => ({
       key,
       label: labels[key] || key,
+      actor: traceLaneActorLabel(key),
       steps: [],
       realCount: 0,
     }))
   }
 
-  const ordered = [...steps].sort((a, b) => a.seq_no - b.seq_no)
+  const ordered = sortTraceStepsByOrder(steps)
   const lanes = new Map<string, Array<ServiceTraceStep | null>>()
   for (const key of laneOrder) lanes.set(key, [])
 
@@ -5654,9 +6792,30 @@ function buildFlowLanes(steps: ServiceTraceStep[], mode: FlowLayoutMode): FlowLa
   return laneOrder.map((key) => ({
     key,
     label: labels[key] || key,
+    actor: traceLaneActorLabel(key),
     steps: lanes.get(key) || [],
     realCount: (lanes.get(key) || []).filter((item) => item !== null).length,
   }))
+}
+
+function buildTraceLaneCounts(steps: ServiceTraceStep[]): Record<string, number> {
+  const counts: Record<string, number> = {
+    user: 0,
+    context: 0,
+    ai_submit: 0,
+    ai_feedback: 0,
+    plan: 0,
+    policy: 0,
+    control: 0,
+    execute: 0,
+    evidence: 0,
+    summary: 0,
+  }
+  for (const step of steps) {
+    const laneKey = traceLaneKey(step.step_type)
+    counts[laneKey] = (counts[laneKey] || 0) + 1
+  }
+  return counts
 }
 
 function traceNodeRelationClass(step: ServiceTraceStep, selected?: ServiceTraceStep): string {
@@ -5699,13 +6858,43 @@ function traceConstraintSourceFromDetail(detail?: string): string {
 
 function traceLaneKey(stepType: string): string {
   if (stepType === 'user_input') return 'user'
-  if (stepType === 'llm_plan' || stepType === 'llm_status' || stepType === 'plan_decision') return 'plan'
+  if (stepType === 'ai_context_submit' || stepType === 'context_snapshot') return 'context'
+  if (stepType === 'llm_request') return 'ai_submit'
+  if (stepType === 'llm_response') return 'ai_feedback'
+  if (
+    stepType === 'llm_plan'
+    || stepType === 'llm_status'
+    || stepType === 'plan_decision'
+    || stepType === 'plan_parse'
+    || stepType === 'loop_control'
+  ) return 'plan'
   if (stepType === 'policy_decision' || stepType === 'capability_decision' || stepType === 'scope_decision') return 'policy'
   if (stepType === 'command_execution' || stepType === 'command_confirm_execution') return 'execute'
   if (stepType === 'evidence_parse') return 'evidence'
   if (stepType === 'llm_final') return 'summary'
-  if (stepType === 'session_control') return 'control'
-  return 'other'
+  if (stepType === 'session_control' || stepType === 'session_adapter') return 'control'
+  return 'control'
+}
+
+function traceLaneActorLabel(laneKey: string): string {
+  if (laneKey === 'user') return '用户'
+  if (laneKey === 'ai_feedback' || laneKey === 'summary') return 'AI'
+  if (laneKey === 'execute') return '设备'
+  return '系统'
+}
+
+function traceStepActorLabel(stepType: string): string {
+  if (stepType === 'user_input') return '用户'
+  if (stepType === 'command_execution' || stepType === 'command_confirm_execution') return '设备'
+  if (stepType === 'llm_response' || stepType === 'llm_plan' || stepType === 'llm_final' || stepType === 'llm_status') return 'AI'
+  return '系统'
+}
+
+function traceActorClass(actor: string): string {
+  if (actor === '用户') return 'actor-user'
+  if (actor === 'AI') return 'actor-ai'
+  if (actor === '设备') return 'actor-device'
+  return 'actor-system'
 }
 
 function formatDuration(ms: number): string {
@@ -5737,12 +6926,182 @@ function computeTracePlaybackDelay(current: ServiceTraceStep, next: ServiceTrace
   return 900
 }
 
+function isTraceRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function stringifyTraceValue(value: unknown): string {
+  if (value === undefined || value === null) return ''
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+function collectTraceCommandResults(payload: Record<string, unknown>): string {
+  const lines: string[] = []
+  const pushCommand = (record: Record<string, unknown>) => {
+    const stepNo = record.step_no !== undefined ? `#${String(record.step_no)} ` : ''
+    const cmd = String(record.effective_command || record.command || '').trim()
+    const status = String(record.status || '').trim()
+    const error = String(record.error || '').trim()
+    const output = String(record.output || '').trim()
+    if (!cmd) return
+    const header = `${stepNo}${cmd}${status ? ` [${status}]` : ''}`
+    if (output) {
+      lines.push(`${header}\n${output}`)
+      return
+    }
+    if (error) {
+      lines.push(`${header}\n${error}`)
+      return
+    }
+    lines.push(header)
+  }
+
+  const candidates: Array<unknown> = []
+  if (isTraceRecord(payload.command)) candidates.push(payload.command)
+  const commandArrays = ['commands', 'precheck_commands', 'pending_commands']
+  for (const key of commandArrays) {
+    const value = payload[key]
+    if (Array.isArray(value)) candidates.push(...value)
+  }
+  for (const item of candidates) {
+    if (!isTraceRecord(item)) continue
+    pushCommand(item)
+  }
+  return lines.join('\n\n').trim()
+}
+
+function buildTraceDetailSections(step: ServiceTraceStep): TraceDetailSection[] {
+  const sections: TraceDetailSection[] = []
+  const payload = isTraceRecord(step.detail_payload) ? step.detail_payload : undefined
+  const extra = payload && isTraceRecord(payload.extra) ? payload.extra : undefined
+  const stepType = String(step.step_type || '').trim().toLowerCase()
+  const isAiSubmitStep = stepType === 'llm_request' || stepType === 'ai_context_submit' || stepType === 'context_snapshot'
+  const isAiFeedbackStep = stepType === 'llm_response' || stepType === 'llm_plan' || stepType === 'llm_final'
+
+  if (step.detail) {
+    sections.push({
+      key: 'summary',
+      title: '摘要',
+      body: step.detail,
+    })
+  }
+
+  if (!payload) return sections
+
+  const promptText = stringifyTraceValue(
+    payload.system_prompt
+    || payload.final_prompt
+    || (isTraceRecord(payload.to_ai) ? (payload.to_ai.system_prompt || payload.to_ai.final_prompt) : ''),
+  ).trim()
+  if (promptText && isAiSubmitStep) {
+    sections.push({
+      key: 'prompt',
+      title: '引用提示词',
+      body: promptText,
+    })
+  }
+
+  const userInput = String(payload.user_input || payload.user_problem || '').trim()
+  if (userInput) {
+    sections.push({
+      key: 'user-input',
+      title: '用户输入',
+      body: userInput,
+    })
+  }
+
+  const commandScript = stringifyTraceValue(payload.command || payload.commands || payload.precheck_commands || '')
+  if (commandScript.trim()) {
+    sections.push({
+      key: 'device-script',
+      title: '设备运行脚本/命令',
+      body: commandScript,
+    })
+  }
+
+  const commandResults = collectTraceCommandResults(payload)
+  if (commandResults) {
+    sections.push({
+      key: 'device-result',
+      title: '设备返回结果',
+      body: commandResults,
+    })
+  }
+  const fullCommandFromExtra = extra && isTraceRecord(extra.command_full) ? extra.command_full : undefined
+  if (fullCommandFromExtra) {
+    sections.push({
+      key: 'device-full',
+      title: '设备返回结果(完整)',
+      body: stringifyTraceValue(fullCommandFromExtra),
+    })
+  }
+
+  const toAiPayload: Record<string, unknown> = {}
+  if (payload.system_prompt !== undefined) toAiPayload.system_prompt = payload.system_prompt
+  if (payload.final_prompt !== undefined) toAiPayload.final_prompt = payload.final_prompt
+  if (payload.to_ai_context !== undefined) toAiPayload.to_ai_context = payload.to_ai_context
+  if (payload.source !== undefined) toAiPayload.source = payload.source
+  if (payload.context_count !== undefined) toAiPayload.context_count = payload.context_count
+  if (extra !== undefined) toAiPayload.extra = extra
+  if (payload.to_ai !== undefined) toAiPayload.to_ai = payload.to_ai
+  if (payload.llm !== undefined) toAiPayload.llm = payload.llm
+  if (payload.request_payload !== undefined) toAiPayload.request_payload = payload.request_payload
+  if (payload.request_messages !== undefined) toAiPayload.request_messages = payload.request_messages
+  if (Object.keys(toAiPayload).length > 0 && isAiSubmitStep) {
+    sections.push({
+      key: 'to-ai',
+      title: '提交给 AI 的内容',
+      body: stringifyTraceValue(toAiPayload),
+    })
+  }
+
+  const aiFeedbackPayload: Record<string, unknown> = {}
+  if (payload.ai_response_parsed !== undefined) aiFeedbackPayload.ai_response_parsed = payload.ai_response_parsed
+  if (payload.plan !== undefined) aiFeedbackPayload.plan = payload.plan
+  if (payload.final_summary !== undefined) aiFeedbackPayload.final_summary = payload.final_summary
+  if (isTraceRecord(payload.to_ai)) {
+    if (payload.to_ai.raw_response !== undefined) aiFeedbackPayload.raw_response = payload.to_ai.raw_response
+    if (payload.to_ai.parsed_response !== undefined) aiFeedbackPayload.parsed_response = payload.to_ai.parsed_response
+    if (payload.to_ai.error !== undefined) aiFeedbackPayload.error = payload.to_ai.error
+  }
+  if (isTraceRecord(payload.llm)) {
+    if (payload.llm.raw_response !== undefined) aiFeedbackPayload.raw_response = payload.llm.raw_response
+    if (payload.llm.parsed_response !== undefined) aiFeedbackPayload.parsed_response = payload.llm.parsed_response
+    if (payload.llm.error !== undefined) aiFeedbackPayload.error = payload.llm.error
+  }
+  if (Object.keys(aiFeedbackPayload).length > 0 && isAiFeedbackStep) {
+    sections.push({
+      key: 'ai-feedback',
+      title: 'AI 真实反馈',
+      body: stringifyTraceValue(aiFeedbackPayload),
+    })
+  }
+
+  sections.push({
+    key: 'raw-payload',
+    title: '节点原始记录(JSON)',
+    body: stringifyTraceValue(payload),
+  })
+  return sections
+}
+
 function traceTypeLabel(stepType: string): string {
   if (stepType === 'user_input') return '用户请求'
+  if (stepType === 'context_snapshot') return '上下文快照'
+  if (stepType === 'ai_context_submit') return '系统提交上下文'
+  if (stepType === 'llm_request') return '提交给 AI'
+  if (stepType === 'llm_response') return 'AI 原始回复'
   if (stepType === 'llm_plan') return 'LLM 规划'
   if (stepType === 'llm_final') return 'LLM 总结'
   if (stepType === 'llm_status') return 'LLM 可用性'
   if (stepType === 'plan_decision') return '流程判定'
+  if (stepType === 'plan_parse') return '计划解析'
+  if (stepType === 'loop_control') return '循环控制'
   if (stepType === 'policy_decision') return '策略判定'
   if (stepType === 'capability_decision') return '能力判定'
   if (stepType === 'scope_decision') return '模式范围判定'
@@ -5750,6 +7109,7 @@ function traceTypeLabel(stepType: string): string {
   if (stepType === 'command_execution') return '命令执行'
   if (stepType === 'command_confirm_execution') return '确认后执行'
   if (stepType === 'session_control') return '会话控制'
+  if (stepType === 'session_adapter') return '连接会话'
   if (stepType === 'orchestrator_error') return '流程异常'
   return stepType
 }
