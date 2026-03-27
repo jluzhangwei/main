@@ -351,6 +351,7 @@ class SmcShellClient:
         self.master_fd: int | None = None
         self.proc: subprocess.Popen[bytes] | None = None
         self.smc_mode_active = False
+        self.last_prompt = ""
 
     def _dbg(self, message: str) -> None:
         if self.config.debug:
@@ -461,7 +462,7 @@ class SmcShellClient:
                 pass
         self.master_fd = master_fd
 
-        jump_deadline = time.time() + max(20, self.config.timeout * 2)
+        jump_deadline = time.time() + max(15, self.config.timeout)
         jump_buffer = ""
         jump_ready = False
         while time.time() < jump_deadline:
@@ -494,9 +495,17 @@ class SmcShellClient:
     def connect(self) -> None:
         self._connect_via_smc_shell()
         self._dbg(f"[LOGIN] ssh to {self.config.username}@{self.config.device_ip}")
-        self._smc_send(f"ssh -o StrictHostKeyChecking=no {self.config.username}@{self.config.device_ip}\n")
+        ssh_connect_timeout = max(5, min(int(self.config.timeout or 10), 12))
+        ssh_cmd = (
+            "ssh "
+            "-o StrictHostKeyChecking=no "
+            f"-o ConnectTimeout={ssh_connect_timeout} "
+            "-o ConnectionAttempts=1 "
+            f"{self.config.username}@{self.config.device_ip}"
+        )
+        self._smc_send(ssh_cmd + "\n")
 
-        deadline = time.time() + max(20, self.config.timeout * 3)
+        deadline = time.time() + max(15, ssh_connect_timeout + 8)
         buffer = ""
         password_attempts = 0
         max_password_attempts = 3
@@ -531,6 +540,9 @@ class SmcShellClient:
                 raise RuntimeError("SMC auth failed: password prompt repeated too many times")
             tail = normalized[-4000:]
             if PROMPT_PATTERN.search(tail):
+                matches = list(PROMPT_PATTERN.finditer(tail))
+                if matches:
+                    self.last_prompt = (matches[-1].group(1) or "").strip()
                 self.smc_mode_active = True
                 self._dbg("[LOGIN] target device prompt reached")
                 break
@@ -705,10 +717,11 @@ def run_lldp_commands(cli: SmcShellClient, timeout: int, vendor: str = "huawei")
             "show lldp neighbors detail",
             "display lldp neighbor",
         ]
+    per_cmd_timeout = timeout if v != "unknown" else min(timeout, 8)
     best = ""
     for cmd in commands:
         try:
-            out = cli.exec(cmd, timeout=timeout)
+            out = cli.exec(cmd, timeout=per_cmd_timeout)
         except Exception:
             continue
         if not out.strip():
@@ -756,7 +769,7 @@ def disable_paging(cli: SmcShellClient, vendor: str, timeout: int = 3) -> None:
         return
 
 
-def detect_vendor(cli: SmcShellClient, timeout: int = 15) -> str:
+def detect_vendor(cli: SmcShellClient, timeout: int = 8) -> str:
     probes = [
         "display version",
         "dis version",
@@ -777,12 +790,35 @@ def detect_vendor(cli: SmcShellClient, timeout: int = 15) -> str:
     return "unknown"
 
 
-def detect_device_name(cli: SmcShellClient, vendor: str, timeout: int = 15) -> str:
+def extract_hostname_from_prompt(prompt_text: str) -> str:
+    text = str(prompt_text or "").strip()
+    if not text:
+        return ""
+    if text.startswith("<") and text.endswith(">"):
+        text = text[1:-1].strip()
+    elif text.startswith("[") and text.endswith("]"):
+        text = text[1:-1].strip()
+    elif text.endswith("#") or text.endswith(">"):
+        text = text[:-1].strip()
+    if ":" in text:
+        text = text.split(":")[-1].strip()
+    text = text.strip()
+    if not text:
+        return ""
+    if _looks_like_ip(text):
+        return ""
+    return text
+
+
+def detect_device_name(cli: SmcShellClient, vendor: str, timeout: int = 5) -> str:
+    prompt_name = extract_hostname_from_prompt(getattr(cli, "last_prompt", ""))
+    if prompt_name:
+        return prompt_name
     v = (vendor or "").strip().lower()
     if v == "huawei":
         cmds = [
-            "display current-configuration | include ^sysname",
-            "dis current-configuration | include ^sysname",
+            "display current-configuration | include  sysname",
+            "dis current-configuration | include  sysname",
         ]
         for cmd in cmds:
             try:
@@ -794,7 +830,7 @@ def detect_device_name(cli: SmcShellClient, vendor: str, timeout: int = 15) -> s
                 return m.group(1).strip()
     elif v == "cisco":
         cmds = [
-            "show running-config | include ^hostname",
+            "show hostname",
             "show version",
             "show ver",
         ]
@@ -810,13 +846,21 @@ def detect_device_name(cli: SmcShellClient, vendor: str, timeout: int = 15) -> s
             if m:
                 return m.group(1).strip()
     elif v == "arista":
-        try:
-            out = cli.exec("show running-config | include ^hostname", timeout=timeout)
+        cmds = [
+            "show hostname",
+            "show version",
+        ]
+        for cmd in cmds:
+            try:
+                out = cli.exec(cmd, timeout=timeout)
+            except Exception:
+                continue
             m = re.search(r"(?im)^\s*hostname\s+(.+?)\s*$", out)
             if m:
                 return m.group(1).strip()
-        except Exception:
-            pass
+            m = re.search(r"(?im)^\s*System MAC address:\s*(.+?)\s*$", out)
+            if m:
+                break
     return ""
 
 
@@ -1290,9 +1334,10 @@ def collect_device_lldp_once(source: str, depth: int, cfg: CliRuntimeConfig) -> 
 
     try:
         cli.connect()
-        vendor = detect_vendor(cli, timeout=min(cfg.command_timeout, 20))
+        disable_paging(cli, "unknown", timeout=2)
+        vendor = detect_vendor(cli, timeout=min(cfg.command_timeout, 8))
         disable_paging(cli, vendor, timeout=3)
-        device_name = detect_device_name(cli, vendor, timeout=min(cfg.command_timeout, 20))
+        device_name = detect_device_name(cli, vendor, timeout=min(cfg.command_timeout, 5))
         output = run_lldp_commands(cli, timeout=cfg.command_timeout, vendor=vendor)
         parsed = parse_lldp_neighbors(output, vendor=vendor)
         for rec in parsed:
@@ -1376,6 +1421,8 @@ def build_cli_lldp_rows(
     visited_sources: set[str] = set()
     failed: list[dict[str, str]] = []
     debug_entries: list[dict[str, Any]] = []
+    device_timings: list[dict[str, Any]] = []
+    depth_summaries: list[dict[str, Any]] = []
     detected_vendors: dict[str, str] = {}
     detected_device_names: dict[str, str] = {}
     rows: list[dict[str, Any]] = []
@@ -1414,10 +1461,12 @@ def build_cli_lldp_rows(
         targets = [t for t in current_layer if t and t not in visited_sources]
         if not targets:
             break
+        depth_started = time.perf_counter()
         visited_sources.update(targets)
         total_devices = max(total_devices, len(visited_sources))
 
         next_layer: set[str] = set()
+        depth_completed = 0
         with ThreadPoolExecutor(max_workers=min(workers, len(targets))) as pool:
             future_map = {
                 pool.submit(collect_device_lldp_once, source, depth, cfg): source
@@ -1445,6 +1494,17 @@ def build_cli_lldp_rows(
                         res = fut.result()
                     except Exception as exc:
                         failed.append({"device": str(source), "error": f"worker_exception: {exc}"})
+                        device_timings.append(
+                            {
+                                "device": str(source),
+                                "depth": depth,
+                                "status": "failed",
+                                "vendor": "unknown",
+                                "neighbor_count": 0,
+                                "duration_sec": 0.0,
+                                "error": f"worker_exception: {exc}",
+                            }
+                        )
                         debug_entries.append(
                             {
                                 "device": source,
@@ -1458,6 +1518,7 @@ def build_cli_lldp_rows(
                             }
                         )
                         finished_devices += 1
+                        depth_completed += 1
                         emit_progress("running")
                         continue
                     source = str(res.get("source", "") or "")
@@ -1465,6 +1526,17 @@ def build_cli_lldp_rows(
                     device_name = str(res.get("device_name", "") or "")
                     error = str(res.get("error", "") or "")
                     debug_entries.append(res.get("debug_entry", {}))
+                    device_timings.append(
+                        {
+                            "device": source,
+                            "depth": depth,
+                            "status": "failed" if error else "ok",
+                            "vendor": vendor,
+                            "neighbor_count": len(res.get("rows", []) or []),
+                            "duration_sec": float(res.get("duration_sec", 0.0) or 0.0),
+                            "error": error,
+                        }
+                    )
 
                     if vendor and vendor != "unknown":
                         detected_vendors[source] = vendor
@@ -1473,6 +1545,7 @@ def build_cli_lldp_rows(
                     if error:
                         failed.append({"device": source, "error": error})
                         finished_devices += 1
+                        depth_completed += 1
                         emit_progress("running")
                         continue
 
@@ -1501,12 +1574,22 @@ def build_cli_lldp_rows(
                                 next_layer.add(ip)
                     total_devices = max(total_devices, len(visited_sources) + len(next_layer) + len(pending))
                     finished_devices += 1
+                    depth_completed += 1
                     emit_progress("running")
             if cancel_event and cancel_event.is_set():
                 current_layer = []
                 break
 
         current_layer = sorted(next_layer)
+        depth_summaries.append(
+            {
+                "depth": depth,
+                "submitted": len(targets),
+                "completed": depth_completed,
+                "discovered_next": len(current_layer),
+                "elapsed_seconds": max(0.0, time.perf_counter() - depth_started),
+            }
+        )
         total_devices = max(total_devices, len(visited_sources) + len(current_layer))
         emit_progress("running")
 
@@ -1514,6 +1597,8 @@ def build_cli_lldp_rows(
         "queried_devices": sorted(visited_sources),
         "failed_devices": failed,
         "debug_entries": debug_entries,
+        "device_timings": device_timings,
+        "depth_summaries": depth_summaries,
         "detected_vendors": detected_vendors,
         "detected_device_names": detected_device_names,
         "cli_max_workers": workers,
@@ -1881,6 +1966,23 @@ def write_cli_debug_text(file_prefix: str, meta: dict[str, Any]) -> tuple[str, P
     lines.append(f"queried_count={len(meta.get('queried_devices', []))}")
     lines.append(f"failed_count={len(meta.get('failed_devices', []))}")
     lines.append(f"total_elapsed_seconds={float(meta.get('total_elapsed_seconds', 0.0)):.3f}")
+    lines.append("")
+    lines.append("[Per-Depth Summary]")
+    for item in meta.get("depth_summaries", []):
+        lines.append(
+            f"depth={item.get('depth')} submitted={item.get('submitted')} "
+            f"completed={item.get('completed')} discovered_next={item.get('discovered_next')} "
+            f"elapsed_sec={float(item.get('elapsed_seconds', 0.0) or 0.0):.3f}"
+        )
+    lines.append("")
+    lines.append("[Per-Device Timing]")
+    for item in meta.get("device_timings", []):
+        lines.append(
+            f"device={item.get('device')} depth={item.get('depth')} status={item.get('status')} "
+            f"vendor={item.get('vendor', 'unknown')} neighbor_count={item.get('neighbor_count', 0)} "
+            f"duration_sec={float(item.get('duration_sec', 0.0) or 0.0):.3f} "
+            f"error={item.get('error', '')}"
+        )
     lines.append("")
     for entry in meta.get("debug_entries", []):
         lines.append("=" * 80)

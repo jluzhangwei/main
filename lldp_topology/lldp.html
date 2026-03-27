@@ -168,6 +168,12 @@
       white-space: nowrap;
     }
     #ctxMenu button:hover { background: #eff5ff; }
+    #ctxMenu .ctx-sep {
+      height: 1px;
+      margin: 4px 0;
+      background: #e5e7eb;
+      display: none;
+    }
     .modal-backdrop {
       position: fixed;
       inset: 0;
@@ -348,23 +354,25 @@
         <div>
           <label id="lblImportMode">导入方式</label>
           <select id="importMode">
-            <option value="sql">SQL 导入</option>
             <option value="cli">CLI 导入</option>
             <option value="csv">CSV 导入</option>
+            <option value="sql">SQL 导入</option>
+            <option value="json">Json 导入</option>
           </select>
         </div>
         <div>
           <label>&nbsp;</label>
           <div class="row inline" style="margin:0;">
-            <button id="openImportModalImport" class="primary">导入输入</button>
-            <button id="openImportModalAppend">追加输入</button>
+            <button id="openImportModalImport" class="primary">导入</button>
+            <button id="openImportModalAppend">追加</button>
           </div>
         </div>
       </div>
-      <div class="hint" id="importHint">导入输入会覆盖当前结果；追加输入会把新查询结果合并到当前图中，补充链路。</div>
+      <div class="hint" id="importHint">导入会覆盖当前结果；追加会把新查询结果合并到当前图中，补充链路。</div>
       <div style="display:none">
         <input id="file" type="file" accept=".csv,text/csv" multiple />
         <input id="appendFile" type="file" accept=".csv,text/csv" multiple />
+        <input id="importSessionFile" type="file" accept=".json,application/json" style="display:none" />
       </div>
       </div>
     </div>
@@ -486,6 +494,7 @@
         </div>
         <div class="row inline">
           <button id="buildScopedTopo">重排选中设备</button>
+          <button id="openPathFinder">查找路径</button>
         </div>
       </div>
 
@@ -535,15 +544,16 @@
         <button id="copyMermaid">复制 Mermaid</button>
       </div>
       <div class="row inline">
-        <button id="exportSession">导出会话</button>
-        <button id="importSessionBtn">导入会话</button>
-        <input id="importSessionFile" type="file" accept=".json,application/json" style="display:none" />
+        <button id="exportSession">导出 Json</button>
       </div>
       <div class="action-group">
-        <div id="cleanupGroupTitle" class="action-group-title">清理与分享</div>
+        <div id="cleanupGroupTitle" class="action-group-title">清理</div>
         <div class="row inline">
           <button id="clearTempDataBtn">删除临时数据</button>
           <button id="clearConnectionPrefsBtn">删除连接配置</button>
+        </div>
+        <div class="row inline">
+          <button id="clearUtilCache" type="button">删除链路缓存</button>
         </div>
         <div class="hint" id="cleanupHint">删除临时数据会清空服务器上的临时 CSV、调试日志、状态快照和服务日志；删除连接配置只清空当前浏览器保存的 SQL / CLI / Zabbix 配置。</div>
       </div>
@@ -572,9 +582,6 @@
         </div>
         <div>
           <button id="downloadUtilCache" type="button">下载链路缓存CSV</button>
-        </div>
-        <div>
-          <button id="clearUtilCache" type="button">删除链路缓存</button>
         </div>
         <div>
           <button id="downloadUtilDebug" type="button">下载利用率调试日志</button>
@@ -608,12 +615,16 @@
   <button id="ctxLock">固定位置</button>
   <button id="ctxDelete">删除设备</button>
   <button id="ctxDeleteLink">删除链路</button>
+  <div id="ctxSepEdit" class="ctx-sep"></div>
+  <button id="ctxPathVia">设为必经点</button>
   <button id="ctxCreateGroup">设备合组</button>
   <button id="ctxToggleGroup">合组展开</button>
   <button id="ctxRenameGroup">修改组名</button>
+  <div id="ctxSepCopy" class="ctx-sep"></div>
   <button id="ctxCopy">复制名称</button>
   <button id="ctxCopyIp">复制地址</button>
   <button id="ctxCopyLink">复制链路</button>
+  <div id="ctxSepQuery" class="ctx-sep"></div>
   <button id="ctxUtil">当前利用率</button>
   <button id="ctxUtilRange">区间利用率</button>
   <button id="ctxAppendQuery">追加查询</button>
@@ -736,6 +747,42 @@
     <div class="modal-actions">
       <button id="refreshStateList">刷新列表</button>
       <button id="closeStateModal">关闭</button>
+    </div>
+  </div>
+</div>
+<div id="pathModal" class="modal-backdrop">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="pathModalTitle">
+    <div class="modal-title" id="pathModalTitle">查找路径</div>
+    <div class="modal-form-grid">
+      <div class="field">
+        <label>源节点</label>
+        <input id="pathSourceInput" type="text" list="pathNodeNames" placeholder="输入源节点名称" />
+      </div>
+      <div class="field">
+        <label>目的节点</label>
+        <input id="pathTargetInput" type="text" list="pathNodeNames" placeholder="输入目的节点名称" />
+      </div>
+      <div class="field span-2">
+        <label>路径必经点（逗号分隔，按输入顺序生效）</label>
+        <input id="pathViaInput" type="text" list="pathNodeNames" placeholder="例如：NODE-A,NODE-B" />
+      </div>
+      <div class="field">
+        <label>备份路径</label>
+        <select id="pathBackupCount">
+          <option value="0">无</option>
+          <option value="1">1 条</option>
+          <option value="2">2 条</option>
+        </select>
+      </div>
+    </div>
+    <datalist id="pathNodeNames"></datalist>
+    <div class="hint" id="pathResultHint">基于当前可见拓扑按最少跳数查找路径；必经点按输入顺序串联。</div>
+    <div id="pathResultList" class="state-list" style="max-height:min(38vh,320px);"></div>
+    <div class="modal-actions">
+      <button id="runPathSearchBtn" class="primary">查找</button>
+      <button id="clearPathHighlightBtn">清除路径高亮</button>
+      <button id="keepPathNodesBtn">只保留路径节点</button>
+      <button id="closePathModal">关闭</button>
     </div>
   </div>
 </div>
@@ -927,6 +974,8 @@
   };
   let rollbackApplyInProgress = false;
   let rollbackArmSeq = 0;
+  let currentPathState = null;
+  let pendingViaNodeName = '';
   // 注册 fCoSE 扩展（兼容不同全局名），避免引用未定义导致脚本中断
 (() => {
     const extFcose = window.cytoscapeFcose || window.cytoFcose || window.fcose || window.fCoSE;
@@ -956,9 +1005,9 @@
       waiting_import: '等待导入',
       sec_import: '导入数据',
       import_mode: '导入方式',
-      import_input: '导入输入',
-      append_input: '追加输入',
-      import_hint: '导入输入会覆盖当前结果；追加输入会把新查询结果合并到当前图中，补充链路。',
+      import_input: '导入',
+      append_input: '追加',
+      import_hint: '导入会覆盖当前结果；追加会把新查询结果合并到当前图中，补充链路。',
       workspace_summary_empty: '当前工作集来源：未载入',
       layout_mode_label: '布局模式',
       strip_domain_label: '去掉 hostname 域名后缀',
@@ -993,6 +1042,7 @@
       btn_center: '居中 + 放大',
       btn_select_visible: '全选可见节点',
       btn_relayout_selected: '重排选中设备',
+      btn_find_path: '查找路径',
       node_label_short: '缩略（推荐）',
       node_label_full: '全名（容易挤）',
       node_label_full_ip: '全名+IP',
@@ -1011,9 +1061,9 @@
       btn_export_link_summary: '导出链路汇总',
       btn_export_drawio: '导出 draw.io',
       btn_copy_mermaid: '复制 Mermaid',
-      btn_export_session: '导出会话',
-      btn_import_session: '导入会话',
-      cleanup_group_title: '清理与分享',
+      btn_export_session: '导出 Json',
+      btn_import_session: 'Json 导入',
+      cleanup_group_title: '清理',
       btn_clear_temp_data: '删除临时数据',
       btn_clear_connection_prefs: '删除连接配置',
       cleanup_hint: '删除临时数据会清空服务器上的临时 CSV、调试日志、状态快照和服务日志；删除连接配置只清空当前浏览器保存的 SQL / CLI / Zabbix 配置。',
@@ -1034,6 +1084,7 @@
       btn_pick_csv: '选择 CSV 文件',
       btn_append_csv: '追加 CSV',
       btn_load_paste: '从粘贴内容载入',
+      ctx_path_via: '设为必经点',
       ctx_util: '当前利用率',
       ctx_util_range: '区间利用率',
       state_modal_title: '导入状态',
@@ -1059,6 +1110,7 @@
       import_mode_sql: 'SQL 导入',
       import_mode_cli: 'CLI 导入',
       import_mode_csv: 'CSV 导入',
+      import_mode_json: 'Json 导入',
       util_filter_active: '已启用利用率过滤：>= {threshold}%',
     },
     en: {
@@ -1070,9 +1122,9 @@
       waiting_import: 'Waiting for import',
       sec_import: 'Import Data',
       import_mode: 'Import Mode',
-      import_input: 'Import Input',
-      append_input: 'Append Input',
-      import_hint: 'Import Input replaces current data; Append Input merges newly queried rows into current topology.',
+      import_input: 'Import',
+      append_input: 'Append',
+      import_hint: 'Import replaces current data; Append merges newly queried rows into current topology.',
       workspace_summary_empty: 'Current Workspace: not loaded',
       layout_mode_label: 'Layout Mode',
       strip_domain_label: 'Strip hostname domain suffix',
@@ -1107,6 +1159,7 @@
       btn_center: 'Center + Zoom',
       btn_select_visible: 'Select Visible Nodes',
       btn_relayout_selected: 'Relayout Selected',
+      btn_find_path: 'Find Path',
       node_label_short: 'Short (Recommended)',
       node_label_full: 'Full (Crowded)',
       node_label_full_ip: 'Full + IP',
@@ -1125,9 +1178,9 @@
       btn_export_link_summary: 'Export Link Summary',
       btn_export_drawio: 'Export draw.io',
       btn_copy_mermaid: 'Copy Mermaid',
-      btn_export_session: 'Export Session',
-      btn_import_session: 'Import Session',
-      cleanup_group_title: 'Cleanup & Sharing',
+      btn_export_session: 'Export Json',
+      btn_import_session: 'Json Import',
+      cleanup_group_title: 'Cleanup',
       btn_clear_temp_data: 'Delete Temp Data',
       btn_clear_connection_prefs: 'Delete Connection Config',
       cleanup_hint: 'Delete Temp Data clears server-side temp CSV/debug/state/log files; Delete Connection Config clears only browser-stored SQL/CLI/Zabbix settings.',
@@ -1148,6 +1201,7 @@
       btn_pick_csv: 'Select CSV File',
       btn_append_csv: 'Append CSV',
       btn_load_paste: 'Load Pasted CSV',
+      ctx_path_via: 'Set Via Point',
       ctx_util: 'Current Utilization',
       ctx_util_range: 'Range Utilization',
       state_modal_title: 'Load State',
@@ -1173,6 +1227,7 @@
       import_mode_sql: 'SQL Import',
       import_mode_cli: 'CLI Import',
       import_mode_csv: 'CSV Import',
+      import_mode_json: 'Json Import',
       util_filter_active: 'Utilization filter active: >= {threshold}%',
     }
   };
@@ -1325,6 +1380,7 @@
     setText('center', 'btn_center');
     setText('selectVisible', 'btn_select_visible');
     setText('buildScopedTopo', 'btn_relayout_selected');
+    setText('openPathFinder', 'btn_find_path');
     setText('fitSelection', 'btn_fit_selection');
     setText('isolateSelection', 'btn_isolate');
     setText('clearSelectionHide', 'btn_clear_visibility');
@@ -1364,6 +1420,7 @@
     setText('loadPasteModal', 'btn_load_paste');
     setText('ctxUtil', 'ctx_util');
     setText('ctxUtilRange', 'ctx_util_range');
+    setText('ctxPathVia', 'ctx_path_via');
     setText('ctxCreateGroup', 'ctx_create_group');
     setText('ctxDeleteLink', 'ctx_delete_link');
     setText('ctxCopyLink', 'ctx_copy_link');
@@ -1388,6 +1445,7 @@
     setOptionText('importMode', 'sql', 'import_mode_sql');
     setOptionText('importMode', 'cli', 'import_mode_cli');
     setOptionText('importMode', 'csv', 'import_mode_csv');
+    setOptionText('importMode', 'json', 'import_mode_json');
     setOptionText('nameClusterMode', 'on', 'on');
     setOptionText('nameClusterMode', 'off', 'off');
     setOptionText('autoGroupMode', 'on', 'on');
@@ -1673,7 +1731,7 @@
     if (s === 'cli') return 'CLI';
     if (s === 'csv') return 'CSV';
     if (s === 'paste') return '粘贴';
-    if (s === 'session') return '会话文件';
+    if (s === 'session') return 'Json';
     if (s === 'server_state') return '服务器状态';
     if (s === 'page_session') return '页面会话';
     return String(source || '').trim();
@@ -2341,6 +2399,15 @@
       { selector: 'edge.util-mid', style: { 'line-color': '#ca8a04', 'target-arrow-color': '#ca8a04' } },
       { selector: 'edge.util-high', style: { 'line-color': '#dc2626', 'target-arrow-color': '#dc2626' } },
       { selector: 'edge.util-na', style: { 'line-style': 'dashed', 'line-color': '#9ca3af', 'target-arrow-color': '#9ca3af' } },
+      { selector: '.path-main', style: { 'line-color': '#2563eb', 'target-arrow-color': '#2563eb', 'width': 3.2, 'z-index-compare': 'manual', 'z-index': 1200 } },
+      { selector: '.path-main2', style: { 'line-color': '#0ea5e9', 'target-arrow-color': '#0ea5e9', 'width': 3.2, 'z-index-compare': 'manual', 'z-index': 1190 } },
+      { selector: '.path-alt1', style: { 'line-color': '#f59e0b', 'target-arrow-color': '#f59e0b', 'width': 2.8, 'z-index-compare': 'manual', 'z-index': 1180 } },
+      { selector: '.path-alt2', style: { 'line-color': '#ef4444', 'target-arrow-color': '#ef4444', 'width': 2.8, 'z-index-compare': 'manual', 'z-index': 1170 } },
+      { selector: '.path-node-main', style: { 'border-width': 4, 'border-color': '#2563eb', 'z-index-compare': 'manual', 'z-index': 1200 } },
+      { selector: '.path-node-main2', style: { 'border-width': 4, 'border-color': '#0ea5e9', 'z-index-compare': 'manual', 'z-index': 1190 } },
+      { selector: '.path-node-alt1', style: { 'border-width': 4, 'border-color': '#f59e0b', 'z-index-compare': 'manual', 'z-index': 1180 } },
+      { selector: '.path-node-alt2', style: { 'border-width': 4, 'border-color': '#ef4444', 'z-index-compare': 'manual', 'z-index': 1170 } },
+      { selector: '.path-dim', style: { 'opacity': 0.15 } },
       {
         selector: 'edge.heavy',
         style: {
@@ -3957,6 +4024,318 @@
     });
   }
 
+  function refreshPathNodeOptions() {
+    const list = $('pathNodeNames');
+    if (!list) return;
+    const names = [];
+    if (cy) {
+      cy.nodes(':visible').forEach((n) => {
+        if (n.data('isGroup')) return;
+        const label = String(n.data('label') || '').trim();
+        if (label) names.push(label);
+      });
+    }
+    const uniq = Array.from(new Set(names)).sort((a, b) => a.localeCompare(b));
+    list.innerHTML = uniq.map((name) => `<option value="${escapeHtml(name)}"></option>`).join('');
+  }
+
+  function openPathModal() {
+    refreshPathNodeOptions();
+    if (!cy || !cy.nodes(':visible').length) {
+      $('pathResultList').innerHTML = '<div class="state-empty">请先生成拓扑，再查找路径</div>';
+      $('pathResultHint').textContent = '请先生成拓扑，再查找路径。';
+      $('pathModal').style.display = 'flex';
+      return;
+    }
+    const selected = cy.nodes(':selected').filter((n) => !n.data('isGroup'));
+    if (selected.length >= 2) {
+      $('pathSourceInput').value = String(selected[0].data('label') || '').trim();
+      $('pathTargetInput').value = String(selected[1].data('label') || '').trim();
+      if (selected.length > 2 && !$('pathViaInput').value.trim()) {
+        $('pathViaInput').value = selected.slice(2).map((n) => String(n.data('label') || '').trim()).filter(Boolean).join(',');
+      }
+    }
+    $('pathModal').style.display = 'flex';
+  }
+
+  function closePathModal() {
+    $('pathModal').style.display = 'none';
+  }
+
+  function normalizePathName(text) {
+    return String(text || '').trim().toLowerCase();
+  }
+
+  function resolvePathNodeId(name) {
+    const needle = normalizePathName(name);
+    if (!needle || !cy) return '';
+    let exact = '';
+    cy.nodes(':visible').forEach((n) => {
+      if (exact || n.data('isGroup')) return;
+      const candidates = [
+        String(n.data('label') || '').trim(),
+        String(n.data('short') || '').trim(),
+        String(n.id() || '').trim()
+      ].filter(Boolean);
+      const ips = Array.isArray(n.data('ips')) ? n.data('ips') : [];
+      ips.forEach((ip) => candidates.push(String(ip || '').trim()));
+      if (candidates.some((item) => normalizePathName(item) === needle)) exact = n.id();
+    });
+    return exact;
+  }
+
+  function parseViaNodeNames(value) {
+    return String(value || '').split(',').map((part) => part.trim()).filter(Boolean);
+  }
+
+  function buildVisibleAdjacency() {
+    const adj = new Map();
+    if (!cy) return adj;
+    cy.nodes(':visible').forEach((n) => {
+      if (!n.data('isGroup')) adj.set(n.id(), []);
+    });
+    cy.edges(':visible').forEach((e) => {
+      const s = e.source().id();
+      const t = e.target().id();
+      if (!adj.has(s) || !adj.has(t)) return;
+      adj.get(s).push({ node: t, edgeId: e.id() });
+      adj.get(t).push({ node: s, edgeId: e.id() });
+    });
+    return adj;
+  }
+
+  function enumerateShortestSegmentPaths(adj, startId, targetId, forbiddenEdgeIds = new Set(), limit = 2) {
+    if (!startId || !targetId || !adj.has(startId) || !adj.has(targetId)) return [];
+    if (startId === targetId) return [{ nodeIds: [startId], edgeIds: [], hopCount: 0 }];
+    const dist = new Map([[startId, 0]]);
+    const preds = new Map();
+    const queue = [startId];
+    while (queue.length) {
+      const current = queue.shift();
+      const baseDist = dist.get(current) || 0;
+      (adj.get(current) || []).forEach(({ node, edgeId }) => {
+        if (forbiddenEdgeIds.has(edgeId)) return;
+        const nextDist = baseDist + 1;
+        if (!dist.has(node)) {
+          dist.set(node, nextDist);
+          preds.set(node, [{ node: current, edgeId }]);
+          queue.push(node);
+        } else if (dist.get(node) === nextDist) {
+          const arr = preds.get(node) || [];
+          arr.push({ node: current, edgeId });
+          preds.set(node, arr);
+        }
+      });
+    }
+    if (!dist.has(targetId)) return [];
+    const results = [];
+    const seen = new Set();
+    function backtrack(nodeId, nodeTrail, edgeTrail) {
+      if (results.length >= limit) return;
+      if (nodeId === startId) {
+        const nodeIds = nodeTrail.slice().reverse();
+        const edgeIds = edgeTrail.slice().reverse();
+        const key = `${nodeIds.join('>')}|${edgeIds.join('>')}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          results.push({ nodeIds, edgeIds, hopCount: edgeIds.length });
+        }
+        return;
+      }
+      const arr = preds.get(nodeId) || [];
+      for (const prev of arr) {
+        backtrack(prev.node, nodeTrail.concat(prev.node), edgeTrail.concat(prev.edgeId));
+        if (results.length >= limit) return;
+      }
+    }
+    backtrack(targetId, [targetId], []);
+    return results;
+  }
+
+  function combineSegmentPathChoices(segments, limit = 4) {
+    const results = [];
+    function walk(idx, nodeIds, edgeIds) {
+      if (results.length >= limit) return;
+      if (idx >= segments.length) {
+        results.push({ nodeIds: nodeIds.slice(), edgeIds: edgeIds.slice(), hopCount: edgeIds.length });
+        return;
+      }
+      for (const seg of segments[idx]) {
+        const nextNodes = nodeIds.length ? nodeIds.concat(seg.nodeIds.slice(1)) : seg.nodeIds.slice();
+        const nextEdges = edgeIds.concat(seg.edgeIds);
+        walk(idx + 1, nextNodes, nextEdges);
+        if (results.length >= limit) return;
+      }
+    }
+    walk(0, [], []);
+    const uniq = new Map();
+    results.forEach((item) => {
+      const key = item.edgeIds.join('>');
+      if (!uniq.has(key)) uniq.set(key, item);
+    });
+    return Array.from(uniq.values()).sort((a, b) => a.hopCount - b.hopCount).slice(0, limit);
+  }
+
+  function buildPathSegments(adj, nodeIds, forbiddenEdgeIds = new Set(), limitPerSegment = 2) {
+    const segments = [];
+    for (let i = 0; i < nodeIds.length - 1; i += 1) {
+      const seg = enumerateShortestSegmentPaths(adj, nodeIds[i], nodeIds[i + 1], forbiddenEdgeIds, limitPerSegment);
+      if (!seg.length) return { ok: false, failedFrom: nodeIds[i], failedTo: nodeIds[i + 1], segments: [] };
+      segments.push(seg);
+    }
+    return { ok: true, segments };
+  }
+
+  function edgeStepText(edgeId, fromNodeId) {
+    const edge = cy ? cy.getElementById(edgeId) : null;
+    if (!edge || !edge.length) return '';
+    const sourceNode = edge.source();
+    const targetNode = edge.target();
+    const fromIsSource = String(fromNodeId || '') === sourceNode.id();
+    const leftNode = fromIsSource ? sourceNode : targetNode;
+    const rightNode = fromIsSource ? targetNode : sourceNode;
+    const leftPort = fromIsSource ? String(edge.data('sourcePort') || '').trim() : String(edge.data('targetPort') || '').trim();
+    const rightPort = fromIsSource ? String(edge.data('targetPort') || '').trim() : String(edge.data('sourcePort') || '').trim();
+    return `${String(leftNode.data('label') || leftNode.id() || '').trim()}${leftPort ? ` ${leftPort}` : ''} -> ${String(rightNode.data('label') || rightNode.id() || '').trim()}${rightPort ? ` ${rightPort}` : ''}`.trim();
+  }
+
+  function clearPathHighlight(opts = {}) {
+    if (!cy) return;
+    cy.batch(() => {
+      cy.elements().removeClass('path-main path-main2 path-alt1 path-alt2 path-node-main path-node-main2 path-node-alt1 path-node-alt2 path-dim');
+    });
+    if (!opts.keepState) currentPathState = null;
+    if (!opts.silent) setOK('已清除路径高亮。');
+  }
+
+  function applyPathHighlight(resultState) {
+    if (!cy) return;
+    clearPathHighlight({ keepState: true, silent: true });
+    cy.batch(() => {
+      cy.elements().addClass('path-dim');
+      (resultState.paths || []).forEach((item) => {
+        item.edgeIds.forEach((id) => {
+          const edge = cy.getElementById(id);
+          if (edge && edge.length) {
+            edge.removeClass('path-dim');
+            edge.addClass(item.edgeClass);
+          }
+        });
+        item.nodeIds.forEach((id) => {
+          const node = cy.getElementById(id);
+          if (node && node.length) {
+            node.removeClass('path-dim');
+            node.addClass(item.nodeClass);
+          }
+        });
+      });
+    });
+  }
+
+  function renderPathResults(resultState) {
+    const box = $('pathResultList');
+    if (!box) return;
+    const items = Array.isArray(resultState?.paths) ? resultState.paths : [];
+    if (!items.length) {
+      box.innerHTML = '<div class="state-empty">未找到路径</div>';
+      return;
+    }
+    box.innerHTML = items.map((item) => {
+      const steps = item.edgeIds.map((edgeId, idx) => `<div class="state-item-meta">${escapeHtml(edgeStepText(edgeId, item.nodeIds[idx] || ''))}</div>`).join('');
+      return `<div class="state-item"><div class="state-item-main"><div class="state-item-title">${escapeHtml(item.label)}</div><div class="state-item-meta">跳数 ${item.hopCount}</div>${steps}</div></div>`;
+    }).join('');
+  }
+
+  function keepOnlyPathNodes() {
+    if (!cy || !currentPathState?.allNodeIds?.size) {
+      setErr('请先查找到路径后再执行仅保留路径节点。');
+      return;
+    }
+    const removeNodes = cy.nodes(':visible').filter((n) => !currentPathState.allNodeIds.has(n.id()));
+    if (!removeNodes.length) {
+      setOK('当前只剩路径节点，无需裁剪。');
+      return;
+    }
+    const ids = removeNodes.map((n) => n.id());
+    pushDeletedNodeIds(ids);
+    removeNodes.remove();
+    updateCounts();
+    schedulePersistCurrentPageSession(80);
+    setOK(`已仅保留路径节点，删除其余 ${ids.length} 个节点（可恢复）。`);
+  }
+
+  function computePathSearchResult() {
+    if (!cy) throw new Error('请先生成拓扑，再查找路径');
+    const sourceName = String($('pathSourceInput')?.value || '').trim();
+    const targetName = String($('pathTargetInput')?.value || '').trim();
+    const viaNames = parseViaNodeNames($('pathViaInput')?.value || '');
+    const backupCount = Math.max(0, Math.min(2, parseInt($('pathBackupCount')?.value || '0', 10) || 0));
+    const sourceId = resolvePathNodeId(sourceName);
+    const targetId = resolvePathNodeId(targetName);
+    if (!sourceId) throw new Error(`未找到源节点：${sourceName || '-'}`);
+    if (!targetId) throw new Error(`未找到目的节点：${targetName || '-'}`);
+    const viaIds = viaNames.map((name) => {
+      const id = resolvePathNodeId(name);
+      if (!id) throw new Error(`未找到必经点：${name}`);
+      return id;
+    });
+    const seq = [sourceId, ...viaIds, targetId];
+    const adj = buildVisibleAdjacency();
+    const built = buildPathSegments(adj, seq, new Set(), 2);
+    if (!built.ok) {
+      const fromNode = cy.getElementById(built.failedFrom);
+      const toNode = cy.getElementById(built.failedTo);
+      throw new Error(`路径不可达：${String(fromNode?.data('label') || built.failedFrom)} -> ${String(toNode?.data('label') || built.failedTo)}`);
+    }
+    const combined = combineSegmentPathChoices(built.segments, 6);
+    if (!combined.length) throw new Error('未找到可用路径');
+    const paths = [];
+    const main1 = combined[0];
+    paths.push({ ...main1, label: '主路径', edgeClass: 'path-main', nodeClass: 'path-node-main' });
+    const reserved = new Set(main1.edgeIds);
+    if (combined.length > 1 && combined[1].hopCount === main1.hopCount) {
+      const main2 = combined[1];
+      paths.push({ ...main2, label: '主路径 2', edgeClass: 'path-main2', nodeClass: 'path-node-main2' });
+      main2.edgeIds.forEach((id) => reserved.add(id));
+    }
+    for (let i = 0; i < backupCount; i += 1) {
+      const altBuilt = buildPathSegments(adj, seq, reserved, 1);
+      if (!altBuilt.ok) break;
+      const alt = combineSegmentPathChoices(altBuilt.segments, 1)[0];
+      if (!alt || !alt.edgeIds.length) break;
+      alt.edgeIds.forEach((id) => reserved.add(id));
+      paths.push({
+        ...alt,
+        label: `备份路径 ${i + 1}`,
+        edgeClass: i === 0 ? 'path-alt1' : 'path-alt2',
+        nodeClass: i === 0 ? 'path-node-alt1' : 'path-node-alt2'
+      });
+    }
+    const allNodeIds = new Set();
+    paths.forEach((item) => item.nodeIds.forEach((id) => allNodeIds.add(id)));
+    return { sourceName, targetName, viaNames, backupCount, sourceId, targetId, viaIds, paths, allNodeIds };
+  }
+
+  function runPathSearch(opts = {}) {
+    try {
+      const result = computePathSearchResult();
+      currentPathState = result;
+      applyPathHighlight(result);
+      renderPathResults(result);
+      const mainCount = result.paths.filter((item) => item.label.startsWith('主路径')).length;
+      const backupFound = result.paths.filter((item) => item.label.startsWith('备份路径')).length;
+      const note = backupFound < result.backupCount ? `，备份路径仅找到 ${backupFound}/${result.backupCount} 条` : '';
+      $('pathResultHint').textContent = `已找到 ${mainCount} 条主路径${note}。`;
+      if (!opts.silent) setOK(`路径查找完成：主路径 ${mainCount} 条，备份路径 ${backupFound} 条。`);
+      return result;
+    } catch (e) {
+      renderPathResults({ paths: [] });
+      $('pathResultHint').textContent = String(e && e.message ? e.message : e);
+      if (!opts.silent) setErr(`路径查找失败：${String(e && e.message ? e.message : e)}`);
+      return null;
+    }
+  }
+
   // 右键菜单
   let ctxTarget = null;
   function hideCtx() {
@@ -4066,13 +4445,15 @@
     if (!cy) return;
     const edgeMode = $('edgeLabelMode')?.value || 'none';
     const showUtilLabel = !!$('utilLabelEnabled')?.checked;
+    const showBandwidth = !!$('utilShowBandwidth')?.checked;
+    const showExtra = showUtilLabel || showBandwidth;
     cy.edges().forEach((e) => {
       const base = formatEdgePortLabel(e);
       const util = formatEdgeUtilText(e);
       let shown = '';
-      if (edgeMode === 'both' && showUtilLabel) shown = [base, util].filter(Boolean).join(' | ');
+      if (edgeMode === 'both' && showExtra) shown = [base, util].filter(Boolean).join(' | ');
       else if (edgeMode === 'both') shown = base;
-      else if (showUtilLabel) shown = util;
+      else if (showExtra) shown = util;
       e.data('labelShown', shown);
     });
   }
@@ -4548,8 +4929,9 @@
     const parts = [];
     const portText = formatEdgePortLabel(edge);
     const utilText = formatEdgeUtilText(edge);
+    const showExtra = !!$('utilLabelEnabled')?.checked || !!$('utilShowBandwidth')?.checked;
     if (portText) parts.push(portText);
-    if (!!$('utilLabelEnabled')?.checked && utilText) parts.push(utilText);
+    if (showExtra && utilText) parts.push(utilText);
     return parts.join('<br/>');
   }
 
@@ -4861,7 +5243,7 @@
     const isManualGroup = ctxGroupKind() === 'manual';
     const groupKey = ctxGroupKey();
     const canToggleGroup = !!groupKey;
-    const nodeBtnIds = ['ctxLock', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery'];
+    const nodeBtnIds = ['ctxLock', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia'];
     nodeBtnIds.forEach((id) => {
       const el = $(id);
       if (!el) return;
@@ -4869,7 +5251,7 @@
         el.style.display = (id === 'ctxUtil' || id === 'ctxUtilRange') ? '' : 'none';
         return;
       }
-      if (isGroupNode && ['ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery'].includes(id)) {
+      if (isGroupNode && ['ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia'].includes(id)) {
         el.style.display = 'none';
         return;
       }
@@ -4888,11 +5270,32 @@
     if ($('ctxRenameGroup')) {
       $('ctxRenameGroup').style.display = (!isEdgeTarget && isManualGroup && canToggleGroup) ? '' : 'none';
     }
+    if ($('ctxPathVia')) $('ctxPathVia').style.display = (!isEdgeTarget && !isGroupNode) ? '' : 'none';
     if (!isEdgeTarget) {
       const nodes = ctxNodes();
       const locked = nodes.length ? nodes.every(n => n.locked()) : false;
       $('ctxLock').textContent = locked ? '取消固定' : '固定位置';
     }
+    const groups = [
+      { sep: 'ctxSepEdit', ids: ['ctxLock', 'ctxDelete', 'ctxDeleteLink'] },
+      { sep: 'ctxSepCopy', ids: ['ctxPathVia', 'ctxCreateGroup', 'ctxToggleGroup', 'ctxRenameGroup'] },
+      { sep: 'ctxSepQuery', ids: ['ctxCopy', 'ctxCopyIp', 'ctxCopyLink'] },
+      { sep: '', ids: ['ctxUtil', 'ctxUtilRange', 'ctxAppendQuery'] }
+    ];
+    groups.forEach((group, idx) => {
+      if (!group.sep) return;
+      const hasVisible = group.ids.some((id) => {
+        const el = $(id);
+        return el && el.style.display !== 'none';
+      });
+      const sep = $(group.sep);
+      if (!sep) return;
+      const laterHasVisible = groups.slice(idx + 1).some((later) => later.ids.some((id) => {
+        const el = $(id);
+        return el && el.style.display !== 'none';
+      }));
+      sep.style.display = hasVisible && laterHasVisible ? 'block' : 'none';
+    });
     const { clientX, clientY } = evt.originalEvent || {};
     if (clientX !== undefined) {
       menu.style.left = `${clientX}px`;
@@ -6498,12 +6901,29 @@
     csv.classList.add('hidden');
     if (mode === 'sql') sql.classList.remove('hidden');
     else if (mode === 'cli') cli.classList.remove('hidden');
-    else csv.classList.remove('hidden');
+    else if (mode === 'csv') csv.classList.remove('hidden');
+  }
+
+  function refreshImportActionButtons(mode = $('importMode')?.value || 'cli') {
+    const importBtn = $('openImportModalImport');
+    const appendBtn = $('openImportModalAppend');
+    if (!importBtn || !appendBtn) return;
+    const isJson = String(mode || '').trim() === 'json';
+    appendBtn.style.display = isJson ? 'none' : '';
   }
 
   function openImportModal(action = 'import') {
     importInputAction = action === 'append' ? 'append' : 'import';
     const mode = $('importMode')?.value || 'sql';
+    if (mode === 'json') {
+      if (importInputAction === 'append') {
+        setErr('Json 导入不支持追加，请使用导入。');
+        return;
+      }
+      $('importSessionFile').value = '';
+      $('importSessionFile').click();
+      return;
+    }
     showImportPanel(mode);
     const title = $('importModalTitle');
     if (title) title.textContent = importInputAction === 'append' ? tr('append_input') : tr('import_input');
@@ -6611,7 +7031,10 @@
   $('cliCredModal').addEventListener('click', (e) => {
     if (e.target && e.target.id === 'cliCredModal') closeCliCredModal(null);
   });
-  $('importMode').addEventListener('change', (e) => showImportPanel(e.target.value));
+  $('importMode').addEventListener('change', (e) => {
+    showImportPanel(e.target.value);
+    refreshImportActionButtons(e.target.value);
+  });
   $('runSqlGenerateModal').addEventListener('click', async () => {
     try {
       await runSqlGenerateAndBuild('sqlStartHostnameModal', 'sqlResultHintModal', importInputAction);
@@ -6837,6 +7260,8 @@
   loadSqlPrefs();
   loadZbxPrefs();
   loadTopologyUiPrefs();
+  showImportPanel($('importMode')?.value || 'cli');
+  refreshImportActionButtons($('importMode')?.value || 'cli');
   const restoredPageSession = restoreCurrentPageSession();
   if (!restoredPageSession) resetWorkspaceMeta();
   refreshKeywordHistories();
@@ -6953,14 +7378,14 @@
   });
 
   $('exportSession').addEventListener('click', () => {
-    if (!rawRows.length) { setErr('请先生成或导入拓扑数据，再导出会话'); return; }
+    if (!rawRows.length) { setErr('请先生成或导入拓扑数据，再导出 Json'); return; }
     try {
       const snap = buildSessionSnapshot();
       const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
       download(`lldp-session-${ts}.json`, JSON.stringify(snap, null, 2), 'application/json');
-      setOK(`会话导出成功：${snap.rows.length} 行，包含坐标。`);
+      setOK(`Json 导出成功：${snap.rows.length} 行，包含坐标。`);
     } catch (e) {
-      setErr(`导出会话失败：${String(e && e.message ? e.message : e)}`);
+      setErr(`导出 Json 失败：${String(e && e.message ? e.message : e)}`);
     }
   });
 
@@ -7034,10 +7459,6 @@
     }
   });
 
-  $('importSessionBtn').addEventListener('click', () => {
-    $('importSessionFile').value = '';
-    $('importSessionFile').click();
-  });
   $('importSessionFile').addEventListener('change', async (e) => {
     const f = e.target.files?.[0];
     if (!f) return;
@@ -7045,11 +7466,11 @@
       const text = await f.text();
       const obj = JSON.parse(text);
       applySessionSnapshot(obj, { source: 'session', actionText: '恢复' });
-      setStatus('会话已导入并恢复拓扑');
-      setOK(`会话导入成功：${rawRows.length} 行，坐标已恢复。`);
+      setStatus('Json 已导入并恢复拓扑');
+      setOK(`Json 导入成功：${rawRows.length} 行，坐标已恢复。`);
       setErr('');
     } catch (err) {
-      setErr(`导入会话失败：${String(err && err.message ? err.message : err)}`);
+      setErr(`导入 Json 失败：${String(err && err.message ? err.message : err)}`);
     }
   });
 
@@ -7428,6 +7849,25 @@
     hideCtx();
   });
 
+  $('ctxPathVia').addEventListener('click', () => {
+    const node = ctxTarget && typeof ctxTarget.isNode === 'function' && ctxTarget.isNode() ? ctxTarget : null;
+    if (!node || !node.length) return hideCtx();
+    const label = String(node.data('label') || '').trim();
+    if (!label) return hideCtx();
+    openPathModal();
+    const viaValues = parseViaNodeNames($('pathViaInput')?.value || '');
+    if (!viaValues.includes(label) && $('pathSourceInput')?.value.trim() !== label && $('pathTargetInput')?.value.trim() !== label) {
+      viaValues.push(label);
+      $('pathViaInput').value = viaValues.join(',');
+    }
+    if ($('pathSourceInput')?.value.trim() && $('pathTargetInput')?.value.trim()) {
+      runPathSearch();
+    } else {
+      setOK(`已将 ${label} 设为必经点。`);
+    }
+    hideCtx();
+  });
+
   function buildSelectionScopeLabel(nodes, edges) {
     const names = (nodes || []).map((n) => String(n.data('label') || n.id())).filter(Boolean);
     const edgeCount = edges?.length || 0;
@@ -7666,11 +8106,27 @@
   $('buildScopedTopo').addEventListener('click', () => {
     runWithRollback(() => buildScopedTopologyFromVisible(), { delayMs: 1300 });
   });
+  $('openPathFinder').addEventListener('click', openPathModal);
   $('keepAdjacentOnly').addEventListener('click', () => {
     runWithRollback(() => keepAdjacentOnly(), { delayMs: 0 });
   });
   $('clearSelectionHide').addEventListener('click', () => {
     runWithRollback(() => clearSelectionHide(), { delayMs: 0 });
+  });
+  $('runPathSearchBtn').addEventListener('click', () => {
+    runPathSearch();
+  });
+  $('clearPathHighlightBtn').addEventListener('click', () => {
+    clearPathHighlight();
+    $('pathResultList').innerHTML = '';
+    $('pathResultHint').textContent = '已清除路径高亮。';
+  });
+  $('keepPathNodesBtn').addEventListener('click', () => {
+    runWithRollback(() => keepOnlyPathNodes(), { delayMs: 0 });
+  });
+  $('closePathModal').addEventListener('click', closePathModal);
+  $('pathModal').addEventListener('click', (e) => {
+    if (e.target && e.target.id === 'pathModal') closePathModal();
   });
 
   $('search').addEventListener('keydown', (e) => {
