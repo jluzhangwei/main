@@ -29,17 +29,12 @@ import {
   v2CreateApiKey,
   v2CreateJob,
   v2DeleteApiKey,
-  v2GetAuditLogs,
-  v2GetCommandProfiles,
   v2GetPermissionTemplates,
   v2GetJobTimeline,
   v2ListApiKeys,
   v2QueryJobs,
   v2RejectActionGroupsBatch,
-  v2StreamJobEvents,
   v2UpdateApiKey,
-  v2UpdateRcaWeights,
-  v2UpdateTopology,
   updateCommandPolicy,
   updateRiskPolicy,
   updateSessionCredentials,
@@ -63,7 +58,6 @@ import type {
   SessionResponse,
   Timeline,
   V2ApiKey,
-  V2JobActionGroup,
   V2JobCommandResult,
   V2JobEvent,
   V2JobSummary,
@@ -72,7 +66,6 @@ import type {
 
 type PageId =
   | 'workbench'
-  | 'v3_jobs'
   | 'third_party_keys'
   | 'control'
   | 'command_policy'
@@ -112,7 +105,6 @@ type HistorySessionItem = {
 
 const UI_STATE_KEY = 'netops_ui_prefs_v1'
 const DEVICE_AUTH_CACHE_KEY = 'netops_device_auth_cache_v1'
-const V2_API_KEY_CACHE_KEY = 'netops_v2_api_key_v1'
 
 type DeviceAuthRecord = {
   username?: string
@@ -261,29 +253,6 @@ type MultiSessionConfig = {
   api_token?: string
 }
 
-type V3JobCreateForm = {
-  name: string
-  problem: string
-  mode: 'diagnosis' | 'inspection' | 'repair'
-  topology_mode: 'hybrid' | 'external' | 'auto'
-  max_gap_seconds: number
-  max_device_concurrency: number
-  execution_policy: 'stop_on_failure' | 'continue_on_failure' | 'rollback_template'
-  devices_json: string
-  topology_edges_json: string
-  webhook_url: string
-  webhook_events: string
-  idempotency_key: string
-}
-
-type V3RcaWeightsInput = {
-  anomaly: number
-  timing: number
-  topology: number
-  change: number
-  consistency: number
-}
-
 const V3_DEFAULT_PERMISSIONS = [
   'job.read',
   'job.write',
@@ -292,32 +261,6 @@ const V3_DEFAULT_PERMISSIONS = [
   'policy.write',
   'audit.read',
 ]
-
-const V3_DEFAULT_JOB_FORM: V3JobCreateForm = {
-  name: 'v3-multi-device-job',
-  problem: '请做跨设备根因分析并输出证据链',
-  mode: 'diagnosis',
-  topology_mode: 'hybrid',
-  max_gap_seconds: 300,
-  max_device_concurrency: 20,
-  execution_policy: 'stop_on_failure',
-  devices_json: JSON.stringify(
-    [
-      {
-        host: '192.168.0.102',
-        protocol: 'ssh',
-        username: '',
-        password: '',
-      },
-    ],
-    null,
-    2,
-  ),
-  topology_edges_json: '[]',
-  webhook_url: '',
-  webhook_events: 'job_created,phase_changed,job_completed,job_failed',
-  idempotency_key: '',
-}
 
 function App() {
   const [automationLevel, setAutomationLevel] = useState<AutomationLevel>('assisted')
@@ -343,8 +286,6 @@ function App() {
   const [llmFailoverEnabled, setLlmFailoverEnabled] = useState(true)
   const [llmBatchExecutionEnabled, setLlmBatchExecutionEnabled] = useState(true)
   const [llmSaving, setLlmSaving] = useState(false)
-  const [v3ApiKeyInput, setV3ApiKeyInput] = useState('')
-  const [v3BootstrapApiKey, setV3BootstrapApiKey] = useState('')
   const [v3ApiKeyName, setV3ApiKeyName] = useState('ops-admin')
   const [v3ApiKeyPermissions, setV3ApiKeyPermissions] = useState(V3_DEFAULT_PERMISSIONS.join(','))
   const [v3ApiKeyLoading, setV3ApiKeyLoading] = useState(false)
@@ -352,35 +293,8 @@ function App() {
   const [v3LastCreatedSecret, setV3LastCreatedSecret] = useState('')
   const [v3JobsLoading, setV3JobsLoading] = useState(false)
   const [v3Jobs, setV3Jobs] = useState<V2JobSummary[]>([])
-  const [v3JobsTotal, setV3JobsTotal] = useState(0)
-  const [v3JobOffset, setV3JobOffset] = useState(0)
-  const [v3JobLimit, setV3JobLimit] = useState(20)
-  const [v3JobStatusFilter, setV3JobStatusFilter] = useState<'all' | 'queued' | 'running' | 'waiting_approval' | 'executing' | 'completed' | 'failed' | 'cancelled'>('all')
-  const [v3JobModeFilter, setV3JobModeFilter] = useState<'all' | 'diagnosis' | 'inspection' | 'repair'>('all')
   const [v3SelectedJobId, setV3SelectedJobId] = useState<string | undefined>(undefined)
-  const [v3TimelineLoading, setV3TimelineLoading] = useState(false)
-  const [v3Timeline, setV3Timeline] = useState<V2JobTimeline | null>(null)
-  const [v3Events, setV3Events] = useState<V2JobEvent[]>([])
-  const [v3EventSeq, setV3EventSeq] = useState(0)
-  const [v3Streaming, setV3Streaming] = useState(false)
-  const [v3SelectedActionIds, setV3SelectedActionIds] = useState<string[]>([])
-  const [v3AuditLogs, setV3AuditLogs] = useState<Array<Record<string, unknown>>>([])
-  const [v3AuditLoading, setV3AuditLoading] = useState(false)
-  const [v3CommandProfiles, setV3CommandProfiles] = useState<Array<Record<string, unknown>>>([])
-  const [v3ProfilesLoading, setV3ProfilesLoading] = useState(false)
   const [v3PermissionTemplates, setV3PermissionTemplates] = useState<Record<string, string[]>>({})
-  const [v3TopologyEditor, setV3TopologyEditor] = useState('[]')
-  const [v3RcaWeights, setV3RcaWeights] = useState<V3RcaWeightsInput>({
-    anomaly: 0.3,
-    timing: 0.25,
-    topology: 0.25,
-    change: 0.1,
-    consistency: 0.1,
-  })
-  const [v3JobForm, setV3JobForm] = useState<V3JobCreateForm>(V3_DEFAULT_JOB_FORM)
-  const [v3CreateJobLoading, setV3CreateJobLoading] = useState(false)
-  const [v3ActionLoading, setV3ActionLoading] = useState(false)
-  const v3EventAbortRef = useRef<AbortController | null>(null)
   const [commandPolicy, setCommandPolicy] = useState<CommandPolicy | null>(null)
   const [blockedRules, setBlockedRules] = useState<string[]>([])
   const [executableRules, setExecutableRules] = useState<string[]>([])
@@ -651,7 +565,7 @@ function App() {
       if (!item.id || seen.has(item.id)) continue
       seen.add(item.id)
       const mode = operationModeLabel(item.operation_mode)
-      const kind = item.kind === 'multi' ? '多设备任务' : '单设备会话'
+      const kind = item.kind === 'multi' ? '多设备协同' : '单设备会话'
       const label = `${kind} · ${item.host} · ${mode} · ${item.source_id.slice(0, 8)}...`
       options.push({ value: item.id, label })
     }
@@ -720,16 +634,13 @@ function App() {
     () => computeSessionLastUpdatedAt(selectedHistorySnapshotView),
     [selectedHistorySnapshotView],
   )
-  const v3PendingActionGroups = useMemo<V2JobActionGroup[]>(
-    () =>
-      (v3Timeline?.job.action_groups || []).filter(
-        (item) => item.status === 'pending_approval',
-      ),
-    [v3Timeline],
-  )
   const v3SelectedJobSummary = useMemo(
     () => v3Jobs.find((item) => item.id === v3SelectedJobId),
     [v3Jobs, v3SelectedJobId],
+  )
+  const recentMultiJobItems = useMemo(
+    () => [...v3Jobs].sort((left, right) => Date.parse(String(right.created_at || '')) - Date.parse(String(left.created_at || ''))).slice(0, 6),
+    [v3Jobs],
   )
 
   const selectedDetailTitle = useMemo(() => {
@@ -844,16 +755,6 @@ function App() {
   }, [])
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(V2_API_KEY_CACHE_KEY)
-      if (!raw) return
-      setV3ApiKeyInput(String(raw))
-    } catch {
-      // ignore local storage parse errors
-    }
-  }, [])
-
-  useEffect(() => {
     const payload: PersistedUiState = {
       activePage,
       rightPanelWidth,
@@ -868,18 +769,6 @@ function App() {
   }, [activePage, rightPanelWidth, terminalSplitRatio, statusCollapsed, directionInput, session?.id, traceListExpanded, flowLayoutMode])
 
   useEffect(() => {
-    try {
-      if (v3ApiKeyInput.trim()) {
-        localStorage.setItem(V2_API_KEY_CACHE_KEY, v3ApiKeyInput.trim())
-      } else {
-        localStorage.removeItem(V2_API_KEY_CACHE_KEY)
-      }
-    } catch {
-      // ignore local storage errors
-    }
-  }, [v3ApiKeyInput])
-
-  useEffect(() => {
     if (commands.length === 0) {
       setSelectedCommandId(undefined)
       return
@@ -891,17 +780,7 @@ function App() {
     if (activePage !== 'third_party_keys') return
     void refreshV3ApiKeys()
     void refreshV3PermissionTemplates()
-  }, [activePage, v3ApiKeyInput])
-
-  useEffect(() => {
-    if (!v3SelectedJobId) return
-    void refreshV3Timeline(v3SelectedJobId)
-  }, [v3SelectedJobId, v3ApiKeyInput])
-
-  useEffect(() => {
-    const ids = v3PendingActionGroups.map((item) => item.id)
-    setV3SelectedActionIds(ids)
-  }, [v3PendingActionGroups])
+  }, [activePage])
 
   useEffect(() => {
     if (!sessionVersionSignature) return
@@ -1076,8 +955,6 @@ function App() {
         window.clearTimeout(tracePlaybackTimerRef.current)
         tracePlaybackTimerRef.current = null
       }
-      v3EventAbortRef.current?.abort()
-      v3EventAbortRef.current = null
     }
   }, [])
 
@@ -1239,8 +1116,14 @@ function App() {
           limit: 200,
         }).then((payload) => payload.items).catch(() => [] as V2JobSummary[]),
       ])
+      setV3Jobs(multiJobs)
+      setV3SelectedJobId((prev) => {
+        if (prev && multiJobs.some((item) => item.id === prev)) return prev
+        return multiJobs[0]?.id
+      })
       setSessionHistory(buildHistorySessionItems(singleSessions, multiJobs))
     } catch {
+      setV3Jobs([])
       setSessionHistory([])
     } finally {
       setSessionsLoading(false)
@@ -1267,57 +1150,17 @@ function App() {
   }
 
   function resolveV3ApiKey(): string {
-    return v3ApiKeyInput.trim()
+    // Built-in UI reaches /v2/* through the trusted internal channel; user-managed API keys
+    // on the "第三方 Key 服务" page are only for external systems and scripts.
+    return ''
   }
 
   async function refreshV3Jobs() {
-    const key = resolveV3ApiKey()
     setV3JobsLoading(true)
     try {
-      const payload = await v2QueryJobs(key, {
-        offset: v3JobOffset,
-        limit: v3JobLimit,
-        status: v3JobStatusFilter === 'all' ? undefined : v3JobStatusFilter,
-        mode: v3JobModeFilter === 'all' ? undefined : v3JobModeFilter,
-      })
-      setV3Jobs(payload.items)
-      setV3JobsTotal(payload.total)
-      if (!v3SelectedJobId && payload.items[0]) {
-        setV3SelectedJobId(payload.items[0].id)
-      } else if (v3SelectedJobId && !payload.items.some((item) => item.id === v3SelectedJobId)) {
-        setV3SelectedJobId(payload.items[0]?.id)
-      }
-    } catch (error) {
-      setV3Jobs([])
-      setV3JobsTotal(0)
-      antMessage.error((error as Error).message || '加载 V3 任务失败')
+      await refreshSessionHistory()
     } finally {
       setV3JobsLoading(false)
-    }
-  }
-
-  async function refreshV3Timeline(jobId: string, silent = true) {
-    const id = String(jobId || '').trim()
-    if (!id) return
-    const key = resolveV3ApiKey()
-    setV3TimelineLoading(true)
-    try {
-      const timeline = await v2GetJobTimeline(key, id)
-      setV3Timeline(timeline)
-      const sortedEvents = [...timeline.events].sort((a, b) => a.seq_no - b.seq_no)
-      setV3Events(sortedEvents)
-      const maxSeq = sortedEvents.reduce((max, item) => Math.max(max, item.seq_no), 0)
-      setV3EventSeq(maxSeq)
-      setV3TopologyEditor(JSON.stringify(timeline.job.causal_edges || [], null, 2))
-    } catch (error) {
-      if (!silent) {
-        antMessage.error((error as Error).message || '加载任务时间线失败')
-      }
-      setV3Timeline(null)
-      setV3Events([])
-      setV3EventSeq(0)
-    } finally {
-      setV3TimelineLoading(false)
     }
   }
 
@@ -1332,34 +1175,6 @@ function App() {
       antMessage.error((error as Error).message || '加载 API Key 列表失败')
     } finally {
       setV3ApiKeyLoading(false)
-    }
-  }
-
-  async function refreshV3AuditLogs() {
-    const key = resolveV3ApiKey()
-    setV3AuditLoading(true)
-    try {
-      const payload = await v2GetAuditLogs(key, { limit: 100, offset: 0 })
-      setV3AuditLogs(payload)
-    } catch (error) {
-      setV3AuditLogs([])
-      antMessage.error((error as Error).message || '加载审计日志失败')
-    } finally {
-      setV3AuditLoading(false)
-    }
-  }
-
-  async function refreshV3CommandProfiles() {
-    const key = resolveV3ApiKey()
-    setV3ProfilesLoading(true)
-    try {
-      const payload = await v2GetCommandProfiles(key)
-      setV3CommandProfiles(payload)
-    } catch (error) {
-      setV3CommandProfiles([])
-      antMessage.error((error as Error).message || '加载命令能力画像失败')
-    } finally {
-      setV3ProfilesLoading(false)
     }
   }
 
@@ -1420,12 +1235,9 @@ function App() {
       const created = await v2CreateApiKey({
         name,
         permissions,
-        bootstrapApiKey: v3BootstrapApiKey.trim() || undefined,
       })
       setV3LastCreatedSecret(created.api_key)
-      setV3ApiKeyInput((prev) => prev.trim() || created.api_key)
-      setV3BootstrapApiKey('')
-      antMessage.success('V3 API Key 创建成功')
+      antMessage.success('第三方 API Key 创建成功')
       await refreshV3ApiKeys()
     } catch (error) {
       antMessage.error((error as Error).message || '创建 API Key 失败')
@@ -1462,238 +1274,6 @@ function App() {
       antMessage.error((error as Error).message || '更新 API Key 状态失败')
     } finally {
       setV3ApiKeyLoading(false)
-    }
-  }
-
-  async function handleV3CreateJob() {
-    const key = resolveV3ApiKey()
-    let devices: Array<Record<string, unknown>> = []
-    let topologyEdges: Array<Record<string, unknown>> = []
-    try {
-      const parsedDevices = JSON.parse(v3JobForm.devices_json)
-      if (!Array.isArray(parsedDevices)) {
-        throw new Error('devices_json 必须是数组')
-      }
-      devices = parsedDevices as Array<Record<string, unknown>>
-    } catch (error) {
-      antMessage.error(`设备 JSON 解析失败: ${(error as Error).message}`)
-      return
-    }
-    try {
-      const parsedEdges = JSON.parse(v3JobForm.topology_edges_json || '[]')
-      if (!Array.isArray(parsedEdges)) {
-        throw new Error('topology_edges_json 必须是数组')
-      }
-      topologyEdges = parsedEdges as Array<Record<string, unknown>>
-    } catch (error) {
-      antMessage.error(`拓扑边 JSON 解析失败: ${(error as Error).message}`)
-      return
-    }
-    setV3CreateJobLoading(true)
-    try {
-      const created = await v2CreateJob(
-        key,
-        {
-          name: v3JobForm.name.trim() || undefined,
-          problem: v3JobForm.problem.trim(),
-          mode: v3JobForm.mode,
-          topology_mode: v3JobForm.topology_mode,
-          max_gap_seconds: Number(v3JobForm.max_gap_seconds || 300),
-          max_device_concurrency: Number(v3JobForm.max_device_concurrency || 20),
-          execution_policy: v3JobForm.execution_policy,
-          devices,
-          topology_edges: topologyEdges,
-          webhook_url: v3JobForm.webhook_url.trim() || undefined,
-          webhook_events: v3JobForm.webhook_events
-            .split(',')
-            .map((item) => item.trim())
-            .filter(Boolean),
-        },
-        v3JobForm.idempotency_key.trim() || undefined,
-      )
-      antMessage.success(`任务创建成功: ${created.id.slice(0, 8)}...`)
-      await refreshV3Jobs()
-      await refreshSessionHistory()
-      setV3SelectedJobId(created.id)
-      await refreshV3Timeline(created.id, false)
-    } catch (error) {
-      antMessage.error((error as Error).message || '创建任务失败')
-    } finally {
-      setV3CreateJobLoading(false)
-    }
-  }
-
-  async function handleV3CancelSelectedJob() {
-    if (!v3SelectedJobId) return
-    const key = resolveV3ApiKey()
-    setV3ActionLoading(true)
-    try {
-      await v2CancelJob(key, v3SelectedJobId, 'manual_stop')
-      await refreshV3Jobs()
-      await refreshSessionHistory()
-      await refreshV3Timeline(v3SelectedJobId)
-      antMessage.success('任务已取消')
-    } catch (error) {
-      antMessage.error((error as Error).message || '取消任务失败')
-    } finally {
-      setV3ActionLoading(false)
-    }
-  }
-
-  async function handleV3ApproveSelected() {
-    if (!v3SelectedJobId || v3SelectedActionIds.length === 0) {
-      antMessage.info('请选择待审批命令组')
-      return
-    }
-    const key = resolveV3ApiKey()
-    setV3ActionLoading(true)
-    try {
-      await v2ApproveActionGroupsBatch(key, v3SelectedJobId, v3SelectedActionIds, 'batch-approve-from-ui')
-      await refreshV3Timeline(v3SelectedJobId, false)
-      await refreshV3Jobs()
-      await refreshSessionHistory()
-      antMessage.success('已批量通过命令组')
-    } catch (error) {
-      antMessage.error((error as Error).message || '批量审批失败')
-    } finally {
-      setV3ActionLoading(false)
-    }
-  }
-
-  async function handleV3RejectSelected() {
-    if (!v3SelectedJobId || v3SelectedActionIds.length === 0) {
-      antMessage.info('请选择待审批命令组')
-      return
-    }
-    const key = resolveV3ApiKey()
-    setV3ActionLoading(true)
-    try {
-      await v2RejectActionGroupsBatch(key, v3SelectedJobId, v3SelectedActionIds, 'batch-reject-from-ui')
-      await refreshV3Timeline(v3SelectedJobId, false)
-      await refreshV3Jobs()
-      await refreshSessionHistory()
-      antMessage.success('已批量拒绝命令组')
-    } catch (error) {
-      antMessage.error((error as Error).message || '批量拒绝失败')
-    } finally {
-      setV3ActionLoading(false)
-    }
-  }
-
-  async function handleV3StartStream() {
-    if (!v3SelectedJobId) {
-      antMessage.warning('请先选择任务')
-      return
-    }
-    const key = resolveV3ApiKey()
-    v3EventAbortRef.current?.abort()
-    const controller = new AbortController()
-    v3EventAbortRef.current = controller
-    setV3Streaming(true)
-    try {
-      await v2StreamJobEvents(
-        key,
-        v3SelectedJobId,
-        v3EventSeq,
-        (event, payload) => {
-          const seqNo = Number(payload.seq_no || 0)
-          if (seqNo > 0) {
-            setV3EventSeq((prev) => Math.max(prev, seqNo))
-            const normalized: V2JobEvent = {
-              id: String(payload.id || `${v3SelectedJobId}-${seqNo}`),
-              job_id: String(payload.job_id || v3SelectedJobId),
-              seq_no: seqNo,
-              event_type: String(payload.event_type || event),
-              payload: payload.payload && typeof payload.payload === 'object'
-                ? (payload.payload as Record<string, unknown>)
-                : payload,
-              created_at: String(payload.created_at || new Date().toISOString()),
-            }
-            setV3Events((prev) => {
-              const merged = [...prev.filter((item) => item.seq_no !== normalized.seq_no), normalized]
-              merged.sort((a, b) => a.seq_no - b.seq_no)
-              return merged
-            })
-          }
-          if (event === 'completed') {
-            void refreshV3Jobs()
-            void refreshV3Timeline(v3SelectedJobId, true)
-          }
-        },
-        controller.signal,
-      )
-    } catch (error) {
-      if ((error as Error).name !== 'AbortError') {
-        antMessage.error((error as Error).message || '事件流连接失败')
-      }
-    } finally {
-      if (v3EventAbortRef.current === controller) {
-        v3EventAbortRef.current = null
-      }
-      setV3Streaming(false)
-    }
-  }
-
-  function handleV3StopStream() {
-    v3EventAbortRef.current?.abort()
-    v3EventAbortRef.current = null
-    setV3Streaming(false)
-  }
-
-  async function handleV3UpdateTopology() {
-    if (!v3SelectedJobId) {
-      antMessage.warning('请先选择任务')
-      return
-    }
-    const key = resolveV3ApiKey()
-    let edges: Array<{ source: string; target: string; kind?: string; confidence?: number; reason?: string }> = []
-    try {
-      const parsed = JSON.parse(v3TopologyEditor || '[]')
-      if (!Array.isArray(parsed)) {
-        throw new Error('拓扑边必须是数组')
-      }
-      edges = parsed as Array<{ source: string; target: string; kind?: string; confidence?: number; reason?: string }>
-    } catch (error) {
-      antMessage.error(`拓扑边 JSON 解析失败: ${(error as Error).message}`)
-      return
-    }
-    setV3ActionLoading(true)
-    try {
-      await v2UpdateTopology(key, v3SelectedJobId, { edges, replace: true })
-      await refreshV3Jobs()
-      await refreshV3Timeline(v3SelectedJobId, false)
-      antMessage.success('拓扑输入已更新')
-    } catch (error) {
-      antMessage.error((error as Error).message || '更新拓扑失败')
-    } finally {
-      setV3ActionLoading(false)
-    }
-  }
-
-  async function handleV3UpdateRcaWeights() {
-    if (!v3SelectedJobId) {
-      antMessage.warning('请先选择任务')
-      return
-    }
-    const key = resolveV3ApiKey()
-    setV3ActionLoading(true)
-    try {
-      await v2UpdateRcaWeights(key, v3SelectedJobId, {
-        rca_weights: {
-          anomaly: Number(v3RcaWeights.anomaly || 0),
-          timing: Number(v3RcaWeights.timing || 0),
-          topology: Number(v3RcaWeights.topology || 0),
-          change: Number(v3RcaWeights.change || 0),
-          consistency: Number(v3RcaWeights.consistency || 0),
-        },
-      })
-      await refreshV3Jobs()
-      await refreshV3Timeline(v3SelectedJobId, false)
-      antMessage.success('RCA 权重已更新')
-    } catch (error) {
-      antMessage.error((error as Error).message || '更新 RCA 权重失败')
-    } finally {
-      setV3ActionLoading(false)
     }
   }
 
@@ -1797,10 +1377,10 @@ function App() {
         setContinueExecutionState(null)
         setTraceSteps([])
         setSessionDeviceAddress(normalizedHosts.join(', '))
-        setSessionDeviceName(`多设备(${normalizedHosts.length})`)
+        setSessionDeviceName(`多设备协同(${normalizedHosts.length})`)
         setSessionVersionSignature('')
         setDraftInput('')
-        antMessage.success(`多设备会话已创建 (${normalizedHosts.length} 台)`)
+        antMessage.success(`多设备协同会话已创建 (${normalizedHosts.length} 台)`)
         setActivePage('workbench')
         return
       }
@@ -2347,7 +1927,6 @@ function App() {
         return 'stopped'
       }
       const timeline = await v2GetJobTimeline(key, jobId)
-      setV3Timeline(timeline)
       setV3SelectedJobId(jobId)
       const mapped = mapV2TimelineToWorkbenchCommands(timeline, session?.id || jobId)
       setCommands(mapped)
@@ -2404,7 +1983,7 @@ function App() {
 
   async function handleSendMulti(content: string) {
     if (!session?.id || !multiSessionConfig) {
-      antMessage.warning('请先创建多设备会话')
+      antMessage.warning('请先创建多设备协同会话')
       return
     }
     const userMessage: ChatMessage = {
@@ -2439,7 +2018,7 @@ function App() {
       await refreshV3Jobs()
       await refreshSessionHistory()
     } catch (error) {
-      antMessage.error((error as Error).message || '多设备任务执行失败')
+      antMessage.error((error as Error).message || '多设备协同执行失败')
     } finally {
       setBusy(false)
       multiJobAbortRef.current = null
@@ -2563,13 +2142,13 @@ function App() {
           {
             id: `multi-stop-${Date.now()}`,
             role: 'system',
-            content: '多设备任务已手动停止。',
+            content: '多设备协同已手动停止。',
             created_at: new Date().toISOString(),
           },
         ])
-        antMessage.success('当前多设备任务已停止')
+        antMessage.success('当前多设备协同已停止')
       } catch (error) {
-        antMessage.error((error as Error).message || '停止多设备任务失败')
+        antMessage.error((error as Error).message || '停止多设备协同失败')
       } finally {
         setStoppingSession(false)
       }
@@ -2634,7 +2213,6 @@ function App() {
     const key = resolveV3ApiKey()
     try {
       const timeline = await v2GetJobTimeline(key, jobId)
-      setV3Timeline(timeline)
       setV3SelectedJobId(jobId)
       const hosts = (timeline.job.devices || []).map((item) => String(item.host || '').trim()).filter(Boolean)
       const operationMode = operationModeFromJobMode(timeline.job.mode)
@@ -2661,7 +2239,7 @@ function App() {
       setSummary(buildSummaryFromV2Timeline(timeline))
       setContinueExecutionState(null)
       setSessionDeviceAddress(hosts.join(', ') || '-')
-      setSessionDeviceName(`多设备(${hosts.length || timeline.job.devices.length || 0})`)
+      setSessionDeviceName(`多设备协同(${hosts.length || timeline.job.devices.length || 0})`)
       setSessionVersionSignature('')
       setDraftInput('')
       setResumedSessionId(historySessionId)
@@ -2728,7 +2306,7 @@ function App() {
         created_at: timeline.job.created_at,
         device: {
           host: hosts.join(', ') || '-',
-          name: `多设备(${hosts.length || timeline.job.devices.length || 0})`,
+          name: `多设备协同(${hosts.length || timeline.job.devices.length || 0})`,
           protocol: 'ssh',
           version_signature: undefined,
         },
@@ -3462,467 +3040,6 @@ function App() {
             </div>
           )}
 
-          {activePage === 'v3_jobs' && (
-            <div className="page-grid v3-layout">
-              <div className="panel-card v3-card">
-                <div className="policy-overview-head">
-                  <div>
-                    <h3>V3 协同任务说明</h3>
-                    <p className="muted">此页面专注任务编排与执行。第三方 API Key 的创建、共享和说明已独立到“第三方 Key 服务”页面。</p>
-                  </div>
-                  <div className="policy-actions">
-                    <Button size="small" onClick={() => setActivePage('third_party_keys')}>
-                      打开第三方 Key 服务页
-                    </Button>
-                  </div>
-                </div>
-                <div className="v3-template-box">
-                  <span className="muted">页面职责</span>
-                  <div className="v3-template-list">
-                    <div className="v3-template-item">
-                      <strong>这里做什么</strong>
-                      <code>创建多设备任务、查看时间线、审批命令组、观察 RCA 结果。</code>
-                    </div>
-                    <div className="v3-template-item">
-                      <strong>这里不做什么</strong>
-                      <code>不在本页管理第三方密钥，避免和任务操作混杂。</code>
-                    </div>
-                    <div className="v3-template-item">
-                      <strong>调用说明</strong>
-                      <code>内置 UI 支持免填 Key 调用；第三方系统请使用专门 API Key。</code>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="panel-card v3-card">
-                <div className="policy-overview-head">
-                  <div>
-                    <h3>V3 任务创建与调度</h3>
-                    <p className="muted">支持多设备并发采集、跨设备关联分析、修复命令组审批与执行策略。</p>
-                  </div>
-                  <div className="policy-actions">
-                    <Button size="small" loading={v3JobsLoading} onClick={() => void refreshV3Jobs()}>
-                      刷新任务
-                    </Button>
-                    <Button
-                      size="small"
-                      danger
-                      loading={v3ActionLoading}
-                      onClick={() => void handleV3CancelSelectedJob()}
-                      disabled={!v3SelectedJobId}
-                    >
-                      停止任务
-                    </Button>
-                  </div>
-                </div>
-                <div className="v3-grid-3">
-                  <Input
-                    size="small"
-                    value={v3JobForm.name}
-                    onChange={(event) => setV3JobForm((prev) => ({ ...prev, name: event.target.value }))}
-                    placeholder="任务名称"
-                  />
-                  <Select
-                    size="small"
-                    value={v3JobForm.mode}
-                    options={[
-                      { value: 'diagnosis', label: '诊断' },
-                      { value: 'inspection', label: '巡检' },
-                      { value: 'repair', label: '修复' },
-                    ]}
-                    onChange={(value) => setV3JobForm((prev) => ({ ...prev, mode: value }))}
-                  />
-                  <Select
-                    size="small"
-                    value={v3JobForm.execution_policy}
-                    options={[
-                      { value: 'stop_on_failure', label: '失败即停' },
-                      { value: 'continue_on_failure', label: '失败继续' },
-                      { value: 'rollback_template', label: '失败回滚模板' },
-                    ]}
-                    onChange={(value) => setV3JobForm((prev) => ({ ...prev, execution_policy: value }))}
-                  />
-                </div>
-                <Input.TextArea
-                  value={v3JobForm.problem}
-                  onChange={(event) => setV3JobForm((prev) => ({ ...prev, problem: event.target.value }))}
-                  rows={2}
-                  placeholder="问题描述"
-                />
-                <div className="v3-grid-4">
-                  <Select
-                    size="small"
-                    value={v3JobForm.topology_mode}
-                    options={[
-                      { value: 'hybrid', label: 'hybrid' },
-                      { value: 'external', label: 'external' },
-                      { value: 'auto', label: 'auto' },
-                    ]}
-                    onChange={(value) => setV3JobForm((prev) => ({ ...prev, topology_mode: value }))}
-                  />
-                  <Input
-                    size="small"
-                    value={String(v3JobForm.max_gap_seconds)}
-                    onChange={(event) =>
-                      setV3JobForm((prev) => ({
-                        ...prev,
-                        max_gap_seconds: Number(event.target.value || 300),
-                      }))
-                    }
-                    placeholder="max_gap_seconds"
-                  />
-                  <Input
-                    size="small"
-                    value={String(v3JobForm.max_device_concurrency)}
-                    onChange={(event) =>
-                      setV3JobForm((prev) => ({
-                        ...prev,
-                        max_device_concurrency: Number(event.target.value || 20),
-                      }))
-                    }
-                    placeholder="max_device_concurrency"
-                  />
-                  <Input
-                    size="small"
-                    value={v3JobForm.idempotency_key}
-                    onChange={(event) => setV3JobForm((prev) => ({ ...prev, idempotency_key: event.target.value }))}
-                    placeholder="Idempotency-Key（可选）"
-                  />
-                </div>
-                <Input
-                  size="small"
-                  value={v3JobForm.webhook_url}
-                  onChange={(event) => setV3JobForm((prev) => ({ ...prev, webhook_url: event.target.value }))}
-                  placeholder="Webhook URL（可选）"
-                />
-                <Input
-                  size="small"
-                  value={v3JobForm.webhook_events}
-                  onChange={(event) => setV3JobForm((prev) => ({ ...prev, webhook_events: event.target.value }))}
-                  placeholder="Webhook 事件（逗号分隔）"
-                />
-                <div className="v3-grid-2">
-                  <Input.TextArea
-                    value={v3JobForm.devices_json}
-                    onChange={(event) => setV3JobForm((prev) => ({ ...prev, devices_json: event.target.value }))}
-                    rows={6}
-                    placeholder="devices JSON"
-                  />
-                  <Input.TextArea
-                    value={v3JobForm.topology_edges_json}
-                    onChange={(event) => setV3JobForm((prev) => ({ ...prev, topology_edges_json: event.target.value }))}
-                    rows={6}
-                    placeholder="topology_edges JSON"
-                  />
-                </div>
-                <div className="policy-actions">
-                  <Button
-                    type="primary"
-                    loading={v3CreateJobLoading}
-                    onClick={() => void handleV3CreateJob()}
-                  >
-                    创建任务
-                  </Button>
-                  <Button
-                    onClick={() => {
-                      setV3JobForm(V3_DEFAULT_JOB_FORM)
-                    }}
-                  >
-                    重置表单
-                  </Button>
-                </div>
-                <div className="v3-list-head">
-                  <strong>任务列表</strong>
-                  <span className="muted">总数 {v3JobsTotal}</span>
-                </div>
-                <div className="v3-grid-4">
-                  <Select
-                    size="small"
-                    value={v3JobStatusFilter}
-                    options={[
-                      { value: 'all', label: '状态: 全部' },
-                      { value: 'queued', label: 'queued' },
-                      { value: 'running', label: 'running' },
-                      { value: 'waiting_approval', label: 'waiting_approval' },
-                      { value: 'executing', label: 'executing' },
-                      { value: 'completed', label: 'completed' },
-                      { value: 'failed', label: 'failed' },
-                      { value: 'cancelled', label: 'cancelled' },
-                    ]}
-                    onChange={(value) => setV3JobStatusFilter(value)}
-                  />
-                  <Select
-                    size="small"
-                    value={v3JobModeFilter}
-                    options={[
-                      { value: 'all', label: '模式: 全部' },
-                      { value: 'diagnosis', label: 'diagnosis' },
-                      { value: 'inspection', label: 'inspection' },
-                      { value: 'repair', label: 'repair' },
-                    ]}
-                    onChange={(value) => setV3JobModeFilter(value)}
-                  />
-                  <Input
-                    size="small"
-                    value={String(v3JobOffset)}
-                    onChange={(event) => setV3JobOffset(Number(event.target.value || 0))}
-                    placeholder="offset"
-                  />
-                  <Input
-                    size="small"
-                    value={String(v3JobLimit)}
-                    onChange={(event) => setV3JobLimit(Number(event.target.value || 20))}
-                    placeholder="limit"
-                  />
-                </div>
-                <div className="policy-actions">
-                  <Button size="small" onClick={() => void refreshV3Jobs()} loading={v3JobsLoading}>
-                    应用筛选
-                  </Button>
-                </div>
-                <div className="policy-rule-table v3-table">
-                  {v3Jobs.length === 0 && <div className="policy-empty muted">暂无任务</div>}
-                  {v3Jobs.map((job) => (
-                    <button
-                      type="button"
-                      key={job.id}
-                      className={`v3-job-item ${v3SelectedJobId === job.id ? 'active' : ''}`}
-                      onClick={() => setV3SelectedJobId(job.id)}
-                    >
-                      <div className="v3-job-head">
-                        <strong>{job.name || job.id.slice(0, 8)}</strong>
-                        <span className={`cmd-status ${statusClass(job.status)}`}>{job.status}</span>
-                      </div>
-                      <div className="v3-job-meta">
-                        <span>{job.mode}</span>
-                        <span>{job.phase}</span>
-                        <span>设备 {job.device_count}</span>
-                        <span>命令 {job.command_count}</span>
-                      </div>
-                      <div className="muted">{truncateText(job.problem, 120)}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="panel-card v3-card">
-                <div className="policy-overview-head">
-                  <div>
-                    <h3>任务详情 / 审批 / 事件流</h3>
-                    <p className="muted">命令组按审批粒度执行，支持批量确认；可实时订阅任务事件。</p>
-                  </div>
-                  <div className="policy-actions">
-                    <Button size="small" loading={v3TimelineLoading} onClick={() => v3SelectedJobId && void refreshV3Timeline(v3SelectedJobId, false)}>
-                      刷新时间线
-                    </Button>
-                    {v3Streaming ? (
-                      <Button size="small" danger onClick={handleV3StopStream}>停止流</Button>
-                    ) : (
-                      <Button size="small" type="primary" onClick={() => void handleV3StartStream()} disabled={!v3SelectedJobId}>
-                        订阅事件流
-                      </Button>
-                    )}
-                  </div>
-                </div>
-                {!v3Timeline && <div className="muted">请先选择任务</div>}
-                {v3Timeline && (
-                  <div className="v3-details-grid">
-                    <div className="v3-section-card">
-                      <div className="kv"><span>任务 ID</span><strong>{v3Timeline.job.id}</strong></div>
-                      <div className="kv"><span>状态</span><strong>{v3Timeline.job.status}</strong></div>
-                      <div className="kv"><span>阶段</span><strong>{v3Timeline.job.phase}</strong></div>
-                      <div className="kv"><span>策略</span><strong>{v3Timeline.job.execution_policy}</strong></div>
-                      <div className="kv"><span>根因设备</span><strong>{v3SelectedJobSummary?.root_device_id || '-'}</strong></div>
-                    </div>
-
-                    <div className="v3-section-card">
-                      <div className="v3-list-head">
-                        <strong>待审批命令组</strong>
-                        <span className="muted">{v3PendingActionGroups.length} 组</span>
-                      </div>
-                      <div className="v3-action-list">
-                        {v3PendingActionGroups.length === 0 && <div className="muted">无待审批命令组</div>}
-                        {v3PendingActionGroups.map((group) => {
-                          const selected = v3SelectedActionIds.includes(group.id)
-                          return (
-                            <label key={group.id} className="v3-action-item">
-                              <input
-                                type="checkbox"
-                                checked={selected}
-                                onChange={(event) => {
-                                  setV3SelectedActionIds((prev) => {
-                                    if (event.target.checked) {
-                                      return Array.from(new Set([...prev, group.id]))
-                                    }
-                                    return prev.filter((id) => id !== group.id)
-                                  })
-                                }}
-                              />
-                              <div className="v3-col-stack">
-                                <strong>{group.title}</strong>
-                                <span className="muted">
-                                  {group.device_id} | risk={group.risk_level} | {group.commands.length} 条
-                                </span>
-                                <code>{group.commands.join(' ; ')}</code>
-                              </div>
-                            </label>
-                          )
-                        })}
-                      </div>
-                      <div className="policy-actions">
-                        <Button
-                          size="small"
-                          type="primary"
-                          loading={v3ActionLoading}
-                          disabled={v3SelectedActionIds.length === 0}
-                          onClick={() => void handleV3ApproveSelected()}
-                        >
-                          批量通过
-                        </Button>
-                        <Button
-                          size="small"
-                          danger
-                          loading={v3ActionLoading}
-                          disabled={v3SelectedActionIds.length === 0}
-                          onClick={() => void handleV3RejectSelected()}
-                        >
-                          批量拒绝
-                        </Button>
-                      </div>
-                    </div>
-
-                    <div className="v3-section-card">
-                      <div className="v3-list-head">
-                        <strong>命令结果（最近 20 条）</strong>
-                        <span className="muted">{v3Timeline.job.command_results.length} 条</span>
-                      </div>
-                      <div className="v3-command-list">
-                        {v3Timeline.job.command_results.slice(-20).map((row) => (
-                          <div key={row.id} className="v3-command-item">
-                            <span className="muted">#{row.step_no}</span>
-                            <span className={`cmd-status ${statusClass(row.status)}`}>{row.status}</span>
-                            <code>{row.command}</code>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="v3-section-card">
-                      <div className="v3-list-head">
-                        <strong>拓扑输入 / RCA 权重</strong>
-                        <span className="muted">可在线调整</span>
-                      </div>
-                      <Input.TextArea
-                        value={v3TopologyEditor}
-                        onChange={(event) => setV3TopologyEditor(event.target.value)}
-                        rows={5}
-                      />
-                      <div className="v3-grid-5">
-                        {(['anomaly', 'timing', 'topology', 'change', 'consistency'] as const).map((key) => (
-                          <Input
-                            key={key}
-                            size="small"
-                            value={String(v3RcaWeights[key])}
-                            onChange={(event) =>
-                              setV3RcaWeights((prev) => ({
-                                ...prev,
-                                [key]: Number(event.target.value || 0),
-                              }))
-                            }
-                            placeholder={key}
-                          />
-                        ))}
-                      </div>
-                      <div className="policy-actions">
-                        <Button size="small" loading={v3ActionLoading} onClick={() => void handleV3UpdateTopology()}>
-                          更新拓扑
-                        </Button>
-                        <Button size="small" loading={v3ActionLoading} onClick={() => void handleV3UpdateRcaWeights()}>
-                          更新权重
-                        </Button>
-                      </div>
-                    </div>
-
-                    <div className="v3-section-card v3-events-card">
-                      <div className="v3-list-head">
-                        <strong>事件流</strong>
-                        <span className="muted">seq: {v3EventSeq}</span>
-                      </div>
-                      <div className="v3-event-list">
-                        {v3Events.length === 0 && <div className="muted">暂无事件</div>}
-                        {v3Events.slice(-80).map((event) => (
-                          <details key={`${event.job_id}-${event.seq_no}`} className="v3-event-item">
-                            <summary>
-                              <span>[{event.seq_no}]</span>
-                              <strong>{event.event_type}</strong>
-                              <span className="muted">{formatTime(event.created_at)}</span>
-                            </summary>
-                            <pre>{JSON.stringify(event.payload, null, 2)}</pre>
-                          </details>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="panel-card v3-card v3-bottom-card">
-                <div className="policy-overview-head">
-                  <div>
-                    <h3>审计日志 / 命令成功率画像</h3>
-                    <p className="muted">用于排查审批轨迹与命令命中效果，帮助持续优化自动化成功率。</p>
-                  </div>
-                  <div className="policy-actions">
-                    <Button size="small" loading={v3AuditLoading} onClick={() => void refreshV3AuditLogs()}>
-                      刷新审计
-                    </Button>
-                    <Button size="small" loading={v3ProfilesLoading} onClick={() => void refreshV3CommandProfiles()}>
-                      刷新画像
-                    </Button>
-                  </div>
-                </div>
-                <div className="v3-grid-2">
-                  <div className="v3-section-card">
-                    <div className="v3-list-head">
-                      <strong>审计日志（最近 100 条）</strong>
-                    </div>
-                    <div className="v3-event-list">
-                      {v3AuditLogs.length === 0 && <div className="muted">暂无审计日志</div>}
-                      {v3AuditLogs.slice(-100).map((row, idx) => (
-                        <div key={`audit-${idx}`} className="v3-audit-row">
-                          <span className="muted">{String(row.ts || '-')}</span>
-                          <strong>{String(row.action || '-')}</strong>
-                          <span>{String(row.resource || '-')}</span>
-                          <span className={`cmd-status ${statusClass(String(row.status || 'idle'))}`}>
-                            {String(row.status || '-')}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="v3-section-card">
-                    <div className="v3-list-head">
-                      <strong>命令画像（最近 100 条）</strong>
-                    </div>
-                    <div className="v3-event-list">
-                      {v3CommandProfiles.length === 0 && <div className="muted">暂无命令画像</div>}
-                      {v3CommandProfiles.slice(0, 100).map((row, idx) => (
-                        <div key={`profile-${idx}`} className="v3-audit-row">
-                          <span>{String(row.version_signature || '-')}</span>
-                          <code>{String(row.command_key || '-')}</code>
-                          <span className="muted">
-                            rate={Number(row.success_rate || 0).toFixed(2)} hit={String(row.hits || 0)}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
           {activePage === 'third_party_keys' && (
             <div className="page-grid keyhub-layout">
               <div className="panel-card v3-card">
@@ -4026,6 +3143,7 @@ function App() {
 
               <div className="panel-card v3-card">
                 <h3>第三方接入说明</h3>
+                <p className="muted">内置诊断工作台和会话历史通过受信任 UI 通道访问 `/v2/*`，不需要你在前端手动配置 API Key。这里的 Key 仅用于共享给第三方系统或外部脚本。</p>
                 <div className="v3-template-box">
                   <div className="v3-template-item">
                     <strong>服务地址</strong>
@@ -4085,6 +3203,42 @@ function App() {
                 <div className="kv"><span>协同任务 ID</span><strong>{v3SelectedJobSummary?.id || '-'}</strong></div>
                 <div className="kv"><span>协同任务阶段</span><strong>{v3SelectedJobSummary ? `${v3SelectedJobSummary.status} / ${v3SelectedJobSummary.phase}` : '-'}</strong></div>
                 <div className="kv"><span>待审批命令组</span><strong>{v3SelectedJobSummary?.pending_action_groups ?? '-'}</strong></div>
+                <div className="trace-head" style={{ marginTop: 16 }}>
+                  <div>
+                    <h3 style={{ marginBottom: 4 }}>近期多设备协同</h3>
+                    <p className="muted">不再单独拆一页，最近任务直接在统一入口下查看和恢复。</p>
+                  </div>
+                  <Button size="small" onClick={() => void refreshV3Jobs()} disabled={v3JobsLoading}>
+                    {v3JobsLoading ? '刷新中...' : '刷新'}
+                  </Button>
+                </div>
+                <div className="session-history-list">
+                  {recentMultiJobItems.length === 0 && <div className="muted">暂无多设备协同任务</div>}
+                  {recentMultiJobItems.map((job) => (
+                    <div
+                      key={job.id}
+                      className={`session-history-item ${v3SelectedJobId === job.id ? 'selected' : ''}`}
+                    >
+                      <div className="session-history-open">
+                        <div className="session-history-main">
+                          <strong>{job.name || `协同任务 ${job.id.slice(0, 8)}...`}</strong>
+                          <span>{`设备 ${job.device_count || 0} 台 / 命令 ${job.command_count || 0} 条`}</span>
+                          <span>{`${job.status} / ${job.phase}`}</span>
+                          <span>{truncateText(job.problem || '-', 80)}</span>
+                        </div>
+                        <div className="session-history-meta">
+                          <span>{job.id.slice(0, 8)}...</span>
+                          <span>{formatTime(job.created_at)}</span>
+                        </div>
+                      </div>
+                      <div className="session-history-actions">
+                        <Button size="small" onClick={() => void handleRestoreV2HistoryJob(job.id)}>
+                          恢复到工作台
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
                 <p className="muted section-tip">更多连接策略、凭据托管、设备模板能力预留到后续迭代。</p>
               </div>
             </div>
@@ -4498,7 +3652,7 @@ function App() {
                 <div className="trace-head">
                   <div>
                     <h3>历史记录</h3>
-                    <p className="muted">包含单设备会话与多设备任务，刷新后可恢复。</p>
+                    <p className="muted">包含单设备会话与多设备协同，刷新后可恢复。</p>
                   </div>
                   <Button size="small" onClick={() => void refreshSessionHistory()} disabled={sessionsLoading}>
                     {sessionsLoading ? '刷新中...' : '刷新'}
@@ -4515,7 +3669,7 @@ function App() {
                     >
                       <div className="session-history-open">
                         <div className="session-history-main">
-                          <strong>{item.kind === 'multi' ? `多设备任务 · ${item.host}` : item.host}</strong>
+                          <strong>{item.kind === 'multi' ? `多设备协同 · ${item.host}` : item.host}</strong>
                           <span>设备名称: {formatDeviceName(item.device_name)}</span>
                           <span>{operationModeLabel(item.operation_mode)} / {automationLabel(item.automation_level)}</span>
                           {item.kind === 'multi' && (
@@ -4581,7 +3735,7 @@ function App() {
                     <Select
                       size="small"
                       style={{ minWidth: 360 }}
-                      placeholder="选择会话/多任务"
+                      placeholder="选择会话/协同记录"
                       value={traceTargetSessionId}
                       options={traceSessionOptions}
                       onChange={(value) => setSelectedHistorySessionId(String(value))}
@@ -5548,7 +4702,7 @@ function buildHistorySessionItems(
     id: toV2HistorySessionId(job.id),
     source_id: job.id,
     kind: 'multi',
-    host: `多设备(${job.device_count})`,
+    host: `多设备协同(${job.device_count})`,
     device_name: `任务 ${job.id.slice(0, 8)}...`,
     protocol: 'ssh',
     automation_level: 'assisted',
@@ -5766,7 +4920,7 @@ function buildLegacyTraceStepsFromV2Event(
           session_id: sessionId,
           seq_no: seqBase,
           step_type: 'session_control',
-          title: '创建多设备任务',
+          title: '创建多设备协同',
           status: 'succeeded',
           started_at: createdAt,
           completed_at: createdAt,
@@ -5995,7 +5149,7 @@ function buildLegacyTraceStepsFromV2Event(
           session_id: sessionId,
           seq_no: seqBase,
           step_type: 'session_control',
-          title: '多设备任务完成',
+          title: '多设备协同完成',
           status: 'succeeded',
           started_at: createdAt,
           completed_at: createdAt,
@@ -6012,7 +5166,7 @@ function buildLegacyTraceStepsFromV2Event(
           session_id: sessionId,
           seq_no: seqBase,
           step_type: 'session_control',
-          title: event.event_type === 'job_failed' ? '多设备任务失败' : '多设备任务已取消',
+          title: event.event_type === 'job_failed' ? '多设备协同失败' : '多设备协同已取消',
           status: event.event_type === 'job_failed' ? 'failed' : 'stopped',
           started_at: createdAt,
           completed_at: createdAt,
@@ -6178,7 +5332,7 @@ function buildSummaryFromV2Timeline(timeline: V2JobTimeline): DiagnosisSummary {
     const errorText = String((timeline.job as { error?: string }).error || '').trim()
     return {
       mode: 'error',
-      root_cause: errorText || '多设备任务执行失败',
+      root_cause: errorText || '多设备协同执行失败',
       impact_scope: '未能完成所有设备的证据采集与汇总。',
       recommendation: '请检查设备连接、账号权限与任务参数后重试。',
       confidence: 0,
@@ -7123,7 +6277,6 @@ function traceStatusClass(status: string): string {
 
 function renderNavIcon(page: PageId): string {
   if (page === 'workbench') return '◫'
-  if (page === 'v3_jobs') return '⬢'
   if (page === 'third_party_keys') return '⌖'
   if (page === 'control') return '⌘'
   if (page === 'command_policy') return '☑'

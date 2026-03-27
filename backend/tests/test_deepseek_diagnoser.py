@@ -163,3 +163,38 @@ def test_llm_batch_execution_flag_can_be_configured_and_persisted(tmp_path, monk
 
     reloaded = DeepSeekDiagnoser()
     assert reloaded.batch_execution_enabled is False
+
+
+def test_nvidia_api_key_can_be_configured_and_persisted(tmp_path, monkeypatch):
+    config_path = tmp_path / "llm_runtime.json"
+    monkeypatch.setenv("NETOPS_LLM_CONFIG_PATH", str(config_path))
+
+    diagnoser = DeepSeekDiagnoser()
+    diagnoser.configure(nvidia_api_key="nvapi-test-token")
+
+    status = diagnoser.status()
+    assert status["enabled"] is True
+    assert status["nvidia_enabled"] is True
+    assert config_path.exists()
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["nvidia_api_key"] == "nvapi-test-token"
+
+    reloaded = DeepSeekDiagnoser()
+    assert reloaded.enabled is True
+    assert reloaded.nvidia_api_key == "nvapi-test-token"
+
+
+def test_nvidia_base_url_prefers_nvidia_api_key(tmp_path, monkeypatch):
+    config_path = tmp_path / "llm_runtime.json"
+    monkeypatch.setenv("NETOPS_LLM_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-main")
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-token")
+    monkeypatch.setenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
+    diagnoser = DeepSeekDiagnoser()
+    diagnoser.configure(base_url="https://integrate.api.nvidia.com/v1")
+
+    selected = diagnoser._resolve_request_api_key(
+        model="meta/llama-3.1-70b-instruct",
+        base_url="https://integrate.api.nvidia.com/v1",
+    )
+    assert selected == "nvapi-token"
