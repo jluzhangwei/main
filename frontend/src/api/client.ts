@@ -10,10 +10,16 @@ import type {
   LLMStatus,
   RiskPolicy,
   RiskPolicyUpdateRequest,
+  RunActionDecisionResponse,
+  RunListResponse,
+  RunStopResponse,
+  RunSummary,
+  RunTimelineResponse,
   ServiceTrace,
   SessionListItem,
   SessionStopResponse,
   SessionResponse,
+  SOPArchiveResponse,
   Timeline,
   V2ApiKey,
   V2ApiKeyCreateResponse,
@@ -276,8 +282,10 @@ export async function getLlmStatus(): Promise<LLMStatus> {
 
 export async function configureLlm(input: {
   apiKey?: string
+  nvidiaApiKey?: string
   model?: string
   baseUrl?: string
+  nvidiaBaseUrl?: string
   failoverEnabled?: boolean
   batchExecutionEnabled?: boolean
   modelCandidates?: string[]
@@ -287,8 +295,10 @@ export async function configureLlm(input: {
     headers,
     body: JSON.stringify({
       api_key: input.apiKey,
+      nvidia_api_key: input.nvidiaApiKey,
       model: input.model,
       base_url: input.baseUrl,
+      nvidia_base_url: input.nvidiaBaseUrl,
       failover_enabled: input.failoverEnabled,
       batch_execution_enabled: input.batchExecutionEnabled,
       model_candidates: input.modelCandidates,
@@ -447,6 +457,193 @@ function v2Headers(apiKey?: string, extra?: Record<string, string>): HeadersInit
     'X-Internal-UI': '1',
     ...(extra || {}),
   }
+}
+
+export async function createRun(
+  apiKey: string,
+  payload: Record<string, unknown>,
+  idempotencyKey?: string,
+): Promise<RunSummary> {
+  const res = await fetch(apiUrl('/api/runs'), {
+    method: 'POST',
+    headers: v2Headers(apiKey, idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined),
+    body: JSON.stringify(payload),
+  })
+  return parseJsonResponse<RunSummary>(res, 'Failed to create run')
+}
+
+export async function streamRunMessage(
+  apiKey: string,
+  runId: string,
+  content: string,
+  onEvent: (event: string, payload: EventPayload) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(apiUrl(`/api/runs/${runId}/messages`), {
+    method: 'POST',
+    headers: v2Headers(apiKey),
+    body: JSON.stringify({ content }),
+    signal,
+  })
+
+  if (!res.ok || !res.body) {
+    throw new Error('Failed to stream run message')
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+    const chunks = buffer.split('\n\n')
+    buffer = chunks.pop() ?? ''
+
+    for (const chunk of chunks) {
+      const lines = chunk.split('\n')
+      const eventLine = lines.find((l) => l.startsWith('event: '))
+      const dataLine = lines.find((l) => l.startsWith('data: '))
+      if (!eventLine || !dataLine) continue
+
+      const event = eventLine.replace('event: ', '').trim()
+      const raw = dataLine.replace('data: ', '')
+      const payload = JSON.parse(raw) as EventPayload
+      onEvent(event, payload)
+    }
+  }
+}
+
+export async function listRuns(
+  apiKey: string,
+  query?: {
+    offset?: number
+    limit?: number
+    kind?: 'single' | 'multi'
+  },
+): Promise<RunListResponse> {
+  const params = new URLSearchParams()
+  if (query?.offset !== undefined) params.set('offset', String(query.offset))
+  if (query?.limit !== undefined) params.set('limit', String(query.limit))
+  if (query?.kind) params.set('kind', query.kind)
+  const res = await fetch(apiUrl(`/api/runs${params.toString() ? `?${params.toString()}` : ''}`), {
+    headers: v2Headers(apiKey),
+  })
+  return parseJsonResponse<RunListResponse>(res, 'Failed to list runs')
+}
+
+export async function getRunTimeline(apiKey: string, runId: string): Promise<RunTimelineResponse> {
+  const res = await fetch(apiUrl(`/api/runs/${runId}/timeline`), {
+    headers: v2Headers(apiKey),
+  })
+  return parseJsonResponse<RunTimelineResponse>(res, 'Failed to get run timeline')
+}
+
+export async function getRunTrace(apiKey: string, runId: string): Promise<ServiceTrace> {
+  const res = await fetch(apiUrl(`/api/runs/${runId}/trace`), {
+    headers: v2Headers(apiKey),
+  })
+  return parseJsonResponse<ServiceTrace>(res, 'Failed to get run trace')
+}
+
+export async function streamRunEvents(
+  apiKey: string,
+  runId: string,
+  fromSeq: number,
+  onEvent: (event: string, payload: Record<string, unknown>) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(apiUrl(`/api/runs/${runId}/events?from_seq=${fromSeq}`), {
+    headers: v2Headers(apiKey),
+    signal,
+  })
+  if (!res.ok || !res.body) {
+    throw new Error('Failed to stream run events')
+  }
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const chunks = buffer.split('\n\n')
+    buffer = chunks.pop() ?? ''
+    for (const chunk of chunks) {
+      const lines = chunk.split('\n')
+      const eventLine = lines.find((l) => l.startsWith('event: '))
+      const dataLine = lines.find((l) => l.startsWith('data: '))
+      if (!eventLine || !dataLine) continue
+      const event = eventLine.replace('event: ', '').trim()
+      const raw = dataLine.replace('data: ', '')
+      const payload = JSON.parse(raw) as Record<string, unknown>
+      onEvent(event, payload)
+    }
+  }
+}
+
+export async function getSopLibrary(
+  apiKey: string,
+  query?: {
+    problem?: string
+    vendor?: string
+  },
+): Promise<SOPArchiveResponse> {
+  const params = new URLSearchParams()
+  if (query?.problem) params.set('problem', query.problem)
+  if (query?.vendor) params.set('vendor', query.vendor)
+  const res = await fetch(apiUrl(`/api/sop-library${params.toString() ? `?${params.toString()}` : ''}`), {
+    headers: v2Headers(apiKey),
+  })
+  return parseJsonResponse<SOPArchiveResponse>(res, 'Failed to get SOP library')
+}
+
+export async function exportRunMarkdown(apiKey: string, runId: string): Promise<string> {
+  const res = await fetch(apiUrl(`/api/runs/${runId}/export`), {
+    method: 'POST',
+    headers: v2Headers(apiKey),
+    body: JSON.stringify({ format: 'markdown' }),
+  })
+  const data = await parseJsonResponse<{ content: string }>(res, 'Failed to export run report')
+  return String(data.content || '')
+}
+
+export async function approveRunActions(
+  apiKey: string,
+  runId: string,
+  itemIds?: string[],
+  reason?: string,
+): Promise<RunActionDecisionResponse> {
+  const res = await fetch(apiUrl(`/api/runs/${runId}/actions/approve`), {
+    method: 'POST',
+    headers: v2Headers(apiKey),
+    body: JSON.stringify({ item_ids: itemIds || [], reason }),
+  })
+  return parseJsonResponse<RunActionDecisionResponse>(res, 'Failed to approve run actions')
+}
+
+export async function rejectRunActions(
+  apiKey: string,
+  runId: string,
+  itemIds?: string[],
+  reason?: string,
+): Promise<RunActionDecisionResponse> {
+  const res = await fetch(apiUrl(`/api/runs/${runId}/actions/reject`), {
+    method: 'POST',
+    headers: v2Headers(apiKey),
+    body: JSON.stringify({ item_ids: itemIds || [], reason }),
+  })
+  return parseJsonResponse<RunActionDecisionResponse>(res, 'Failed to reject run actions')
+}
+
+export async function stopRun(apiKey: string, runId: string): Promise<RunStopResponse> {
+  const res = await fetch(apiUrl(`/api/runs/${runId}/stop`), {
+    method: 'POST',
+    headers: v2Headers(apiKey),
+  })
+  return parseJsonResponse<RunStopResponse>(res, 'Failed to stop run')
 }
 
 export async function v2CreateApiKey(input: {

@@ -117,11 +117,13 @@ export type EventPayload = {
 export type LLMStatus = {
   enabled: boolean
   base_url: string
+  nvidia_base_url?: string
   model: string
   active_model?: string
   failover_enabled?: boolean
   batch_execution_enabled?: boolean
   model_candidates?: string[]
+  nvidia_enabled?: boolean
   last_error?: string
   last_error_code?: string
   unavailable_reason?: string
@@ -131,8 +133,10 @@ export type LLMStatus = {
 export type LLMPromptPolicy = {
   enabled: boolean
   base_url: string
+  nvidia_base_url?: string
   model: string
   batch_execution_enabled?: boolean
+  nvidia_enabled?: boolean
   prompts: Record<string, string>
 }
 
@@ -201,6 +205,26 @@ export type CommandCapabilityResetResponse = {
   remaining: number
 }
 
+export type SOPArchiveCommandTemplate = {
+  vendor: string
+  commands: string[]
+}
+
+export type SOPArchiveEntry = {
+  id: string
+  name: string
+  summary: string
+  usage_hint: string
+  trigger_keywords: string[]
+  command_templates: SOPArchiveCommandTemplate[]
+}
+
+export type SOPArchiveResponse = {
+  total: number
+  matched: SOPArchiveEntry[]
+  items: SOPArchiveEntry[]
+}
+
 export type RiskPolicy = {
   high_risk_patterns: string[]
   medium_risk_patterns: string[]
@@ -223,11 +247,71 @@ export type ServiceTraceStep = {
   duration_ms?: number
   command_id?: string
   detail?: string
+  detail_payload?: Record<string, unknown>
 }
 
 export type ServiceTrace = {
   session_id: string
   steps: ServiceTraceStep[]
+}
+
+export type RunKind = 'single' | 'multi'
+export type RunStatus = 'open' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled'
+
+export type RunSummary = {
+  id: string
+  source_id: string
+  kind: RunKind
+  name?: string
+  protocol?: DeviceProtocol
+  problem?: string
+  status: RunStatus
+  phase?: string
+  automation_level: AutomationLevel
+  operation_mode: OperationMode
+  created_at: string
+  updated_at?: string
+  started_at?: string
+  completed_at?: string
+  device_count: number
+  device_hosts: string[]
+  pending_actions: number
+}
+
+export type RunListResponse = {
+  total: number
+  items: RunSummary[]
+}
+
+export type RunTimelineResponse = {
+  run: RunSummary
+  payload: Record<string, unknown>
+  trace: Array<Record<string, unknown>>
+  timeline: Timeline
+  service_trace: ServiceTrace
+}
+
+export type RunActionDecisionItem = {
+  item_id: string
+  status: string
+  message: string
+}
+
+export type RunActionDecisionResponse = {
+  run_id: string
+  total: number
+  updated: number
+  skipped: number
+  results: RunActionDecisionItem[]
+}
+
+export type RunStopResponse = {
+  run_id: string
+  source_id: string
+  kind: RunKind
+  status: RunStatus
+  stop_requested: boolean
+  message: string
 }
 
 export type JobMode = 'diagnosis' | 'inspection' | 'repair'

@@ -5,35 +5,32 @@ import { AutomationLevelSelector } from './components/AutomationLevelSelector'
 import { DeviceForm } from './components/DeviceForm'
 import { TaskModeSelector } from './components/TaskModeSelector'
 import {
+  approveRunActions,
   configureLlm,
-  confirmCommand,
-  createSession,
+  createRun,
   deleteCommandCapability,
   deleteLlmConfig,
-  exportMarkdown,
+  exportRunMarkdown,
   getCommandCapability,
   getCommandPolicy,
   getLlmPromptPolicy,
   getLlmStatus,
+  getRunTrace,
+  getSopLibrary,
   getRiskPolicy,
-  getServiceTrace,
-  getTimeline,
-  listSessions,
+  getRunTimeline,
+  listRuns,
+  rejectRunActions,
   resetCommandPolicy,
   resetRiskPolicy,
-  streamMessage,
-  stopSession,
+  stopRun,
+  streamRunEvents,
+  streamRunMessage,
   upsertCommandCapability,
-  v2ApproveActionGroupsBatch,
-  v2CancelJob,
   v2CreateApiKey,
-  v2CreateJob,
   v2DeleteApiKey,
   v2GetPermissionTemplates,
-  v2GetJobTimeline,
   v2ListApiKeys,
-  v2QueryJobs,
-  v2RejectActionGroupsBatch,
   v2UpdateApiKey,
   updateCommandPolicy,
   updateRiskPolicy,
@@ -53,9 +50,10 @@ import type {
   LLMStatus,
   OperationMode,
   RiskPolicy,
+  RunSummary,
   ServiceTraceStep,
-  SessionListItem,
   SessionResponse,
+  SOPArchiveResponse,
   Timeline,
   V2ApiKey,
   V2JobCommandResult,
@@ -89,6 +87,7 @@ type PersistedUiState = {
 type HistorySessionItem = {
   id: string
   source_id: string
+  run_id?: string
   kind: 'single' | 'multi'
   host: string
   device_name?: string
@@ -123,7 +122,7 @@ const NAV_ITEMS: Array<{ id: PageId; title: string }> = [
   { id: 'sessions', title: '会话历史' },
   { id: 'service_trace', title: '流程追踪' },
   { id: 'ai_settings', title: 'AI 设置' },
-  { id: 'learning', title: '知识学习' },
+  { id: 'learning', title: 'SOP / 知识学习' },
   { id: 'third_party_keys', title: '第三方 Key 服务' },
   { id: 'lab', title: 'Lab 对抗' },
 ]
@@ -329,6 +328,10 @@ function App() {
   const [capabilityRewriteInput, setCapabilityRewriteInput] = useState('')
   const [capabilityReasonInput, setCapabilityReasonInput] = useState('')
   const [editingCapabilityId, setEditingCapabilityId] = useState<string | undefined>(undefined)
+  const [sopLibraryLoading, setSopLibraryLoading] = useState(false)
+  const [sopLibrary, setSopLibrary] = useState<SOPArchiveResponse | null>(null)
+  const [sopProblemFilter, setSopProblemFilter] = useState('')
+  const [sopVendorFilter, setSopVendorFilter] = useState('')
   const policyImportInputRef = useRef<HTMLInputElement | null>(null)
 
   const [activePage, setActivePage] = useState<PageId>('workbench')
@@ -368,8 +371,10 @@ function App() {
   const commandListRef = useRef<HTMLDivElement | null>(null)
   const traceListScrollRef = useRef<HTMLDivElement | null>(null)
   const tracePlaybackTimerRef = useRef<number | null>(null)
+  const traceSeqRef = useRef(0)
   const terminalGridRef = useRef<HTMLDivElement | null>(null)
   const streamAbortRef = useRef<AbortController | null>(null)
+  const traceEventAbortRef = useRef<AbortController | null>(null)
   const multiJobAbortRef = useRef<{ aborted: boolean; jobId?: string } | null>(null)
 
   const sessionReady = useMemo(() => Boolean(session?.id), [session])
@@ -558,6 +563,20 @@ function App() {
     () => sessionHistory.find((item) => item.id === traceTargetSessionId),
     [sessionHistory, traceTargetSessionId],
   )
+  const liveTraceRunId = useMemo(() => {
+    if (!session?.id) return undefined
+    if (!busy && !stoppingSession) return undefined
+    if (activePage !== 'workbench' && !(activePage === 'service_trace' && traceTargetSessionId === session.id)) {
+      return undefined
+    }
+    return resolveUnifiedRunId({
+      targetId: session.id,
+      sessionHistory,
+      activeSessionId: session.id,
+      sessionRuntimeKind,
+      multiSessionActiveJobId,
+    })
+  }, [activePage, busy, multiSessionActiveJobId, session?.id, sessionHistory, sessionRuntimeKind, stoppingSession, traceTargetSessionId])
   const traceSessionOptions = useMemo(() => {
     const options: Array<{ value: string; label: string }> = []
     const seen = new Set<string>()
@@ -701,6 +720,8 @@ function App() {
     if (unique.length === 1) return unique[0]
     return ''
   }, [capabilityVersionFilter, sessionVersionSignature, commandCapabilityRules])
+  const sopMatchedEntries = useMemo(() => sopLibrary?.matched || [], [sopLibrary])
+  const sopAllEntries = useMemo(() => sopLibrary?.items || [], [sopLibrary])
   const policyDirty = useMemo(() => {
     const commandDirty = commandPolicy
       ? (
@@ -791,6 +812,11 @@ function App() {
   useEffect(() => {
     if (activePage !== 'learning') return
     void refreshCommandCapabilityRules()
+  }, [activePage])
+
+  useEffect(() => {
+    if (activePage !== 'learning') return
+    void refreshSopLibrary()
   }, [activePage])
 
   useEffect(() => {
@@ -928,29 +954,67 @@ function App() {
   }, [activePage, traceTargetSessionId])
 
   useEffect(() => {
-    if (activePage !== 'service_trace') return
-    if (!traceTargetSessionId) return
-    if (traceTargetSessionId !== session?.id) return
-    if (!busy && !stoppingSession) return
-    const intervalId = window.setInterval(() => {
-      void refreshServiceTraceForTarget(traceTargetSessionId, true)
-    }, 900)
-    return () => window.clearInterval(intervalId)
-  }, [activePage, session?.id, traceTargetSessionId, busy, stoppingSession])
+    traceSeqRef.current = getMaxTraceSeqNo(traceSteps)
+  }, [traceSteps])
 
   useEffect(() => {
-    if (activePage !== 'workbench') return
-    if (sessionRuntimeKind !== 'single') return
-    if (!session?.id) return
-    if (!busy && !stoppingSession) return
-    const intervalId = window.setInterval(() => {
-      void refreshServiceTrace(session.id)
-    }, 700)
-    return () => window.clearInterval(intervalId)
-  }, [activePage, session?.id, sessionRuntimeKind, busy, stoppingSession])
+    traceEventAbortRef.current?.abort()
+    if (!liveTraceRunId) return undefined
+
+    const abortController = new AbortController()
+    traceEventAbortRef.current = abortController
+    const currentSessionId = session?.id
+    const bindToTarget = activePage === 'service_trace' && traceTargetSessionId === currentSessionId
+    const ownerSessionId = bindToTarget ? traceTargetSessionId : undefined
+    const fromSeq = traceSeqRef.current
+
+    setTraceLoading(true)
+    void streamRunEvents(
+      resolveV3ApiKey(),
+      liveTraceRunId,
+      fromSeq,
+      (event, payload) => {
+        if (event === 'trace_step') {
+          const step = payload as ServiceTraceStep
+          const normalized = ownerSessionId ? { ...step, session_id: ownerSessionId } : step
+          setTraceSteps((prev) => mergeTraceSteps(prev, [normalized]))
+          setTraceLoading(false)
+          return
+        }
+        if (event === 'completed') {
+          setTraceLoading(false)
+        }
+      },
+      abortController.signal,
+    )
+      .catch(async (error) => {
+        if ((error as Error).name === 'AbortError') return
+        if (ownerSessionId) {
+          await refreshServiceTraceForTarget(ownerSessionId, true)
+          return
+        }
+        if (currentSessionId) {
+          await refreshServiceTrace(currentSessionId)
+        }
+      })
+      .finally(() => {
+        if (traceEventAbortRef.current === abortController) {
+          traceEventAbortRef.current = null
+        }
+        setTraceLoading(false)
+      })
+
+    return () => {
+      abortController.abort()
+      if (traceEventAbortRef.current === abortController) {
+        traceEventAbortRef.current = null
+      }
+    }
+  }, [activePage, liveTraceRunId, session?.id, traceTargetSessionId])
 
   useEffect(() => {
     return () => {
+      traceEventAbortRef.current?.abort()
       if (tracePlaybackTimerRef.current !== null) {
         window.clearTimeout(tracePlaybackTimerRef.current)
         tracePlaybackTimerRef.current = null
@@ -1109,19 +1173,19 @@ function App() {
   async function refreshSessionHistory() {
     setSessionsLoading(true)
     try {
-      const [singleSessions, multiJobs] = await Promise.all([
-        listSessions().catch(() => [] as SessionListItem[]),
-        v2QueryJobs(resolveV3ApiKey(), {
-          offset: 0,
-          limit: 200,
-        }).then((payload) => payload.items).catch(() => [] as V2JobSummary[]),
-      ])
+      const runs = await listRuns(resolveV3ApiKey(), {
+        offset: 0,
+        limit: 200,
+      }).then((payload) => payload.items).catch(() => [] as RunSummary[])
+      const multiJobs = runs
+        .filter((item) => item.kind === 'multi')
+        .map((item) => mapRunToV2JobSummary(item))
       setV3Jobs(multiJobs)
       setV3SelectedJobId((prev) => {
         if (prev && multiJobs.some((item) => item.id === prev)) return prev
         return multiJobs[0]?.id
       })
-      setSessionHistory(buildHistorySessionItems(singleSessions, multiJobs))
+      setSessionHistory(buildHistorySessionItemsFromRuns(runs))
     } catch {
       setV3Jobs([])
       setSessionHistory([])
@@ -1139,6 +1203,21 @@ function App() {
       setCommandCapabilityRules([])
     } finally {
       setCapabilityLoading(false)
+    }
+  }
+
+  async function refreshSopLibrary(problem?: string, vendor?: string) {
+    setSopLibraryLoading(true)
+    try {
+      const payload = await getSopLibrary(resolveV3ApiKey(), {
+        problem: problem ?? (sopProblemFilter.trim() || undefined),
+        vendor: vendor ?? (sopVendorFilter.trim() || undefined),
+      })
+      setSopLibrary(payload)
+    } catch {
+      setSopLibrary(null)
+    } finally {
+      setSopLibraryLoading(false)
     }
   }
 
@@ -1279,7 +1358,8 @@ function App() {
 
   async function hydrateSessionById(sessionId: string, silent = false) {
     try {
-      const data = await getTimeline(sessionId)
+      const historyItem = sessionHistory.find((item) => item.id === sessionId)
+      const data = await buildTimelineSnapshotFromRun(historyItem?.run_id || toUnifiedSingleRunId(sessionId), sessionId)
       historySnapshotCacheRef.current[sessionId] = data
       const restoredSession: SessionResponse = {
         id: data.session.id,
@@ -1289,9 +1369,9 @@ function App() {
         created_at: data.session.created_at,
       }
       setSession(restoredSession)
-      setSessionRuntimeKind('single')
+      setSessionRuntimeKind(historyItem?.kind === 'multi' ? 'multi' : 'single')
       setMultiSessionConfig(null)
-      setMultiSessionActiveJobId(undefined)
+      setMultiSessionActiveJobId(historyItem?.kind === 'multi' ? historyItem.source_id : undefined)
       setAutomationLevel(restoredSession.automation_level)
       setOperationMode(restoredSession.operation_mode)
       setMessages(data.messages)
@@ -1304,7 +1384,7 @@ function App() {
       setSessionVersionSignature(String(data.session.device?.version_signature || '').trim())
       setSelectedHistorySessionId(sessionId)
       setSelectedHistorySnapshot(data)
-      await refreshServiceTrace(sessionId)
+      await refreshServiceTraceForTarget(sessionId)
       if (!silent) {
         antMessage.success(`已恢复会话 ${sessionId.slice(0, 8)}...`)
       }
@@ -1395,10 +1475,30 @@ function App() {
         jump_password: payload.jump_password,
         api_token: payload.api_token,
       })
-      const resp = await createSession({
-        ...payload,
-        host,
+      const run = await createRun(resolveV3ApiKey(), {
+        automation_level: payload.automation_level,
+        operation_mode: payload.operation_mode,
+        devices: [
+          {
+            host,
+            protocol: payload.protocol,
+            username: payload.username,
+            password: payload.password,
+            jump_host: payload.jump_host,
+            jump_port: payload.jump_port,
+            jump_username: payload.jump_username,
+            jump_password: payload.jump_password,
+            api_token: payload.api_token,
+          },
+        ],
       })
+      const resp: SessionResponse = {
+        id: run.source_id,
+        automation_level: run.automation_level,
+        operation_mode: run.operation_mode,
+        status: run.status,
+        created_at: run.created_at,
+      }
       setSession(resp)
       setSessionRuntimeKind('single')
       setMultiSessionConfig(null)
@@ -1921,24 +2021,31 @@ function App() {
 
   async function monitorMultiJobUntilPauseOrDone(jobId: string): Promise<'pending' | 'done' | 'stopped'> {
     const key = resolveV3ApiKey()
+    const runId = toUnifiedMultiRunId(jobId)
     let rounds = 0
     while (rounds < 240) {
       if (multiJobAbortRef.current?.aborted) {
         return 'stopped'
       }
-      const timeline = await v2GetJobTimeline(key, jobId)
+      const runTimeline = await getRunTimeline(key, runId)
+      const timeline = runTimeline.timeline
       setV3SelectedJobId(jobId)
-      const mapped = mapV2TimelineToWorkbenchCommands(timeline, session?.id || jobId)
-      setCommands(mapped)
-      if (mapped.length > 0) {
-        setSelectedCommandId(mapped[mapped.length - 1].id)
-        setSelectedActivityKey(`cmd:${mapped[mapped.length - 1].id}`)
+      setMessages(timeline.messages || [])
+      setCommands(timeline.commands || [])
+      setEvidences(timeline.evidences || [])
+      setTraceSteps(runTimeline.service_trace?.steps || [])
+      if ((timeline.commands || []).length > 0) {
+        const lastCommand = timeline.commands[timeline.commands.length - 1]
+        setSelectedCommandId(lastCommand.id)
+        setSelectedActivityKey(`cmd:${lastCommand.id}`)
       }
 
-      const pendingGroups = (timeline.job.action_groups || []).filter((item) => item.status === 'pending_approval')
-      if (pendingGroups.length > 0) {
-        const pendingSummary = buildPendingApprovalSummary(timeline)
-        setSummary(pendingSummary)
+      if ((runTimeline.run.pending_actions || 0) > 0) {
+        const pendingCount = runTimeline.run.pending_actions || 0
+        const pendingSummary = timeline.summary || summary
+        if (pendingSummary) {
+          setSummary(pendingSummary)
+        }
         setMessages((prev) => {
           const markerId = `multi-pending-${jobId}`
           if (prev.some((item) => item.id === markerId)) return prev
@@ -1947,7 +2054,7 @@ function App() {
             {
               id: markerId,
               role: 'assistant',
-              content: `已生成 ${pendingGroups.length} 组待确认命令，请在卡片中确认后继续执行。`,
+              content: `已生成 ${pendingCount} 组待确认命令，请在卡片中确认后继续执行。`,
               created_at: new Date().toISOString(),
             },
           ]
@@ -1956,8 +2063,11 @@ function App() {
         return 'pending'
       }
 
-      if (timeline.job.status === 'completed' || timeline.job.status === 'failed' || timeline.job.status === 'cancelled') {
-        const finalSummary = buildSummaryFromV2Timeline(timeline)
+      if (runTimeline.run.status === 'completed' || runTimeline.run.status === 'failed' || runTimeline.run.status === 'cancelled') {
+        const finalSummary = timeline.summary || summary
+        if (!finalSummary) {
+          return 'done'
+        }
         setSummary(finalSummary)
         setMessages((prev) => {
           const markerId = `multi-final-${jobId}`
@@ -1998,23 +2108,26 @@ function App() {
     setContinueExecutionState(null)
     try {
       const key = resolveV3ApiKey()
-      const created = await v2CreateJob(
+      const requestId = `workbench-multi-${Date.now()}`
+      const created = await createRun(
         key,
         {
-          name: `workbench-multi-${Date.now()}`,
+          name: requestId,
           problem: buildMultiProblemStatement(content),
-          mode: toV2JobMode(multiSessionConfig.operation_mode),
+          automation_level: automationLevel,
+          operation_mode: multiSessionConfig.operation_mode,
           topology_mode: 'hybrid',
           max_gap_seconds: 300,
           max_device_concurrency: Math.min(50, Math.max(2, multiSessionConfig.hosts.length)),
           execution_policy: 'stop_on_failure',
           devices: buildMultiSessionDevices(multiSessionConfig),
         },
-        `workbench-multi-${Date.now()}`,
+        requestId,
       )
-      setMultiSessionActiveJobId(created.id)
-      multiJobAbortRef.current = { aborted: false, jobId: created.id }
-      await monitorMultiJobUntilPauseOrDone(created.id)
+      setMultiSessionActiveJobId(created.source_id)
+      setV3SelectedJobId(created.source_id)
+      multiJobAbortRef.current = { aborted: false, jobId: created.source_id }
+      await monitorMultiJobUntilPauseOrDone(created.source_id)
       await refreshV3Jobs()
       await refreshSessionHistory()
     } catch (error) {
@@ -2047,7 +2160,7 @@ function App() {
     streamAbortRef.current = abortController
     setBusy(true)
     try {
-      await streamMessage(activeSessionId, content, (event, payload) => {
+      await streamRunMessage(resolveV3ApiKey(), toUnifiedSingleRunId(activeSessionId), content, (event, payload) => {
         if (event === 'message_ack' && payload.message) {
           const msg = payload.message as ChatMessage
           setMessages((prev) => [...prev, msg])
@@ -2133,8 +2246,7 @@ function App() {
           multiJobAbortRef.current.aborted = true
         }
         if (multiSessionActiveJobId) {
-          const key = resolveV3ApiKey()
-          await v2CancelJob(key, multiSessionActiveJobId, 'manual_stop')
+          await stopRun(resolveV3ApiKey(), toUnifiedMultiRunId(multiSessionActiveJobId))
         }
         setBusy(false)
         setMessages((prev) => [
@@ -2157,7 +2269,7 @@ function App() {
     setStoppingSession(true)
     try {
       streamAbortRef.current?.abort()
-      await stopSession(session.id)
+      await stopRun(resolveV3ApiKey(), toUnifiedSingleRunId(session.id))
       setResumedSessionId(undefined)
       setContinueExecutionState(null)
       await Promise.all([refreshTimeline(session.id), refreshServiceTrace(session.id)])
@@ -2210,19 +2322,18 @@ function App() {
   }
 
   async function handleRestoreV2HistoryJob(jobId: string) {
-    const key = resolveV3ApiKey()
     try {
-      const timeline = await v2GetJobTimeline(key, jobId)
+      const timeline = await buildTimelineSnapshotFromRun(toUnifiedMultiRunId(jobId), toV2HistorySessionId(jobId))
+      const hosts = splitHostsFromSnapshot(timeline)
+      const operationMode = timeline.session.operation_mode
+      const historySessionId = timeline.session.id
       setV3SelectedJobId(jobId)
-      const hosts = (timeline.job.devices || []).map((item) => String(item.host || '').trim()).filter(Boolean)
-      const operationMode = operationModeFromJobMode(timeline.job.mode)
-      const historySessionId = toV2HistorySessionId(jobId)
       setSession({
         id: historySessionId,
-        automation_level: 'assisted',
+        automation_level: timeline.session.automation_level,
         operation_mode: operationMode,
-        status: timeline.job.status === 'completed' || timeline.job.status === 'failed' || timeline.job.status === 'cancelled' ? 'closed' : 'open',
-        created_at: timeline.job.created_at,
+        status: timeline.session.status,
+        created_at: timeline.session.created_at,
       })
       setSessionRuntimeKind('multi')
       setMultiSessionConfig({
@@ -2231,19 +2342,20 @@ function App() {
         operation_mode: operationMode,
       })
       setMultiSessionActiveJobId(jobId)
-      setAutomationLevel('assisted')
+      setAutomationLevel(timeline.session.automation_level)
       setOperationMode(operationMode)
-      setMessages(buildHistoryMessagesFromV2Timeline(timeline))
-      setCommands(mapV2TimelineToWorkbenchCommands(timeline, historySessionId))
-      setEvidences([])
-      setSummary(buildSummaryFromV2Timeline(timeline))
+      setMessages(timeline.messages)
+      setCommands(timeline.commands)
+      setEvidences(timeline.evidences)
+      setSummary(timeline.summary)
       setContinueExecutionState(null)
-      setSessionDeviceAddress(hosts.join(', ') || '-')
-      setSessionDeviceName(`多设备协同(${hosts.length || timeline.job.devices.length || 0})`)
-      setSessionVersionSignature('')
+      setSessionDeviceAddress(timeline.session.device?.host || hosts.join(', ') || '-')
+      setSessionDeviceName(formatDeviceName(timeline.session.device?.name))
+      setSessionVersionSignature(String(timeline.session.device?.version_signature || '').trim())
       setDraftInput('')
       setResumedSessionId(historySessionId)
       setActivePage('workbench')
+      historySnapshotCacheRef.current[historySessionId] = timeline
       antMessage.success('已恢复多设备历史任务')
     } catch (error) {
       antMessage.error((error as Error).message || '恢复多设备历史任务失败')
@@ -2262,6 +2374,8 @@ function App() {
   async function loadHistorySnapshot(sessionId: string, forceRefresh: boolean) {
     const target = String(sessionId || '').trim()
     if (!target) return
+    const historyItem = sessionHistory.find((item) => item.id === target)
+    const runId = historyItem?.run_id
     const v2JobId = parseV2HistoryJobId(target)
     const cached = historySnapshotCacheRef.current[target]
     if (cached && !forceRefresh) {
@@ -2276,9 +2390,8 @@ function App() {
       setSelectedHistorySnapshot((prev) => (prev && prev.session.id === target ? prev : null))
     }
     try {
-      const data = v2JobId
-        ? await buildTimelineSnapshotFromV2Job(v2JobId)
-        : await getTimeline(target)
+      const resolvedRunId = runId || (v2JobId ? toUnifiedMultiRunId(v2JobId) : toUnifiedSingleRunId(target))
+      const data = await buildTimelineSnapshotFromRun(resolvedRunId, target)
       if (historySnapshotRequestRef.current !== requestId) return
       historySnapshotCacheRef.current[target] = data
       setSelectedHistorySnapshot(data)
@@ -2291,30 +2404,22 @@ function App() {
     }
   }
 
-  async function buildTimelineSnapshotFromV2Job(jobId: string): Promise<Timeline> {
-    const key = resolveV3ApiKey()
-    const timeline = await v2GetJobTimeline(key, jobId)
-    const historySessionId = toV2HistorySessionId(jobId)
-    const hosts = (timeline.job.devices || []).map((item) => String(item.host || '').trim()).filter(Boolean)
-    const operationMode = operationModeFromJobMode(timeline.job.mode)
+  async function buildTimelineSnapshotFromRun(runId: string, historySessionId?: string): Promise<Timeline> {
+    const runTimeline = await getRunTimeline(resolveV3ApiKey(), runId)
+    const timeline = runTimeline.timeline
+    if (!historySessionId || timeline.session.id === historySessionId) {
+      return timeline
+    }
     return {
+      ...timeline,
       session: {
+        ...timeline.session,
         id: historySessionId,
-        automation_level: 'assisted',
-        operation_mode: operationMode,
-        status: timeline.job.status === 'completed' || timeline.job.status === 'failed' || timeline.job.status === 'cancelled' ? 'closed' : 'open',
-        created_at: timeline.job.created_at,
-        device: {
-          host: hosts.join(', ') || '-',
-          name: `多设备协同(${hosts.length || timeline.job.devices.length || 0})`,
-          protocol: 'ssh',
-          version_signature: undefined,
-        },
       },
-      messages: buildHistoryMessagesFromV2Timeline(timeline),
-      commands: mapV2TimelineToWorkbenchCommands(timeline, historySessionId),
-      evidences: [],
-      summary: buildSummaryFromV2Timeline(timeline),
+      messages: timeline.messages.map((item) => ({ ...item })),
+      commands: timeline.commands.map((item) => ({ ...item, session_id: historySessionId })),
+      evidences: timeline.evidences.map((item) => ({ ...item, session_id: historySessionId })),
+      summary: timeline.summary,
     }
   }
 
@@ -2327,7 +2432,15 @@ function App() {
   async function refreshTimeline(targetSessionId?: string) {
     const sid = targetSessionId ?? session?.id
     if (!sid) return
-    const data = await getTimeline(sid)
+    const runId = resolveUnifiedRunId({
+      targetId: sid,
+      sessionHistory,
+      activeSessionId: session?.id,
+      sessionRuntimeKind,
+      multiSessionActiveJobId,
+    })
+    if (!runId) return
+    const data = (await getRunTimeline(resolveV3ApiKey(), runId)).timeline
     setSession({
       id: data.session.id,
       automation_level: data.session.automation_level,
@@ -2347,9 +2460,17 @@ function App() {
   async function refreshServiceTrace(targetSessionId?: string) {
     const sid = targetSessionId ?? session?.id
     if (!sid) return
+    const runId = resolveUnifiedRunId({
+      targetId: sid,
+      sessionHistory,
+      activeSessionId: session?.id,
+      sessionRuntimeKind,
+      multiSessionActiveJobId,
+    })
+    if (!runId) return
     setTraceLoading(true)
     try {
-      const data = await getServiceTrace(sid)
+      const data = await getRunTrace(resolveV3ApiKey(), runId)
       setTraceSteps(data.steps || [])
     } finally {
       setTraceLoading(false)
@@ -2362,18 +2483,21 @@ function App() {
       setTraceSteps([])
       return
     }
-    const v2JobId = parseV2HistoryJobId(sid)
     setTraceLoading(true)
     try {
-      if (!v2JobId) {
-        const data = await getServiceTrace(sid)
-        setTraceSteps(data.steps || [])
+      const runId = resolveUnifiedRunId({
+        targetId: sid,
+        sessionHistory,
+        activeSessionId: session?.id,
+        sessionRuntimeKind,
+        multiSessionActiveJobId,
+      })
+      if (!runId) {
+        setTraceSteps([])
         return
       }
-      const key = resolveV3ApiKey()
-      const timeline = await v2GetJobTimeline(key, v2JobId)
-      const synthetic = buildServiceTraceStepsFromV2Timeline(timeline, sid)
-      setTraceSteps(synthetic)
+      const data = await getRunTrace(resolveV3ApiKey(), runId)
+      setTraceSteps((data.steps || []).map((item) => ({ ...item, session_id: sid })))
     } catch (error) {
       setTraceSteps([])
       if (!silent) {
@@ -2386,7 +2510,15 @@ function App() {
 
   async function handleExport() {
     if (!session?.id) return
-    const content = await exportMarkdown(session.id)
+    const runId = resolveUnifiedRunId({
+      targetId: session.id,
+      sessionHistory,
+      activeSessionId: session.id,
+      sessionRuntimeKind,
+      multiSessionActiveJobId,
+    })
+    if (!runId) return
+    const content = await exportRunMarkdown(resolveV3ApiKey(), runId)
     const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -2410,11 +2542,11 @@ function App() {
           .filter((item): item is string => Boolean(item))
         const targetIds = actionIds.length > 0 ? actionIds : [v2ActionGroupId]
         if (approved) {
-          await v2ApproveActionGroupsBatch(key, multiSessionActiveJobId, targetIds, 'workbench-confirm')
+          await approveRunActions(key, toUnifiedMultiRunId(multiSessionActiveJobId), targetIds, 'workbench-confirm')
           await monitorMultiJobUntilPauseOrDone(multiSessionActiveJobId)
           antMessage.success(targetIds.length > 1 ? '已确认并执行命令组' : '已确认执行命令组')
         } else {
-          await v2RejectActionGroupsBatch(key, multiSessionActiveJobId, targetIds, 'workbench-reject')
+          await rejectRunActions(key, toUnifiedMultiRunId(multiSessionActiveJobId), targetIds, 'workbench-reject')
           await monitorMultiJobUntilPauseOrDone(multiSessionActiveJobId)
           antMessage.info(targetIds.length > 1 ? '已拒绝命令组' : '已拒绝命令组')
         }
@@ -2429,7 +2561,11 @@ function App() {
     }
     setConfirmingCommandId(commandId)
     try {
-      await confirmCommand(session.id, commandId, approved)
+      if (approved) {
+        await approveRunActions(resolveV3ApiKey(), toUnifiedSingleRunId(session.id), [commandId], 'workbench-confirm')
+      } else {
+        await rejectRunActions(resolveV3ApiKey(), toUnifiedSingleRunId(session.id), [commandId], 'workbench-reject')
+      }
       await Promise.all([refreshTimeline(), refreshServiceTrace()])
       if (approved) {
         antMessage.success('已执行高风险命令')
@@ -3143,11 +3279,11 @@ function App() {
 
               <div className="panel-card v3-card">
                 <h3>第三方接入说明</h3>
-                <p className="muted">内置诊断工作台和会话历史通过受信任 UI 通道访问 `/v2/*`，不需要你在前端手动配置 API Key。这里的 Key 仅用于共享给第三方系统或外部脚本。</p>
+                <p className="muted">内置诊断工作台和会话历史通过受信任 UI 通道访问统一 Run API，不需要你在前端手动配置 API Key。这里的 Key 仅用于共享给第三方系统或外部脚本。</p>
                 <div className="v3-template-box">
                   <div className="v3-template-item">
                     <strong>服务地址</strong>
-                    <code>POST /v2/jobs, GET /v2/jobs/query, GET /v2/jobs/{'{jobId}'}/timeline</code>
+                    <code>POST /api/runs, GET /api/runs, GET /api/runs/{'{runId}'}/timeline</code>
                   </div>
                   <div className="v3-template-item">
                     <strong>鉴权方式</strong>
@@ -3158,12 +3294,13 @@ function App() {
                     <code>按系统/团队分配独立 Key，权限最小化，定期轮换。</code>
                   </div>
                 </div>
-                <pre className="detail-pre">{`curl -sS -X POST 'http://127.0.0.1:8000/v2/jobs' \\
+                <pre className="detail-pre">{`curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
   -H 'X-API-Key: <YOUR_KEY>' \\
   -H 'Content-Type: application/json' \\
   -d '{
     "problem":"多设备异常关联分析",
-    "mode":"diagnosis",
+    "operation_mode":"diagnosis",
+    "automation_level":"assisted",
     "devices":[{"host":"192.168.0.88","protocol":"ssh","username":"***","password":"***"}]
   }'`}</pre>
                 <div className="policy-actions">
@@ -3180,7 +3317,7 @@ function App() {
 
           {activePage === 'control' && (
             <div className="page-grid control-layout">
-              <div className="panel-card">
+              <div className="panel-card control-main-panel">
                 <h3>连接控制</h3>
                 <p className="muted">统一入口：输入一个地址=单设备，多地址（逗号/空格/换行分隔）=多设备协同。</p>
                 <div className="control-card-stack">
@@ -3194,16 +3331,19 @@ function App() {
                   />
                 </div>
               </div>
-              <div className="panel-card">
+              <div className="panel-card control-status-panel">
                 <h3>连接状态</h3>
-                <div className="kv"><span>会话 ID</span><strong>{session?.id || '-'}</strong></div>
-                <div className="kv"><span>会话模式</span><strong>{session?.operation_mode ? operationModeLabel(session.operation_mode) : '-'}</strong></div>
-                <div className="kv"><span>命令执行控制等级</span><strong>{automationLabel(automationLevel)}</strong></div>
-                <div className="kv"><span>LLM</span><strong>{llmStatus?.enabled ? '已启用' : '未启用'}</strong></div>
-                <div className="kv"><span>协同任务 ID</span><strong>{v3SelectedJobSummary?.id || '-'}</strong></div>
-                <div className="kv"><span>协同任务阶段</span><strong>{v3SelectedJobSummary ? `${v3SelectedJobSummary.status} / ${v3SelectedJobSummary.phase}` : '-'}</strong></div>
-                <div className="kv"><span>待审批命令组</span><strong>{v3SelectedJobSummary?.pending_action_groups ?? '-'}</strong></div>
-                <div className="trace-head" style={{ marginTop: 16 }}>
+                <p className="muted">这里集中展示当前连接会话、模型可用性和最近多设备协同状态，方便在同一页确认连接是否进入可诊断状态。</p>
+                <div className="control-status-grid">
+                  <div className="control-kv-card"><span>会话 ID</span><strong>{session?.id || '-'}</strong></div>
+                  <div className="control-kv-card"><span>会话模式</span><strong>{session?.operation_mode ? operationModeLabel(session.operation_mode) : '-'}</strong></div>
+                  <div className="control-kv-card"><span>命令执行控制等级</span><strong>{automationLabel(automationLevel)}</strong></div>
+                  <div className="control-kv-card"><span>LLM</span><strong>{llmStatus?.enabled ? '已启用' : '未启用'}</strong></div>
+                  <div className="control-kv-card"><span>协同任务 ID</span><strong>{v3SelectedJobSummary?.id || '-'}</strong></div>
+                  <div className="control-kv-card"><span>协同任务阶段</span><strong>{v3SelectedJobSummary ? `${v3SelectedJobSummary.status} / ${v3SelectedJobSummary.phase}` : '-'}</strong></div>
+                  <div className="control-kv-card control-kv-card-wide"><span>待审批命令组</span><strong>{v3SelectedJobSummary?.pending_action_groups ?? '-'}</strong></div>
+                </div>
+                <div className="trace-head control-status-history-head">
                   <div>
                     <h3 style={{ marginBottom: 4 }}>近期多设备协同</h3>
                     <p className="muted">不再单独拆一页，最近任务直接在统一入口下查看和恢复。</p>
@@ -3212,7 +3352,7 @@ function App() {
                     {v3JobsLoading ? '刷新中...' : '刷新'}
                   </Button>
                 </div>
-                <div className="session-history-list">
+                <div className="session-history-list control-status-history-list">
                   {recentMultiJobItems.length === 0 && <div className="muted">暂无多设备协同任务</div>}
                   {recentMultiJobItems.map((job) => (
                     <div
@@ -4028,11 +4168,138 @@ function App() {
 
           {activePage === 'learning' && (
             <div className="learning-layout">
+              <div className="panel-card learning-sop-card">
+                <div className="learning-toolbar-main">
+                  <div>
+                    <h3>SOP 档案库（供 AI 参考调用）</h3>
+                    <p className="muted learning-subtitle">用途：沉淀历史故障的排查思路、命令模板和注意事项，供 AI 在规划阶段按当前问题自主决定是否引用。</p>
+                  </div>
+                  <div className="capability-toolbar-actions">
+                    <Button size="small" onClick={() => void refreshSopLibrary()} disabled={sopLibraryLoading}>
+                      {sopLibraryLoading ? '刷新中...' : '刷新'}
+                    </Button>
+                    <Button
+                      size="small"
+                      onClick={() => {
+                        setSopProblemFilter('')
+                        setSopVendorFilter('')
+                        void refreshSopLibrary('', '')
+                      }}
+                      disabled={sopLibraryLoading}
+                    >
+                      查看全部
+                    </Button>
+                  </div>
+                </div>
+                <div className="learning-sop-banner">
+                  系统不会直接按 SOP 自动执行命令。SOP 只是 AI 可选的参考档案；即使 AI 决定引用，其中命令也仍会经过会话范围、命令风险和审批策略。
+                </div>
+                <div className="learning-sop-filter-row">
+                  <Input
+                    size="small"
+                    value={sopProblemFilter}
+                    onChange={(event) => setSopProblemFilter(event.target.value)}
+                    placeholder="按问题语义匹配，例如 上次 OSPF 闪断 / 接口频繁 down"
+                  />
+                  <Input
+                    size="small"
+                    value={sopVendorFilter}
+                    onChange={(event) => setSopVendorFilter(event.target.value)}
+                    placeholder="厂商过滤，例如 huawei / arista"
+                  />
+                  <Button size="small" type="primary" onClick={() => void refreshSopLibrary()} loading={sopLibraryLoading}>
+                    匹配预览
+                  </Button>
+                </div>
+                <div className="learning-sop-stats">
+                  <div className="policy-stat-card">
+                    <span className="muted">档案总数</span>
+                    <strong>{sopLibrary?.total ?? 0}</strong>
+                  </div>
+                  <div className="policy-stat-card">
+                    <span className="muted">当前匹配</span>
+                    <strong>{sopMatchedEntries.length}</strong>
+                  </div>
+                  <div className="policy-stat-card">
+                    <span className="muted">当前过滤问题</span>
+                    <strong>{sopProblemFilter || '-'}</strong>
+                  </div>
+                  <div className="policy-stat-card">
+                    <span className="muted">当前过滤厂商</span>
+                    <strong>{sopVendorFilter || '-'}</strong>
+                  </div>
+                </div>
+                <div className="learning-sop-columns">
+                  <section className="learning-sop-section">
+                    <div className="learning-sop-section-head">
+                      <strong>当前匹配档案</strong>
+                      <span className="muted">{sopMatchedEntries.length} 条</span>
+                    </div>
+                    <div className="learning-sop-list">
+                      {sopMatchedEntries.length === 0 && <div className="policy-empty muted">当前没有命中档案，AI 将继续依赖当前证据自主规划。</div>}
+                      {sopMatchedEntries.map((entry) => (
+                        <details key={`matched-${entry.id}`} className="learning-sop-item" open>
+                          <summary>
+                            <div className="learning-sop-item-head">
+                              <strong>{entry.name}</strong>
+                              <span className="status-chip ok">AI 可选参考</span>
+                            </div>
+                            <span className="muted">{entry.id}</span>
+                          </summary>
+                          <p className="muted learning-sop-summary">{entry.summary}</p>
+                          <div className="learning-sop-usage">{entry.usage_hint}</div>
+                          <div className="learning-sop-tag-row">
+                            {(entry.trigger_keywords || []).map((keyword) => <span key={`${entry.id}-kw-${keyword}`} className="meta-pill">{keyword}</span>)}
+                          </div>
+                          <div className="learning-sop-command-list">
+                            {(entry.command_templates || []).map((template, index) => (
+                              <div key={`${entry.id}-cmd-${index}`} className="learning-sop-command-card">
+                                <div className="learning-sop-command-head">
+                                  <strong>{template.vendor || 'generic'}</strong>
+                                  <span className="muted">{(template.commands || []).length} 条模板</span>
+                                </div>
+                                <code>{(template.commands || []).join('\n')}</code>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      ))}
+                    </div>
+                  </section>
+
+                  <section className="learning-sop-section">
+                    <div className="learning-sop-section-head">
+                      <strong>全部 SOP 档案</strong>
+                      <span className="muted">{sopAllEntries.length} 条</span>
+                    </div>
+                    <div className="learning-sop-list">
+                      {sopAllEntries.length === 0 && <div className="policy-empty muted">暂无 SOP 档案</div>}
+                      {sopAllEntries.map((entry) => (
+                        <details key={`all-${entry.id}`} className="learning-sop-item">
+                          <summary>
+                            <div className="learning-sop-item-head">
+                              <strong>{entry.name}</strong>
+                              <span className="muted">{(entry.command_templates || []).length} 条模板</span>
+                            </div>
+                            <span className="muted">{entry.id}</span>
+                          </summary>
+                          <p className="muted learning-sop-summary">{entry.summary}</p>
+                          <div className="learning-sop-usage">{entry.usage_hint}</div>
+                          <div className="learning-sop-tag-row">
+                            {(entry.trigger_keywords || []).map((keyword) => <span key={`${entry.id}-all-kw-${keyword}`} className="meta-pill">{keyword}</span>)}
+                          </div>
+                        </details>
+                      ))}
+                    </div>
+                  </section>
+                </div>
+              </div>
+
               <div className="panel-card learning-toolbar-card">
                 <div className="learning-toolbar-main">
                   <div>
                     <h3>学习规则（版本级：失败阻断 / 替代改写）</h3>
-                    <p className="muted learning-subtitle">按版本指纹维护命令替代与阻断规则，避免重复试错。</p>
+                    <p className="muted learning-subtitle">按版本指纹维护命令替代与阻断规则，避免重复试错；这部分是系统执行前的能力修正，不等同于 SOP 档案。</p>
                   </div>
                   <div className="capability-toolbar-actions">
                     <Button size="small" onClick={() => void refreshCommandCapabilityRules()} disabled={capabilityLoading}>
@@ -4642,8 +4909,69 @@ function sleepMs(ms: number): Promise<void> {
   })
 }
 
+function resolveUnifiedRunId(options: {
+  targetId?: string
+  sessionHistory: HistorySessionItem[]
+  activeSessionId?: string
+  sessionRuntimeKind?: 'single' | 'multi'
+  multiSessionActiveJobId?: string
+}): string | undefined {
+  const sid = String(options.targetId || '').trim()
+  if (!sid) return undefined
+  const historyItem = options.sessionHistory.find((item) => item.id === sid)
+  if (historyItem?.run_id) return historyItem.run_id
+  const v2JobId = parseV2HistoryJobId(sid)
+  if (v2JobId) return toUnifiedMultiRunId(v2JobId)
+  if (
+    options.activeSessionId === sid
+    && options.sessionRuntimeKind === 'multi'
+    && options.multiSessionActiveJobId
+  ) {
+    return toUnifiedMultiRunId(options.multiSessionActiveJobId)
+  }
+  return toUnifiedSingleRunId(sid)
+}
+
+function getMaxTraceSeqNo(traceSteps: ServiceTraceStep[]): number {
+  let maxSeq = 0
+  for (const item of traceSteps) {
+    const seq = Number(item.seq_no || 0)
+    if (Number.isFinite(seq) && seq > maxSeq) {
+      maxSeq = seq
+    }
+  }
+  return maxSeq
+}
+
+function mergeTraceSteps(current: ServiceTraceStep[], incoming: ServiceTraceStep[]): ServiceTraceStep[] {
+  if (incoming.length === 0) return current
+  const merged = new Map<string, ServiceTraceStep>()
+  for (const item of current) {
+    merged.set(item.id, item)
+  }
+  for (const item of incoming) {
+    merged.set(item.id, item)
+  }
+  return [...merged.values()].sort((left, right) => {
+    const leftSeq = Number(left.seq_no || 0)
+    const rightSeq = Number(right.seq_no || 0)
+    if (leftSeq === rightSeq) {
+      return Date.parse(left.started_at || '') - Date.parse(right.started_at || '')
+    }
+    return leftSeq - rightSeq
+  })
+}
+
 function toV2HistorySessionId(jobId: string): string {
   return `v2job:${String(jobId || '').trim()}`
+}
+
+function toUnifiedSingleRunId(sessionId: string): string {
+  return `run_s:${String(sessionId || '').trim()}`
+}
+
+function toUnifiedMultiRunId(jobId: string): string {
+  return `run_m:${String(jobId || '').trim()}`
 }
 
 function parseV2HistoryJobId(historyId: string): string | undefined {
@@ -4682,39 +5010,65 @@ function buildHistoryMessagesFromV2Timeline(timeline: V2JobTimeline): ChatMessag
   return messages
 }
 
-function buildHistorySessionItems(
-  sessions: SessionListItem[],
-  jobs: V2JobSummary[],
-): HistorySessionItem[] {
-  const sessionItems: HistorySessionItem[] = sessions.map((item) => ({
-    id: item.id,
-    source_id: item.id,
-    kind: 'single',
-    host: item.host,
-    device_name: item.device_name,
-    protocol: item.protocol,
-    automation_level: item.automation_level,
-    operation_mode: item.operation_mode,
-    status: item.status,
-    created_at: item.created_at,
-  }))
-  const jobItems: HistorySessionItem[] = jobs.map((job) => ({
-    id: toV2HistorySessionId(job.id),
-    source_id: job.id,
-    kind: 'multi',
-    host: `多设备协同(${job.device_count})`,
-    device_name: `任务 ${job.id.slice(0, 8)}...`,
-    protocol: 'ssh',
-    automation_level: 'assisted',
-    operation_mode: operationModeFromJobMode(job.mode),
-    status: job.status,
-    created_at: job.created_at,
-    updated_at: job.updated_at,
-    problem: job.problem,
-    device_count: job.device_count,
-    command_count: job.command_count,
-  }))
-  return [...sessionItems, ...jobItems].sort((left, right) => {
+function mapRunToV2JobSummary(run: RunSummary): V2JobSummary {
+  return {
+    id: run.source_id,
+    name: run.name,
+    problem: run.problem || '',
+    mode: run.operation_mode === 'query' ? 'inspection' : run.operation_mode === 'config' ? 'repair' : 'diagnosis',
+    status: run.status === 'open' ? 'queued' : run.status,
+    phase: (String(run.phase || 'collect') as V2JobSummary['phase']),
+    created_at: run.created_at,
+    started_at: run.started_at,
+    completed_at: run.completed_at,
+    updated_at: run.updated_at || run.created_at,
+    device_count: run.device_count,
+    command_count: 0,
+    pending_action_groups: run.pending_actions,
+    root_device_id: undefined,
+  }
+}
+
+function buildHistorySessionItemsFromRuns(runs: RunSummary[]): HistorySessionItem[] {
+  const items: HistorySessionItem[] = runs.map((run) => {
+    if (run.kind === 'multi') {
+      return {
+        id: toV2HistorySessionId(run.source_id),
+        source_id: run.source_id,
+        run_id: run.id,
+        kind: 'multi',
+        host: `多设备协同(${run.device_count})`,
+        device_name: run.name || `任务 ${run.source_id.slice(0, 8)}...`,
+        protocol: 'ssh',
+        automation_level: run.automation_level,
+        operation_mode: run.operation_mode,
+        status: run.status,
+        created_at: run.created_at,
+        updated_at: run.updated_at,
+        problem: run.problem,
+        device_count: run.device_count,
+        command_count: undefined,
+      }
+    }
+    return {
+      id: run.source_id,
+      source_id: run.source_id,
+      run_id: run.id,
+      kind: 'single',
+      host: run.device_hosts[0] || '-',
+      device_name: run.name,
+      protocol: run.protocol || 'ssh',
+      automation_level: run.automation_level,
+      operation_mode: run.operation_mode,
+      status: run.status,
+      created_at: run.created_at,
+      updated_at: run.updated_at,
+      problem: run.problem,
+      device_count: run.device_count,
+      command_count: undefined,
+    }
+  })
+  return items.sort((left, right) => {
     const l = Date.parse(String(left.created_at || ''))
     const r = Date.parse(String(right.created_at || ''))
     const lt = Number.isFinite(l) ? l : 0
@@ -4727,6 +5081,13 @@ function parseV2ActionGroupCommandId(commandId: string): string | undefined {
   const value = String(commandId || '').trim()
   if (!value.startsWith('v2ag:')) return undefined
   return value.slice(5).trim() || undefined
+}
+
+function splitHostsFromSnapshot(timeline: Timeline): string[] {
+  return String(timeline.session.device?.host || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
 }
 
 function mapV2TimelineToWorkbenchCommands(timeline: V2JobTimeline, sessionId: string): CommandExecution[] {

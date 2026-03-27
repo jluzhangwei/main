@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import os
+import pwd
 import re
 import tempfile
 from pathlib import Path
@@ -68,6 +69,12 @@ HISTORY_FORENSICS_RULES = (
     "若日志命令不可用或无记录，必须在reason中明确说明“日志证据不足/不可得”，再给出替代取证路径。"
 )
 
+SOP_ARCHIVE_RULES = (
+    "系统可能提供 SOP 档案候选，它们只是可选参考，不会被系统自动执行。"
+    "你必须先判断是否需要调用某个 SOP；若调用，应在reason中说明调用了哪个SOP，并自行决定真正执行的命令。"
+    "若你认为 SOP 不适用，可完全忽略并继续自主规划。"
+)
+
 MODE_SCOPE_RULES = (
     "你必须严格遵守会话模式边界（字段“会话模式”）："
     "当会话模式为query或diagnosis时，只能输出采集/查询类命令，禁止输出配置变更类命令。"
@@ -101,6 +108,7 @@ NEXT_STEP_SYSTEM_PROMPT_WITH_HISTORY = (
     f"{BASELINE_CONTEXT_RULES}"
     f"{VENDOR_COMMAND_FAMILY_RULES}"
     f"{HISTORY_FORENSICS_RULES}"
+    f"{SOP_ARCHIVE_RULES}"
 )
 
 NEXT_STEP_SYSTEM_PROMPT = (
@@ -127,6 +135,7 @@ NEXT_STEP_SYSTEM_PROMPT = (
     f"{BASELINE_CONTEXT_RULES}"
     f"{VENDOR_COMMAND_FAMILY_RULES}"
     f"{HISTORY_FORENSICS_RULES}"
+    f"{SOP_ARCHIVE_RULES}"
 )
 
 PRIMARY_SUMMARY_SYSTEM_PROMPT = (
@@ -180,7 +189,8 @@ class DeepSeekDiagnoser:
         env_config_path = (os.getenv("NETOPS_LLM_CONFIG_PATH") or "").strip()
         self.config_path = Path(env_config_path).expanduser() if env_config_path else self._default_config_path()
         self.legacy_config_path = Path(tempfile.gettempdir()) / "netops_ai_v1_llm_config.json"
-        self._load_saved_config()
+        if self._should_load_saved_config():
+            self._load_saved_config()
 
     @property
     def enabled(self) -> bool:
@@ -360,6 +370,23 @@ class DeepSeekDiagnoser:
         self.model_candidates = self._normalize_model_candidates([self.model, *self.model_candidates])
         self.active_model = self.model
 
+    def _should_load_saved_config(self) -> bool:
+        if os.getenv("NETOPS_DISABLE_LLM_CONFIG_LOAD", "").strip().lower() in {"1", "true", "yes"}:
+            return False
+        if os.getenv("PYTEST_CURRENT_TEST"):
+            explicit_config_path = (os.getenv("NETOPS_LLM_CONFIG_PATH") or "").strip()
+            if explicit_config_path:
+                return True
+            return self.config_path != self._real_user_default_config_path()
+        return True
+
+    def _real_user_default_config_path(self) -> Path:
+        try:
+            home_dir = Path(pwd.getpwuid(os.getuid()).pw_dir).expanduser()
+        except Exception:
+            home_dir = Path.home().expanduser()
+        return home_dir / ".netops-ai-v1" / "llm_config.json"
+
     async def diagnose(
         self,
         session: Session,
@@ -408,6 +435,7 @@ class DeepSeekDiagnoser:
         iteration: int,
         max_iterations: int,
         conversation_history: Optional[list[dict[str, str]]] = None,
+        planner_context: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         plan, _ = await self.propose_next_step_with_debug(
             session=session,
@@ -417,6 +445,7 @@ class DeepSeekDiagnoser:
             iteration=iteration,
             max_iterations=max_iterations,
             conversation_history=conversation_history,
+            planner_context=planner_context,
         )
         return plan
 
@@ -430,6 +459,7 @@ class DeepSeekDiagnoser:
         iteration: int,
         max_iterations: int,
         conversation_history: Optional[list[dict[str, str]]] = None,
+        planner_context: Optional[str] = None,
     ) -> tuple[Optional[dict[str, Any]], dict[str, Any]]:
         debug: dict[str, Any] = {
             "iteration": iteration,
@@ -479,6 +509,7 @@ class DeepSeekDiagnoser:
             evidences=evidences,
             iteration=iteration,
             max_iterations=max_iterations,
+            planner_context=planner_context,
         )
         system_prompt = self._next_step_prompt(with_history=False)
         debug["system_prompt"] = self._clip_trace_text(system_prompt, 200000)
@@ -555,8 +586,9 @@ class DeepSeekDiagnoser:
         evidences: list[Evidence],
         iteration: int,
         max_iterations: int,
+        planner_context: Optional[str] = None,
     ) -> dict[str, Any]:
-        return {
+        payload = {
             "session": {
                 "id": session.id,
                 "vendor": session.device.vendor,
@@ -586,6 +618,9 @@ class DeepSeekDiagnoser:
                 for evidence in evidences
             ],
         }
+        if str(planner_context or "").strip():
+            payload["planner_context"] = str(planner_context).strip()
+        return payload
 
     async def _run_primary(self, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
         content = await self._chat_completion(

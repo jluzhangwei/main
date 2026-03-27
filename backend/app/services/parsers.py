@@ -16,6 +16,10 @@ def parse_command_output(command: str, output: str) -> tuple[str, dict[str, Any]
 
     if "version" in cmd:
         return _parse_version(output)
+    if ("ospf" in cmd and ("peer" in cmd or "neighbor" in cmd)) or cmd.startswith("display ospf"):
+        return _parse_ospf(output)
+    if "logbuffer" in cmd or (cmd.startswith("show logging")) or ("alarm" in cmd and ("display" in cmd or "show" in cmd)):
+        return _parse_history_log(output)
     if "running-config interface" in cmd or "current-configuration interface" in cmd:
         return _parse_interface_config(command, output)
     if "interface" in cmd:
@@ -180,6 +184,78 @@ def _parse_ping(output: str) -> tuple[str, dict[str, Any], str]:
         "connectivity",
         {"success": False, "packet_loss_100": False},
         "Ping result uncertain; manual verification recommended.",
+    )
+
+
+def _parse_ospf(output: str) -> tuple[str, dict[str, Any], str]:
+    states = re.findall(r"(?im)\bstate\s*:\s*([A-Za-z]+)\b", output)
+    norm_states = [item.strip().lower() for item in states if item.strip()]
+    full_count = sum(1 for item in norm_states if item == "full")
+    non_full = [item for item in norm_states if item != "full"]
+    neighbor_lines = re.findall(r"(?im)^\s*router id\s*:\s*([0-9.]+)", output)
+    neighbor_count = len(neighbor_lines) if neighbor_lines else len(norm_states)
+    has_down_hint = bool(re.search(r"(?im)\b(ospf|adj)\b.*\b(down|flap|flapping|reset)\b", output))
+
+    parsed = {
+        "neighbor_count": neighbor_count,
+        "states": norm_states[:50],
+        "full_count": full_count,
+        "non_full_count": len(non_full),
+        "has_down_hint": has_down_hint,
+    }
+
+    if has_down_hint:
+        return (
+            "protocol",
+            parsed,
+            "检测到 OSPF 历史下线/抖动提示，存在邻接不稳定迹象。",
+        )
+    if neighbor_count == 0:
+        return (
+            "protocol",
+            parsed,
+            "未检测到 OSPF 邻居，可能存在邻接未建立或已中断情况。",
+        )
+    if non_full:
+        return (
+            "protocol",
+            parsed,
+            f"检测到 OSPF 邻居非 Full 状态: {', '.join(non_full[:6])}",
+        )
+    return (
+        "protocol",
+        parsed,
+        f"当前 OSPF 邻居状态正常（Full={full_count}）。",
+    )
+
+
+def _parse_history_log(output: str) -> tuple[str, dict[str, Any], str]:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    ospf_lines = [line for line in lines if re.search(r"(?i)\bospf\b", line)]
+    flap_lines = [line for line in ospf_lines if re.search(r"(?i)\b(down|up|flap|adj|neighbor)\b", line)]
+
+    parsed = {
+        "log_line_count": len(lines),
+        "ospf_log_count": len(ospf_lines),
+        "ospf_flap_log_count": len(flap_lines),
+        "samples": flap_lines[:5] or ospf_lines[:5],
+    }
+    if flap_lines:
+        return (
+            "protocol",
+            parsed,
+            f"日志中发现 OSPF 邻接变化/抖动线索 {len(flap_lines)} 条。",
+        )
+    if ospf_lines:
+        return (
+            "protocol",
+            parsed,
+            "日志中发现 OSPF 相关记录，但未明确出现 down/up 抖动关键词。",
+        )
+    return (
+        "protocol",
+        parsed,
+        "日志中未发现 OSPF 相关历史记录。",
     )
 
 

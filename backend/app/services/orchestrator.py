@@ -5,7 +5,7 @@ import os
 import re
 import time
 from datetime import datetime, timezone
-from typing import AsyncIterator, Literal
+from typing import Any, AsyncIterator, Literal
 
 from app.models.schemas import (
     AutomationLevel,
@@ -23,11 +23,20 @@ from app.models.schemas import (
     make_id,
     now_utc,
 )
-from app.services.command_policy import CommandPolicyEngine
 from app.services.adapters import build_adapter
+from app.services.command_policy import CommandPolicyEngine
+from app.services.command_group_runtime import execute_command_group
+from app.services.command_runtime import (
+    apply_adapter_command_meta,
+    apply_device_profile_to_session_store,
+    parse_command_runtime,
+)
+from app.services.compound_command_runtime import run_compound_command_batch
+from app.services.adapter_runtime import close_connected_adapter, ensure_connected_adapter
 from app.services.deepseek_diagnoser import DeepSeekDiagnoser
-from app.services.parsers import parse_command_output
+from app.services.llm_planner_bridge import LLMPlannerBridge
 from app.services.risk_engine import RiskEngine
+from app.services.sop_archive import SOPArchive
 from app.services.store import InMemoryStore
 
 
@@ -37,6 +46,8 @@ class ConversationOrchestrator:
         self.risk_engine = RiskEngine()
         self.command_policy_engine = CommandPolicyEngine()
         self.deepseek_diagnoser = DeepSeekDiagnoser()
+        self.llm_planner_bridge = LLMPlannerBridge()
+        self.sop_archive = SOPArchive()
         self.allow_simulation = allow_simulation
         self.max_autonomous_steps = int(os.getenv("AUTONOMOUS_MAX_STEPS", "8"))
         self._session_adapters: dict[str, object] = {}
@@ -101,6 +112,17 @@ class ConversationOrchestrator:
                 "将用户问题、控制器当前时间、设备基线画像汇总后再进入LLM规划；"
                 "避免在证据未消费前重复同类基线探测。"
             ),
+            "runtime_vendor_command_family_policy": (
+                "运行期厂商命令家族策略："
+                "当厂商/版本已识别后，Huawei优先display家族，Arista/Cisco-like优先show家族；"
+                "禁止跨家族盲试与来回切换；如需切换必须在reason中说明兼容性依据。"
+            ),
+            "runtime_history_forensics_policy": (
+                "运行期历史取证策略："
+                "当用户请求“上次/历史/闪断/flap/间歇”类问题时，应优先采集日志/告警/协议邻接变化记录；"
+                "不得仅依据当前瞬时状态直接下结论；"
+                "若日志不可得，需显式返回“日志证据不足”并给出替代取证命令。"
+            ),
             "runtime_mode_scope_policy": (
                 "运行期模式范围策略："
                 "query/diagnosis 模式仅允许采集与查询命令；"
@@ -120,7 +142,32 @@ class ConversationOrchestrator:
                 "若仍需继续执行，结论中应包含“建议执行/修复/打开/变更”；"
                 "若任务已闭环，结论中应包含“已完成/无需”。"
             ),
+            "runtime_sop_archive_policy": self.sop_archive.prompt_policy(),
         }
+
+    async def _propose_next_step_with_debug(
+        self,
+        *,
+        session,
+        user_problem: str,
+        commands,
+        evidences,
+        iteration: int,
+        max_iterations: int,
+        conversation_history=None,
+        planner_context: str | None = None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        return await self.llm_planner_bridge.propose_next_step_with_debug(
+            self.deepseek_diagnoser,
+            session=session,
+            user_problem=user_problem,
+            commands=commands,
+            evidences=evidences,
+            iteration=iteration,
+            max_iterations=max_iterations,
+            conversation_history=conversation_history,
+            planner_context=planner_context,
+        )
 
     async def stop_session(self, session_id: str) -> dict[str, object]:
         self._stop_requested_sessions.add(session_id)
@@ -168,6 +215,16 @@ class ConversationOrchestrator:
                 step_type="user_input",
                 title="接收用户请求",
                 detail=user_content[:220],
+                detail_payload={
+                    "user_input": self._clip_trace_text(self._sanitize_for_llm(user_content), 12000),
+                    "session_mode": session.operation_mode.value,
+                    "automation_level": session.automation_level.value,
+                    "device": {
+                        "host": session.device.host,
+                        "name": session.device.name or "",
+                        "protocol": session.device.protocol.value,
+                    },
+                },
             )
             preferred_mode = self._preferred_mode_from_session(session.operation_mode)
             self.store.clear_summary(session_id)
@@ -224,12 +281,57 @@ class ConversationOrchestrator:
                     step_type="llm_final",
                     title="请求最终总结",
                 )
-                summary = await self._request_final_from_context(session_id, preferred_mode=preferred_mode)
+                summary, final_debug = await self._request_final_from_context_with_debug(
+                    session_id,
+                    preferred_mode=preferred_mode,
+                )
+                final_llm_request = self._trace_start(
+                    session_id=session_id,
+                    step_type="llm_request",
+                    title="提交给 AI（最终总结）",
+                )
+                self._trace_finish(
+                    final_llm_request,
+                    status="succeeded",
+                    detail="request_submitted",
+                    detail_payload=self._build_llm_request_payload(final_debug),
+                )
+                final_llm_response = self._trace_start(
+                    session_id=session_id,
+                    step_type="llm_response",
+                    title="AI 原始回复（最终总结）",
+                )
                 if summary is None:
                     summary = self._build_no_conclusion_summary(session_id)
-                    self._trace_finish(final_trace, status="failed", detail="LLM未返回final")
+                    self._trace_finish(
+                        final_llm_response,
+                        status="failed",
+                        detail="LLM未返回final",
+                        detail_payload=self._build_llm_response_payload(final_debug.get("llm"), None),
+                    )
+                    self._trace_finish(
+                        final_trace,
+                        status="failed",
+                        detail="LLM未返回final",
+                        detail_payload=self._compact_trace_payload(final_debug),
+                    )
                 else:
-                    self._trace_finish(final_trace, status="succeeded")
+                    self._trace_finish(
+                        final_llm_response,
+                        status="succeeded",
+                        detail="decision=final",
+                        detail_payload=self._build_llm_response_payload(final_debug.get("llm"), final_debug.get("plan")),
+                    )
+                    self._trace_finish(
+                        final_trace,
+                        status="succeeded",
+                        detail_payload=self._compact_trace_payload(
+                            {
+                                **final_debug,
+                                "final_summary": summary.model_dump(mode="json"),
+                            }
+                        ),
+                    )
                 self.store.set_summary(summary)
 
             assistant_message = Message(
@@ -358,6 +460,11 @@ class ConversationOrchestrator:
                 version_commands=baseline_version_commands,
                 profile_commands=baseline_profile_commands,
             )
+            self._append_sop_context_to_ai_context(
+                session_id=session_id,
+                problem=user_content,
+                vendor=session.device.vendor,
+            )
 
         for iteration in range(1, self.max_autonomous_steps + 1):
             if self._is_stop_requested(session_id):
@@ -365,12 +472,40 @@ class ConversationOrchestrator:
             commands = self.store.list_commands(session_id)
             evidences = self.store.list_evidence(session_id)
             ai_context = self.store.list_ai_context(session_id)
+            self._trace_decision(
+                session_id=session_id,
+                step_type="context_snapshot",
+                title=f"会话上下文快照（第 {iteration} 轮）",
+                detail=(
+                    f"iteration={iteration}; "
+                    f"commands={len(commands)}; "
+                    f"evidences={len(evidences)}; "
+                    f"ai_context={len(ai_context)}"
+                ),
+                detail_payload=self._compact_trace_payload(
+                    {
+                        "iteration": iteration,
+                        "counts": {
+                            "commands": len(commands),
+                            "evidences": len(evidences),
+                            "ai_context": len(ai_context),
+                        },
+                        "latest_command": self._command_trace_record(commands[-1], include_output=True) if commands else None,
+                        "latest_evidence": evidences[-1].model_dump(mode="json") if evidences else None,
+                    }
+                ),
+            )
             llm_trace = self._trace_start(
                 session_id=session_id,
                 step_type="llm_plan",
                 title=f"LLM 规划第 {iteration} 轮",
+                detail_payload={
+                    "iteration": iteration,
+                    "max_iterations": self.max_autonomous_steps,
+                    "status": "requesting",
+                },
             )
-            plan = await self.deepseek_diagnoser.propose_next_step(
+            plan, plan_debug = await self._propose_next_step_with_debug(
                 session=session,
                 user_problem=user_content,
                 commands=commands,
@@ -379,18 +514,81 @@ class ConversationOrchestrator:
                 max_iterations=self.max_autonomous_steps,
                 conversation_history=ai_context,
             )
+            llm_request_trace = self._trace_start(
+                session_id=session_id,
+                step_type="llm_request",
+                title=f"提交给 AI（第 {iteration} 轮）",
+            )
+            self._trace_finish(
+                llm_request_trace,
+                status="succeeded",
+                detail="request_submitted",
+                detail_payload=self._build_llm_request_payload(plan_debug),
+            )
+            llm_response_trace = self._trace_start(
+                session_id=session_id,
+                step_type="llm_response",
+                title=f"AI 原始回复（第 {iteration} 轮）",
+            )
 
             if not plan:
-                self._trace_finish(llm_trace, status="failed", detail="LLM未返回可解析计划")
+                self._trace_finish(
+                    llm_response_trace,
+                    status="failed",
+                    detail="LLM未返回可解析计划",
+                    detail_payload=self._build_llm_response_payload(plan_debug, None),
+                )
+                self._trace_finish(
+                    llm_trace,
+                    status="failed",
+                    detail="LLM未返回可解析计划",
+                    detail_payload=self._build_llm_trace_payload(
+                        session=session,
+                        user_problem=user_content,
+                        plan_debug=plan_debug,
+                        parsed_plan=None,
+                    ),
+                )
                 break
+            self._trace_finish(
+                llm_response_trace,
+                status="succeeded",
+                detail=f"decision={str(plan.get('decision', ''))}",
+                detail_payload=self._build_llm_response_payload(plan_debug, plan),
+            )
             self._trace_finish(
                 llm_trace,
                 status="succeeded",
                 detail=f"decision={str(plan.get('decision', ''))}",
+                detail_payload=self._build_llm_trace_payload(
+                    session=session,
+                    user_problem=user_content,
+                    plan_debug=plan_debug,
+                    parsed_plan=plan,
+                ),
             )
-            self.store.append_ai_context(session_id, "assistant", json.dumps(plan, ensure_ascii=False))
+            plan_text = json.dumps(plan, ensure_ascii=False)
+            self.store.append_ai_context(session_id, "assistant", plan_text)
+            self._trace_ai_context_submission(
+                session_id=session_id,
+                title=f"系统提交上下文（AI计划第 {iteration} 轮）",
+                role="assistant",
+                source="llm_plan",
+                content=plan_text,
+                extra_payload={
+                    "plan": plan,
+                    "iteration": iteration,
+                },
+            )
 
             if self._is_stop_requested(session_id):
+                self._trace_decision(
+                    session_id=session_id,
+                    step_type="loop_control",
+                    title="循环控制判定",
+                    detail="operator_stop",
+                    status="stopped",
+                )
                 break
 
             if plan.get("decision") == "final":
@@ -412,6 +610,12 @@ class ConversationOrchestrator:
                         detail="LLM返回decision=final，但内容不完整，未生成有效总结。",
                         status="failed",
                     )
+                self._trace_decision(
+                    session_id=session_id,
+                    step_type="loop_control",
+                    title="循环控制判定",
+                    detail="decision=final",
+                )
                 break
 
             plan_commands = self._extract_plan_commands(plan, next_step_no=step_no + 1)
@@ -423,7 +627,33 @@ class ConversationOrchestrator:
                     detail="LLM plan未提取到可执行命令，结束本轮。",
                     status="failed",
                 )
+                self._trace_decision(
+                    session_id=session_id,
+                    step_type="loop_control",
+                    title="循环控制判定",
+                    detail="no_executable_commands",
+                    status="failed",
+                )
                 break
+            plan_message = Message(
+                session_id=session_id,
+                role="assistant",
+                content=self._render_plan_message(iteration=iteration, plan=plan, plan_commands=plan_commands),
+            )
+            self.store.add_message(plan_message)
+            yield self._sse("message_ack", {"message": plan_message.model_dump(mode="json")})
+            self._trace_decision(
+                session_id=session_id,
+                step_type="plan_parse",
+                title="计划命令解析结果",
+                detail=f"commands={len(plan_commands)}",
+                detail_payload=self._compact_trace_payload(
+                    {
+                        "iteration": iteration,
+                        "commands": [{"title": title, "command": cmd} for title, cmd in plan_commands],
+                    }
+                ),
+            )
 
             batch_group_enabled = self._batch_execution_enabled() and len(plan_commands) > 1
             self._trace_decision(
@@ -470,19 +700,52 @@ class ConversationOrchestrator:
                     yield event
 
                 if self._is_stop_requested(session_id):
+                    self._trace_decision(
+                        session_id=session_id,
+                        step_type="loop_control",
+                        title="循环控制判定",
+                        detail="operator_stop",
+                        status="stopped",
+                    )
                     break
 
                 for command in batch_commands:
                     self._append_command_result_to_ai_context(session_id, command)
 
                 if pending_hit:
+                    self._trace_decision(
+                        session_id=session_id,
+                        step_type="loop_control",
+                        title="循环控制判定",
+                        detail="pending_confirmation",
+                        status="pending_confirm",
+                    )
                     break
                 if blocked_hit:
                     # Let AI continue in next round with structured block reasons.
+                    self._trace_decision(
+                        session_id=session_id,
+                        step_type="loop_control",
+                        title="循环控制判定",
+                        detail="blocked_continue_next_round",
+                    )
                     continue
                 if any(command.status == CommandStatus.failed for command in batch_commands):
                     # Keep autonomous loop alive: feed execution failure back to AI so it can self-correct.
+                    self._trace_decision(
+                        session_id=session_id,
+                        step_type="loop_control",
+                        title="循环控制判定",
+                        detail="command_failed_continue_next_round",
+                        status="failed",
+                    )
                     continue
+                self._trace_decision(
+                    session_id=session_id,
+                    step_type="loop_control",
+                    title="循环控制判定",
+                    detail="batch_succeeded_continue_next_round",
+                )
                 continue
 
             executed_commands: list[CommandExecution] = []
@@ -511,23 +774,77 @@ class ConversationOrchestrator:
                 self._append_command_result_to_ai_context(session_id, command)
 
                 if self._is_stop_requested(session_id):
+                    self._trace_decision(
+                        session_id=session_id,
+                        step_type="loop_control",
+                        title="循环控制判定",
+                        detail="operator_stop",
+                        status="stopped",
+                    )
                     break
                 if pending_hit:
+                    self._trace_decision(
+                        session_id=session_id,
+                        step_type="loop_control",
+                        title="循环控制判定",
+                        detail="pending_confirmation",
+                        status="pending_confirm",
+                    )
                     break
                 if blocked_hit:
+                    self._trace_decision(
+                        session_id=session_id,
+                        step_type="loop_control",
+                        title="循环控制判定",
+                        detail="blocked_continue_next_round",
+                    )
                     break
                 if command.status == CommandStatus.failed:
                     # Let AI self-correct from the failure result before continuing.
+                    self._trace_decision(
+                        session_id=session_id,
+                        step_type="loop_control",
+                        title="循环控制判定",
+                        detail=f"command_failed_at_step={command.step_no}",
+                        status="failed",
+                    )
                     break
 
             if self._is_stop_requested(session_id):
+                self._trace_decision(
+                    session_id=session_id,
+                    step_type="loop_control",
+                    title="循环控制判定",
+                    detail="operator_stop",
+                    status="stopped",
+                )
                 break
             if pending_hit:
+                self._trace_decision(
+                    session_id=session_id,
+                    step_type="loop_control",
+                    title="循环控制判定",
+                    detail="pending_confirmation",
+                    status="pending_confirm",
+                )
                 break
             if blocked_hit:
                 # Let AI self-correct with blocked reason in next round.
+                self._trace_decision(
+                    session_id=session_id,
+                    step_type="loop_control",
+                    title="循环控制判定",
+                    detail="blocked_continue_next_round",
+                )
                 continue
             if any(command.status == CommandStatus.failed for command in executed_commands):
+                self._trace_decision(
+                    session_id=session_id,
+                    step_type="loop_control",
+                    title="循环控制判定",
+                    detail="command_failed_continue_next_round",
+                    status="failed",
+                )
                 continue
 
     async def _execute_with_policy(
@@ -535,20 +852,26 @@ class ConversationOrchestrator:
         session,
         command: CommandExecution,
     ) -> AsyncIterator[str]:
-        execution_trace = self._trace_start(
-            session_id=command.session_id,
-            step_type="command_execution",
-            title=f"执行命令 #{command.step_no}: {command.title}",
-            command_id=command.id,
-            detail=command.command[:260],
-        )
         if self._is_stop_requested(command.session_id):
             command.status = CommandStatus.rejected
             command.error = "Stopped by operator"
             command.completed_at = now_utc()
             command.duration_ms = 0
             self.store.add_command(command)
-            self._trace_finish(execution_trace, status="stopped", detail="Stopped by operator")
+            self._trace_decision(
+                session_id=command.session_id,
+                step_type="session_control",
+                title="会话控制：执行前终止",
+                status="stopped",
+                detail=f"operator_stop_before_execution; command={command.command[:140]}",
+                detail_payload=self._compact_trace_payload(
+                    {
+                        "phase": "stopped_before_execution",
+                        "reason": "Stopped by operator",
+                        "command": self._command_trace_record(command, include_output=False),
+                    }
+                ),
+            )
             yield self._sse("command_completed", {"command": command.model_dump(mode="json")})
             return
 
@@ -564,7 +887,21 @@ class ConversationOrchestrator:
             command.completed_at = now_utc()
             command.duration_ms = 0
             self.store.add_command(command)
-            self._trace_finish(execution_trace, status="blocked", detail=str(capability["reason"])[:300])
+            self._trace_decision(
+                session_id=command.session_id,
+                step_type="session_control",
+                title="会话控制：命令被能力规则阻断",
+                status="blocked",
+                detail=str(capability["reason"])[:280],
+                detail_payload=self._compact_trace_payload(
+                    {
+                        "phase": "blocked_before_execution",
+                        "reason": str(capability["reason"]),
+                        "constraint_source": "capability_block",
+                        "command": self._command_trace_record(command, include_output=False),
+                    }
+                ),
+            )
             yield self._sse(
                 "command_blocked",
                 {
@@ -583,7 +920,21 @@ class ConversationOrchestrator:
             command.completed_at = now_utc()
             command.duration_ms = 0
             self.store.add_command(command)
-            self._trace_finish(execution_trace, status="blocked", detail=str(scope["reason"])[:300])
+            self._trace_decision(
+                session_id=command.session_id,
+                step_type="session_control",
+                title="会话控制：命令超出模式范围",
+                status="blocked",
+                detail=str(scope["reason"])[:280],
+                detail_payload=self._compact_trace_payload(
+                    {
+                        "phase": "blocked_before_execution",
+                        "reason": str(scope["reason"]),
+                        "constraint_source": "mode_scope_block",
+                        "command": self._command_trace_record(command, include_output=False),
+                    }
+                ),
+            )
             yield self._sse(
                 "command_blocked",
                 {
@@ -606,7 +957,21 @@ class ConversationOrchestrator:
             command.completed_at = now_utc()
             command.duration_ms = 0
             self.store.add_command(command)
-            self._trace_finish(execution_trace, status="blocked", detail=decision["reason"])
+            self._trace_decision(
+                session_id=command.session_id,
+                step_type="session_control",
+                title="会话控制：命令被策略阻断",
+                status="blocked",
+                detail=decision["reason"][:280],
+                detail_payload=self._compact_trace_payload(
+                    {
+                        "phase": "blocked_before_execution",
+                        "reason": decision["reason"],
+                        "constraint_source": str(decision.get("reason_source", "") or ""),
+                        "command": self._command_trace_record(command, include_output=False),
+                    }
+                ),
+            )
             yield self._sse(
                 "command_blocked",
                 {
@@ -617,18 +982,80 @@ class ConversationOrchestrator:
             return
 
         if decision["action"] == "confirm":
-            self._trace_finish(execution_trace, status="pending_confirm", detail=decision["reason"])
+            self._trace_decision(
+                session_id=command.session_id,
+                step_type="session_control",
+                title="会话控制：命令等待确认",
+                status="pending_confirm",
+                detail=f"command={command.command[:140]}; reason={decision['reason'][:180]}",
+                detail_payload=self._compact_trace_payload(
+                    {
+                        "phase": "pending_confirm",
+                        "reason": decision["reason"],
+                        "constraint_source": str(decision.get("reason_source", "") or ""),
+                        "command": self._command_trace_record(command, include_output=False),
+                    }
+                ),
+            )
             yield self._mark_pending_confirmation(command, decision["reason"])
             return
 
         self.store.add_command(command)
         try:
             adapter = await self._get_session_adapter(session)
+        except Exception as exc:
+            command.status = CommandStatus.failed
+            command.error = str(exc)
+            command.completed_at = now_utc()
+            if command.started_at:
+                command.duration_ms = max(
+                    0,
+                    int((command.completed_at - command.started_at).total_seconds() * 1000),
+                )
+            self.store.update_command(command)
+            self._trace_decision(
+                session_id=command.session_id,
+                step_type="session_control",
+                title="会话控制：设备连接失败",
+                status="failed",
+                detail=str(exc)[:280],
+                detail_payload=self._compact_trace_payload(
+                    {
+                        "phase": "adapter_connect_failed",
+                        "error": str(exc),
+                        "command": self._command_trace_record(command, include_output=False),
+                    }
+                ),
+            )
+            await self._drop_session_adapter(session.id)
+            yield self._sse("command_completed", {"command": command.model_dump(mode="json")})
+            return
+
+        execution_trace = self._trace_start(
+            session_id=command.session_id,
+            step_type="command_execution",
+            title=f"设备执行命令 #{command.step_no}: {command.title}",
+            command_id=command.id,
+            detail=command.command[:260],
+            detail_payload=self._compact_trace_payload(
+                {
+                    "phase": "start",
+                    "command": self._command_trace_record(command, include_output=False),
+                }
+            ),
+        )
+        try:
             await self._execute_and_record(adapter, command)
             self._trace_finish(
                 execution_trace,
                 status=command.status.value,
                 detail=(command.error or command.output or "")[:300],
+                detail_payload=self._compact_trace_payload(
+                    {
+                        "phase": "completed",
+                        "command": self._command_trace_record(command, include_output=True),
+                    }
+                ),
             )
         except Exception as exc:
             command.status = CommandStatus.failed
@@ -640,7 +1067,18 @@ class ConversationOrchestrator:
                     int((command.completed_at - command.started_at).total_seconds() * 1000),
                 )
             self.store.update_command(command)
-            self._trace_finish(execution_trace, status="failed", detail=str(exc)[:300])
+            self._trace_finish(
+                execution_trace,
+                status="failed",
+                detail=str(exc)[:300],
+                detail_payload=self._compact_trace_payload(
+                    {
+                        "phase": "failed",
+                        "error": str(exc),
+                        "command": self._command_trace_record(command, include_output=True),
+                    }
+                ),
+            )
             await self._drop_session_adapter(session.id)
         yield self._sse("command_completed", {"command": command.model_dump(mode="json")})
 
@@ -661,14 +1099,14 @@ class ConversationOrchestrator:
                 command.duration_ms = 0
                 self.store.add_command(command)
                 yield self._sse("command_completed", {"command": command.model_dump(mode="json")})
+            self._trace_decision(
+                session_id=commands[0].session_id,
+                step_type="session_control",
+                title="会话控制：批量执行前终止",
+                status="stopped",
+                detail="operator_stop_before_batch_execution",
+            )
             return
-
-        execution_trace = self._trace_start(
-            session_id=commands[0].session_id,
-            step_type="command_execution",
-            title=f"执行批量命令 ({len(commands)} 条)",
-            detail=" ; ".join(command.command for command in commands)[:260],
-        )
 
         policy = self.store.get_command_policy()
         blocked_reasons: dict[str, str] = {}
@@ -727,7 +1165,13 @@ class ConversationOrchestrator:
                     },
                 )
             if not executable_commands:
-                self._trace_finish(execution_trace, status="blocked", detail="All commands in batch were blocked.")
+                self._trace_decision(
+                    session_id=commands[0].session_id,
+                    step_type="session_control",
+                    title="会话控制：命令组全部被拦截",
+                    status="failed",
+                    detail="All commands in batch were blocked.",
+                )
                 return
 
         if first_confirm_idx is not None:
@@ -742,6 +1186,7 @@ class ConversationOrchestrator:
                 if idx >= first_confirm_idx and command.id not in blocked_reasons
             ]
             adapter = None
+            precheck_trace = None
 
             if precheck_commands:
                 for command in precheck_commands:
@@ -749,21 +1194,104 @@ class ConversationOrchestrator:
 
                 try:
                     adapter = await self._get_session_adapter(session)
-                    for command in precheck_commands:
-                        if self._is_stop_requested(command.session_id):
-                            command.status = CommandStatus.rejected
-                            command.error = "Stopped by operator"
-                            command.completed_at = now_utc()
-                            command.duration_ms = 0
-                            self.store.update_command(command)
-                            yield self._sse("command_completed", {"command": command.model_dump(mode="json")})
-                            self._trace_finish(execution_trace, status="stopped", detail="Stopped by operator")
-                            return
+                    precheck_trace = self._trace_start(
+                        session_id=commands[0].session_id,
+                        step_type="command_execution",
+                        title=f"设备执行命令组预检查 ({len(precheck_commands)} 条)",
+                        detail=" ; ".join(command.command for command in precheck_commands)[:260],
+                        detail_payload=self._compact_trace_payload(
+                            {
+                                "phase": "start_precheck",
+                                "batch_size": len(precheck_commands),
+                                "commands": self._command_trace_records(precheck_commands, include_output=False),
+                            }
+                        ),
+                    )
+                    precheck_events: list[str] = []
+
+                    async def _execute_precheck(command: CommandExecution, _idx: int):
                         await self._execute_and_record(adapter, command)
-                        yield self._sse("command_completed", {"command": command.model_dump(mode="json")})
-                        if command.status == CommandStatus.failed:
-                            self._trace_finish(execution_trace, status="failed", detail=(command.error or "")[:300])
-                            return
+                        precheck_events.append(self._sse("command_completed", {"command": command.model_dump(mode="json")}))
+                        return command
+
+                    async def _mark_stopped_remaining(remaining: list[CommandExecution], _idx: int):
+                        stopped_at = now_utc()
+                        for queued in remaining:
+                            if queued.status in {CommandStatus.succeeded, CommandStatus.failed, CommandStatus.rejected}:
+                                continue
+                            queued.status = CommandStatus.rejected
+                            queued.error = "Stopped by operator"
+                            queued.completed_at = stopped_at
+                            queued.duration_ms = 0
+                            self.store.update_command(queued)
+                            precheck_events.append(self._sse("command_completed", {"command": queued.model_dump(mode="json")}))
+
+                    async def _mark_failed_remaining(remaining: list[CommandExecution], failed_command: CommandExecution, _idx: int):
+                        skipped_at = now_utc()
+                        base_error = (failed_command.error or "Command execution failed").strip()
+                        for queued in remaining:
+                            if queued.status in {CommandStatus.succeeded, CommandStatus.failed, CommandStatus.rejected}:
+                                continue
+                            queued.status = CommandStatus.failed
+                            queued.error = f"{base_error} (skipped subsequent command in same batch)"
+                            queued.completed_at = skipped_at
+                            queued.duration_ms = 0
+                            self.store.update_command(queued)
+                            precheck_events.append(self._sse("command_completed", {"command": queued.model_dump(mode="json")}))
+
+                    group_result = await execute_command_group(
+                        precheck_commands,
+                        execute_item=_execute_precheck,
+                        is_failure=lambda result: result.status == CommandStatus.failed,
+                        should_stop=lambda: self._is_stop_requested(commands[0].session_id),
+                        on_stopped_remaining=_mark_stopped_remaining,
+                        on_failed_remaining=_mark_failed_remaining,
+                    )
+                    for event in precheck_events:
+                        yield event
+                    if group_result.stopped or any(command.status == CommandStatus.rejected for command in precheck_commands):
+                        if precheck_trace is not None:
+                            self._trace_finish(
+                                precheck_trace,
+                                status="stopped",
+                                detail="Stopped by operator",
+                                detail_payload=self._compact_trace_payload(
+                                    {
+                                        "phase": "stopped",
+                                        "batch_size": len(precheck_commands),
+                                        "commands": self._command_trace_records(precheck_commands, include_output=True),
+                                    }
+                                ),
+                            )
+                        return
+                    first_failed_command = next((item for item in precheck_commands if item.status == CommandStatus.failed), None)
+                    if first_failed_command is not None:
+                        if precheck_trace is not None:
+                            self._trace_finish(
+                                precheck_trace,
+                                status="failed",
+                                detail=(first_failed_command.error or "")[:300],
+                                detail_payload=self._compact_trace_payload(
+                                    {
+                                        "phase": "failed_precheck",
+                                        "error": first_failed_command.error or "",
+                                        "commands": self._command_trace_records(precheck_commands, include_output=True),
+                                    }
+                                ),
+                            )
+                        return
+                    if precheck_trace is not None:
+                        self._trace_finish(
+                            precheck_trace,
+                            status="succeeded",
+                            detail="precheck commands completed",
+                            detail_payload=self._compact_trace_payload(
+                                {
+                                    "phase": "succeeded_precheck",
+                                    "commands": self._command_trace_records(precheck_commands, include_output=True),
+                                }
+                            ),
+                        )
                 except Exception as exc:
                     failed_at = now_utc()
                     for command in precheck_commands:
@@ -776,12 +1304,45 @@ class ConversationOrchestrator:
                             command.duration_ms = max(0, int((failed_at - command.started_at).total_seconds() * 1000))
                         self.store.update_command(command)
                         yield self._sse("command_completed", {"command": command.model_dump(mode="json")})
-                    self._trace_finish(execution_trace, status="failed", detail=str(exc)[:300])
+                    if precheck_trace is not None:
+                        self._trace_finish(
+                            precheck_trace,
+                            status="failed",
+                            detail=str(exc)[:300],
+                            detail_payload=self._compact_trace_payload(
+                                {
+                                    "phase": "failed_precheck",
+                                    "error": str(exc),
+                                    "commands": self._command_trace_records(precheck_commands, include_output=True),
+                                }
+                            ),
+                        )
+                    self._trace_decision(
+                        session_id=commands[0].session_id,
+                        step_type="session_control",
+                        title="会话控制：命令组预检查失败",
+                        status="failed",
+                        detail=str(exc)[:280],
+                    )
                     await self._drop_session_adapter(session.id)
                     return
 
             reason = confirm_reason or "批量命令包含未命中可执行规则的命令，请确认后整批执行。"
-            self._trace_finish(execution_trace, status="pending_confirm", detail=reason[:300])
+            self._trace_decision(
+                session_id=commands[0].session_id,
+                step_type="session_control",
+                title="会话控制：命令组等待确认",
+                status="pending_confirm",
+                detail=reason[:280],
+                detail_payload=self._compact_trace_payload(
+                    {
+                        "phase": "pending_confirm_batch",
+                        "reason": reason,
+                        "precheck_commands": self._command_trace_records(precheck_commands, include_output=True),
+                        "pending_commands": self._command_trace_records(pending_commands, include_output=False),
+                    }
+                ),
+            )
             for idx, command in enumerate(pending_commands):
                 pending_reason = reason if idx == 0 else "批量命令等待统一确认"
                 yield self._mark_pending_confirmation(command, pending_reason)
@@ -792,6 +1353,41 @@ class ConversationOrchestrator:
 
         try:
             adapter = await self._get_session_adapter(session)
+        except Exception as exc:
+            failed_at = now_utc()
+            for command in executable_commands:
+                command.status = CommandStatus.failed
+                command.error = str(exc)
+                command.completed_at = failed_at
+                if command.started_at:
+                    command.duration_ms = max(0, int((failed_at - command.started_at).total_seconds() * 1000))
+                self.store.update_command(command)
+                yield self._sse("command_completed", {"command": command.model_dump(mode="json")})
+            self._trace_decision(
+                session_id=commands[0].session_id,
+                step_type="session_control",
+                title="会话控制：命令组设备连接失败",
+                status="failed",
+                detail=str(exc)[:280],
+            )
+            await self._drop_session_adapter(session.id)
+            return
+
+        execution_trace = self._trace_start(
+            session_id=commands[0].session_id,
+            step_type="command_execution",
+            title=f"设备执行命令组 ({len(executable_commands)} 条)",
+            detail=" ; ".join(command.command for command in executable_commands)[:260],
+            detail_payload=self._compact_trace_payload(
+                {
+                    "phase": "start_batch",
+                    "batch_size": len(executable_commands),
+                    "commands": self._command_trace_records(executable_commands, include_output=False),
+                }
+            ),
+        )
+
+        try:
             await self._execute_batch_and_record(adapter, executable_commands)
         except Exception as exc:
             failed_at = now_utc()
@@ -802,12 +1398,34 @@ class ConversationOrchestrator:
                 if command.started_at:
                     command.duration_ms = max(0, int((failed_at - command.started_at).total_seconds() * 1000))
                 self.store.update_command(command)
-            self._trace_finish(execution_trace, status="failed", detail=str(exc)[:300])
+            self._trace_finish(
+                execution_trace,
+                status="failed",
+                detail=str(exc)[:300],
+                detail_payload=self._compact_trace_payload(
+                    {
+                        "phase": "failed_batch",
+                        "error": str(exc),
+                        "commands": self._command_trace_records(executable_commands, include_output=True),
+                    }
+                ),
+            )
             await self._drop_session_adapter(session.id)
         else:
             first_error = next((command.error for command in executable_commands if command.status == CommandStatus.failed), "")
             if first_error:
-                self._trace_finish(execution_trace, status="failed", detail=first_error[:300])
+                self._trace_finish(
+                    execution_trace,
+                    status="failed",
+                    detail=first_error[:300],
+                    detail_payload=self._compact_trace_payload(
+                        {
+                            "phase": "failed_batch",
+                            "error": first_error,
+                            "commands": self._command_trace_records(executable_commands, include_output=True),
+                        }
+                    ),
+                )
             else:
                 output_brief = next((command.output for command in executable_commands if command.output), "")
                 if blocked_commands:
@@ -818,9 +1436,27 @@ class ConversationOrchestrator:
                             f"partial execution: blocked={len(blocked_commands)}, "
                             f"executed={len(executable_commands)}; {(output_brief or '')[:200]}"
                         ),
+                        detail_payload=self._compact_trace_payload(
+                            {
+                                "phase": "succeeded_partial",
+                                "blocked_count": len(blocked_commands),
+                                "executed_count": len(executable_commands),
+                                "commands": self._command_trace_records(executable_commands, include_output=True),
+                            }
+                        ),
                     )
                 else:
-                    self._trace_finish(execution_trace, status="succeeded", detail=(output_brief or "")[:300])
+                    self._trace_finish(
+                        execution_trace,
+                        status="succeeded",
+                        detail=(output_brief or "")[:300],
+                        detail_payload=self._compact_trace_payload(
+                            {
+                                "phase": "succeeded_batch",
+                                "commands": self._command_trace_records(executable_commands, include_output=True),
+                            }
+                        ),
+                    )
 
         for command in executable_commands:
             yield self._sse("command_completed", {"command": command.model_dump(mode="json")})
@@ -879,7 +1515,7 @@ class ConversationOrchestrator:
             self._trace_decision(
                 session_id=session_id,
                 step_type="policy_decision",
-                title="执行策略判定",
+                title="执行前策略判定",
                 detail=(
                     f"command={command_text[:140]}; "
                     f"policy_result={policy_decision.result}; "
@@ -937,7 +1573,7 @@ class ConversationOrchestrator:
                 self._trace_decision(
                     session_id=command.session_id,
                     step_type="capability_decision",
-                    title="命令能力命中（改写）",
+                    title="执行前命令能力判定（改写）",
                     detail=(
                         f"original={original_command[:120]}; "
                         f"rewrite_to={rewritten[:120]}; "
@@ -957,7 +1593,7 @@ class ConversationOrchestrator:
                 self._trace_decision(
                     session_id=command.session_id,
                     step_type="capability_decision",
-                    title="命令能力命中（跳过权限阻断）",
+                    title="执行前命令能力判定（跳过权限阻断）",
                     detail=(
                         f"command={original_command[:120]}; "
                         f"rule_id={rule.id}; "
@@ -976,7 +1612,7 @@ class ConversationOrchestrator:
                 self._trace_decision(
                     session_id=command.session_id,
                     step_type="capability_decision",
-                    title="命令能力命中（跳过上下文阻断）",
+                    title="执行前命令能力判定（跳过上下文阻断）",
                     detail=(
                         f"command={original_command[:120]}; "
                         f"rule_id={rule.id}; "
@@ -993,7 +1629,7 @@ class ConversationOrchestrator:
             self._trace_decision(
                 session_id=command.session_id,
                 step_type="capability_decision",
-                title="命令能力命中（阻断）",
+                title="执行前命令能力判定（阻断）",
                 detail=(
                     f"command={original_command[:120]}; "
                     f"rule_id={rule.id}; "
@@ -1026,7 +1662,7 @@ class ConversationOrchestrator:
                 self._trace_decision(
                     session_id=session_id,
                     step_type="scope_decision",
-                    title="会话模式范围判定",
+                    title="执行前会话范围判定",
                     detail=f"mode={mode}; command={normalized[:140]}; action=blocked; reason={reason[:180]}",
                     status="failed",
                 )
@@ -1036,7 +1672,7 @@ class ConversationOrchestrator:
             self._trace_decision(
                 session_id=session_id,
                 step_type="scope_decision",
-                title="会话模式范围判定",
+                title="执行前会话范围判定",
                 detail=f"mode={mode}; command={normalized[:140]}; action=allow",
             )
         return {"action": "none", "reason": "mode scope pass"}
@@ -1145,90 +1781,36 @@ class ConversationOrchestrator:
         if not commands:
             return
 
-        started_at = now_utc()
-        for command in commands:
+        async def _mark_running(command: CommandExecution, started_at):
             command.status = CommandStatus.running
             command.started_at = started_at
             command.completed_at = None
             command.duration_ms = None
             self.store.update_command(command)
 
-        combined = " ; ".join(command.command.strip() for command in commands if command.command.strip())
-        try:
-            output = await adapter.run_command(combined)
-        except Exception as exc:
-            failed_at = now_utc()
-            base_error = str(exc)
-            for idx, command in enumerate(commands):
-                command.status = CommandStatus.failed
-                if idx == 0:
-                    command.error = base_error
-                else:
-                    command.error = f"{base_error} (skipped subsequent command in same batch)"
-                command.completed_at = failed_at
-                if command.started_at:
-                    command.duration_ms = max(0, int((failed_at - command.started_at).total_seconds() * 1000))
-                self.store.update_command(command)
-            raise
+        async def _mark_failed(command: CommandExecution, error: str, failed_at):
+            command.status = CommandStatus.failed
+            command.error = error
+            command.completed_at = failed_at
+            if command.started_at:
+                command.duration_ms = max(0, int((failed_at - command.started_at).total_seconds() * 1000))
+            self.store.update_command(command)
 
-        chunks = self._split_batch_output_by_markers(output)
-        chunk_cursor = 0
-        for command in commands:
-            command_output = ""
-            normalized_target = re.sub(r"\s+", " ", (command.command or "").strip().lower())
-            for idx in range(chunk_cursor, len(chunks)):
-                marker_cmd, marker_output = chunks[idx]
-                normalized_marker = re.sub(r"\s+", " ", marker_cmd.strip().lower())
-                if normalized_marker == normalized_target:
-                    command_output = marker_output
-                    chunk_cursor = idx + 1
-                    break
-            if not command_output:
-                if len(commands) == 1:
-                    command_output = output
-                elif chunk_cursor < len(chunks):
-                    command_output = chunks[chunk_cursor][1]
-                    chunk_cursor += 1
-                else:
-                    command_output = output
+        async def _record_output(command: CommandExecution, output: str):
+            await self._record_command_output(adapter, command, output)
 
-            await self._record_command_output(adapter, command, command_output)
-
-    def _split_batch_output_by_markers(self, output: str) -> list[tuple[str, str]]:
-        text = str(output or "")
-        if not text.strip():
-            return []
-
-        chunks: list[tuple[str, str]] = []
-        current_cmd: str | None = None
-        current_lines: list[str] = []
-
-        for raw_line in text.splitlines():
-            line = raw_line.rstrip("\r")
-            if line.startswith("# "):
-                if current_cmd is not None:
-                    chunks.append((current_cmd, "\n".join(current_lines).strip()))
-                current_cmd = line[2:].strip()
-                current_lines = []
-                continue
-            if current_cmd is None and not line.strip():
-                continue
-            current_lines.append(line)
-
-        if current_cmd is not None:
-            chunks.append((current_cmd, "\n".join(current_lines).strip()))
-
-        return chunks
+        await run_compound_command_batch(
+            adapter,
+            commands,
+            get_command_text=lambda item: item.command,
+            mark_running=_mark_running,
+            mark_failed=_mark_failed,
+            record_output=_record_output,
+            now_factory=now_utc,
+        )
 
     async def _record_command_output(self, adapter, command: CommandExecution, output: str) -> None:
-        adapter_meta = getattr(adapter, "last_command_meta", {}) or {}
-        if isinstance(adapter_meta, dict):
-            adapter_effective = str(adapter_meta.get("effective_command") or "").strip()
-            if adapter_effective and not command.effective_command:
-                command.effective_command = adapter_effective
-            if not command.original_command:
-                original = str(adapter_meta.get("original_command") or "").strip()
-                command.original_command = original or command.command
+        apply_adapter_command_meta(command, adapter)
 
         if self._is_stop_requested(command.session_id):
             command.status = CommandStatus.rejected
@@ -1239,32 +1821,28 @@ class ConversationOrchestrator:
             self.store.update_command(command)
             return
 
-        category, parsed_data, conclusion = parse_command_output(command.effective_command or command.command, output)
+        parsed = parse_command_runtime(command.effective_command or command.command, output)
         self._trace_decision(
             session_id=command.session_id,
             step_type="evidence_parse",
             title="证据解析",
             detail=(
                 f"command={command.command[:120]}; "
-                f"category={category}; "
-                f"conclusion={str(conclusion)[:140]}"
+                f"category={parsed.category}; "
+                f"conclusion={str(parsed.conclusion)[:140]}"
+            ),
+            detail_payload=self._compact_trace_payload(
+                {
+                    "command": self._command_trace_record(command, include_output=False),
+                    "parser_result": {
+                        "category": parsed.category,
+                        "conclusion": parsed.conclusion,
+                        "parsed_data": parsed.parsed_data,
+                    },
+                }
             ),
         )
-        parsed_device_name = str(parsed_data.get("device_name") or "").strip() if isinstance(parsed_data, dict) else ""
-        parsed_vendor = str(parsed_data.get("vendor") or "").strip().lower() if isinstance(parsed_data, dict) else ""
-        parsed_platform = str(parsed_data.get("platform") or "").strip() if isinstance(parsed_data, dict) else ""
-        parsed_software_version = str(parsed_data.get("software_version") or "").strip() if isinstance(parsed_data, dict) else ""
-        parsed_version_signature = str(parsed_data.get("version_signature") or "").strip().lower() if isinstance(parsed_data, dict) else ""
-        if parsed_device_name or parsed_vendor or parsed_platform or parsed_software_version or parsed_version_signature:
-            self.store.update_session_device_profile(
-                command.session_id,
-                vendor=parsed_vendor or None,
-                platform=parsed_platform or None,
-                software_version=parsed_software_version or None,
-                version_signature=parsed_version_signature or None,
-            )
-            if parsed_device_name:
-                self.store.update_session_device_name(command.session_id, parsed_device_name)
+        apply_device_profile_to_session_store(self.store, command.session_id, parsed.device_profile)
 
         command.output = output
         command.status = CommandStatus.succeeded
@@ -1274,8 +1852,8 @@ class ConversationOrchestrator:
         self._learn_command_capability_from_result(
             session_id=command.session_id,
             command=command,
-            category=category,
-            parsed_data=parsed_data,
+            category=parsed.category,
+            parsed_data=parsed.parsed_data,
             adapter=adapter,
         )
         self.store.update_command(command)
@@ -1283,10 +1861,10 @@ class ConversationOrchestrator:
         evidence = Evidence(
             session_id=command.session_id,
             command_id=command.id,
-            category=category,
+            category=parsed.category,
             raw_output=output,
-            parsed_data=parsed_data,
-            conclusion=conclusion,
+            parsed_data=parsed.parsed_data,
+            conclusion=parsed.conclusion,
         )
         self.store.add_evidence(evidence)
 
@@ -1441,10 +2019,25 @@ class ConversationOrchestrator:
             f"会话模式: {operation_mode}\n"
             f"会话目标: {sanitized_goal}\n"
             f"本轮请求: {sanitized_content}\n"
+            f"命令家族约束: {self._vendor_command_family_hint(vendor)}\n"
             "请只基于当前会话上下文继续诊断，禁止引用或臆测其他会话。\n"
             "优先围绕会话目标完成闭环，避免无证据的机会性扩展变更。"
         )
         self.store.append_ai_context(session_id, "user", header)
+        self._trace_ai_context_submission(
+            session_id=session_id,
+            title="系统提交上下文（会话头）",
+            role="user",
+            source="session_header",
+            content=header,
+            extra_payload={
+                "session_goal": sanitized_goal,
+                "request": sanitized_content,
+                "vendor": vendor,
+                "protocol": protocol,
+                "operation_mode": operation_mode,
+            },
+        )
 
     def _baseline_version_probe_plan(self, vendor: str) -> list[tuple[str, str]]:
         normalized_vendor = (vendor or "").strip().lower()
@@ -1514,6 +2107,7 @@ class ConversationOrchestrator:
             f"- 平台: {session.device.platform or '-'}\n"
             f"- 软件版本: {session.device.software_version or '-'}\n"
             f"- 版本指纹: {session.device.version_signature or '-'}\n"
+            f"- 命令家族建议: {self._vendor_command_family_hint(session.device.vendor)}\n"
             f"- 版本探针成功数: {version_success}/{len(version_commands)}\n"
             f"- 权限探测状态: {permission_state or '-'}\n"
             f"- 权限动作建议: {permission_hint or '-'}\n"
@@ -1521,8 +2115,28 @@ class ConversationOrchestrator:
             "- 画像结果摘要:\n"
             f"{chr(10).join(summary_lines) if summary_lines else '  - (无)'}\n"
             "请基于以上基线信息与会话证据规划下一步，不要重复无效探测。"
+            "当厂商与版本已识别时，必须遵循命令家族建议，不要跨厂商盲试。"
         )
         self.store.append_ai_context(session_id, "user", baseline_text)
+        self._trace_ai_context_submission(
+            session_id=session_id,
+            title="系统提交上下文（基线汇总）",
+            role="user",
+            source="baseline_snapshot",
+            content=baseline_text,
+            extra_payload={
+                "baseline_version_commands": self._command_trace_records(version_commands, include_output=True),
+                "baseline_profile_commands": self._command_trace_records(profile_commands, include_output=True),
+            },
+        )
+
+    def _vendor_command_family_hint(self, vendor: str) -> str:
+        normalized = (vendor or "").strip().lower()
+        if "huawei" in normalized:
+            return "Huawei 已识别：优先 display 家族命令；show 仅用于兼容探测且需说明原因。"
+        if "arista" in normalized or "cisco" in normalized:
+            return "Arista/Cisco-like 已识别：优先 show 家族命令；display 仅用于兼容探测且需说明原因。"
+        return "厂商未识别：可先做最小兼容探测（show/display），识别后固定到同厂商命令家族。"
 
     def _derive_session_goal(self, session_id: str, fallback: str) -> str:
         messages = self.store.list_messages(session_id)
@@ -1586,6 +2200,67 @@ class ConversationOrchestrator:
         if command.output:
             text += f"- output:\n{self._sanitize_for_llm(command.output)[:2500]}"
         self.store.append_ai_context(session_id, "user", text)
+        self._trace_ai_context_submission(
+            session_id=session_id,
+            title=f"系统提交上下文（命令结果 #{command.step_no}）",
+            role="user",
+            source="command_result",
+            content=text,
+            command_id=command.id,
+            extra_payload={
+                "command_full": self._command_trace_record(command, include_output=True),
+            },
+        )
+
+    def _append_sop_context_to_ai_context(self, *, session_id: str, problem: str, vendor: str | None) -> None:
+        sop_text = self.sop_archive.prompt_context(problem, vendor=vendor)
+        if not sop_text:
+            return
+        self.store.append_ai_context(session_id, "user", sop_text)
+        self._trace_ai_context_submission(
+            session_id=session_id,
+            title="系统提交上下文（SOP档案候选）",
+            role="user",
+            source="sop_archive",
+            content=sop_text,
+            extra_payload={
+                "problem": self._sanitize_for_llm(problem)[:1200],
+                "vendor": str(vendor or "").strip(),
+            },
+        )
+
+    def _trace_ai_context_submission(
+        self,
+        *,
+        session_id: str,
+        title: str,
+        role: str,
+        source: str,
+        content: str,
+        command_id: str | None = None,
+        extra_payload: dict[str, Any] | None = None,
+    ) -> None:
+        trace = self._trace_start(
+            session_id=session_id,
+            step_type="ai_context_submit",
+            title=title,
+            command_id=command_id,
+            detail=f"source={source}; role={role}",
+        )
+        self._trace_finish(
+            trace,
+            status="succeeded",
+            detail=f"source={source}; role={role}",
+            detail_payload=self._compact_trace_payload(
+                {
+                    "source": source,
+                    "role": role,
+                    "to_ai_context": content,
+                    "command_id": command_id,
+                    "extra": extra_payload or {},
+                }
+            ),
+        )
 
     def _derive_permission_signal(self, command: str, output: str, error: str) -> tuple[str, str]:
         merged = f"{output}\n{error}".strip()
@@ -1642,6 +2317,152 @@ class ConversationOrchestrator:
         for pattern, replacement in patterns:
             sanitized = pattern.sub(replacement, sanitized)
         return sanitized
+
+    def _clip_trace_text(self, value: str, limit: int = 200000) -> str:
+        text = str(value or "")
+        if limit <= 0 or len(text) <= limit:
+            return text
+        return f"{text[:limit]}...(truncated,{len(text)} chars)"
+
+    def _compact_trace_payload(
+        self,
+        payload: Any,
+        *,
+        depth: int = 0,
+        max_depth: int = 10,
+        max_items: int = 200,
+        text_limit: int = 200000,
+    ) -> Any:
+        if depth >= max_depth:
+            return "<max-depth>"
+        if isinstance(payload, str):
+            return self._clip_trace_text(self._sanitize_for_llm(payload), text_limit)
+        if isinstance(payload, (int, float, bool)) or payload is None:
+            return payload
+        if isinstance(payload, dict):
+            out: dict[str, Any] = {}
+            for idx, (key, value) in enumerate(payload.items()):
+                if idx >= max_items:
+                    out["__truncated_items__"] = len(payload) - max_items
+                    break
+                out[str(key)] = self._compact_trace_payload(
+                    value,
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                    max_items=max_items,
+                    text_limit=text_limit,
+                )
+            return out
+        if isinstance(payload, list):
+            out_list = []
+            for idx, item in enumerate(payload):
+                if idx >= max_items:
+                    out_list.append({"__truncated_items__": len(payload) - max_items})
+                    break
+                out_list.append(
+                    self._compact_trace_payload(
+                        item,
+                        depth=depth + 1,
+                        max_depth=max_depth,
+                        max_items=max_items,
+                        text_limit=text_limit,
+                    )
+                )
+            return out_list
+        return self._clip_trace_text(self._sanitize_for_llm(str(payload)), text_limit)
+
+    def _command_trace_record(self, command: CommandExecution, *, include_output: bool) -> dict[str, Any]:
+        record: dict[str, Any] = {
+            "id": command.id,
+            "step_no": command.step_no,
+            "title": command.title,
+            "command": command.command,
+            "original_command": command.original_command or command.command,
+            "effective_command": command.effective_command or command.command,
+            "risk_level": command.risk_level.value,
+            "status": command.status.value,
+            "requires_confirmation": command.requires_confirmation,
+            "constraint_source": command.constraint_source or "",
+            "constraint_reason": command.constraint_reason or "",
+            "capability_state": command.capability_state or "",
+            "capability_reason": command.capability_reason or "",
+            "started_at": command.started_at.isoformat() if command.started_at else None,
+            "completed_at": command.completed_at.isoformat() if command.completed_at else None,
+            "duration_ms": command.duration_ms,
+            "error": command.error or "",
+        }
+        if include_output:
+            record["output"] = command.output or ""
+        return record
+
+    def _command_trace_records(self, commands: list[CommandExecution], *, include_output: bool) -> list[dict[str, Any]]:
+        return [self._command_trace_record(item, include_output=include_output) for item in commands]
+
+    def _build_llm_trace_payload(
+        self,
+        *,
+        session,
+        user_problem: str,
+        plan_debug: dict[str, Any] | None,
+        parsed_plan: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        return self._compact_trace_payload(
+            {
+                "device": {
+                    "host": session.device.host,
+                    "name": session.device.name or "",
+                    "vendor": session.device.vendor,
+                    "protocol": session.device.protocol.value,
+                    "version_signature": session.device.version_signature or "",
+                },
+                "session_mode": session.operation_mode.value,
+                "automation_level": session.automation_level.value,
+                "user_problem": user_problem,
+                "to_ai": (plan_debug or {}),
+                "ai_response_parsed": parsed_plan,
+            }
+        )
+
+    def _build_llm_request_payload(self, plan_debug: Any) -> dict[str, Any]:
+        source = plan_debug if isinstance(plan_debug, dict) else {}
+        nested = source.get("llm") if isinstance(source.get("llm"), dict) else {}
+        nested = nested if isinstance(nested, dict) else {}
+
+        def pick(key: str) -> Any:
+            if key in source:
+                return source.get(key)
+            if key in nested:
+                return nested.get(key)
+            return None
+
+        payload: dict[str, Any] = {}
+        for key in ("iteration", "max_iterations", "with_history", "system_prompt", "request_messages", "request_payload"):
+            value = pick(key)
+            if value is not None:
+                payload[key] = value
+        if source.get("final_prompt") is not None:
+            payload["final_prompt"] = source.get("final_prompt")
+        if source.get("context_count") is not None:
+            payload["context_count"] = source.get("context_count")
+        return self._compact_trace_payload(payload, max_depth=10, max_items=500, text_limit=200000)
+
+    def _build_llm_response_payload(self, plan_debug: Any, parsed_plan: Any) -> dict[str, Any]:
+        source = plan_debug if isinstance(plan_debug, dict) else {}
+        llm_payload: dict[str, Any] = {}
+        for key in ("raw_response", "parsed_response", "error"):
+            if key in source:
+                llm_payload[key] = source.get(key)
+        if parsed_plan is not None:
+            llm_payload["parsed_response"] = parsed_plan
+        return self._compact_trace_payload(
+            {
+                "llm": llm_payload,
+                "ai_response_parsed": parsed_plan,
+            },
+            max_depth=10,
+            max_items=500,
+            text_limit=200000,
+        )
 
     async def confirm_command(self, session_id: str, command_id: str, request: ConfirmCommandRequest) -> ConfirmCommandResponse:
         session = self.store.get_session(session_id)
@@ -1747,72 +2568,7 @@ class ConversationOrchestrator:
 
         try:
             output = await adapter.run_command(command.command)
-            adapter_meta = getattr(adapter, "last_command_meta", {}) or {}
-            if isinstance(adapter_meta, dict):
-                adapter_effective = str(adapter_meta.get("effective_command") or "").strip()
-                if adapter_effective:
-                    command.effective_command = adapter_effective
-                if not command.original_command:
-                    original = str(adapter_meta.get("original_command") or "").strip()
-                    command.original_command = original or command.command
-            if self._is_stop_requested(command.session_id):
-                command.status = CommandStatus.rejected
-                command.error = "Stopped by operator"
-                command.completed_at = now_utc()
-                if command.started_at:
-                    command.duration_ms = max(0, int((command.completed_at - command.started_at).total_seconds() * 1000))
-                self.store.update_command(command)
-                return
-            category, parsed_data, conclusion = parse_command_output(command.effective_command or command.command, output)
-            self._trace_decision(
-                session_id=command.session_id,
-                step_type="evidence_parse",
-                title="证据解析",
-                detail=(
-                    f"command={command.command[:120]}; "
-                    f"category={category}; "
-                    f"conclusion={str(conclusion)[:140]}"
-                ),
-            )
-            parsed_device_name = str(parsed_data.get("device_name") or "").strip() if isinstance(parsed_data, dict) else ""
-            parsed_vendor = str(parsed_data.get("vendor") or "").strip().lower() if isinstance(parsed_data, dict) else ""
-            parsed_platform = str(parsed_data.get("platform") or "").strip() if isinstance(parsed_data, dict) else ""
-            parsed_software_version = str(parsed_data.get("software_version") or "").strip() if isinstance(parsed_data, dict) else ""
-            parsed_version_signature = str(parsed_data.get("version_signature") or "").strip().lower() if isinstance(parsed_data, dict) else ""
-            if parsed_device_name or parsed_vendor or parsed_platform or parsed_software_version or parsed_version_signature:
-                self.store.update_session_device_profile(
-                    command.session_id,
-                    vendor=parsed_vendor or None,
-                    platform=parsed_platform or None,
-                    software_version=parsed_software_version or None,
-                    version_signature=parsed_version_signature or None,
-                )
-                if parsed_device_name:
-                    self.store.update_session_device_name(command.session_id, parsed_device_name)
-            command.output = output
-            # Keep transport/execution semantics simple: command is successful if SSH/API execution returned.
-            # Whether CLI syntax is semantically correct is left for the LLM to judge from raw output.
-            command.status = CommandStatus.succeeded
-            command.completed_at = now_utc()
-            command.duration_ms = max(0, int((command.completed_at - command.started_at).total_seconds() * 1000))
-            self._learn_command_capability_from_result(
-                session_id=command.session_id,
-                command=command,
-                category=category,
-                parsed_data=parsed_data,
-                adapter=adapter,
-            )
-            self.store.update_command(command)
-
-            evidence = Evidence(
-                session_id=command.session_id,
-                command_id=command.id,
-                category=category,
-                raw_output=output,
-                parsed_data=parsed_data,
-                conclusion=conclusion,
-            )
-            self.store.add_evidence(evidence)
+            await self._record_command_output(adapter, command, output)
         except Exception as exc:  # pragma: no cover
             command.status = CommandStatus.failed
             command.error = str(exc)
@@ -2035,10 +2791,31 @@ class ConversationOrchestrator:
 
     async def _get_session_adapter(self, session):
         adapter = self._session_adapters.get(session.id)
-        if adapter is None:
-            adapter = build_adapter(session, allow_simulation=self.allow_simulation)
-            self._session_adapters[session.id] = adapter
-        await adapter.connect()
+        try:
+            adapter, _ = await ensure_connected_adapter(
+                adapter,
+                session,
+                allow_simulation=self.allow_simulation,
+                build_factory=build_adapter,
+                on_create=lambda _adapter: self._trace_decision(
+                    session_id=session.id,
+                    step_type="session_adapter",
+                    title="会话控制：设备连接会话创建",
+                    detail=f"adapter_created; host={session.device.host}; protocol={session.device.protocol.value}",
+                    detail_payload=self._compact_trace_payload(
+                        {
+                            "host": session.device.host,
+                            "protocol": session.device.protocol.value,
+                            "vendor": session.device.vendor,
+                            "action": "created",
+                        }
+                    ),
+                ),
+            )
+        except Exception:
+            self._session_adapters.pop(session.id, None)
+            raise
+        self._session_adapters[session.id] = adapter
         return adapter
 
     async def _drop_session_adapter(self, session_id: str) -> None:
@@ -2046,7 +2823,15 @@ class ConversationOrchestrator:
         if adapter is None:
             return
         try:
-            await adapter.close()
+            await close_connected_adapter(
+                adapter,
+                on_close=lambda: self._trace_decision(
+                    session_id=session_id,
+                    step_type="session_adapter",
+                    title="会话控制：设备连接会话关闭",
+                    detail="adapter_closed",
+                ),
+            )
         except Exception:
             pass
 
@@ -2055,10 +2840,27 @@ class ConversationOrchestrator:
         session_id: str,
         preferred_mode: Literal["query", "diagnosis", "config"] | None = None,
     ) -> IncidentSummary | None:
+        summary, _ = await self._request_final_from_context_with_debug(
+            session_id=session_id,
+            preferred_mode=preferred_mode,
+        )
+        return summary
+
+    async def _request_final_from_context_with_debug(
+        self,
+        session_id: str,
+        preferred_mode: Literal["query", "diagnosis", "config"] | None = None,
+    ) -> tuple[IncidentSummary | None, dict[str, Any]]:
         session = self.store.get_session(session_id)
         ai_context = list(self.store.list_ai_context(session_id))
+        debug: dict[str, Any] = {
+            "session_id": session_id,
+            "preferred_mode": preferred_mode or "",
+            "context_count": len(ai_context),
+        }
         if not ai_context:
-            return None
+            debug["error"] = "empty_context"
+            return None, debug
 
         mode_hint = ""
         if preferred_mode == "query":
@@ -2076,8 +2878,9 @@ class ConversationOrchestrator:
             "如果是故障诊断任务，请返回mode=diagnosis和根因/影响/建议。"
             f"{mode_hint}"
         )
+        debug["final_prompt"] = self._clip_trace_text(final_prompt, 12000)
         ai_context.append({"role": "user", "content": final_prompt})
-        plan = await self.deepseek_diagnoser.propose_next_step(
+        plan, plan_debug = await self._propose_next_step_with_debug(
             session=session,
             user_problem="",
             commands=self.store.list_commands(session_id),
@@ -2086,11 +2889,19 @@ class ConversationOrchestrator:
             max_iterations=self.max_autonomous_steps,
             conversation_history=ai_context,
         )
+        debug["llm"] = plan_debug
         if not plan:
-            return None
+            return None, debug
         if str(plan.get("decision", "")).strip().lower() != "final":
-            return None
-        return self._summary_from_plan(session_id, plan, preferred_mode=preferred_mode)
+            debug["error"] = "decision_not_final"
+            debug["plan"] = plan
+            return None, debug
+        summary = self._summary_from_plan(session_id, plan, preferred_mode=preferred_mode)
+        debug["plan"] = plan
+        if summary is None:
+            debug["error"] = "invalid_final_payload"
+            return None, debug
+        return summary, debug
 
     def _build_llm_unavailable_summary(self, session_id: str) -> IncidentSummary:
         return IncidentSummary(
@@ -2133,6 +2944,25 @@ class ConversationOrchestrator:
         if interrupted:
             return f"诊断中断。根因判断: {summary.root_cause}。影响范围: {summary.impact_scope}。建议: {summary.recommendation}"
         return f"诊断完成。根因判断: {summary.root_cause}。影响范围: {summary.impact_scope}。建议: {summary.recommendation}"
+
+    def _render_plan_message(
+        self,
+        *,
+        iteration: int,
+        plan: dict[str, Any],
+        plan_commands: list[tuple[str, str]],
+    ) -> str:
+        title = str(plan.get("title", "")).strip() or f"第 {iteration} 轮执行计划"
+        reason = str(plan.get("reason", "")).strip() or "基于当前证据继续取证。"
+        command_lines = [f"{idx}. {cmd}" for idx, (_cmd_title, cmd) in enumerate(plan_commands, start=1)]
+        commands_text = "\n".join(command_lines)
+        return (
+            f"AI 规划（第 {iteration} 轮）\n"
+            f"目标: {title}\n"
+            f"判断: {reason}\n"
+            f"下一步命令({len(plan_commands)}条):\n"
+            f"{commands_text}"
+        )
 
     def _preferred_mode_from_session(self, operation_mode) -> Literal["query", "diagnosis", "config"]:
         value = str(getattr(operation_mode, "value", operation_mode or "")).strip().lower()
@@ -2182,14 +3012,41 @@ class ConversationOrchestrator:
                 step_type="command_confirm_execution",
                 title=f"执行确认批次命令 ({len(commands)} 条)",
                 detail=" ; ".join(command.command for command in commands)[:260],
+                detail_payload=self._compact_trace_payload(
+                    {
+                        "phase": "confirm_batch_start",
+                        "commands": self._command_trace_records(commands, include_output=False),
+                    }
+                ),
             )
             await self._execute_batch_and_record(adapter, commands)
             first_error = next((command.error for command in commands if command.status == CommandStatus.failed), "")
             if first_error:
-                self._trace_finish(confirm_trace, status="failed", detail=first_error[:300])
+                self._trace_finish(
+                    confirm_trace,
+                    status="failed",
+                    detail=first_error[:300],
+                    detail_payload=self._compact_trace_payload(
+                        {
+                            "phase": "confirm_batch_failed",
+                            "error": first_error,
+                            "commands": self._command_trace_records(commands, include_output=True),
+                        }
+                    ),
+                )
             else:
                 first_output = next((command.output for command in commands if command.output), "")
-                self._trace_finish(confirm_trace, status="succeeded", detail=(first_output or "")[:300])
+                self._trace_finish(
+                    confirm_trace,
+                    status="succeeded",
+                    detail=(first_output or "")[:300],
+                    detail_payload=self._compact_trace_payload(
+                        {
+                            "phase": "confirm_batch_succeeded",
+                            "commands": self._command_trace_records(commands, include_output=True),
+                        }
+                    ),
+                )
             for command in commands:
                 self._append_command_result_to_ai_context(session_id, command)
         except Exception as exc:
@@ -2210,7 +3067,18 @@ class ConversationOrchestrator:
                     step_type="command_confirm_execution",
                     title=f"执行确认批次命令 ({len(commands)} 条)",
                 )
-            self._trace_finish(confirm_trace, status="failed", detail=str(exc)[:300])
+            self._trace_finish(
+                confirm_trace,
+                status="failed",
+                detail=str(exc)[:300],
+                detail_payload=self._compact_trace_payload(
+                    {
+                        "phase": "confirm_batch_failed",
+                        "error": str(exc),
+                        "commands": self._command_trace_records(commands, include_output=True),
+                    }
+                ),
+            )
             await self._drop_session_adapter(session.id)
 
     async def _execute_confirmed_command(self, session_id: str, session, command: CommandExecution) -> None:
@@ -2223,12 +3091,24 @@ class ConversationOrchestrator:
                 title=f"执行确认命令 #{command.step_no}: {command.title}",
                 command_id=command.id,
                 detail=command.command[:260],
+                detail_payload=self._compact_trace_payload(
+                    {
+                        "phase": "confirm_single_start",
+                        "command": self._command_trace_record(command, include_output=False),
+                    }
+                ),
             )
             await self._execute_and_record(adapter, command)
             self._trace_finish(
                 confirm_trace,
                 status=command.status.value,
                 detail=(command.error or command.output or "")[:300],
+                detail_payload=self._compact_trace_payload(
+                    {
+                        "phase": "confirm_single_completed",
+                        "command": self._command_trace_record(command, include_output=True),
+                    }
+                ),
             )
             self._append_command_result_to_ai_context(session_id, command)
         except Exception as exc:
@@ -2248,7 +3128,18 @@ class ConversationOrchestrator:
                     title=f"执行确认命令 #{command.step_no}: {command.title}",
                     command_id=command.id,
                 )
-            self._trace_finish(confirm_trace, status="failed", detail=str(exc)[:300])
+            self._trace_finish(
+                confirm_trace,
+                status="failed",
+                detail=str(exc)[:300],
+                detail_payload=self._compact_trace_payload(
+                    {
+                        "phase": "confirm_single_failed",
+                        "error": str(exc),
+                        "command": self._command_trace_record(command, include_output=True),
+                    }
+                ),
+            )
             await self._drop_session_adapter(session.id)
 
     def _trace_start(
@@ -2259,6 +3150,7 @@ class ConversationOrchestrator:
         title: str,
         command_id: str | None = None,
         detail: str | None = None,
+        detail_payload: dict[str, Any] | None = None,
     ) -> ServiceTraceStep:
         step = ServiceTraceStep(
             session_id=session_id,
@@ -2268,12 +3160,20 @@ class ConversationOrchestrator:
             status="running",
             command_id=command_id,
             detail=detail,
+            detail_payload=detail_payload,
         )
         self.store.add_trace_step(step)
         self._trace_perf_started[step.id] = time.perf_counter()
         return step
 
-    def _trace_finish(self, step: ServiceTraceStep, *, status: str, detail: str | None = None) -> None:
+    def _trace_finish(
+        self,
+        step: ServiceTraceStep,
+        *,
+        status: str,
+        detail: str | None = None,
+        detail_payload: dict[str, Any] | None = None,
+    ) -> None:
         started = self._trace_perf_started.pop(step.id, None)
         step.status = status
         step.completed_at = now_utc()
@@ -2283,6 +3183,8 @@ class ConversationOrchestrator:
             step.duration_ms = max(0, int((step.completed_at - step.started_at).total_seconds() * 1000))
         if detail:
             step.detail = detail
+        if detail_payload is not None:
+            step.detail_payload = detail_payload
         self.store.update_trace_step(step)
 
     def _trace_decision(
@@ -2293,11 +3195,13 @@ class ConversationOrchestrator:
         title: str,
         detail: str,
         status: str = "succeeded",
+        detail_payload: dict[str, Any] | None = None,
     ) -> None:
         step = self._trace_start(
             session_id=session_id,
             step_type=step_type,
             title=title,
             detail=detail[:280],
+            detail_payload=detail_payload,
         )
-        self._trace_finish(step, status=status, detail=detail[:280])
+        self._trace_finish(step, status=status, detail=detail[:280], detail_payload=detail_payload)

@@ -227,6 +227,7 @@ class ServiceTraceStep(BaseModel):
     duration_ms: Optional[int] = None
     command_id: Optional[str] = None
     detail: Optional[str] = None
+    detail_payload: Optional[dict[str, Any]] = None
 
 
 class ServiceTraceResponse(BaseModel):
@@ -251,7 +252,9 @@ class EventEnvelope(BaseModel):
 
 class LLMConfigRequest(BaseModel):
     api_key: Optional[str] = None
+    nvidia_api_key: Optional[str] = None
     base_url: Optional[str] = None
+    nvidia_base_url: Optional[str] = None
     model: Optional[str] = None
     failover_enabled: Optional[bool] = None
     model_candidates: Optional[list[str]] = None
@@ -261,11 +264,13 @@ class LLMConfigRequest(BaseModel):
 class LLMConfigResponse(BaseModel):
     enabled: bool
     base_url: str
+    nvidia_base_url: Optional[str] = None
     model: str
     active_model: Optional[str] = None
     failover_enabled: bool = True
     batch_execution_enabled: bool = True
     model_candidates: list[str] = Field(default_factory=list)
+    nvidia_enabled: bool = False
     last_error: Optional[str] = None
     last_error_code: Optional[str] = None
     unavailable_reason: Optional[str] = None
@@ -275,9 +280,31 @@ class LLMConfigResponse(BaseModel):
 class LLMPromptPolicyResponse(BaseModel):
     enabled: bool
     base_url: str
+    nvidia_base_url: Optional[str] = None
     model: str
     batch_execution_enabled: bool = True
+    nvidia_enabled: bool = False
     prompts: dict[str, str] = Field(default_factory=dict)
+
+
+class SOPArchiveCommandTemplate(BaseModel):
+    vendor: str = "generic"
+    commands: list[str] = Field(default_factory=list)
+
+
+class SOPArchiveEntryResponse(BaseModel):
+    id: str
+    name: str
+    summary: str
+    usage_hint: str
+    trigger_keywords: list[str] = Field(default_factory=list)
+    command_templates: list[SOPArchiveCommandTemplate] = Field(default_factory=list)
+
+
+class SOPArchiveResponse(BaseModel):
+    total: int
+    matched: list[SOPArchiveEntryResponse] = Field(default_factory=list)
+    items: list[SOPArchiveEntryResponse] = Field(default_factory=list)
 
 
 class CommandPolicy(BaseModel):
@@ -554,6 +581,8 @@ class RCAResult(BaseModel):
     root_device_id: Optional[str] = None
     root_device_name: Optional[str] = None
     root_device_host: Optional[str] = None
+    root_cause: str = ""
+    impact_scope: str = ""
     confidence: float = 0.0
     score_breakdown: dict[str, float] = Field(default_factory=dict)
     impacted_device_ids: list[str] = Field(default_factory=list)
@@ -689,6 +718,97 @@ class JobTopologyUpdateRequest(BaseModel):
 
 class JobRCAWeightsUpdateRequest(BaseModel):
     rca_weights: RCAWeights
+
+
+class RunKind(str, Enum):
+    single = "single"
+    multi = "multi"
+
+
+class RunStatus(str, Enum):
+    open = "open"
+    running = "running"
+    waiting_approval = "waiting_approval"
+    completed = "completed"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
+class RunCreateRequest(BaseModel):
+    name: Optional[str] = None
+    problem: Optional[str] = None
+    devices: list[JobDeviceRequest] = Field(default_factory=list)
+    automation_level: AutomationLevel = AutomationLevel.assisted
+    operation_mode: OperationMode = OperationMode.diagnosis
+    issue_scope: list[str] = Field(default_factory=lambda: ["connectivity", "interface", "routing"])
+    max_gap_seconds: int = 300
+    topology_mode: TopologyMode = TopologyMode.hybrid
+    topology_edges: list[JobTopologyEdge] = Field(default_factory=list)
+    max_device_concurrency: int = 20
+    execution_policy: Literal["stop_on_failure", "continue_on_failure", "rollback_template"] = "stop_on_failure"
+    webhook_url: Optional[str] = None
+    webhook_events: list[str] = Field(default_factory=list)
+
+
+class RunResponse(BaseModel):
+    id: str
+    source_id: str
+    kind: RunKind
+    name: Optional[str] = None
+    protocol: Optional[DeviceProtocol] = None
+    problem: Optional[str] = None
+    status: RunStatus
+    phase: Optional[str] = None
+    automation_level: AutomationLevel = AutomationLevel.assisted
+    operation_mode: OperationMode = OperationMode.diagnosis
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    device_count: int = 1
+    device_hosts: list[str] = Field(default_factory=list)
+    pending_actions: int = 0
+
+
+class RunListResponse(BaseModel):
+    total: int
+    items: list[RunResponse] = Field(default_factory=list)
+
+
+class RunTimelineResponse(BaseModel):
+    run: RunResponse
+    payload: dict[str, Any] = Field(default_factory=dict)
+    trace: list[dict[str, Any]] = Field(default_factory=list)
+    timeline: TimelineResponse
+    service_trace: ServiceTraceResponse
+
+
+class RunActionDecisionRequest(BaseModel):
+    item_ids: list[str] = Field(default_factory=list)
+    reason: Optional[str] = None
+
+
+class RunActionDecisionItem(BaseModel):
+    item_id: str
+    status: str
+    message: str
+
+
+class RunActionDecisionResponse(BaseModel):
+    run_id: str
+    total: int
+    updated: int
+    skipped: int
+    results: list[RunActionDecisionItem] = Field(default_factory=list)
+
+
+class RunStopResponse(BaseModel):
+    run_id: str
+    source_id: str
+    kind: RunKind
+    status: RunStatus
+    stop_requested: bool
+    message: str
 
 
 class ApiKeyCreateRequest(BaseModel):

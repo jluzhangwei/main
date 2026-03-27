@@ -166,6 +166,14 @@ def test_v2_job_timeline_events_and_report():
     assert md_payload["filename"].endswith(".md")
     assert md_payload["mime_type"] == "text/markdown"
 
+    unified_export = client.post(
+        f"/api/runs/run_m:{job_id}/export",
+        json={"format": "markdown"},
+        headers=_auth(admin_key),
+    )
+    assert unified_export.status_code == 200, unified_export.text
+    assert unified_export.json()["content"] == md_payload["content"]
+
 
 def test_v2_keys_and_audit_endpoints():
     admin_key = _bootstrap_admin_key()

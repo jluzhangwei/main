@@ -152,6 +152,10 @@ def _stream_message(session_id: str, content: str) -> str:
         return "".join(response.iter_text())
 
 
+def _internal() -> dict[str, str]:
+    return {"X-Internal-UI": "1"}
+
+
 def test_read_only_session_blocks_risky_execution_but_keeps_read_only_steps():
     session_id = _create_session("read_only")
     body = _stream_message(session_id, "请自动修复接口故障")
@@ -435,3 +439,34 @@ def test_update_session_credentials_and_timeline_hides_secrets():
     assert session["device"]["password"] is None
     assert session["device"]["jump_username"] is None
     assert session["device"]["jump_password"] is None
+
+
+def test_legacy_v1_read_endpoints_match_unified_run_endpoints():
+    session_id = _create_session("assisted", "config")
+    _stream_message(session_id, "请自动修复接口故障")
+    run_id = f"run_s:{session_id}"
+
+    legacy_timeline = client.get(f"/v1/sessions/{session_id}/timeline")
+    assert legacy_timeline.status_code == 200
+    unified_timeline = client.get(f"/api/runs/{run_id}/timeline", headers=_internal())
+    assert unified_timeline.status_code == 200
+
+    legacy_timeline_payload = legacy_timeline.json()
+    unified_timeline_payload = unified_timeline.json()["timeline"]
+    assert legacy_timeline_payload == unified_timeline_payload
+
+    legacy_trace = client.get(f"/v1/sessions/{session_id}/trace")
+    assert legacy_trace.status_code == 200
+    unified_trace = client.get(f"/api/runs/{run_id}/trace", headers=_internal())
+    assert unified_trace.status_code == 200
+    assert legacy_trace.json() == unified_trace.json()
+
+    legacy_export = client.post(f"/v1/sessions/{session_id}/export", json={"format": "markdown"})
+    assert legacy_export.status_code == 200
+    unified_export = client.post(
+        f"/api/runs/{run_id}/export",
+        json={"format": "markdown"},
+        headers=_internal(),
+    )
+    assert unified_export.status_code == 200
+    assert legacy_export.json() == unified_export.json()

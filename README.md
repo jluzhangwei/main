@@ -18,6 +18,7 @@
 ## 用户文档
 
 - 图文用户说明书（中文）：[`docs/USER_GUIDE.zh-CN.md`](docs/USER_GUIDE.zh-CN.md)
+- 统一 Run API 接入说明：[`docs/UNIFIED_RUN_API.zh-CN.md`](docs/UNIFIED_RUN_API.zh-CN.md)
 - V3 运维说明（多设备任务编排）：[`docs/V3_OPERATIONS.zh-CN.md`](docs/V3_OPERATIONS.zh-CN.md)
 - V3 对外 API 接入说明：[`docs/V3_API_EXTERNAL.zh-CN.md`](docs/V3_API_EXTERNAL.zh-CN.md)
 - V4 预研计划：[`docs/V4_RESEARCH_PLAN.zh-CN.md`](docs/V4_RESEARCH_PLAN.zh-CN.md)
@@ -50,7 +51,27 @@ docker compose up --build
 
 ## API
 
-### v1（保持兼容）
+### 统一入口（推荐）
+
+- `POST /api/runs`
+- `POST /api/runs/{runId}/messages`
+- `GET /api/runs`
+- `GET /api/runs/{runId}`
+- `GET /api/runs/{runId}/events` (SSE)
+- `GET /api/runs/{runId}/timeline`
+- `GET /api/runs/{runId}/report?format=json|markdown|pdf`
+- `POST /api/runs/{runId}/actions/approve`
+- `POST /api/runs/{runId}/actions/reject`
+- `POST /api/runs/{runId}/stop`
+
+说明：
+
+- `devices` 只有 1 台时，统一入口会落到单设备会话能力。
+- `devices` 大于 1 台时，统一入口会落到多设备协同能力。
+- `POST /api/runs/{runId}/messages` 当前用于单设备 Run 的后续对话。
+- `/v1` 与 `/v2` 继续保留，但定位为兼容接口，不再推荐作为新的第三方接入入口。
+
+### v1（兼容接口）
 
 - `POST /v1/sessions`
 - `PATCH /v1/sessions/{id}`
@@ -59,7 +80,7 @@ docker compose up --build
 - `GET /v1/sessions/{id}/timeline`
 - `POST /v1/sessions/{id}/export`
 
-### v2（多设备任务）
+### v2（兼容接口 / 多设备任务）
 
 - `POST /v2/keys`
 - `GET /v2/keys`
@@ -79,7 +100,7 @@ docker compose up --build
 - `GET /v2/command-profiles`
 - `GET /v2/security/permission-templates`
 
-## v2 快速调用示例
+## 统一 Run API 快速调用示例
 
 ### 1) 初始化管理员 Key（首次可无鉴权）
 
@@ -89,17 +110,34 @@ curl -sS -X POST 'http://127.0.0.1:8000/v2/keys' \
   -d '{"name":"admin","permissions":["*"]}'
 ```
 
-### 2) 创建多设备任务（诊断模式）
+### 2) 创建统一 Run（单设备）
 
 ```bash
-curl -sS -X POST 'http://127.0.0.1:8000/v2/jobs' \
+curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \
+  -H 'X-API-Key: <YOUR_API_KEY>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "problem": "帮我检查最近一次 OSPF 闪断原因",
+    "operation_mode": "diagnosis",
+    "automation_level": "assisted",
+    "devices": [
+      {"host":"192.168.0.88","protocol":"ssh","username":"zhangwei","password":"Huawei@123"}
+    ]
+  }'
+```
+
+### 3) 创建统一 Run（多设备协同）
+
+```bash
+curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \
   -H 'X-API-Key: <YOUR_API_KEY>' \
   -H 'Idempotency-Key: job-20260325-rca-001' \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "跨设备故障分析",
     "problem": "5分钟内多设备告警，定位根因和传播链",
-    "mode": "diagnosis",
+    "operation_mode": "diagnosis",
+    "automation_level": "assisted",
     "max_gap_seconds": 300,
     "topology_mode": "hybrid",
     "max_device_concurrency": 20,
@@ -113,25 +151,46 @@ curl -sS -X POST 'http://127.0.0.1:8000/v2/jobs' \
   }'
 ```
 
-### 3) 订阅事件流
-
-```bash
-curl -N -H 'X-API-Key: <YOUR_API_KEY>' \
-  'http://127.0.0.1:8000/v2/jobs/<JOB_ID>/events?from_seq=0'
-```
-
-### 4) 获取报告
+### 4) 查询统一 Run 状态
 
 ```bash
 curl -sS -H 'X-API-Key: <YOUR_API_KEY>' \
-  'http://127.0.0.1:8000/v2/jobs/<JOB_ID>/report?format=markdown'
+  'http://127.0.0.1:8000/api/runs/<RUN_ID>'
 ```
 
-### 5) 分页查询任务
+### 5) 单设备继续提问
+
+```bash
+curl -N -X POST 'http://127.0.0.1:8000/api/runs/<RUN_ID>/messages' \
+  -H 'X-API-Key: <YOUR_API_KEY>' \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"请继续检查接口状态并给出下一步"}'
+```
+
+### 6) 审批待执行命令组
+
+```bash
+curl -sS -X POST 'http://127.0.0.1:8000/api/runs/<RUN_ID>/actions/approve' \
+  -H 'X-API-Key: <YOUR_API_KEY>' \
+  -H 'Content-Type: application/json' \
+  -d '{"reason":"approved by operator"}'
+```
+
+### 7) 获取统一 Run 时间线 / 报告
 
 ```bash
 curl -sS -H 'X-API-Key: <YOUR_API_KEY>' \
-  'http://127.0.0.1:8000/v2/jobs/query?offset=0&limit=20&status=completed'
+  'http://127.0.0.1:8000/api/runs/<RUN_ID>/timeline'
+
+curl -sS -H 'X-API-Key: <YOUR_API_KEY>' \
+  'http://127.0.0.1:8000/api/runs/<RUN_ID>/report?format=markdown'
+```
+
+### 8) 分页查询历史 Run
+
+```bash
+curl -sS -H 'X-API-Key: <YOUR_API_KEY>' \
+  'http://127.0.0.1:8000/api/runs?offset=0&limit=20'
 ```
 
 ## 权限标签建议
@@ -164,6 +223,21 @@ export VENDOR=huawei
 export AUTOMATION_LEVEL=assisted
 export DIAG_MESSAGE='请帮我诊断连通性、接口和路由问题'
 python scripts/run_device_diag.py
+```
+
+也可以直接使用统一入口脚本：
+
+```bash
+cd backend
+. .venv/bin/activate
+python scripts/unified_diag_client.py \
+  --base-url http://127.0.0.1:8000 \
+  --hosts "192.168.0.88 192.168.0.101" \
+  --username zhangwei \
+  --password 'Huawei@123' \
+  --question '查一下上次 OSPF 闪断原因' \
+  --api-key <YOUR_API_KEY> \
+  --auto-approve
 ```
 
 ## V3 压测脚本
