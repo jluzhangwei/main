@@ -304,6 +304,10 @@ def test_v2_batch_action_decisions():
     assert approved_payload["updated"] == len(pending_ids)
     assert approved_payload["total"] == len(pending_ids)
 
+    unified_trace = client.get(f"/api/runs/run_m:{job_id}/trace", headers=_auth(admin_key))
+    assert unified_trace.status_code == 200, unified_trace.text
+    assert any("审批通过命令组" in str(step.get("title", "")) for step in unified_trace.json()["steps"])
+
     job_id_2 = _create_job(admin_key, mode="repair")
     task2 = routes.orchestrator_v2._tasks.get(job_id_2)
     if task2 and not task2.done():
@@ -348,6 +352,10 @@ def test_v2_batch_action_decisions():
     assert post_timeline.status_code == 200
     statuses = {row["status"] for row in post_timeline.json()["job"]["action_groups"]}
     assert "rejected" in statuses
+
+    unified_trace_rejected = client.get(f"/api/runs/run_m:{job_id_2}/trace", headers=_auth(admin_key))
+    assert unified_trace_rejected.status_code == 200, unified_trace_rejected.text
+    assert any("审批拒绝命令组" in str(step.get("title", "")) for step in unified_trace_rejected.json()["steps"])
 
 
 def test_v2_topology_and_rca_weights_updates():

@@ -36,6 +36,7 @@ from app.services.adapter_runtime import close_connected_adapter, ensure_connect
 from app.services.deepseek_diagnoser import DeepSeekDiagnoser
 from app.services.llm_planner_bridge import LLMPlannerBridge
 from app.services.risk_engine import RiskEngine
+from app.services.single_command_runtime import execute_single_command
 from app.services.sop_archive import SOPArchive
 from app.services.store import InMemoryStore
 
@@ -2552,29 +2553,40 @@ class ConversationOrchestrator:
         )
 
     async def _execute_and_record(self, adapter, command: CommandExecution) -> None:
-        if self._is_stop_requested(command.session_id):
+        async def _mark_rejected(_message: str) -> None:
             command.status = CommandStatus.rejected
             command.error = "Stopped by operator"
             command.completed_at = now_utc()
             command.duration_ms = 0
             self.store.update_command(command)
-            return
 
-        command.status = CommandStatus.running
-        command.started_at = now_utc()
-        command.completed_at = None
-        command.duration_ms = None
-        self.store.update_command(command)
-
-        try:
-            output = await adapter.run_command(command.command)
-            await self._record_command_output(adapter, command, output)
-        except Exception as exc:  # pragma: no cover
-            command.status = CommandStatus.failed
-            command.error = str(exc)
-            command.completed_at = now_utc()
-            command.duration_ms = max(0, int((command.completed_at - command.started_at).total_seconds() * 1000))
+        async def _mark_running() -> None:
+            command.status = CommandStatus.running
+            command.started_at = now_utc()
+            command.completed_at = None
+            command.duration_ms = None
             self.store.update_command(command)
+
+        async def _handle_success(output: str) -> None:
+            await self._record_command_output(adapter, command, output)
+
+        async def _handle_failure(message: str) -> None:
+            command.status = CommandStatus.failed
+            command.error = message
+            command.completed_at = now_utc()
+            if command.started_at:
+                command.duration_ms = max(0, int((command.completed_at - command.started_at).total_seconds() * 1000))
+            self.store.update_command(command)
+
+        await execute_single_command(
+            adapter,
+            command.command,
+            should_stop=lambda: self._is_stop_requested(command.session_id),
+            on_rejected=_mark_rejected,
+            on_running=_mark_running,
+            on_success=_handle_success,
+            on_failure=_handle_failure,
+        )
 
     def _learn_command_capability_from_result(
         self,

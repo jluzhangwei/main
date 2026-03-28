@@ -600,13 +600,14 @@ class UnifiedRunService:
 
     def _build_native_trace_step(self, event: JobEvent, session_id: str) -> ServiceTraceStep | None:
         event_type = str(event.event_type or "").strip()
-        if event_type not in self.NATIVE_TRACE_EVENT_TYPES:
-            return None
         payload = event.payload if isinstance(event.payload, dict) else {}
+        trace_step_type = str(payload.get("trace_step_type") or event_type or "").strip()
+        if trace_step_type not in self.NATIVE_TRACE_EVENT_TYPES:
+            return None
         detail_payload = payload.get("detail_payload") if isinstance(payload.get("detail_payload"), dict) else {
             key: value
             for key, value in payload.items()
-            if key not in {"title", "status", "detail", "started_at", "completed_at", "duration_ms", "command_id", "step_no", "device_id", "device_host"}
+            if key not in {"trace_step_type", "title", "status", "detail", "started_at", "completed_at", "duration_ms", "command_id", "step_no", "device_id", "device_host"}
         }
         if not detail_payload:
             detail_payload = {"event_payload": payload}
@@ -614,8 +615,8 @@ class UnifiedRunService:
             id=f"runtrace:{session_id}:evt:{event.id}",
             session_id=session_id,
             seq_no=int(event.seq_no or 0),
-            step_type=event_type,
-            title=str(payload.get("title") or event_type),
+            step_type=trace_step_type,
+            title=str(payload.get("title") or trace_step_type),
             status=str(payload.get("status") or "succeeded"),
             started_at=payload.get("started_at") or event.created_at,
             completed_at=payload.get("completed_at") or event.created_at,

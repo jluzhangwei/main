@@ -66,6 +66,7 @@ from app.services.command_runtime import (
 from app.services.deepseek_diagnoser import DeepSeekDiagnoser
 from app.services.llm_planner_bridge import LLMPlannerBridge
 from app.services.risk_engine import RiskEngine
+from app.services.single_command_runtime import execute_single_command
 from app.services.sop_archive import SOPArchive
 from app.services.store import InMemoryStore
 
@@ -390,9 +391,20 @@ class JobV2Orchestrator:
             )
             self._save_state()
 
-    def _append_trace_event(
+    def _format_phase_label(self, phase: str) -> str:
+        labels = {
+            "collect": "采集",
+            "correlate": "关联",
+            "plan": "规划",
+            "approve": "审批",
+            "execute": "执行",
+            "analyze": "分析",
+            "conclude": "总结",
+        }
+        return labels.get(phase, phase or "-")
+
+    def _build_trace_payload(
         self,
-        job: Job,
         step_type: str,
         title: str,
         *,
@@ -404,8 +416,9 @@ class JobV2Orchestrator:
         started_at: datetime | None = None,
         completed_at: datetime | None = None,
         duration_ms: int | None = None,
-    ) -> JobEvent:
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {
+            "trace_step_type": step_type,
             "title": title,
             "status": status,
             "detail": self._clip_trace_text(self._sanitize_trace_text(detail), 12000),
@@ -423,7 +436,70 @@ class JobV2Orchestrator:
             payload["completed_at"] = completed_at.isoformat()
         if duration_ms is not None:
             payload["duration_ms"] = duration_ms
+        return payload
+
+    def _append_trace_event(
+        self,
+        job: Job,
+        step_type: str,
+        title: str,
+        *,
+        status: str = "succeeded",
+        detail: str = "",
+        detail_payload: dict[str, Any] | None = None,
+        command: JobCommandResult | None = None,
+        device: JobDevice | None = None,
+        started_at: datetime | None = None,
+        completed_at: datetime | None = None,
+        duration_ms: int | None = None,
+    ) -> JobEvent:
+        payload = self._build_trace_payload(
+            step_type,
+            title,
+            status=status,
+            detail=detail,
+            detail_payload=detail_payload,
+            command=command,
+            device=device,
+            started_at=started_at,
+            completed_at=completed_at,
+            duration_ms=duration_ms,
+        )
         return self._append_event(job, step_type, payload)
+
+    def _append_event_with_trace(
+        self,
+        job: Job,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        step_type: str,
+        title: str,
+        status: str = "succeeded",
+        detail: str = "",
+        detail_payload: dict[str, Any] | None = None,
+        command: JobCommandResult | None = None,
+        device: JobDevice | None = None,
+        started_at: datetime | None = None,
+        completed_at: datetime | None = None,
+        duration_ms: int | None = None,
+    ) -> JobEvent:
+        merged = dict(payload)
+        merged.update(
+            self._build_trace_payload(
+                step_type,
+                title,
+                status=status,
+                detail=detail,
+                detail_payload=detail_payload,
+                command=command,
+                device=device,
+                started_at=started_at,
+                completed_at=completed_at,
+                duration_ms=duration_ms,
+            )
+        )
+        return self._append_event(job, event_type, merged)
 
     def _build_llm_request_payload(self, debug: dict[str, Any], *, device: JobDevice | None = None) -> dict[str, Any]:
         source = debug if isinstance(debug, dict) else {}
@@ -791,7 +867,8 @@ class JobV2Orchestrator:
             action.approve_reason = (reason or "").strip() or None
             action.updated_at = now_utc()
             job.updated_at = now_utc()
-            self._append_event(
+            device = self._find_device(job, action.device_id)
+            self._append_event_with_trace(
                 job,
                 "action_group_approved",
                 {
@@ -799,6 +876,16 @@ class JobV2Orchestrator:
                     "device_id": action.device_id,
                     "approved_by": actor_name,
                 },
+                step_type="session_control",
+                title=f"[{device.host if device else action.device_id}] 审批通过命令组",
+                status="succeeded",
+                detail=f"approved_by={actor_name}",
+                detail_payload={
+                    "action_group_id": action.id,
+                    "approved_by": actor_name,
+                    "reason": action.approve_reason or "",
+                },
+                device=device,
             )
             if job.status == JobStatus.waiting_approval:
                 job.status = JobStatus.executing
@@ -879,7 +966,8 @@ class JobV2Orchestrator:
             action.reject_reason = (reason or "").strip() or None
             action.updated_at = now_utc()
             job.updated_at = now_utc()
-            self._append_event(
+            device = self._find_device(job, action.device_id)
+            self._append_event_with_trace(
                 job,
                 "action_group_rejected",
                 {
@@ -887,6 +975,16 @@ class JobV2Orchestrator:
                     "device_id": action.device_id,
                     "rejected_by": actor_name,
                 },
+                step_type="session_control",
+                title=f"[{device.host if device else action.device_id}] 审批拒绝命令组",
+                status="failed",
+                detail=f"rejected_by={actor_name}",
+                detail_payload={
+                    "action_group_id": action.id,
+                    "rejected_by": actor_name,
+                    "reason": action.reject_reason or "",
+                },
+                device=device,
             )
 
             if all(item.status != JobActionGroupStatus.pending_approval for item in job.action_groups):
@@ -895,6 +993,18 @@ class JobV2Orchestrator:
                     job.status = JobStatus.completed
                     if not job.completed_at:
                         job.completed_at = now_utc()
+                    self._append_event_with_trace(
+                        job,
+                        "job_completed",
+                        {"mode": job.mode.value, "message": "all action groups resolved after rejection"},
+                        step_type="session_control",
+                        title="多设备协同完成",
+                        status="succeeded",
+                        detail="all action groups resolved after rejection",
+                        detail_payload={"mode": job.mode.value, "message": "all action groups resolved after rejection"},
+                        completed_at=job.completed_at,
+                        duration_ms=0,
+                    )
             self._save_state()
 
         self._audit_logs.append(
@@ -950,7 +1060,19 @@ class JobV2Orchestrator:
                 job.phase = JobPhase.collect
                 job.started_at = now_utc()
                 job.updated_at = now_utc()
-                self._append_event(job, "phase_changed", {"phase": job.phase.value, "status": job.status.value})
+                self._append_event_with_trace(
+                    job,
+                    "phase_changed",
+                    {"phase": job.phase.value, "status": job.status.value},
+                    step_type="session_control",
+                    title=f"阶段切换：{self._format_phase_label(job.phase.value)}",
+                    status=job.status.value,
+                    detail=f"phase={job.phase.value}; status={job.status.value}",
+                    detail_payload={"phase": job.phase.value, "status": job.status.value},
+                    started_at=job.started_at,
+                    completed_at=job.updated_at,
+                    duration_ms=0,
+                )
                 self._save_state()
 
             await self._collect_phase(job_id)
@@ -965,7 +1087,18 @@ class JobV2Orchestrator:
                     job.phase = JobPhase.conclude
                     job.completed_at = now_utc()
                     job.updated_at = now_utc()
-                    self._append_event(job, "job_cancelled", {"reason": "task_cancelled"})
+                    self._append_event_with_trace(
+                        job,
+                        "job_cancelled",
+                        {"reason": "task_cancelled"},
+                        step_type="session_control",
+                        title="多设备协同已取消",
+                        status="stopped",
+                        detail="task_cancelled",
+                        detail_payload={"reason": "task_cancelled"},
+                        completed_at=job.completed_at,
+                        duration_ms=0,
+                    )
                     self._save_state()
             await self._close_job_adapters(job_id)
             raise
@@ -979,7 +1112,18 @@ class JobV2Orchestrator:
                 job.error = str(exc)
                 job.updated_at = now_utc()
                 job.completed_at = now_utc()
-                self._append_event(job, "job_failed", {"error": str(exc)[:500]})
+                self._append_event_with_trace(
+                    job,
+                    "job_failed",
+                    {"error": str(exc)[:500]},
+                    step_type="session_control",
+                    title="多设备协同失败",
+                    status="failed",
+                    detail=str(exc)[:280],
+                    detail_payload={"error": str(exc)},
+                    completed_at=job.completed_at,
+                    duration_ms=0,
+                )
                 self._save_state()
             await self._close_job_adapters(job_id)
 
@@ -989,7 +1133,18 @@ class JobV2Orchestrator:
             job.phase = JobPhase.collect
             job.status = JobStatus.running
             job.updated_at = now_utc()
-            self._append_event(job, "phase_changed", {"phase": "collect", "status": job.status.value})
+            self._append_event_with_trace(
+                job,
+                "phase_changed",
+                {"phase": "collect", "status": job.status.value},
+                step_type="session_control",
+                title=f"阶段切换：{self._format_phase_label('collect')}",
+                status=job.status.value,
+                detail=f"phase=collect; status={job.status.value}",
+                detail_payload={"phase": "collect", "status": job.status.value},
+                completed_at=job.updated_at,
+                duration_ms=0,
+            )
             devices = list(job.devices)
             concurrency = max(1, int(job.max_device_concurrency or 20))
             self._save_state()
@@ -1848,21 +2003,54 @@ class JobV2Orchestrator:
                     )
 
         adapter = await self._get_adapter(job_id, device_id)
-        try:
-            output = await adapter.run_command(command_to_run)
-            finished_at = now_utc()
-        except Exception as exc:
+
+        async def _should_stop() -> bool:
+            async with self._state_lock:
+                current_job = self._jobs.get(job_id)
+                return current_job is None or current_job.status == JobStatus.cancelled
+
+        async def _handle_rejected(_message: str) -> None:
+            async with self._state_lock:
+                job = self._jobs.get(job_id)
+                device = self._find_device(job, device_id) if job else None
+                if not job or not device:
+                    return
+                command.status = JobCommandStatus.rejected
+                command.error = "Stopped by operator"
+                command.capability_state = capability_state
+                command.capability_reason = capability_reason
+                command.completed_at = now_utc()
+                if command.started_at:
+                    command.duration_ms = max(0, int((command.completed_at - command.started_at).total_seconds() * 1000))
+                self._append_trace_event(
+                    job,
+                    "command_execution",
+                    f"设备执行命令 #{command.step_no}: {title}",
+                    status="stopped",
+                    detail=command.error,
+                    detail_payload={"command": self._job_command_trace_record(command, include_output=False)},
+                    command=command,
+                    device=device,
+                    started_at=command.started_at,
+                    completed_at=command.completed_at,
+                    duration_ms=command.duration_ms,
+                )
+                self._save_state()
+
+        async def _handle_failure(message: str) -> None:
             apply_adapter_command_meta(command, adapter)
             async with self._state_lock:
-                job = self._jobs[job_id]
-                device = self._find_device(job, device_id)
+                job = self._jobs.get(job_id)
+                device = self._find_device(job, device_id) if job else None
+                if not job or not device:
+                    return
                 command.status = JobCommandStatus.failed
-                command.error = str(exc)
+                command.error = message
                 if not command.effective_command:
                     command.effective_command = command_to_run
                 command.capability_state = capability_state
                 command.capability_reason = capability_reason
-                command.completed_at = finished_at if "finished_at" in locals() else now_utc()
+                command.completed_at = now_utc()
                 if command.started_at:
                     command.duration_ms = max(0, int((command.completed_at - command.started_at).total_seconds() * 1000))
                 self._append_event(
@@ -1889,90 +2077,100 @@ class JobV2Orchestrator:
                 )
                 self._touch_command_profile(device.version_signature, command_text, success=False, error=command.error)
                 self._save_state()
-            return command
 
-        apply_adapter_command_meta(command, adapter)
-        if not command.effective_command:
-            command.effective_command = command_to_run
-        parsed = parse_command_runtime(command.effective_command or command_to_run, output)
+        async def _handle_success(output: str) -> None:
+            apply_adapter_command_meta(command, adapter)
+            if not command.effective_command:
+                command.effective_command = command_to_run
+            parsed = parse_command_runtime(command.effective_command or command_to_run, output)
+            finished_at = now_utc()
 
-        async with self._state_lock:
-            job = self._jobs[job_id]
-            device = self._find_device(job, device_id)
-            if not device:
-                raise RuntimeError(f"device not found: {device_id}")
+            async with self._state_lock:
+                job = self._jobs.get(job_id)
+                device = self._find_device(job, device_id) if job else None
+                if not job or not device:
+                    return
 
-            evidence = JobEvidence(
-                job_id=job_id,
-                device_id=device_id,
-                command_id=command.id,
-                category=parsed.category,
-                raw_output=output,
-                parsed_data=parsed.parsed_data,
-                conclusion=parsed.conclusion,
-            )
-            job.evidences.append(evidence)
+                evidence = JobEvidence(
+                    job_id=job_id,
+                    device_id=device_id,
+                    command_id=command.id,
+                    category=parsed.category,
+                    raw_output=output,
+                    parsed_data=parsed.parsed_data,
+                    conclusion=parsed.conclusion,
+                )
+                job.evidences.append(evidence)
 
-            command.status = JobCommandStatus.succeeded
-            command.output = output
-            command.capability_state = capability_state
-            command.capability_reason = capability_reason
-            command.completed_at = finished_at
-            command.duration_ms = max(0, int((command.completed_at - command.started_at).total_seconds() * 1000)) if command.started_at else 0
+                command.status = JobCommandStatus.succeeded
+                command.output = output
+                command.capability_state = capability_state
+                command.capability_reason = capability_reason
+                command.completed_at = finished_at
+                command.duration_ms = max(0, int((command.completed_at - command.started_at).total_seconds() * 1000)) if command.started_at else 0
 
-            apply_device_profile_to_job_device(device, parsed.device_profile)
-            self._apply_incidents_from_evidence(job, device, evidence)
-            self._collect_topology_hints(job, device, command_to_run, output)
+                apply_device_profile_to_job_device(device, parsed.device_profile)
+                self._apply_incidents_from_evidence(job, device, evidence)
+                self._collect_topology_hints(job, device, command_to_run, output)
 
-            self._learn_capability_from_command(job, device, command, parsed.category)
-            self._touch_command_profile(device.version_signature, command_text, success=True, error=None, rewritten=bool(capability_state == "rewrite"))
+                self._learn_capability_from_command(job, device, command, parsed.category)
+                self._touch_command_profile(device.version_signature, command_text, success=True, error=None, rewritten=bool(capability_state == "rewrite"))
 
-            self._append_event(
-                job,
-                "command_completed",
-                {
-                    "command_id": command.id,
-                    "device_id": device_id,
-                    "status": command.status.value,
-                    "category": parsed.category,
-                    "conclusion": parsed.conclusion[:220],
-                },
-            )
-            self._append_trace_event(
-                job,
-                "command_execution",
-                f"设备执行命令 #{command.step_no}: {title}",
-                status="succeeded",
-                detail=(command.effective_command or command.command)[:280],
-                detail_payload={"command": self._job_command_trace_record(command, include_output=True)},
-                command=command,
-                device=device,
-                started_at=command.started_at,
-                completed_at=command.completed_at,
-                duration_ms=command.duration_ms,
-            )
-            self._append_trace_event(
-                job,
-                "evidence_parse",
-                "证据解析",
-                status="succeeded",
-                detail=f"category={parsed.category}; conclusion={str(parsed.conclusion)[:180]}",
-                detail_payload={
-                    "command": self._job_command_trace_record(command, include_output=False),
-                    "parser_result": {
+                self._append_event(
+                    job,
+                    "command_completed",
+                    {
+                        "command_id": command.id,
+                        "device_id": device_id,
+                        "status": command.status.value,
                         "category": parsed.category,
-                        "conclusion": parsed.conclusion,
-                        "parsed_data": parsed.parsed_data,
+                        "conclusion": parsed.conclusion[:220],
                     },
-                    "evidence": evidence.model_dump(mode="json"),
-                },
-                command=command,
-                device=device,
-                started_at=command.completed_at or finished_at,
-                completed_at=command.completed_at or finished_at,
-                duration_ms=0,
-            )
-            self._save_state()
+                )
+                self._append_trace_event(
+                    job,
+                    "command_execution",
+                    f"设备执行命令 #{command.step_no}: {title}",
+                    status="succeeded",
+                    detail=(command.effective_command or command.command)[:280],
+                    detail_payload={"command": self._job_command_trace_record(command, include_output=True)},
+                    command=command,
+                    device=device,
+                    started_at=command.started_at,
+                    completed_at=command.completed_at,
+                    duration_ms=command.duration_ms,
+                )
+                self._append_trace_event(
+                    job,
+                    "evidence_parse",
+                    "证据解析",
+                    status="succeeded",
+                    detail=f"category={parsed.category}; conclusion={str(parsed.conclusion)[:180]}",
+                    detail_payload={
+                        "command": self._job_command_trace_record(command, include_output=False),
+                        "parser_result": {
+                            "category": parsed.category,
+                            "conclusion": parsed.conclusion,
+                            "parsed_data": parsed.parsed_data,
+                        },
+                        "evidence": evidence.model_dump(mode="json"),
+                    },
+                    command=command,
+                    device=device,
+                    started_at=command.completed_at or finished_at,
+                    completed_at=command.completed_at or finished_at,
+                    duration_ms=0,
+                )
+                self._save_state()
+
+        await execute_single_command(
+            adapter,
+            command_to_run,
+            should_stop=_should_stop,
+            on_rejected=_handle_rejected,
+            on_success=_handle_success,
+            on_failure=_handle_failure,
+        )
 
         return command
 
@@ -2240,7 +2438,18 @@ class JobV2Orchestrator:
             job = self._jobs[job_id]
             job.phase = JobPhase.correlate
             job.updated_at = now_utc()
-            self._append_event(job, "phase_changed", {"phase": "correlate", "status": job.status.value})
+            self._append_event_with_trace(
+                job,
+                "phase_changed",
+                {"phase": "correlate", "status": job.status.value},
+                step_type="session_control",
+                title=f"阶段切换：{self._format_phase_label('correlate')}",
+                status=job.status.value,
+                detail=f"phase=correlate; status={job.status.value}",
+                detail_payload={"phase": "correlate", "status": job.status.value},
+                completed_at=job.updated_at,
+                duration_ms=0,
+            )
 
             incidents = sorted(job.incidents, key=lambda item: item.timestamp)
             clusters: list[IncidentCluster] = []
@@ -2279,7 +2488,7 @@ class JobV2Orchestrator:
 
             job.clusters = clusters
             self._resolve_causal_graph_and_root(job)
-            self._append_event(
+            self._append_event_with_trace(
                 job,
                 "correlate_completed",
                 {
@@ -2287,6 +2496,21 @@ class JobV2Orchestrator:
                     "incident_count": len(job.incidents),
                     "root_device_id": job.rca_result.root_device_id if job.rca_result else None,
                 },
+                step_type="evidence_parse",
+                title="多设备关联分析完成",
+                status="succeeded",
+                detail=(
+                    f"clusters={len(job.clusters)}; "
+                    f"incidents={len(job.incidents)}; "
+                    f"root_device={job.rca_result.root_device_id if job.rca_result else '-'}"
+                ),
+                detail_payload={
+                    "cluster_count": len(job.clusters),
+                    "incident_count": len(job.incidents),
+                    "root_device_id": job.rca_result.root_device_id if job.rca_result else None,
+                },
+                completed_at=job.updated_at,
+                duration_ms=0,
             )
             self._save_state()
 
@@ -3005,10 +3229,32 @@ class JobV2Orchestrator:
             job = self._jobs[job_id]
             job.phase = JobPhase.plan
             job.updated_at = now_utc()
-            self._append_event(job, "phase_changed", {"phase": "plan", "status": job.status.value})
+            self._append_event_with_trace(
+                job,
+                "phase_changed",
+                {"phase": "plan", "status": job.status.value},
+                step_type="session_control",
+                title=f"阶段切换：{self._format_phase_label('plan')}",
+                status=job.status.value,
+                detail=f"phase=plan; status={job.status.value}",
+                detail_payload={"phase": "plan", "status": job.status.value},
+                completed_at=job.updated_at,
+                duration_ms=0,
+            )
 
             if job.mode != JobMode.repair:
-                self._append_event(job, "plan_completed", {"action_group_count": 0})
+                self._append_event_with_trace(
+                    job,
+                    "plan_completed",
+                    {"action_group_count": 0},
+                    step_type="plan_decision",
+                    title="修复计划生成完成",
+                    status="succeeded",
+                    detail="action_groups=0; pending=0; auto_approved=0",
+                    detail_payload={"action_group_count": 0, "pending_approval": 0, "auto_approved": 0},
+                    completed_at=job.updated_at,
+                    duration_ms=0,
+                )
                 self._save_state()
                 return
 
@@ -3049,14 +3295,40 @@ class JobV2Orchestrator:
             if action_groups and any(item.status == JobActionGroupStatus.pending_approval for item in action_groups):
                 job.phase = JobPhase.approve
                 job.status = JobStatus.waiting_approval
-            self._append_event(
+                job.updated_at = now_utc()
+                self._append_event_with_trace(
+                    job,
+                    "phase_changed",
+                    {"phase": "approve", "status": job.status.value},
+                    step_type="session_control",
+                    title=f"阶段切换：{self._format_phase_label('approve')}",
+                    status=job.status.value,
+                    detail=f"phase=approve; status={job.status.value}",
+                    detail_payload={"phase": "approve", "status": job.status.value},
+                    completed_at=job.updated_at,
+                    duration_ms=0,
+                )
+            pending_count = len([item for item in action_groups if item.status == JobActionGroupStatus.pending_approval])
+            auto_count = len([item for item in action_groups if item.status == JobActionGroupStatus.approved])
+            self._append_event_with_trace(
                 job,
                 "plan_completed",
                 {
                     "action_group_count": len(action_groups),
-                    "pending_approval": len([item for item in action_groups if item.status == JobActionGroupStatus.pending_approval]),
-                    "auto_approved": len([item for item in action_groups if item.status == JobActionGroupStatus.approved]),
+                    "pending_approval": pending_count,
+                    "auto_approved": auto_count,
                 },
+                step_type="plan_decision",
+                title="修复计划生成完成",
+                status="succeeded",
+                detail=f"action_groups={len(action_groups)}; pending={pending_count}; auto_approved={auto_count}",
+                detail_payload={
+                    "action_group_count": len(action_groups),
+                    "pending_approval": pending_count,
+                    "auto_approved": auto_count,
+                },
+                completed_at=job.updated_at,
+                duration_ms=0,
             )
             self._save_state()
 
@@ -3108,7 +3380,18 @@ class JobV2Orchestrator:
                 job.status = JobStatus.completed
                 job.completed_at = now_utc()
                 job.updated_at = now_utc()
-                self._append_event(job, "job_completed", {"mode": job.mode.value})
+                self._append_event_with_trace(
+                    job,
+                    "job_completed",
+                    {"mode": job.mode.value},
+                    step_type="session_control",
+                    title="多设备协同完成",
+                    status="succeeded",
+                    detail=f"mode={job.mode.value}",
+                    detail_payload={"mode": job.mode.value},
+                    completed_at=job.completed_at,
+                    duration_ms=0,
+                )
                 self._save_state()
                 await self._close_job_adapters(job_id)
                 return
@@ -3127,7 +3410,18 @@ class JobV2Orchestrator:
                 job.status = JobStatus.completed
                 job.completed_at = now_utc()
                 job.updated_at = now_utc()
-                self._append_event(job, "job_completed", {"mode": job.mode.value, "message": "no approved action groups"})
+                self._append_event_with_trace(
+                    job,
+                    "job_completed",
+                    {"mode": job.mode.value, "message": "no approved action groups"},
+                    step_type="session_control",
+                    title="多设备协同完成",
+                    status="succeeded",
+                    detail=f"mode={job.mode.value}; message=no approved action groups",
+                    detail_payload={"mode": job.mode.value, "message": "no approved action groups"},
+                    completed_at=job.completed_at,
+                    duration_ms=0,
+                )
                 self._save_state()
                 await self._close_job_adapters(job_id)
                 return
@@ -3135,7 +3429,18 @@ class JobV2Orchestrator:
             job.phase = JobPhase.execute
             job.status = JobStatus.executing
             job.updated_at = now_utc()
-            self._append_event(job, "phase_changed", {"phase": "execute", "status": job.status.value})
+            self._append_event_with_trace(
+                job,
+                "phase_changed",
+                {"phase": "execute", "status": job.status.value},
+                step_type="session_control",
+                title=f"阶段切换：{self._format_phase_label('execute')}",
+                status=job.status.value,
+                detail=f"phase=execute; status={job.status.value}",
+                detail_payload={"phase": "execute", "status": job.status.value},
+                completed_at=job.updated_at,
+                duration_ms=0,
+            )
             self._save_state()
 
         for group in approved:
@@ -3153,12 +3458,35 @@ class JobV2Orchestrator:
                 job.phase = JobPhase.approve
                 job.status = JobStatus.waiting_approval
                 job.updated_at = now_utc()
+                self._append_event_with_trace(
+                    job,
+                    "phase_changed",
+                    {"phase": "approve", "status": job.status.value},
+                    step_type="session_control",
+                    title=f"阶段切换：{self._format_phase_label('approve')}",
+                    status=job.status.value,
+                    detail=f"phase=approve; status={job.status.value}",
+                    detail_payload={"phase": "approve", "status": job.status.value},
+                    completed_at=job.updated_at,
+                    duration_ms=0,
+                )
                 self._save_state()
                 return
 
             job.phase = JobPhase.analyze
             job.updated_at = now_utc()
-            self._append_event(job, "phase_changed", {"phase": "analyze", "status": job.status.value})
+            self._append_event_with_trace(
+                job,
+                "phase_changed",
+                {"phase": "analyze", "status": job.status.value},
+                step_type="session_control",
+                title=f"阶段切换：{self._format_phase_label('analyze')}",
+                status=job.status.value,
+                detail=f"phase=analyze; status={job.status.value}",
+                detail_payload={"phase": "analyze", "status": job.status.value},
+                completed_at=job.updated_at,
+                duration_ms=0,
+            )
             self._save_state()
 
         await self._correlate_phase(job_id)
@@ -3171,7 +3499,18 @@ class JobV2Orchestrator:
             job.status = JobStatus.completed
             job.completed_at = now_utc()
             job.updated_at = now_utc()
-            self._append_event(job, "job_completed", {"mode": job.mode.value})
+            self._append_event_with_trace(
+                job,
+                "job_completed",
+                {"mode": job.mode.value},
+                step_type="session_control",
+                title="多设备协同完成",
+                status="succeeded",
+                detail=f"mode={job.mode.value}",
+                detail_payload={"mode": job.mode.value},
+                completed_at=job.completed_at,
+                duration_ms=0,
+            )
             self._save_state()
 
         await self._close_job_adapters(job_id)
@@ -3188,7 +3527,8 @@ class JobV2Orchestrator:
             action.updated_at = now_utc()
             device_id = action.device_id
             commands = list(action.commands)
-            self._append_event(
+            device = self._find_device(job, device_id)
+            self._append_event_with_trace(
                 job,
                 "action_group_started",
                 {
@@ -3196,6 +3536,18 @@ class JobV2Orchestrator:
                     "device_id": device_id,
                     "command_count": len(commands),
                 },
+                step_type="session_control",
+                title=f"[{device.host if device else device_id}] 开始执行命令组",
+                status="running",
+                detail=f"command_count={len(commands)}",
+                detail_payload={
+                    "action_group_id": action.id,
+                    "command_count": len(commands),
+                    "title": action.title,
+                },
+                device=device,
+                completed_at=action.updated_at,
+                duration_ms=0,
             )
             self._save_state()
 
@@ -3252,16 +3604,32 @@ class JobV2Orchestrator:
                 return
             action.status = JobActionGroupStatus.failed if failed else JobActionGroupStatus.succeeded
             action.updated_at = now_utc()
-            self._append_event(
+            device = self._find_device(job, action.device_id)
+            self._append_event_with_trace(
                 job,
                 "action_group_completed",
                 {
+                    "action_group_id": action.id,
+                    "device_id": action.device_id,
+                    "status": action.status.value,
+                    "failed": failed,
+                    "processed_count": group_result.processed_count,
+                    "rollback_executed": group_result.rollback_count,
+                },
+                step_type="session_control",
+                title=f"[{device.host if device else action.device_id}] 命令组执行完成",
+                status=action.status.value,
+                detail=f"status={action.status.value}; processed={group_result.processed_count}; rollback={group_result.rollback_count}",
+                detail_payload={
                     "action_group_id": action.id,
                     "status": action.status.value,
                     "failed": failed,
                     "processed_count": group_result.processed_count,
                     "rollback_executed": group_result.rollback_count,
                 },
+                device=device,
+                completed_at=action.updated_at,
+                duration_ms=0,
             )
             self._save_state()
 

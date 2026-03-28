@@ -239,6 +239,10 @@ def test_api_runs_multi_create_list_and_timeline():
     assert isinstance(payload["trace"], list)
     assert "timeline" in payload
     assert "service_trace" in payload
+    assert any(
+        str(step.get("id", "")).find(":evt:") >= 0 and str(step.get("title", "")).startswith("阶段切换：")
+        for step in payload["trace"]
+    )
 
 
 def test_api_runs_trace_export_and_sop_library():
