@@ -79,6 +79,7 @@ type PersistedUiState = {
   currentSessionId?: string
   traceListExpanded?: boolean
   flowLayoutMode?: FlowLayoutMode
+  activityViewMode?: ActivityViewMode
 }
 
 type HistorySessionItem = {
@@ -192,6 +193,7 @@ type FlowLane = {
 }
 
 type FlowLayoutMode = 'compact' | 'stair'
+type ActivityViewMode = 'full' | 'compact'
 
 type TraceDetailSection = {
   key: string
@@ -358,6 +360,7 @@ function App() {
   const [selectedTraceStepId, setSelectedTraceStepId] = useState<string | undefined>(undefined)
   const [traceListExpanded, setTraceListExpanded] = useState(false)
   const [flowLayoutMode, setFlowLayoutMode] = useState<FlowLayoutMode>('stair')
+  const [activityViewMode, setActivityViewMode] = useState<ActivityViewMode>('full')
   const [tracePlaybackActive, setTracePlaybackActive] = useState(false)
   const [continueExecutionState, setContinueExecutionState] = useState<ContinueExecutionState | null>(null)
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true)
@@ -385,8 +388,8 @@ function App() {
     [commands, summary],
   )
   const activityCards = useMemo(
-    () => buildActivityCards(messages, commands, summary, traceSteps),
-    [messages, commands, summary, traceSteps],
+    () => filterActivityCards(buildActivityCards(messages, commands, summary, traceSteps), activityViewMode),
+    [messages, commands, summary, traceSteps, activityViewMode],
   )
 
   const selectedCommand = useMemo(() => {
@@ -767,6 +770,9 @@ function App() {
       if (parsed.flowLayoutMode === 'compact' || parsed.flowLayoutMode === 'stair') {
         setFlowLayoutMode(parsed.flowLayoutMode)
       }
+      if (parsed.activityViewMode === 'compact' || parsed.activityViewMode === 'full') {
+        setActivityViewMode(parsed.activityViewMode)
+      }
     } catch {
       // ignore local storage parse errors
     }
@@ -782,9 +788,10 @@ function App() {
       currentSessionId: session?.id,
       traceListExpanded,
       flowLayoutMode,
+      activityViewMode,
     }
     localStorage.setItem(UI_STATE_KEY, JSON.stringify(payload))
-  }, [activePage, rightPanelWidth, terminalSplitRatio, statusCollapsed, directionInput, session?.id, traceListExpanded, flowLayoutMode])
+  }, [activePage, rightPanelWidth, terminalSplitRatio, statusCollapsed, directionInput, session?.id, traceListExpanded, flowLayoutMode, activityViewMode])
 
   useEffect(() => {
     if (commands.length === 0) {
@@ -3025,6 +3032,14 @@ function App() {
                             disabled={llmSaving || llmControlsLocked}
                           />
                         </div>
+                        <div className="composer-inline-toggle">
+                          <span className="composer-inline-label">{activityViewMode === 'compact' ? '精简模式' : '完整模式'}</span>
+                          <Switch
+                            size="small"
+                            checked={activityViewMode === 'compact'}
+                            onChange={(checked) => setActivityViewMode(checked ? 'compact' : 'full')}
+                          />
+                        </div>
                       </div>
                       <div className="composer-actions">
                         <Button
@@ -4707,6 +4722,15 @@ function buildActivityCards(
     .map(({ sortAt: _, sortIdx: __, ...rest }) => rest)
 }
 
+function filterActivityCards(cards: ActivityCard[], mode: ActivityViewMode): ActivityCard[] {
+  if (mode === 'full') return cards
+  return cards.filter((item) => {
+    if (item.kind === 'message') return item.message.role === 'user'
+    if (item.kind === 'trace') return shouldDisplayTraceInCompactMode(item.trace)
+    return true
+  })
+}
+
 function renderActivityDetail(activity: ActivityCard): string {
   if (activity.kind === 'message') {
     return activity.message.content
@@ -4794,6 +4818,15 @@ function shouldDisplayTraceAsActivity(step: ServiceTraceStep): boolean {
     'evidence_parse',
     'session_control',
     'session_adapter',
+    'orchestrator_error',
+  ].includes(step.step_type)
+}
+
+function shouldDisplayTraceInCompactMode(step: ServiceTraceStep): boolean {
+  return [
+    'llm_request',
+    'llm_response',
+    'llm_plan',
     'orchestrator_error',
   ].includes(step.step_type)
 }
