@@ -192,6 +192,13 @@ async def test_learns_block_rule_from_syntax_error_and_blocks_next_time(monkeypa
 
     learned_rules = store.list_command_capability_rules(host="192.168.0.102")
     assert any(item.action == "block" and item.command_key == "show inventory" for item in learned_rules)
+    capability_traces = [
+        step
+        for step in store.list_trace_steps(session.id)
+        if step.step_type == "capability_decision" and step.title == "命令能力学习（block）"
+    ]
+    assert capability_traces
+    assert all(step.status == "succeeded" for step in capability_traces)
 
     async for _ in orchestrator.stream_message(session.id, "第二次检查"):
         pass
@@ -200,6 +207,13 @@ async def test_learns_block_rule_from_syntax_error_and_blocks_next_time(monkeypa
     assert len(inventory_runs) >= 2
     assert inventory_runs[-1].status.value == "blocked"
     assert inventory_runs[-1].capability_state == "block_hit"
+    blocked_traces = [
+        step
+        for step in store.list_trace_steps(session.id)
+        if step.step_type == "capability_decision" and step.title == "执行前命令能力判定（阻断）"
+    ]
+    assert blocked_traces
+    assert all(step.status == "blocked" for step in blocked_traces)
 
 
 @pytest.mark.asyncio

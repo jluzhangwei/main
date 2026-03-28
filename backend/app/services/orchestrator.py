@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import json
 import os
 import re
@@ -51,6 +50,8 @@ class ConversationOrchestrator:
         self.sop_archive = SOPArchive()
         self.allow_simulation = allow_simulation
         self.max_autonomous_steps = int(os.getenv("AUTONOMOUS_MAX_STEPS", "8"))
+        default_llm_timeout = max(60.0, float(getattr(self.deepseek_diagnoser, "timeout", 30.0)) * 2 + 15.0)
+        self.llm_plan_timeout = float(os.getenv("LLM_PLAN_TIMEOUT", str(default_llm_timeout)))
         self._session_adapters: dict[str, object] = {}
         self._trace_perf_started: dict[str, float] = {}
         self._stop_requested_sessions: set[str] = set()
@@ -168,6 +169,7 @@ class ConversationOrchestrator:
             max_iterations=max_iterations,
             conversation_history=conversation_history,
             planner_context=planner_context,
+            timeout_seconds=self.llm_plan_timeout,
         )
 
     async def stop_session(self, session_id: str) -> dict[str, object]:
@@ -506,20 +508,51 @@ class ConversationOrchestrator:
                     "status": "requesting",
                 },
             )
-            plan, plan_debug = await self._propose_next_step_with_debug(
-                session=session,
-                user_problem=user_content,
-                commands=commands,
-                evidences=evidences,
-                iteration=iteration,
-                max_iterations=self.max_autonomous_steps,
-                conversation_history=ai_context,
-            )
             llm_request_trace = self._trace_start(
                 session_id=session_id,
                 step_type="llm_request",
                 title=f"提交给 AI（第 {iteration} 轮）",
+                detail="requesting",
             )
+            try:
+                plan, plan_debug = await self._propose_next_step_with_debug(
+                    session=session,
+                    user_problem=user_content,
+                    commands=commands,
+                    evidences=evidences,
+                    iteration=iteration,
+                    max_iterations=self.max_autonomous_steps,
+                    conversation_history=ai_context,
+                )
+            except Exception as exc:
+                self._trace_finish(
+                    llm_request_trace,
+                    status="failed",
+                    detail="request_exception",
+                    detail_payload=self._compact_trace_payload({"error": str(exc)}),
+                )
+                self._trace_finish(
+                    llm_trace,
+                    status="failed",
+                    detail=str(exc)[:300],
+                    detail_payload=self._compact_trace_payload(
+                        {
+                            "device": {
+                                "host": session.device.host,
+                                "name": session.device.name or "",
+                                "vendor": session.device.vendor,
+                                "protocol": session.device.protocol.value,
+                                "version_signature": session.device.version_signature or "",
+                            },
+                            "session_mode": session.operation_mode.value,
+                            "automation_level": session.automation_level.value,
+                            "user_problem": user_content,
+                            "to_ai": {"error": str(exc)},
+                            "ai_response_parsed": None,
+                        }
+                    ),
+                )
+                break
             self._trace_finish(
                 llm_request_trace,
                 status="succeeded",
@@ -1644,7 +1677,7 @@ class ConversationOrchestrator:
                     f"rule_id={rule.id}; "
                     f"reason={str(command.capability_reason)[:120]}"
                 ),
-                status="failed",
+                status="blocked",
             )
             return {"action": "block", "reason": command.capability_reason or "blocked by capability"}
 
@@ -2781,7 +2814,7 @@ class ConversationOrchestrator:
                     f"learned_update; command={original_command[:120]}; "
                     f"reason={reason[:120]}; rule_id={learned.id}"
                 ),
-                status="failed",
+                status="succeeded",
             )
 
     def _is_baseline_collection_command(self, command: CommandExecution) -> bool:

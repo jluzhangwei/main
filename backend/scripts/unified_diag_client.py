@@ -73,7 +73,12 @@ def auth_headers(api_key: str) -> dict[str, str]:
 
 def try_create_api_key(client: httpx.Client, base_url: str) -> str:
     payload = {"name": f"cli-auto-{int(time.time())}", "permissions": ["*"]}
-    resp = client.post(f"{base_url}/v2/keys", json=payload, timeout=20.0)
+    resp = client.post(
+        f"{base_url}/v2/keys",
+        headers={"X-Internal-UI": "1"},
+        json=payload,
+        timeout=20.0,
+    )
     resp.raise_for_status()
     body = resp.json()
     token = str(body.get("api_key") or "").strip()
