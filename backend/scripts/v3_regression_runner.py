@@ -13,7 +13,7 @@ TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run V3 multi-device regression scenario via /v2 API")
+    parser = argparse.ArgumentParser(description="Run multi-device regression scenario via unified /api/runs API")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="Backend URL")
     parser.add_argument("--api-key", required=True, help="V2 API key")
     parser.add_argument("--scenario", required=True, help="Path to scenario json")
@@ -36,11 +36,23 @@ def load_scenario(path: str) -> dict[str, Any]:
     return data
 
 
-def build_job_payload(s: dict[str, Any]) -> dict[str, Any]:
+def normalize_operation_mode(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw == "inspection":
+        return "query"
+    if raw == "repair":
+        return "config"
+    if raw in {"diagnosis", "query", "config"}:
+        return raw
+    return "diagnosis"
+
+
+def build_run_payload(s: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": s.get("name") or "v3-regression-job",
         "problem": s["problem"],
-        "mode": s.get("mode") or "diagnosis",
+        "operation_mode": normalize_operation_mode(s.get("operation_mode") or s.get("mode")),
+        "automation_level": s.get("automation_level") or "assisted",
         "max_gap_seconds": int(s.get("max_gap_seconds") or 300),
         "topology_mode": s.get("topology_mode") or "hybrid",
         "max_device_concurrency": int(s.get("max_device_concurrency") or 20),
@@ -54,55 +66,63 @@ def build_job_payload(s: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def wait_job(
+def wait_run(
     client: httpx.Client,
     base_url: str,
     api_key: str,
-    job_id: str,
+    run_id: str,
     timeout: float,
     poll: float,
 ) -> dict[str, Any]:
     deadline = time.time() + timeout
     last: dict[str, Any] = {}
     while time.time() < deadline:
-        resp = client.get(f"{base_url}/v2/jobs/{job_id}", headers={"X-API-Key": api_key}, timeout=20.0)
+        resp = client.get(f"{base_url}/api/runs/{run_id}", headers={"X-API-Key": api_key}, timeout=20.0)
         resp.raise_for_status()
         payload = resp.json()
         last = payload
         status = str(payload.get("status") or "")
         phase = str(payload.get("phase") or "")
-        print(f"[job] status={status:<16} phase={phase:<10} pending={payload.get('pending_action_groups', 0)}")
+        print(f"[run] status={status:<16} phase={phase:<10} pending={payload.get('pending_actions', 0)}")
         if status in TERMINAL_STATUSES:
             return payload
         time.sleep(max(0.2, poll))
     return last
 
 
-def format_report(timeline: dict[str, Any]) -> str:
-    job = timeline.get("job", {})
-    events = timeline.get("events", [])
-    rca = job.get("rca_result") or {}
+def format_report(run_timeline: dict[str, Any]) -> str:
+    run = run_timeline.get("run", {})
+    timeline = run_timeline.get("timeline", {})
+    payload = run_timeline.get("payload") or {}
+    service_trace = run_timeline.get("service_trace") or {}
+    summary = timeline.get("summary") or {}
+    session = timeline.get("session") or {}
+    commands = timeline.get("commands") or []
+    trace_steps = service_trace.get("steps") or []
+    rca = payload.get("rca_result") or {}
     lines: list[str] = []
-    lines.append(f"# V3 Regression Report: {job.get('id', '-')}")
+    lines.append(f"# Unified Run Regression Report: {run.get('source_id', '-')}")
     lines.append("")
-    lines.append(f"- Name: {job.get('name', '-')}")
-    lines.append(f"- Problem: {job.get('problem', '-')}")
-    lines.append(f"- Status: {job.get('status', '-')}")
-    lines.append(f"- Phase: {job.get('phase', '-')}")
-    lines.append(f"- Mode: {job.get('mode', '-')}")
-    lines.append(f"- Devices: {len(job.get('devices') or [])}")
-    lines.append(f"- Commands: {len(job.get('command_results') or [])}")
+    lines.append(f"- Run ID: {run.get('id', '-')}")
+    lines.append(f"- Name: {run.get('name', '-')}")
+    lines.append(f"- Problem: {run.get('problem', '-')}")
+    lines.append(f"- Status: {run.get('status', '-')}")
+    lines.append(f"- Phase: {run.get('phase', '-')}")
+    lines.append(f"- Mode: {run.get('operation_mode', '-')}")
+    lines.append(f"- Devices: {run.get('device_count', 0)}")
+    lines.append(f"- Commands: {len(commands)}")
+    lines.append(f"- Session: {session.get('id', '-')}")
     lines.append("")
     lines.append("## RCA")
     lines.append("")
-    lines.append(f"- Root device: {rca.get('root_device_host') or rca.get('root_device_id') or '-'}")
-    lines.append(f"- Confidence: {rca.get('confidence', 0)}")
-    lines.append(f"- Summary: {rca.get('summary', '-')}")
-    lines.append(f"- Recommendation: {rca.get('recommendation', '-')}")
+    lines.append(f"- Root device: {rca.get('root_device_host') or rca.get('root_device_id') or summary.get('device_scope') or '-'}")
+    lines.append(f"- Confidence: {rca.get('confidence', summary.get('confidence', 0))}")
+    lines.append(f"- Summary: {rca.get('summary') or summary.get('root_cause') or '-'}")
+    lines.append(f"- Recommendation: {rca.get('recommendation') or summary.get('recommendation') or '-'}")
     lines.append("")
     lines.append("## Causal Edges")
     lines.append("")
-    edges = job.get("causal_edges") or []
+    edges = payload.get("causal_edges") or []
     if not edges:
         lines.append("- (none)")
     else:
@@ -113,7 +133,7 @@ def format_report(timeline: dict[str, Any]) -> str:
     lines.append("")
     lines.append("## Action Groups")
     lines.append("")
-    groups = job.get("action_groups") or []
+    groups = payload.get("action_groups") or []
     if not groups:
         lines.append("- (none)")
     else:
@@ -123,10 +143,13 @@ def format_report(timeline: dict[str, Any]) -> str:
                 f"- [{group.get('status', '-')}] {group.get('title', '-')} "
                 f"device={group.get('device_id', '-')} risk={group.get('risk_level', '-')} cmd={cmds}")
     lines.append("")
-    lines.append("## Events")
+    lines.append("## Trace Steps")
     lines.append("")
-    for event in events[-120:]:
-        lines.append(f"- [{event.get('seq_no', '-')}] {event.get('event_type', '-')} @ {event.get('created_at', '-')}")
+    for step in trace_steps[-120:]:
+        lines.append(
+            f"- [{step.get('seq_no', '-')}] {step.get('step_type', '-')} / {step.get('status', '-')} / "
+            f"{step.get('title', '-')} @ {step.get('started_at', '-')}"
+        )
     return "\n".join(lines)
 
 
@@ -134,7 +157,7 @@ def main() -> int:
     args = parse_args()
     base_url = args.base_url.rstrip("/")
     scenario = load_scenario(args.scenario)
-    payload = build_job_payload(scenario)
+    payload = build_run_payload(scenario)
 
     idempotency = f"v3-regression-{int(time.time())}"
     headers = {
@@ -145,23 +168,23 @@ def main() -> int:
 
     with httpx.Client() as client:
         print(f"[create] scenario={args.scenario}")
-        resp = client.post(f"{base_url}/v2/jobs", headers=headers, json=payload, timeout=30.0)
+        resp = client.post(f"{base_url}/api/runs", headers=headers, json=payload, timeout=30.0)
         resp.raise_for_status()
-        job = resp.json()
-        job_id = str(job["id"])
-        print(f"[create] job_id={job_id}")
+        run = resp.json()
+        run_id = str(run["id"])
+        print(f"[create] run_id={run_id}")
 
-        status = wait_job(client, base_url, args.api_key, job_id, args.timeout, args.poll)
+        status = wait_run(client, base_url, args.api_key, run_id, args.timeout, args.poll)
         print(f"[done] status={status.get('status')} phase={status.get('phase')}")
 
-        tl = client.get(f"{base_url}/v2/jobs/{job_id}/timeline", headers={"X-API-Key": args.api_key}, timeout=20.0)
+        tl = client.get(f"{base_url}/api/runs/{run_id}/timeline", headers={"X-API-Key": args.api_key}, timeout=20.0)
         tl.raise_for_status()
-        timeline = tl.json()
-        report = format_report(timeline)
+        run_timeline = tl.json()
+        report = format_report(run_timeline)
 
         output = args.output.strip()
         if not output:
-            output = f"v3_regression_{job_id}.md"
+            output = f"run_regression_{run.get('source_id', run_id)}.md"
         output_path = Path(output).expanduser().resolve()
         output_path.write_text(report, encoding="utf-8")
         print(f"[report] {output_path}")

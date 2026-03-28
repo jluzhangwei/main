@@ -16,16 +16,10 @@ import type {
   RunSummary,
   RunTimelineResponse,
   ServiceTrace,
-  SessionListItem,
-  SessionStopResponse,
   SessionResponse,
   SOPArchiveResponse,
-  Timeline,
   V2ApiKey,
   V2ApiKeyCreateResponse,
-  V2JobListResponse,
-  V2JobSummary,
-  V2JobTimeline,
   V2PermissionTemplates,
 } from '../types'
 
@@ -90,122 +84,6 @@ async function parseJsonResponse<T>(res: Response, message: string): Promise<T> 
   throw new Error(`${message}: ${htmlHint(body)}`)
 }
 
-export async function createSession(input: {
-  host: string
-  protocol: 'ssh' | 'telnet' | 'api'
-  operation_mode: 'diagnosis' | 'query' | 'config'
-  username?: string
-  password?: string
-  jump_host?: string
-  jump_port?: number
-  jump_username?: string
-  jump_password?: string
-  api_token?: string
-  automation_level: AutomationLevel
-}): Promise<SessionResponse> {
-  const res = await fetch('/v1/sessions', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      device: {
-        host: input.host,
-        protocol: input.protocol,
-        username: input.username,
-        password: input.password,
-        jump_host: input.jump_host,
-        jump_port: input.jump_port,
-        jump_username: input.jump_username,
-        jump_password: input.jump_password,
-        api_token: input.api_token,
-      },
-      operation_mode: input.operation_mode,
-      automation_level: input.automation_level,
-    }),
-  })
-
-  if (!res.ok) {
-    throw new Error('Failed to create session')
-  }
-
-  return res.json()
-}
-
-export async function listSessions(): Promise<SessionListItem[]> {
-  const res = await fetch('/v1/sessions')
-  if (!res.ok) {
-    throw new Error('Failed to load sessions')
-  }
-  return res.json()
-}
-
-export async function streamMessage(
-  sessionId: string,
-  content: string,
-  onEvent: (event: string, payload: EventPayload) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const res = await fetch(`/v1/sessions/${sessionId}/messages`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ content }),
-    signal,
-  })
-
-  if (!res.ok || !res.body) {
-    throw new Error('Failed to stream message')
-  }
-
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-
-    buffer += decoder.decode(value, { stream: true })
-    const chunks = buffer.split('\n\n')
-    buffer = chunks.pop() ?? ''
-
-    for (const chunk of chunks) {
-      const lines = chunk.split('\n')
-      const eventLine = lines.find((l) => l.startsWith('event: '))
-      const dataLine = lines.find((l) => l.startsWith('data: '))
-      if (!eventLine || !dataLine) continue
-
-      const event = eventLine.replace('event: ', '').trim()
-      const raw = dataLine.replace('data: ', '')
-      const payload = JSON.parse(raw) as EventPayload
-      onEvent(event, payload)
-    }
-  }
-}
-
-export async function stopSession(sessionId: string): Promise<SessionStopResponse> {
-  const res = await fetch(`/v1/sessions/${sessionId}/stop`, {
-    method: 'POST',
-    headers,
-  })
-  if (!res.ok) {
-    throw new Error('Failed to stop session')
-  }
-  return res.json()
-}
-
-export async function updateSessionAutomation(sessionId: string, automationLevel: AutomationLevel): Promise<SessionResponse> {
-  const res = await fetch(`/v1/sessions/${sessionId}`, {
-    method: 'PATCH',
-    headers,
-    body: JSON.stringify({ automation_level: automationLevel }),
-  })
-
-  if (!res.ok) {
-    throw new Error('Failed to update automation level')
-  }
-
-  return res.json()
-}
-
 export async function updateRunAutomation(apiKey: string, runId: string, automationLevel: AutomationLevel): Promise<SessionResponse> {
   const res = await fetch(apiUrl(`/api/runs/${runId}`), {
     method: 'PATCH',
@@ -220,29 +98,6 @@ export async function updateRunAutomation(apiKey: string, runId: string, automat
     status: payload.status === 'cancelled' ? 'closed' : payload.status === 'open' || payload.status === 'running' || payload.status === 'waiting_approval' ? 'open' : 'closed',
     created_at: payload.created_at,
   }
-}
-
-export async function updateSessionCredentials(
-  sessionId: string,
-  payload: {
-    username?: string
-    password?: string
-    jump_host?: string
-    jump_port?: number
-    jump_username?: string
-    jump_password?: string
-    api_token?: string
-  },
-): Promise<SessionResponse> {
-  const res = await fetch(`/v1/sessions/${sessionId}/credentials`, {
-    method: 'PATCH',
-    headers,
-    body: JSON.stringify(payload),
-  })
-  if (!res.ok) {
-    throw new Error('Failed to update session credentials')
-  }
-  return res.json()
 }
 
 export async function updateRunCredentials(
@@ -271,49 +126,6 @@ export async function updateRunCredentials(
     status: run.status === 'cancelled' ? 'closed' : run.status === 'open' || run.status === 'running' || run.status === 'waiting_approval' ? 'open' : 'closed',
     created_at: run.created_at,
   }
-}
-
-export async function confirmCommand(sessionId: string, commandId: string, approved: boolean): Promise<void> {
-  const res = await fetch(`/v1/sessions/${sessionId}/commands/${commandId}/confirm`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ approved }),
-  })
-
-  if (!res.ok) {
-    throw new Error('Failed to confirm command')
-  }
-}
-
-export async function getTimeline(sessionId: string): Promise<Timeline> {
-  const res = await fetch(`/v1/sessions/${sessionId}/timeline`)
-  if (!res.ok) {
-    throw new Error('Failed to load timeline')
-  }
-  return res.json()
-}
-
-export async function getServiceTrace(sessionId: string): Promise<ServiceTrace> {
-  const res = await fetch(`/v1/sessions/${sessionId}/trace`)
-  if (!res.ok) {
-    throw new Error('Failed to load service trace')
-  }
-  return res.json()
-}
-
-export async function exportMarkdown(sessionId: string): Promise<string> {
-  const res = await fetch(`/v1/sessions/${sessionId}/export`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ format: 'markdown' }),
-  })
-
-  if (!res.ok) {
-    throw new Error('Failed to export report')
-  }
-
-  const data = await res.json()
-  return data.content as string
 }
 
 export async function getLlmStatus(): Promise<LLMStatus> {
@@ -750,137 +562,6 @@ export async function v2DeleteApiKey(apiKey: string, keyId: string): Promise<voi
   await parseJsonResponse<Record<string, unknown>>(res, 'Failed to delete API key')
 }
 
-export async function v2CreateJob(apiKey: string, payload: Record<string, unknown>, idempotencyKey?: string): Promise<V2JobSummary> {
-  const res = await fetch(apiUrl('/v2/jobs'), {
-    method: 'POST',
-    headers: v2Headers(apiKey, idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined),
-    body: JSON.stringify(payload),
-  })
-  return parseJsonResponse<V2JobSummary>(res, 'Failed to create v2 job')
-}
-
-export async function v2ListJobs(apiKey: string, query?: {
-  offset?: number
-  limit?: number
-  status?: string
-  mode?: string
-}): Promise<V2JobSummary[]> {
-  const params = new URLSearchParams()
-  if (query?.offset !== undefined) params.set('offset', String(query.offset))
-  if (query?.limit !== undefined) params.set('limit', String(query.limit))
-  if (query?.status) params.set('status', query.status)
-  if (query?.mode) params.set('mode', query.mode)
-  const res = await fetch(apiUrl(`/v2/jobs${params.toString() ? `?${params.toString()}` : ''}`), {
-    headers: v2Headers(apiKey),
-  })
-  return parseJsonResponse<V2JobSummary[]>(res, 'Failed to list v2 jobs')
-}
-
-export async function v2QueryJobs(apiKey: string, query?: {
-  offset?: number
-  limit?: number
-  status?: string
-  mode?: string
-}): Promise<V2JobListResponse> {
-  const params = new URLSearchParams()
-  if (query?.offset !== undefined) params.set('offset', String(query.offset))
-  if (query?.limit !== undefined) params.set('limit', String(query.limit))
-  if (query?.status) params.set('status', query.status)
-  if (query?.mode) params.set('mode', query.mode)
-  const res = await fetch(apiUrl(`/v2/jobs/query${params.toString() ? `?${params.toString()}` : ''}`), {
-    headers: v2Headers(apiKey),
-  })
-  return parseJsonResponse<V2JobListResponse>(res, 'Failed to query v2 jobs')
-}
-
-export async function v2GetJob(apiKey: string, jobId: string): Promise<V2JobSummary> {
-  const res = await fetch(apiUrl(`/v2/jobs/${jobId}`), {
-    headers: v2Headers(apiKey),
-  })
-  return parseJsonResponse<V2JobSummary>(res, 'Failed to get v2 job')
-}
-
-export async function v2GetJobTimeline(apiKey: string, jobId: string): Promise<V2JobTimeline> {
-  const res = await fetch(apiUrl(`/v2/jobs/${jobId}/timeline`), {
-    headers: v2Headers(apiKey),
-  })
-  return parseJsonResponse<V2JobTimeline>(res, 'Failed to get v2 job timeline')
-}
-
-export async function v2CancelJob(apiKey: string, jobId: string, reason?: string): Promise<V2JobSummary> {
-  const query = reason ? `?reason=${encodeURIComponent(reason)}` : ''
-  const res = await fetch(apiUrl(`/v2/jobs/${jobId}/cancel${query}`), {
-    method: 'POST',
-    headers: v2Headers(apiKey),
-  })
-  return parseJsonResponse<V2JobSummary>(res, 'Failed to cancel v2 job')
-}
-
-export async function v2ApproveActionGroup(apiKey: string, jobId: string, actionGroupId: string, reason?: string): Promise<void> {
-  const res = await fetch(apiUrl(`/v2/jobs/${jobId}/actions/${actionGroupId}/approve`), {
-    method: 'POST',
-    headers: v2Headers(apiKey),
-    body: JSON.stringify({ reason }),
-  })
-  await parseJsonResponse<Record<string, unknown>>(res, 'Failed to approve action group')
-}
-
-export async function v2RejectActionGroup(apiKey: string, jobId: string, actionGroupId: string, reason?: string): Promise<void> {
-  const res = await fetch(apiUrl(`/v2/jobs/${jobId}/actions/${actionGroupId}/reject`), {
-    method: 'POST',
-    headers: v2Headers(apiKey),
-    body: JSON.stringify({ reason }),
-  })
-  await parseJsonResponse<Record<string, unknown>>(res, 'Failed to reject action group')
-}
-
-export async function v2ApproveActionGroupsBatch(apiKey: string, jobId: string, actionGroupIds: string[], reason?: string): Promise<void> {
-  const res = await fetch(apiUrl(`/v2/jobs/${jobId}/actions/approve-batch`), {
-    method: 'POST',
-    headers: v2Headers(apiKey),
-    body: JSON.stringify({ action_group_ids: actionGroupIds, reason }),
-  })
-  await parseJsonResponse<Record<string, unknown>>(res, 'Failed to batch approve action groups')
-}
-
-export async function v2RejectActionGroupsBatch(apiKey: string, jobId: string, actionGroupIds: string[], reason?: string): Promise<void> {
-  const res = await fetch(apiUrl(`/v2/jobs/${jobId}/actions/reject-batch`), {
-    method: 'POST',
-    headers: v2Headers(apiKey),
-    body: JSON.stringify({ action_group_ids: actionGroupIds, reason }),
-  })
-  await parseJsonResponse<Record<string, unknown>>(res, 'Failed to batch reject action groups')
-}
-
-export async function v2UpdateTopology(apiKey: string, jobId: string, payload: {
-  edges: Array<{ source: string; target: string; kind?: string; confidence?: number; reason?: string }>
-  replace?: boolean
-}): Promise<V2JobSummary> {
-  const res = await fetch(apiUrl(`/v2/jobs/${jobId}/topology`), {
-    method: 'PUT',
-    headers: v2Headers(apiKey),
-    body: JSON.stringify(payload),
-  })
-  return parseJsonResponse<V2JobSummary>(res, 'Failed to update job topology')
-}
-
-export async function v2UpdateRcaWeights(apiKey: string, jobId: string, payload: {
-  rca_weights: {
-    anomaly: number
-    timing: number
-    topology: number
-    change: number
-    consistency: number
-  }
-}): Promise<V2JobSummary> {
-  const res = await fetch(apiUrl(`/v2/jobs/${jobId}/rca-weights`), {
-    method: 'PUT',
-    headers: v2Headers(apiKey),
-    body: JSON.stringify(payload),
-  })
-  return parseJsonResponse<V2JobSummary>(res, 'Failed to update rca weights')
-}
-
 export async function v2GetAuditLogs(apiKey: string, query?: {
   action?: string
   status?: string
@@ -929,40 +610,4 @@ export async function v2GetPermissionTemplates(apiKey: string): Promise<V2Permis
     headers: v2Headers(apiKey),
   })
   return parseJsonResponse<V2PermissionTemplates>(res, 'Failed to get permission templates')
-}
-
-export async function v2StreamJobEvents(
-  apiKey: string,
-  jobId: string,
-  fromSeq: number,
-  onEvent: (event: string, payload: Record<string, unknown>) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const res = await fetch(apiUrl(`/v2/jobs/${jobId}/events?from_seq=${fromSeq}`), {
-    headers: v2Headers(apiKey),
-    signal,
-  })
-  if (!res.ok || !res.body) {
-    throw new Error('Failed to stream v2 events')
-  }
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const chunks = buffer.split('\n\n')
-    buffer = chunks.pop() ?? ''
-    for (const chunk of chunks) {
-      const lines = chunk.split('\n')
-      const eventLine = lines.find((l) => l.startsWith('event: '))
-      const dataLine = lines.find((l) => l.startsWith('data: '))
-      if (!eventLine || !dataLine) continue
-      const event = eventLine.replace('event: ', '').trim()
-      const raw = dataLine.replace('data: ', '')
-      const payload = JSON.parse(raw) as Record<string, unknown>
-      onEvent(event, payload)
-    }
-  }
 }

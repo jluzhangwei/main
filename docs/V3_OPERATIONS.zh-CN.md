@@ -128,7 +128,7 @@ curl -sS -X POST 'http://127.0.0.1:8000/v2/jobs' \
 - 审计日志
 - 命令成功率画像
 
-## 7. 并发压测脚本
+## 7. 并发压测脚本（统一 /api/runs）
 
 脚本：`backend/scripts/v2_stress_jobs.py`
 
@@ -148,7 +148,11 @@ python scripts/v2_stress_jobs.py \
 - 任务状态分布
 - 平均耗时 / P50 / 最大耗时
 
-## 8. 多设备回归脚本
+说明：
+- 脚本内部已切换到统一 `/api/runs`。
+- `--mode` 现支持 `diagnosis / query / config`，同时兼容旧写法 `inspection / repair`。
+
+## 8. 多设备回归脚本（统一 /api/runs）
 
 脚本：`backend/scripts/v3_regression_runner.py`
 
@@ -160,6 +164,10 @@ python scripts/v3_regression_runner.py \
   --api-key <ADMIN_KEY> \
   --scenario scripts/scenarios/multi_device_rca.sample.json
 ```
+
+说明：
+- 场景文件优先使用 `operation_mode` 字段。
+- 为兼容旧样例，脚本仍接受 `mode=inspection/repair`，并自动映射到统一运行模式。
 
 ## 9. 审计报表导出脚本
 

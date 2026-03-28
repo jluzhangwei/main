@@ -14,7 +14,7 @@ TERMINAL = {"completed", "failed", "cancelled"}
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Simple stress runner for /v2 multi-device jobs")
+    parser = argparse.ArgumentParser(description="Simple stress runner for unified /api/runs multi-device flows")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="Backend base URL")
     parser.add_argument("--api-key", default="", help="Existing admin API key. If omitted, bootstrap one.")
     parser.add_argument("--jobs", type=int, default=20, help="Number of jobs to create")
@@ -22,7 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--create-concurrency", type=int, default=10, help="Concurrent create requests")
     parser.add_argument("--poll-interval", type=float, default=0.8, help="Polling interval seconds")
     parser.add_argument("--timeout", type=float, default=180.0, help="Global timeout seconds")
-    parser.add_argument("--mode", choices=["diagnosis", "inspection", "repair"], default="diagnosis")
+    parser.add_argument("--mode", choices=["diagnosis", "query", "config", "inspection", "repair"], default="diagnosis")
     return parser.parse_args()
 
 
@@ -45,7 +45,18 @@ def make_devices(job_idx: int, count: int) -> list[dict[str, Any]]:
     return devices
 
 
-async def create_job(
+def normalize_operation_mode(value: str) -> str:
+    raw = str(value or "").strip().lower()
+    if raw == "inspection":
+        return "query"
+    if raw == "repair":
+        return "config"
+    if raw in {"diagnosis", "query", "config"}:
+        return raw
+    return "diagnosis"
+
+
+async def create_run(
     client: httpx.AsyncClient,
     base_url: str,
     api_key: str,
@@ -54,16 +65,17 @@ async def create_job(
     mode: str,
 ) -> str:
     payload = {
-        "name": f"stress-{idx:04d}",
+        "name": f"stress-run-{idx:04d}",
         "problem": "stress run: multi device correlation",
-        "mode": mode,
+        "operation_mode": normalize_operation_mode(mode),
+        "automation_level": "assisted",
         "max_gap_seconds": 300,
         "topology_mode": "hybrid",
         "max_device_concurrency": 20,
         "devices": make_devices(idx, device_count),
     }
     resp = await client.post(
-        f"{base_url}/v2/jobs",
+        f"{base_url}/api/runs",
         headers={"X-API-Key": api_key, "Idempotency-Key": f"stress-{idx}-{int(time.time())}"},
         json=payload,
         timeout=30.0,
@@ -72,11 +84,11 @@ async def create_job(
     return str(resp.json()["id"])
 
 
-async def wait_job(
+async def wait_run(
     client: httpx.AsyncClient,
     base_url: str,
     api_key: str,
-    job_id: str,
+    run_id: str,
     poll_interval: float,
     timeout: float,
 ) -> tuple[str, float]:
@@ -85,7 +97,7 @@ async def wait_job(
     status = "queued"
     while time.perf_counter() < deadline:
         resp = await client.get(
-            f"{base_url}/v2/jobs/{job_id}",
+            f"{base_url}/api/runs/{run_id}",
             headers={"X-API-Key": api_key},
             timeout=20.0,
         )
@@ -110,30 +122,30 @@ async def main() -> int:
             api_key = await bootstrap_key(client, base_url)
             print(f"[info] Bootstrap key: {api_key}")
 
-        print(f"[info] Creating {args.jobs} jobs with concurrency={args.create_concurrency}")
+        print(f"[info] Creating {args.jobs} runs with concurrency={args.create_concurrency}")
         sem = asyncio.Semaphore(max(1, args.create_concurrency))
 
         async def create_one(i: int) -> str:
             async with sem:
-                return await create_job(client, base_url, api_key, i, args.device_count, args.mode)
+                return await create_run(client, base_url, api_key, i, args.device_count, args.mode)
 
         started = time.perf_counter()
-        job_ids = await asyncio.gather(*(create_one(i) for i in range(args.jobs)))
+        run_ids = await asyncio.gather(*(create_one(i) for i in range(args.jobs)))
         create_cost = time.perf_counter() - started
-        print(f"[info] Created {len(job_ids)} jobs in {create_cost:.2f}s")
+        print(f"[info] Created {len(run_ids)} runs in {create_cost:.2f}s")
 
         print("[info] Polling completion...")
         completed = await asyncio.gather(
             *(
-                wait_job(
+                wait_run(
                     client,
                     base_url,
                     api_key,
-                    job_id,
+                    run_id,
                     poll_interval=args.poll_interval,
                     timeout=args.timeout,
                 )
-                for job_id in job_ids
+                for run_id in run_ids
             )
         )
 
@@ -144,7 +156,7 @@ async def main() -> int:
         durations.append(seconds)
 
     print("\n=== Stress Summary ===")
-    print(f"jobs={len(job_ids)} device_count/job={args.device_count} mode={args.mode}")
+    print(f"runs={len(run_ids)} device_count/run={args.device_count} mode={normalize_operation_mode(args.mode)}")
     print(f"status_distribution={by_status}")
     if durations:
         print(f"latency_avg={statistics.mean(durations):.2f}s")

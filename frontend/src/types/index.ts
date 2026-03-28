@@ -11,25 +11,6 @@ export type SessionResponse = {
   created_at: string
 }
 
-export type SessionListItem = {
-  id: string
-  host: string
-  device_name?: string
-  protocol: DeviceProtocol
-  automation_level: AutomationLevel
-  operation_mode: OperationMode
-  status: string
-  created_at: string
-}
-
-export type SessionStopResponse = {
-  session_id: string
-  stop_requested: boolean
-  adapter_closed: boolean
-  running: boolean
-  message: string
-}
-
 export type ChatMessage = {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -350,95 +331,6 @@ export type V2JobSummary = {
   command_count: number
   pending_action_groups: number
   root_device_id?: string
-}
-
-export type V2JobListResponse = {
-  total: number
-  offset: number
-  limit: number
-  items: V2JobSummary[]
-}
-
-export type V2JobActionGroup = {
-  id: string
-  job_id: string
-  device_id: string
-  title: string
-  commands: string[]
-  rollback_commands?: string[]
-  risk_level: 'low' | 'medium' | 'high'
-  requires_approval: boolean
-  status: 'pending_approval' | 'approved' | 'rejected' | 'running' | 'succeeded' | 'failed'
-  approve_reason?: string
-  reject_reason?: string
-  approved_by?: string
-  created_at: string
-  updated_at: string
-}
-
-export type V2JobCommandResult = {
-  id: string
-  job_id: string
-  device_id: string
-  action_group_id?: string
-  step_no: number
-  title: string
-  command: string
-  effective_command?: string
-  risk_level: 'low' | 'medium' | 'high'
-  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'blocked' | 'rejected'
-  output?: string
-  error?: string
-  capability_state?: string
-  capability_reason?: string
-  constraint_source?: string
-  constraint_reason?: string
-  created_at: string
-  started_at?: string
-  completed_at?: string
-  duration_ms?: number
-}
-
-export type V2JobEvent = {
-  id: string
-  job_id: string
-  seq_no: number
-  event_type: string
-  payload: Record<string, unknown>
-  created_at: string
-}
-
-export type V2JobTimeline = {
-  job: {
-    id: string
-    name?: string
-    problem: string
-    mode: JobMode
-    status: JobStatus
-    phase: JobPhase
-    execution_policy: 'stop_on_failure' | 'continue_on_failure' | 'rollback_template'
-    devices: Array<{
-      id: string
-      host: string
-      name?: string
-      status: string
-      vendor?: string
-      platform?: string
-      software_version?: string
-      version_signature?: string
-      last_error?: string
-    }>
-    action_groups: V2JobActionGroup[]
-    command_results: V2JobCommandResult[]
-    incidents: Array<Record<string, unknown>>
-    clusters: Array<Record<string, unknown>>
-    causal_edges: Array<Record<string, unknown>>
-    rca_result?: Record<string, unknown>
-    created_at: string
-    updated_at: string
-    completed_at?: string
-  }
-  events: V2JobEvent[]
 }
 
 export type V2PermissionTemplates = {

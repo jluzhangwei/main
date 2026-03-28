@@ -14,13 +14,13 @@ pytest -q
 
 ## V2/V3 Tools
 
-### Stress test for multi-device jobs
+### Stress test for unified multi-device runs
 
 ```bash
 python scripts/v2_stress_jobs.py --base-url http://127.0.0.1:8000 --api-key <ADMIN_KEY> --jobs 30 --device-count 8
 ```
 
-### Scenario regression runner
+### Unified run scenario regression runner
 
 ```bash
 python scripts/v3_regression_runner.py \

@@ -1,7 +1,7 @@
 {
   "name": "multi-device-rca-sample",
   "problem": "前后 5 分钟内多台设备出现异常，请定位根因设备并给出传播链",
-  "mode": "diagnosis",
+  "operation_mode": "diagnosis",
   "topology_mode": "hybrid",
   "max_gap_seconds": 300,
   "max_device_concurrency": 20,

@@ -247,7 +247,7 @@ python scripts/unified_diag_client.py \
   --auto-approve
 ```
 
-## V3 压测脚本
+## 统一 Run 压测脚本
 
 ```bash
 cd backend
@@ -255,7 +255,7 @@ cd backend
 python scripts/v2_stress_jobs.py --base-url http://127.0.0.1:8000 --api-key <ADMIN_KEY> --jobs 30 --device-count 8
 ```
 
-## V3 回归脚本
+## 统一 Run 回归脚本
 
 ```bash
 cd backend
