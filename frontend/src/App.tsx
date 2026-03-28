@@ -1040,7 +1040,7 @@ function App() {
     const nextStep = sortedTraceSteps[currentIndex + 1]
     const delayMs = computeTracePlaybackDelay(currentStep, nextStep)
     tracePlaybackTimerRef.current = window.setTimeout(() => {
-      setSelectedTraceStepId(nextStep.id)
+      jumpToTraceStep(nextStep.id)
     }, delayMs)
     return () => {
       if (tracePlaybackTimerRef.current !== null) {
@@ -2691,7 +2691,7 @@ function App() {
       return
     }
     if (selectedTraceIndex < 0 || selectedTraceIndex >= sortedTraceSteps.length - 1) {
-      setSelectedTraceStepId(sortedTraceSteps[0].id)
+      jumpToTraceStep(sortedTraceSteps[0].id)
     }
     setTracePlaybackActive(true)
   }
