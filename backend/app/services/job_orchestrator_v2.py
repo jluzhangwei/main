@@ -687,25 +687,22 @@ class JobV2Orchestrator:
                     "topology_mode": job.topology_mode.value,
                 },
             )
-            self._append_trace_event(
-                job,
-                "session_control",
-                "创建多设备任务",
-                status="succeeded",
-                detail=f"devices={len(job.devices)}; mode={job.mode.value}; topology={job.topology_mode.value}",
-                detail_payload={
-                    "job_id": job.id,
-                    "device_hosts": [item.host for item in job.devices],
-                    "mode": job.mode.value,
-                    "topology_mode": job.topology_mode.value,
-                },
-            )
-            self._append_event(
+            self._append_event_with_trace(
                 job,
                 "job_created",
                 {
                     "job_id": job.id,
                     "device_count": len(job.devices),
+                    "mode": job.mode.value,
+                    "topology_mode": job.topology_mode.value,
+                },
+                step_type="session_control",
+                title="创建多设备任务",
+                status="succeeded",
+                detail=f"devices={len(job.devices)}; mode={job.mode.value}; topology={job.topology_mode.value}",
+                detail_payload={
+                    "job_id": job.id,
+                    "device_hosts": [item.host for item in job.devices],
                     "mode": job.mode.value,
                     "topology_mode": job.topology_mode.value,
                 },
@@ -770,10 +767,19 @@ class JobV2Orchestrator:
                 existing.add(key)
                 appended += 1
             job.updated_at = now_utc()
-            self._append_event(
+            self._append_event_with_trace(
                 job,
                 "topology_updated",
                 {
+                    "replace": replace,
+                    "append_count": appended,
+                    "total_edges": len(job.external_topology_edges),
+                },
+                step_type="session_control",
+                title="更新任务拓扑输入",
+                status="succeeded",
+                detail=f"replace={replace}; append_count={appended}; total_edges={len(job.external_topology_edges)}",
+                detail_payload={
                     "replace": replace,
                     "append_count": appended,
                     "total_edges": len(job.external_topology_edges),
@@ -789,12 +795,17 @@ class JobV2Orchestrator:
                 raise KeyError(job_id)
             job.rca_weights = weights
             job.updated_at = now_utc()
-            self._append_event(
+            self._append_event_with_trace(
                 job,
                 "rca_weights_updated",
                 {
                     "weights": weights.model_dump(mode="json"),
                 },
+                step_type="session_control",
+                title="更新 RCA 权重",
+                status="succeeded",
+                detail="rca_weights_updated",
+                detail_payload={"weights": weights.model_dump(mode="json")},
             )
             self._save_state()
             return self._job_summary(job)
@@ -811,10 +822,18 @@ class JobV2Orchestrator:
                 job.error = (reason or "").strip() or None
                 job.completed_at = now_utc()
                 job.updated_at = now_utc()
-                self._append_event(
+                self._append_event_with_trace(
                     job,
                     "job_cancelled",
                     {
+                        "reason": reason,
+                        "actor": actor_name,
+                    },
+                    step_type="session_control",
+                    title="多设备任务已取消",
+                    status="stopped",
+                    detail=str(reason or actor_name or "cancelled")[:280],
+                    detail_payload={
                         "reason": reason,
                         "actor": actor_name,
                     },
@@ -1165,16 +1184,17 @@ class JobV2Orchestrator:
                 return
             device.status = "collecting"
             device.last_error = None
-            self._append_trace_event(
+            self._append_event_with_trace(
                 job,
-                "session_control",
-                f"[{device.host}] 开始设备采集",
+                "device_collect_started",
+                {"device_id": device.id, "host": device.host},
+                step_type="session_control",
+                title=f"[{device.host}] 开始设备采集",
                 status="running",
                 detail="phase=collect",
                 detail_payload={"device": self._job_device_trace_record(device), "phase": "collect"},
                 device=device,
             )
-            self._append_event(job, "device_collect_started", {"device_id": device.id, "host": device.host})
             self._save_state()
 
         try:
@@ -1208,16 +1228,19 @@ class JobV2Orchestrator:
                 if device:
                     device.status = "collected"
                     device.last_error = None
-                    self._append_trace_event(
+                    self._append_event_with_trace(
                         job,
-                        "session_control",
-                        f"[{device.host}] 设备采集完成",
+                        "device_collect_completed",
+                        {"device_id": device_id},
+                        step_type="session_control",
+                        title=f"[{device.host}] 设备采集完成",
                         status="succeeded",
                         detail="phase=collect",
                         detail_payload={"device": self._job_device_trace_record(device), "phase": "collect"},
                         device=device,
                     )
-                self._append_event(job, "device_collect_completed", {"device_id": device_id})
+                else:
+                    self._append_event(job, "device_collect_completed", {"device_id": device_id})
                 self._save_state()
         except Exception as exc:
             async with self._state_lock:
@@ -1226,10 +1249,12 @@ class JobV2Orchestrator:
                 if device:
                     device.status = "failed"
                     device.last_error = str(exc)
-                    self._append_trace_event(
+                    self._append_event_with_trace(
                         job,
-                        "session_control",
-                        f"[{device.host}] 设备采集失败",
+                        "device_collect_failed",
+                        {"device_id": device_id, "error": str(exc)[:260]},
+                        step_type="session_control",
+                        title=f"[{device.host}] 设备采集失败",
                         status="failed",
                         detail=str(exc)[:280],
                         detail_payload={
@@ -1239,7 +1264,8 @@ class JobV2Orchestrator:
                         },
                         device=device,
                     )
-                self._append_event(job, "device_collect_failed", {"device_id": device_id, "error": str(exc)[:260]})
+                else:
+                    self._append_event(job, "device_collect_failed", {"device_id": device_id, "error": str(exc)[:260]})
                 self._save_state()
 
     def _baseline_collect_commands(self) -> list[tuple[str, str]]:
@@ -2247,7 +2273,7 @@ class JobV2Orchestrator:
                 reason_text=(command.error or "auto learned from retry-success")[:300],
             )
             if learned is not None:
-                self._append_event(
+                self._append_event_with_trace(
                     job,
                     "capability_decision",
                     {
@@ -2259,6 +2285,21 @@ class JobV2Orchestrator:
                         "from": command.command,
                         "to": retry_to,
                     },
+                    step_type="capability_decision",
+                    title="命令能力学习更新（改写）",
+                    status="succeeded",
+                    detail=f"decision=learned_update; action=rewrite; from={command.command}; to={retry_to}",
+                    detail_payload={
+                        "decision": "learned_update",
+                        "action": "rewrite",
+                        "rule_id": learned.id,
+                        "from": command.command,
+                        "to": retry_to,
+                        "device": self._job_device_trace_record(device),
+                        "command": self._job_command_trace_record(command, include_output=False),
+                    },
+                    command=command,
+                    device=device,
                 )
             return
 
@@ -2273,7 +2314,7 @@ class JobV2Orchestrator:
                 reason_text=(command.error or "auto learned from syntax failure")[:300],
             )
             if learned is not None:
-                self._append_event(
+                self._append_event_with_trace(
                     job,
                     "capability_decision",
                     {
@@ -2284,6 +2325,19 @@ class JobV2Orchestrator:
                         "rule_id": learned.id,
                         "command": command.command,
                     },
+                    step_type="capability_decision",
+                    title="命令能力学习更新（阻断）",
+                    status="succeeded",
+                    detail=f"decision=learned_update; action=block; command={command.command}",
+                    detail_payload={
+                        "decision": "learned_update",
+                        "action": "block",
+                        "rule_id": learned.id,
+                        "command": self._job_command_trace_record(command, include_output=False),
+                        "device": self._job_device_trace_record(device),
+                    },
+                    command=command,
+                    device=device,
                 )
 
     def _apply_incidents_from_evidence(self, job: Job, device: JobDevice, evidence: JobEvidence) -> None:
@@ -3094,6 +3148,24 @@ class JobV2Orchestrator:
 
             job.updated_at = now_utc()
             representative = job.devices[0] if job.devices else None
+            self._append_event_with_trace(
+                job,
+                "llm_rca_refined",
+                {
+                    "root_device_id": job.rca_result.root_device_id,
+                    "confidence": job.rca_result.confidence,
+                    "summary": summary_text[:220],
+                },
+                step_type="llm_response",
+                title="AI RCA 精炼回复",
+                status="succeeded",
+                detail=summary_text[:220],
+                detail_payload={
+                    "ai_response_parsed": parsed,
+                    "final_summary": job.rca_result.model_dump(mode="json"),
+                },
+                device=representative,
+            )
             self._append_trace_event(
                 job,
                 "llm_final",
@@ -3105,15 +3177,6 @@ class JobV2Orchestrator:
                     "ai_response_parsed": parsed,
                 },
                 device=representative,
-            )
-            self._append_event(
-                job,
-                "llm_rca_refined",
-                {
-                    "root_device_id": job.rca_result.root_device_id,
-                    "confidence": job.rca_result.confidence,
-                    "summary": summary_text[:220],
-                },
             )
             self._save_state()
 

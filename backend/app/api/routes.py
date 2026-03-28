@@ -570,6 +570,51 @@ async def post_run_message_api(
     return StreamingResponse(generator, media_type="text/event-stream")
 
 
+@router_api.patch("/runs/{run_id}", response_model=RunResponse)
+async def patch_run_api(
+    run_id: str,
+    req: SessionUpdateRequest,
+    actor: ApiKeyRecord = Depends(require_v2_permission("job.write")),
+) -> RunResponse:
+    kind, source_id = _parse_unified_run_id(run_id)
+    if kind != RunKind.single:
+        raise HTTPException(status_code=409, detail="run patch currently supports single-device runs only")
+    if source_id not in store.sessions:
+        raise HTTPException(status_code=404, detail="Run not found")
+    store.update_session_automation(source_id, req.automation_level)
+    payload = await get_unified_runs_service().get_run(run_id)
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="run.update",
+        resource=f"run:{run_id}",
+        status="ok",
+        detail=f"automation_level={req.automation_level.value}",
+    )
+    return payload
+
+
+@router_api.patch("/runs/{run_id}/credentials", response_model=RunResponse)
+async def patch_run_credentials_api(
+    run_id: str,
+    req: SessionCredentialUpdateRequest,
+    actor: ApiKeyRecord = Depends(require_v2_permission("job.write")),
+) -> RunResponse:
+    kind, source_id = _parse_unified_run_id(run_id)
+    if kind != RunKind.single:
+        raise HTTPException(status_code=409, detail="run credential patch currently supports single-device runs only")
+    if source_id not in store.sessions:
+        raise HTTPException(status_code=404, detail="Run not found")
+    store.update_session_credentials(source_id, req)
+    payload = await get_unified_runs_service().get_run(run_id)
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="run.credentials.update",
+        resource=f"run:{run_id}",
+        status="ok",
+    )
+    return payload
+
+
 @router_api.get("/runs", response_model=RunListResponse)
 async def list_runs_api(
     kind: RunKind | None = Query(default=None),

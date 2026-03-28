@@ -211,6 +211,53 @@ def test_api_runs_single_message_stream_uses_unified_run_endpoint():
     assert run.json()["status"] == "waiting_approval"
 
 
+def test_api_runs_single_patch_automation_and_credentials():
+    created = client.post(
+        "/api/runs",
+        json={
+            "automation_level": "assisted",
+            "operation_mode": "diagnosis",
+            "devices": [
+                {
+                    "host": "192.168.0.88",
+                    "protocol": "ssh",
+                    "vendor": "huawei_like",
+                }
+            ],
+        },
+        headers=_internal(),
+    )
+    assert created.status_code == 200, created.text
+    run_id = created.json()["id"]
+    session_id = created.json()["source_id"]
+
+    patched = client.patch(
+        f"/api/runs/{run_id}",
+        json={"automation_level": "full_auto"},
+        headers=_internal(),
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["automation_level"] == "full_auto"
+
+    creds = client.patch(
+        f"/api/runs/{run_id}/credentials",
+        json={
+            "username": "tester",
+            "password": "secret",
+            "jump_host": "10.0.0.1",
+            "jump_username": "jumper",
+        },
+        headers=_internal(),
+    )
+    assert creds.status_code == 200, creds.text
+    session = routes.store.get_session(session_id)
+    assert session.automation_level.value == "full_auto"
+    assert session.device.username == "tester"
+    assert session.device.password == "secret"
+    assert session.device.jump_host == "10.0.0.1"
+    assert session.device.jump_username == "jumper"
+
+
 def test_api_runs_multi_create_list_and_timeline():
     payload = {
         "problem": "查一下两台设备的关联异常",
@@ -260,10 +307,16 @@ def test_api_runs_trace_export_and_sop_library():
     )
     assert created.status_code == 200, created.text
     run_id = created.json()["id"]
+    _wait_run_status(run_id, {"completed", "failed", "cancelled"})
 
     trace = client.get(f"/api/runs/{run_id}/trace", headers=_internal())
     assert trace.status_code == 200, trace.text
-    assert "steps" in trace.json()
+    trace_payload = trace.json()
+    assert "steps" in trace_payload
+    steps = trace_payload["steps"]
+    titles = [str(step.get("title", "")) for step in steps]
+    assert any("开始设备采集" in title for title in titles)
+    assert any(str(step.get("id", "")).find(":evt:") >= 0 and "创建多设备任务" in str(step.get("title", "")) for step in steps)
 
     exported = client.post(f"/api/runs/{run_id}/export", json={"format": "markdown"}, headers=_internal())
     assert exported.status_code == 200, exported.text

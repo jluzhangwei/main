@@ -206,6 +206,22 @@ export async function updateSessionAutomation(sessionId: string, automationLevel
   return res.json()
 }
 
+export async function updateRunAutomation(apiKey: string, runId: string, automationLevel: AutomationLevel): Promise<SessionResponse> {
+  const res = await fetch(apiUrl(`/api/runs/${runId}`), {
+    method: 'PATCH',
+    headers: v2Headers(apiKey),
+    body: JSON.stringify({ automation_level: automationLevel }),
+  })
+  const payload = await parseJsonResponse<RunSummary>(res, 'Failed to update run automation level')
+  return {
+    id: payload.source_id,
+    automation_level: payload.automation_level,
+    operation_mode: payload.operation_mode,
+    status: payload.status === 'cancelled' ? 'closed' : payload.status === 'open' || payload.status === 'running' || payload.status === 'waiting_approval' ? 'open' : 'closed',
+    created_at: payload.created_at,
+  }
+}
+
 export async function updateSessionCredentials(
   sessionId: string,
   payload: {
@@ -227,6 +243,34 @@ export async function updateSessionCredentials(
     throw new Error('Failed to update session credentials')
   }
   return res.json()
+}
+
+export async function updateRunCredentials(
+  apiKey: string,
+  runId: string,
+  payload: {
+    username?: string
+    password?: string
+    jump_host?: string
+    jump_port?: number
+    jump_username?: string
+    jump_password?: string
+    api_token?: string
+  },
+): Promise<SessionResponse> {
+  const res = await fetch(apiUrl(`/api/runs/${runId}/credentials`), {
+    method: 'PATCH',
+    headers: v2Headers(apiKey),
+    body: JSON.stringify(payload),
+  })
+  const run = await parseJsonResponse<RunSummary>(res, 'Failed to update run credentials')
+  return {
+    id: run.source_id,
+    automation_level: run.automation_level,
+    operation_mode: run.operation_mode,
+    status: run.status === 'cancelled' ? 'closed' : run.status === 'open' || run.status === 'running' || run.status === 'waiting_approval' ? 'open' : 'closed',
+    created_at: run.created_at,
+  }
 }
 
 export async function confirmCommand(sessionId: string, commandId: string, approved: boolean): Promise<void> {

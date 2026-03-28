@@ -34,8 +34,8 @@ import {
   v2UpdateApiKey,
   updateCommandPolicy,
   updateRiskPolicy,
-  updateSessionCredentials,
-  updateSessionAutomation,
+  updateRunCredentials,
+  updateRunAutomation,
   resetCommandCapability,
 } from './api/client'
 import type {
@@ -1088,7 +1088,7 @@ function App() {
 
     const syncAutomation = async () => {
       try {
-        const updated = await updateSessionAutomation(session.id, automationLevel)
+        const updated = await updateRunAutomation(resolveV3ApiKey(), toUnifiedSingleRunId(session.id), automationLevel)
         if (canceled) return
         setSession(updated)
         antMessage.success(`命令执行控制等级已切换为 ${automationLabel(updated.automation_level)}`)
@@ -2302,7 +2302,7 @@ function App() {
           || cached.api_token)
       ) {
         try {
-          await updateSessionCredentials(sessionId, {
+          await updateRunCredentials(resolveV3ApiKey(), toUnifiedSingleRunId(sessionId), {
             username: cached.username,
             password: cached.password,
             jump_host: cached.jump_host,
