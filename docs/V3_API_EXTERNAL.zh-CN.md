@@ -1,6 +1,12 @@
-# V3 对外 API 接入说明（/v2）
+# V3 对外 API 接入说明（统一 `/api/runs`）
 
 本文档用于外部系统将 NetOps AI 作为能力服务接入。
+
+说明：
+
+- 新接入统一使用 `/api/runs`
+- `/v1`、`/v2` 仍保留，但属于兼容接口
+- API Key 生命周期与权限模板当前仍通过 `/v2/keys`、`/v2/security/permission-templates` 管理
 
 ## 1. 鉴权
 
@@ -10,27 +16,28 @@
 
 ## 2. 核心流程
 
-1. 创建任务：`POST /v2/jobs`
-2. 轮询状态：`GET /v2/jobs/{jobId}` 或 `GET /v2/jobs/query`
-3. 订阅事件：`GET /v2/jobs/{jobId}/events?from_seq=0`（SSE）
-4. 审批命令组（repair 模式）：
-   - 单组：`/approve`、`/reject`
-   - 批量：`/approve-batch`、`/reject-batch`
-5. 拉取结果：`GET /v2/jobs/{jobId}/timeline` / `GET /v2/jobs/{jobId}/report`
+1. 创建运行：`POST /api/runs`
+2. 轮询状态：`GET /api/runs/{runId}` 或 `GET /api/runs`
+3. 订阅事件：`GET /api/runs/{runId}/events?from_seq=0`（SSE）
+4. 审批命令批次 / 命令组：
+   - 通过：`POST /api/runs/{runId}/actions/approve`
+   - 拒绝：`POST /api/runs/{runId}/actions/reject`
+5. 拉取结果：`GET /api/runs/{runId}/timeline` / `GET /api/runs/{runId}/report`
 
 ## 3. 请求示例
 
-### 3.1 创建任务
+### 3.1 创建运行
 
 ```bash
-curl -sS -X POST 'http://127.0.0.1:8000/v2/jobs' \
+curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \
   -H 'X-API-Key: <KEY>' \
   -H 'Idempotency-Key: ext-job-001' \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "external-call-demo",
     "problem": "多设备异常关联分析",
-    "mode": "diagnosis",
+    "operation_mode": "diagnosis",
+    "automation_level": "assisted",
     "topology_mode": "hybrid",
     "max_gap_seconds": 300,
     "max_device_concurrency": 20,
@@ -41,13 +48,13 @@ curl -sS -X POST 'http://127.0.0.1:8000/v2/jobs' \
   }'
 ```
 
-### 3.2 批量审批
+### 3.2 批量审批 / 统一审批
 
 ```bash
-curl -sS -X POST 'http://127.0.0.1:8000/v2/jobs/<JOB_ID>/actions/approve-batch' \
+curl -sS -X POST 'http://127.0.0.1:8000/api/runs/<RUN_ID>/actions/approve' \
   -H 'X-API-Key: <KEY>' \
   -H 'Content-Type: application/json' \
-  -d '{"action_group_ids":["<GROUP_ID_1>","<GROUP_ID_2>"],"reason":"approved by ticket #123"}'
+  -d '{"item_ids":["<ITEM_ID_1>","<ITEM_ID_2>"],"reason":"approved by ticket #123"}'
 ```
 
 ## 4. 错误码约定
@@ -82,7 +89,8 @@ KEY = "<API_KEY>"
 
 payload = {
     "problem": "请定位多设备根因",
-    "mode": "diagnosis",
+    "operation_mode": "diagnosis",
+    "automation_level": "assisted",
     "devices": [
         {"host": "192.168.0.88", "protocol": "ssh", "username": "zhangwei", "password": "Huawei@123"},
         {"host": "192.168.0.102", "protocol": "ssh", "username": "zhangwei", "password": "Admin@123"},
@@ -90,22 +98,22 @@ payload = {
 }
 
 with httpx.Client() as c:
-    r = c.post(f"{BASE}/v2/jobs", headers={"X-API-Key": KEY}, json=payload)
+    r = c.post(f"{BASE}/api/runs", headers={"X-API-Key": KEY}, json=payload)
     r.raise_for_status()
-    job_id = r.json()["id"]
+    run_id = r.json()["id"]
 
     while True:
-        s = c.get(f"{BASE}/v2/jobs/{job_id}", headers={"X-API-Key": KEY}).json()
+        s = c.get(f"{BASE}/api/runs/{run_id}", headers={"X-API-Key": KEY}).json()
         if s["status"] in {"completed", "failed", "cancelled"}:
             break
         time.sleep(1)
 
     report = c.get(
-        f"{BASE}/v2/jobs/{job_id}/report",
+        f"{BASE}/api/runs/{run_id}/report",
         headers={"X-API-Key": KEY},
         params={"format": "json"},
     ).json()
-    print(report["job"]["rca_result"])
+    print(report.get("summary"))
 ```
 
 ## 7. JavaScript SDK 示例（轻量）
@@ -115,7 +123,7 @@ const BASE = 'http://127.0.0.1:8000'
 const KEY = '<API_KEY>'
 
 async function runJob() {
-  const create = await fetch(`${BASE}/v2/jobs`, {
+  const create = await fetch(`${BASE}/api/runs`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -124,7 +132,8 @@ async function runJob() {
     },
     body: JSON.stringify({
       problem: '请定位多设备根因',
-      mode: 'diagnosis',
+      operation_mode: 'diagnosis',
+      automation_level: 'assisted',
       devices: [
         { host: '192.168.0.88', protocol: 'ssh', username: 'zhangwei', password: 'Huawei@123' },
         { host: '192.168.0.102', protocol: 'ssh', username: 'zhangwei', password: 'Admin@123' },
@@ -132,18 +141,18 @@ async function runJob() {
     }),
   })
   const created = await create.json()
-  const jobId = created.id
+  const runId = created.id
 
   while (true) {
-    const resp = await fetch(`${BASE}/v2/jobs/${jobId}`, { headers: { 'X-API-Key': KEY } })
-    const job = await resp.json()
-    if (['completed', 'failed', 'cancelled'].includes(job.status)) break
+    const resp = await fetch(`${BASE}/api/runs/${runId}`, { headers: { 'X-API-Key': KEY } })
+    const run = await resp.json()
+    if (['completed', 'failed', 'cancelled'].includes(run.status)) break
     await new Promise((r) => setTimeout(r, 1000))
   }
 
-  const timelineResp = await fetch(`${BASE}/v2/jobs/${jobId}/timeline`, { headers: { 'X-API-Key': KEY } })
+  const timelineResp = await fetch(`${BASE}/api/runs/${runId}/timeline`, { headers: { 'X-API-Key': KEY } })
   const timeline = await timelineResp.json()
-  console.log(timeline.job.rca_result)
+  console.log(timeline.summary)
 }
 
 runJob().catch(console.error)
@@ -152,7 +161,7 @@ runJob().catch(console.error)
 ## 8. 生产接入建议
 
 - 所有创建请求带 `Idempotency-Key`。
-- `repair` 模式必须引入审批链，不建议直连自动执行。
-- 外部系统保存 `jobId` 与 `Idempotency-Key` 的映射，避免重复任务。
+- `config` / 高风险执行场景必须引入审批链，不建议直连自动执行。
+- 外部系统保存 `runId` 与 `Idempotency-Key` 的映射，避免重复运行。
 - 对 `audit/report` 做定时归档。
 - 尽量使用跳板机与最小权限设备账号。

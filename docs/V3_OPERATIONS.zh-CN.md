@@ -1,6 +1,12 @@
-# NetOps AI V3 运维说明（多设备任务编排）
+# NetOps AI V3 运维说明（多设备协同与兼容运维）
 
-本文档描述 `/v2` 多设备任务能力、权限模型、审批流程与压测方法。
+本文档描述多设备协同能力、权限模型、审批流程与压测方法。
+
+当前约定：
+
+- 对外新接入优先使用统一 `/api/runs`
+- `/v2` 仍保留，主要承担 API Key、安全、审计与兼容任务接口
+- 本文档中的 `/v2` 示例更多用于运维管理与兼容调用
 
 ## 1. 能力总览
 
@@ -20,7 +26,7 @@
 - `policy.write`：管理 API Key
 - `audit.read`：读取审计日志与报表
 
-说明：内置 Web UI 默认可使用受信任通道调用 `/v2`（无需手工输入 API Key）；第三方系统接入建议始终使用 API Key。
+说明：内置 Web UI 默认可使用受信任通道调用兼容管理接口（无需手工输入 API Key）；第三方系统接入建议始终使用 API Key，并优先走 `/api/runs`。
 
 ## 3. API Key 生命周期
 
@@ -41,6 +47,19 @@ curl -sS -X POST 'http://127.0.0.1:8000/v2/keys' \
 - 删除：`DELETE /v2/keys/{id}`
 
 ## 4. 多设备任务 API
+
+### 4.0 推荐统一入口
+
+- 创建运行：`POST /api/runs`
+- 查询运行：`GET /api/runs/{runId}`
+- 订阅事件：`GET /api/runs/{runId}/events`
+- 审批：`POST /api/runs/{runId}/actions/approve|reject`
+- 获取时间线/报告：`GET /api/runs/{runId}/timeline` / `GET /api/runs/{runId}/report`
+
+说明：
+
+- 当 `devices > 1` 时，统一入口会自动落到多设备协同能力
+- `/v2/jobs/*` 主要用于兼容脚本、管理与细粒度运维接口
 
 ### 4.1 创建任务
 

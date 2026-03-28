@@ -71,6 +71,13 @@ docker compose up --build
 - `POST /api/runs/{runId}/messages` 当前用于单设备 Run 的后续对话。
 - `/v1` 与 `/v2` 继续保留，但定位为兼容接口，不再推荐作为新的第三方接入入口。
 
+### 收尾状态（当前维护约定）
+
+- 前端主工作台主链已统一到 `/api/runs`
+- `timeline / trace / export / events` 已统一走 unified run service
+- `/v1`、`/v2` 继续保留，但主要用于兼容已有脚本、测试与管理接口
+- 历史旧任务若当时未写入原生 trace，仍会走有限的 legacy 映射；新任务/新会话优先使用原生 trace
+
 ### v1（兼容接口）
 
 - `POST /v1/sessions`
