@@ -467,6 +467,7 @@ class ConversationOrchestrator:
                 session_id=session_id,
                 problem=user_content,
                 vendor=session.device.vendor,
+                version_signature=session.device.version_signature,
             )
 
         for iteration in range(1, self.max_autonomous_steps + 1):
@@ -590,7 +591,7 @@ class ConversationOrchestrator:
                 detail=f"decision={str(plan.get('decision', ''))}",
                 detail_payload=self._build_llm_response_payload(plan_debug, plan),
             )
-            referenced_sops = self._referenced_sops_from_plan(plan)
+            referenced_sops = self._referenced_sops_from_plan(plan, run_key=session_id)
             self._trace_finish(
                 llm_trace,
                 status="succeeded",
@@ -637,6 +638,14 @@ class ConversationOrchestrator:
                 summary = self._summary_from_plan(session_id, plan, preferred_mode=preferred_mode)
                 if summary:
                     self.store.set_summary(summary)
+                    if self.sop_archive.record_outcome(session_id, success=True):
+                        self._trace_decision(
+                            session_id=session_id,
+                            step_type="sop_reference_outcome",
+                            title="SOP 引用结果",
+                            detail="success",
+                            status="succeeded",
+                        )
                     self._trace_decision(
                         session_id=session_id,
                         step_type="llm_final",
@@ -645,6 +654,7 @@ class ConversationOrchestrator:
                         status="succeeded",
                     )
                 else:
+                    self.sop_archive.record_outcome(session_id, success=False)
                     self._trace_decision(
                         session_id=session_id,
                         step_type="llm_final",
@@ -2254,11 +2264,30 @@ class ConversationOrchestrator:
             },
         )
 
-    def _append_sop_context_to_ai_context(self, *, session_id: str, problem: str, vendor: str | None) -> None:
-        sop_text = self.sop_archive.prompt_context(problem, vendor=vendor)
+    def _append_sop_context_to_ai_context(
+        self,
+        *,
+        session_id: str,
+        problem: str,
+        vendor: str | None,
+        version_signature: str | None = None,
+    ) -> None:
+        sop_text = self.sop_archive.prompt_context(
+            problem,
+            vendor=vendor,
+            version_signature=version_signature,
+            run_key=session_id,
+        )
         if not sop_text:
             return
         self.store.append_ai_context(session_id, "user", sop_text)
+        self._trace_decision(
+            session_id=session_id,
+            step_type="sop_candidates_generated",
+            title="SOP 候选已生成",
+            detail="published_sop_candidates",
+            status="succeeded",
+        )
         self._trace_ai_context_submission(
             session_id=session_id,
             title="系统提交上下文（SOP档案候选）",
@@ -2268,6 +2297,7 @@ class ConversationOrchestrator:
             extra_payload={
                 "problem": self._sanitize_for_llm(problem)[:1200],
                 "vendor": str(vendor or "").strip(),
+                "version_signature": str(version_signature or "").strip(),
             },
         )
 
@@ -2467,9 +2497,11 @@ class ConversationOrchestrator:
             }
         )
 
-    def _referenced_sops_from_plan(self, plan: dict[str, Any] | None) -> list[dict[str, Any]]:
+    def _referenced_sops_from_plan(self, plan: dict[str, Any] | None, *, run_key: str | None = None) -> list[dict[str, Any]]:
         if not isinstance(plan, dict):
             return []
+        sop_refs = plan.get("sop_refs")
+        refs = [str(item).strip() for item in sop_refs] if isinstance(sop_refs, list) else []
         reference_text = " ".join(
             part.strip()
             for part in (
@@ -2478,7 +2510,7 @@ class ConversationOrchestrator:
             )
             if part and str(part).strip()
         )
-        matches = self.sop_archive.referenced_entries(reference_text)
+        matches = self.sop_archive.referenced_entries(reference_text, refs=refs, run_key=run_key)
         return [item.model_dump(mode="json") for item in matches]
 
     def _trace_sop_reference(
@@ -2495,13 +2527,16 @@ class ConversationOrchestrator:
         names = [item for item in names if item]
         self._trace_decision(
             session_id=session_id,
-            step_type="scope_decision",
+            step_type="sop_referenced_by_ai",
             title=f"AI 引用 SOP 档案（第 {iteration} 轮）",
             detail=" ; ".join(names)[:280] or "referenced_sop_archive",
             detail_payload=self._compact_trace_payload(
                 {
                     "iteration": iteration,
                     "referenced_sops": referenced_sops,
+                    "sop_refs": plan.get("sop_refs") if isinstance(plan.get("sop_refs"), list) else [],
+                    "why_use_this_sop": str(plan.get("why_use_this_sop", "") or ""),
+                    "evidence_goal": str(plan.get("evidence_goal", "") or ""),
                     "plan_title": str(plan.get("title", "") or ""),
                     "plan_reason": str(plan.get("reason", "") or ""),
                 }

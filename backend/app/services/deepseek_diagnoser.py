@@ -39,6 +39,8 @@ ACTION_MARKER_RULES = (
     "若任务已闭环且无需继续动作，follow_up_action或recommendation必须包含以下词之一：已完成、无需。"
 )
 
+SOP_EXTRACTION_PROMPT_VERSION = "sop-extract-v1"
+
 MINIMAL_CHANGE_RULES = (
     "变更执行遵循通用“最小必要变更”原则："
     "优先闭环当前会话目标与已确认根因，不做机会性扩展修复。"
@@ -89,7 +91,7 @@ NEXT_STEP_SYSTEM_PROMPT_WITH_HISTORY = (
     "你无法访问其他会话，禁止引用其他会话的信息。"
     "你的任务是决定下一步动作。"
     "只输出JSON对象。"
-    "字段: decision, title, command, commands, reason, mode, query_result, follow_up_action, root_cause, impact_scope, recommendation, confidence, evidence_refs。"
+    "字段: decision, title, command, commands, reason, sop_refs, why_use_this_sop, evidence_goal, mode, query_result, follow_up_action, root_cause, impact_scope, recommendation, confidence, evidence_refs。"
     "decision只能是run_command或final。"
     "run_command时优先使用commands（数组，最多5条）；仅在确实只有单条且无需分组时才使用command。"
     "commands每项可为字符串，或对象{title, command}。"
@@ -116,7 +118,7 @@ NEXT_STEP_SYSTEM_PROMPT = (
     "任务是基于用户问题和已有证据，决定下一步动作。"
     "你可以自由决定诊断路径，不使用固定剧本。"
     "只输出JSON对象。"
-    "字段: decision, title, command, commands, reason, mode, query_result, follow_up_action, root_cause, impact_scope, recommendation, confidence, evidence_refs。"
+    "字段: decision, title, command, commands, reason, sop_refs, why_use_this_sop, evidence_goal, mode, query_result, follow_up_action, root_cause, impact_scope, recommendation, confidence, evidence_refs。"
     "decision只能是run_command或final。"
     "当decision为run_command时，优先使用commands（数组，最多5条）；仅在确实只有单条且无需分组时才使用command。优先只读排查命令。"
     "commands每项可为字符串，或对象{title, command}。"
@@ -159,6 +161,22 @@ REWRITE_SYSTEM_PROMPT = (
     "你是网络诊断改写器。"
     "只依据证据，修正不被支持的结论。"
     "只输出JSON对象。"
+)
+
+SOP_EXTRACTION_SYSTEM_PROMPT = (
+    "你是网络故障知识库提炼器。"
+    "任务是从一次真实诊断会话中提炼可复用的SOP草稿。"
+    "目标不是复述会话，而是抽取未来可复用的方法。"
+    "严格依据输入证据，不得编造未出现的对象、命令或结论。"
+    "只输出JSON对象。"
+    "字段必须是: name, summary, usage_hint, trigger_keywords, vendor_tags, version_signatures, preconditions, anti_conditions, evidence_goals, command_templates, fallback_commands, expected_findings, review_notes。"
+    "command_templates必须是数组，每项结构为{vendor, commands}。"
+    "trigger_keywords应面向未来检索，不要只是抄用户原句。"
+    "preconditions描述适用前提；anti_conditions描述不应调用该SOP的条件。"
+    "evidence_goals描述该SOP期望验证到的关键信号。"
+    "command_templates只保留真正有复用价值的最小必要命令组，禁止收录明显试错命令。"
+    "fallback_commands是替代性简化命令；expected_findings是调用后期望观察到的现象。"
+    "review_notes要明确指出人工审核时需要重点留意什么。"
 )
 
 
@@ -536,6 +554,21 @@ class DeepSeekDiagnoser:
         parsed["decision"] = decision
         debug["parsed_response"] = parsed
         return parsed, debug
+
+    async def extract_sop_draft(
+        self,
+        *,
+        run_payload: dict[str, Any],
+    ) -> Optional[dict[str, Any]]:
+        if not self.enabled:
+            return None
+        content = await self._chat_completion(
+            system_prompt=SOP_EXTRACTION_SYSTEM_PROMPT,
+            user_payload=run_payload,
+        )
+        if not content:
+            return None
+        return self._parse_json_object(content)
 
     def _build_payload(
         self,

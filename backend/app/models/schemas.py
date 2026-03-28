@@ -294,17 +294,135 @@ class SOPArchiveCommandTemplate(BaseModel):
 
 class SOPArchiveEntryResponse(BaseModel):
     id: str
+    status: Optional[str] = None
     name: str
     summary: str
     usage_hint: str
     trigger_keywords: list[str] = Field(default_factory=list)
+    vendor_tags: list[str] = Field(default_factory=list)
+    version_signatures: list[str] = Field(default_factory=list)
+    preconditions: list[str] = Field(default_factory=list)
+    anti_conditions: list[str] = Field(default_factory=list)
+    evidence_goals: list[str] = Field(default_factory=list)
     command_templates: list[SOPArchiveCommandTemplate] = Field(default_factory=list)
+    fallback_commands: list[str] = Field(default_factory=list)
+    expected_findings: list[str] = Field(default_factory=list)
+    source_run_ids: list[str] = Field(default_factory=list)
+    version: int = 1
+    matched_count: int = 0
+    referenced_count: int = 0
+    success_count: int = 0
+    review_notes: Optional[str] = None
+    generated_by_model: Optional[str] = None
+    generated_by_prompt_version: Optional[str] = None
+    published_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 class SOPArchiveResponse(BaseModel):
     total: int
     matched: list[SOPArchiveEntryResponse] = Field(default_factory=list)
     items: list[SOPArchiveEntryResponse] = Field(default_factory=list)
+
+
+class SOPStatus(str, Enum):
+    draft = "draft"
+    published = "published"
+    archived = "archived"
+
+
+class SOPRecord(BaseModel):
+    id: str = Field(default_factory=make_id)
+    version: int = 1
+    status: SOPStatus = SOPStatus.draft
+    name: str
+    summary: str
+    usage_hint: str
+    trigger_keywords: list[str] = Field(default_factory=list)
+    vendor_tags: list[str] = Field(default_factory=list)
+    version_signatures: list[str] = Field(default_factory=list)
+    preconditions: list[str] = Field(default_factory=list)
+    anti_conditions: list[str] = Field(default_factory=list)
+    evidence_goals: list[str] = Field(default_factory=list)
+    command_templates: list[SOPArchiveCommandTemplate] = Field(default_factory=list)
+    fallback_commands: list[str] = Field(default_factory=list)
+    expected_findings: list[str] = Field(default_factory=list)
+    source_run_ids: list[str] = Field(default_factory=list)
+    generated_by_model: Optional[str] = None
+    generated_by_prompt_version: Optional[str] = None
+    review_notes: Optional[str] = None
+    matched_count: int = 0
+    referenced_count: int = 0
+    success_count: int = 0
+    last_matched_at: Optional[datetime] = None
+    last_referenced_at: Optional[datetime] = None
+    last_success_at: Optional[datetime] = None
+    published_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=now_utc)
+    updated_at: datetime = Field(default_factory=now_utc)
+
+    def to_archive_response(self) -> SOPArchiveEntryResponse:
+        return SOPArchiveEntryResponse(
+            id=self.id,
+            status=self.status.value,
+            name=self.name,
+            summary=self.summary,
+            usage_hint=self.usage_hint,
+            trigger_keywords=list(self.trigger_keywords),
+            vendor_tags=list(self.vendor_tags),
+            version_signatures=list(self.version_signatures),
+            preconditions=list(self.preconditions),
+            anti_conditions=list(self.anti_conditions),
+            evidence_goals=list(self.evidence_goals),
+            command_templates=[item.model_copy(deep=True) for item in self.command_templates],
+            fallback_commands=list(self.fallback_commands),
+            expected_findings=list(self.expected_findings),
+            source_run_ids=list(self.source_run_ids),
+            version=self.version,
+            matched_count=self.matched_count,
+            referenced_count=self.referenced_count,
+            success_count=self.success_count,
+            review_notes=self.review_notes,
+            generated_by_model=self.generated_by_model,
+            generated_by_prompt_version=self.generated_by_prompt_version,
+            published_at=self.published_at,
+            updated_at=self.updated_at,
+        )
+
+
+class SOPListResponse(BaseModel):
+    total: int
+    items: list[SOPArchiveEntryResponse] = Field(default_factory=list)
+
+
+class SOPExtractFromRunRequest(BaseModel):
+    run_id: str
+    force: bool = False
+
+
+class SOPUpsertRequest(BaseModel):
+    name: str
+    summary: str
+    usage_hint: str
+    trigger_keywords: list[str] = Field(default_factory=list)
+    vendor_tags: list[str] = Field(default_factory=list)
+    version_signatures: list[str] = Field(default_factory=list)
+    preconditions: list[str] = Field(default_factory=list)
+    anti_conditions: list[str] = Field(default_factory=list)
+    evidence_goals: list[str] = Field(default_factory=list)
+    command_templates: list[SOPArchiveCommandTemplate] = Field(default_factory=list)
+    fallback_commands: list[str] = Field(default_factory=list)
+    expected_findings: list[str] = Field(default_factory=list)
+    source_run_ids: list[str] = Field(default_factory=list)
+    generated_by_model: Optional[str] = None
+    generated_by_prompt_version: Optional[str] = None
+    review_notes: Optional[str] = None
+
+
+class SOPPublishResponse(BaseModel):
+    item: SOPArchiveEntryResponse
+    previous_status: SOPStatus
+    current_status: SOPStatus
 
 
 class CommandPolicy(BaseModel):
@@ -768,6 +886,9 @@ class RunResponse(BaseModel):
     device_count: int = 1
     device_hosts: list[str] = Field(default_factory=list)
     pending_actions: int = 0
+    sop_extracted: bool = False
+    sop_draft_count: int = 0
+    sop_published_count: int = 0
 
 
 class RunListResponse(BaseModel):

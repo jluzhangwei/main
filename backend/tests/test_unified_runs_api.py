@@ -78,6 +78,25 @@ class ScriptedDiagnoser:
             "model": self.model,
         }
 
+    async def extract_sop_draft(self, *, run_payload):
+        return {
+            "name": "接口管理性关闭排查",
+            "summary": "从历史会话提炼的接口 shutdown 排查方法。",
+            "usage_hint": "仅在接口被管理性关闭或疑似 shutdown 时参考。",
+            "trigger_keywords": ["接口", "shutdown", "disable"],
+            "vendor_tags": ["arista"],
+            "version_signatures": ["veos"],
+            "preconditions": ["接口"],
+            "anti_conditions": ["物理断链"],
+            "evidence_goals": ["确认接口配置中存在 shutdown"],
+            "command_templates": [
+                {"vendor": "arista", "commands": ["show running-config interfaces", "show interfaces status"]},
+            ],
+            "fallback_commands": ["show interfaces Ethernet2"],
+            "expected_findings": ["running-config 中命中 shutdown"],
+            "review_notes": "自动提炼草稿",
+        }
+
     def prompt_strategy(self):
         return {
             "enabled": True,
@@ -327,6 +346,105 @@ def test_api_runs_trace_export_and_sop_library():
     payload = sop.json()
     assert payload["total"] >= 1
     assert any(item["id"] == "history_ospf_flap" for item in payload["matched"])
+
+
+def test_api_sop_extract_and_published_update_creates_new_draft():
+    created = client.post(
+        "/api/runs",
+        json={
+            "problem": "检查接口 Eth2 disable 问题",
+            "automation_level": "assisted",
+            "operation_mode": "diagnosis",
+            "devices": [
+                {
+                    "host": "192.168.0.102",
+                    "protocol": "ssh",
+                    "vendor": "arista_like",
+                }
+            ],
+        },
+        headers=_internal(),
+    )
+    assert created.status_code == 200, created.text
+    run_id = created.json()["id"]
+    _wait_run_status(run_id, {"completed", "waiting_approval"})
+
+    extracted = client.post(
+        "/api/sops/extract-from-run",
+        json={"run_id": run_id},
+        headers=_internal(),
+    )
+    assert extracted.status_code == 200, extracted.text
+    draft = extracted.json()
+    assert draft["status"] == "draft"
+    assert draft["source_run_ids"]
+
+    conflict = client.post(
+        "/api/sops/extract-from-run",
+        json={"run_id": run_id},
+        headers=_internal(),
+    )
+    assert conflict.status_code == 409, conflict.text
+
+    published = client.post(f"/api/sops/{draft['id']}/publish", headers=_internal())
+    assert published.status_code == 200, published.text
+    published_item = published.json()["item"]
+    assert published_item["status"] == "published"
+
+    updated = client.put(
+        f"/api/sops/{draft['id']}",
+        json={
+            "name": "接口管理性关闭排查 v2",
+            "summary": "发布后编辑应生成新的草稿版本。",
+            "usage_hint": "草稿二次修订",
+            "trigger_keywords": ["接口", "shutdown"],
+            "vendor_tags": ["arista"],
+            "version_signatures": ["veos"],
+            "preconditions": ["接口"],
+            "anti_conditions": [],
+            "evidence_goals": ["确认 shutdown"],
+            "command_templates": [{"vendor": "arista", "commands": ["show running-config interfaces"]}],
+            "fallback_commands": [],
+            "expected_findings": ["命中 shutdown"],
+            "source_run_ids": published_item["source_run_ids"],
+            "review_notes": "published -> new draft",
+        },
+        headers=_internal(),
+    )
+    assert updated.status_code == 200, updated.text
+    new_draft = updated.json()
+    assert new_draft["id"] != draft["id"]
+    assert new_draft["status"] == "draft"
+    assert new_draft["version"] == published_item["version"] + 1
+
+    listed = client.get("/api/sops?status=draft", headers=_internal())
+    assert listed.status_code == 200, listed.text
+    assert any(item["id"] == new_draft["id"] for item in listed.json()["items"])
+
+
+def test_api_sop_extract_accepts_legacy_source_id():
+    created = client.post(
+        "/api/runs",
+        json={
+            "problem": "检查接口 disable 问题",
+            "automation_level": "assisted",
+            "operation_mode": "diagnosis",
+            "devices": [{"host": "192.168.0.102", "protocol": "ssh", "vendor": "arista_like"}],
+        },
+        headers=_internal(),
+    )
+    assert created.status_code == 200, created.text
+    source_id = created.json()["source_id"]
+    run_id = created.json()["id"]
+    _wait_run_status(run_id, {"completed", "waiting_approval"})
+
+    extracted = client.post(
+        "/api/sops/extract-from-run",
+        json={"run_id": source_id, "force": True},
+        headers=_internal(),
+    )
+    assert extracted.status_code == 200, extracted.text
+    assert extracted.json()["status"] == "draft"
 
 
 def test_api_runs_events_stream_for_single_and_multi():

@@ -18,6 +18,11 @@ import type {
   ServiceTrace,
   SessionResponse,
   SOPArchiveResponse,
+  SOPExtractFromRunRequest,
+  SOPListResponse,
+  SOPStatus,
+  SOPUpsertRequest,
+  SOPArchiveEntry,
   V2ApiKey,
   V2ApiKeyCreateResponse,
   V2PermissionTemplates,
@@ -445,15 +450,85 @@ export async function getSopLibrary(
   query?: {
     problem?: string
     vendor?: string
+    version_signature?: string
   },
 ): Promise<SOPArchiveResponse> {
   const params = new URLSearchParams()
   if (query?.problem) params.set('problem', query.problem)
   if (query?.vendor) params.set('vendor', query.vendor)
+  if (query?.version_signature) params.set('version_signature', query.version_signature)
   const res = await fetch(apiUrl(`/api/sop-library${params.toString() ? `?${params.toString()}` : ''}`), {
     headers: v2Headers(apiKey),
   })
   return parseJsonResponse<SOPArchiveResponse>(res, 'Failed to get SOP library')
+}
+
+export async function listSops(apiKey: string, status?: SOPStatus): Promise<SOPListResponse> {
+  const params = new URLSearchParams()
+  if (status) params.set('status', status)
+  const res = await fetch(apiUrl(`/api/sops${params.toString() ? `?${params.toString()}` : ''}`), {
+    headers: v2Headers(apiKey),
+  })
+  return parseJsonResponse<SOPListResponse>(res, 'Failed to list SOPs')
+}
+
+export async function getSop(apiKey: string, sopId: string): Promise<SOPArchiveEntry> {
+  const res = await fetch(apiUrl(`/api/sops/${sopId}`), {
+    headers: v2Headers(apiKey),
+  })
+  return parseJsonResponse<SOPArchiveEntry>(res, 'Failed to get SOP')
+}
+
+export async function extractSopFromRun(apiKey: string, payload: SOPExtractFromRunRequest): Promise<SOPArchiveEntry> {
+  const res = await fetch(apiUrl('/api/sops/extract-from-run'), {
+    method: 'POST',
+    headers: v2Headers(apiKey),
+    body: JSON.stringify(payload),
+  })
+  return parseJsonResponse<SOPArchiveEntry>(res, 'Failed to extract SOP from run')
+}
+
+export async function updateSop(apiKey: string, sopId: string, payload: SOPUpsertRequest): Promise<SOPArchiveEntry> {
+  const res = await fetch(apiUrl(`/api/sops/${sopId}`), {
+    method: 'PUT',
+    headers: v2Headers(apiKey),
+    body: JSON.stringify(payload),
+  })
+  return parseJsonResponse<SOPArchiveEntry>(res, 'Failed to update SOP')
+}
+
+export async function publishSop(apiKey: string, sopId: string): Promise<SOPArchiveEntry> {
+  const res = await fetch(apiUrl(`/api/sops/${sopId}/publish`), {
+    method: 'POST',
+    headers: v2Headers(apiKey),
+  })
+  const payload = await parseJsonResponse<{ item: SOPArchiveEntry }>(res, 'Failed to publish SOP')
+  return payload.item
+}
+
+export async function archiveSop(apiKey: string, sopId: string): Promise<SOPArchiveEntry> {
+  const res = await fetch(apiUrl(`/api/sops/${sopId}/archive`), {
+    method: 'POST',
+    headers: v2Headers(apiKey),
+  })
+  const payload = await parseJsonResponse<{ item: SOPArchiveEntry }>(res, 'Failed to archive SOP')
+  return payload.item
+}
+
+export async function reextractSop(apiKey: string, sopId: string): Promise<SOPArchiveEntry> {
+  const res = await fetch(apiUrl(`/api/sops/${sopId}/reextract`), {
+    method: 'POST',
+    headers: v2Headers(apiKey),
+  })
+  return parseJsonResponse<SOPArchiveEntry>(res, 'Failed to re-extract SOP')
+}
+
+export async function deleteSop(apiKey: string, sopId: string): Promise<void> {
+  const res = await fetch(apiUrl(`/api/sops/${sopId}`), {
+    method: 'DELETE',
+    headers: v2Headers(apiKey),
+  })
+  await parseJsonResponse<{ deleted: boolean }>(res, 'Failed to delete SOP')
 }
 
 export async function exportRunMarkdown(apiKey: string, runId: string): Promise<string> {

@@ -562,9 +562,11 @@ class JobV2Orchestrator:
             text_limit=200000,
         )
 
-    def _referenced_sops_from_plan(self, plan: dict[str, Any] | None) -> list[dict[str, Any]]:
+    def _referenced_sops_from_plan(self, plan: dict[str, Any] | None, *, run_key: str | None = None) -> list[dict[str, Any]]:
         if not isinstance(plan, dict):
             return []
+        sop_refs = plan.get("sop_refs")
+        refs = [str(item).strip() for item in sop_refs] if isinstance(sop_refs, list) else []
         reference_text = " ".join(
             part.strip()
             for part in (
@@ -573,7 +575,7 @@ class JobV2Orchestrator:
             )
             if part and str(part).strip()
         )
-        matches = self.sop_archive.referenced_entries(reference_text)
+        matches = self.sop_archive.referenced_entries(reference_text, refs=refs, run_key=run_key)
         return [item.model_dump(mode="json") for item in matches]
 
     def _normalize_idempotency_key(self, key: str | None, actor_key_id: str | None) -> str | None:
@@ -1378,7 +1380,13 @@ class JobV2Orchestrator:
                 evidences = self._build_llm_device_evidences(job, device_id)
                 session = self._build_llm_device_session(job, device)
                 user_problem = f"{job.problem}\n目标设备: {device.host}"
-                planner_context = self.sop_archive.prompt_context(job.problem, vendor=device.vendor)
+                sop_run_key = f"{job.id}:{device.id}"
+                planner_context = self.sop_archive.prompt_context(
+                    job.problem,
+                    vendor=device.vendor,
+                    version_signature=device.version_signature,
+                    run_key=sop_run_key,
+                )
                 self._append_trace_event(
                     job,
                     "context_snapshot",
@@ -1401,7 +1409,7 @@ class JobV2Orchestrator:
                 if planner_context:
                     self._append_trace_event(
                         job,
-                        "scope_decision",
+                        "sop_candidates_generated",
                         f"[{device.host}] SOP档案候选已装载",
                         status="succeeded",
                         detail="planner_context=sop_archive",
@@ -1530,7 +1538,7 @@ class JobV2Orchestrator:
                         self._save_state()
                     else:
                         decision_text = str(plan.get("decision", "")).strip() or "-"
-                        referenced_sops = self._referenced_sops_from_plan(plan)
+                        referenced_sops = self._referenced_sops_from_plan(plan, run_key=f"{job.id}:{device.id}")
                         self._append_trace_event(
                             job,
                             "llm_response",
@@ -1565,7 +1573,7 @@ class JobV2Orchestrator:
                         if referenced_sops:
                             self._append_trace_event(
                                 job,
-                                "scope_decision",
+                                "sop_referenced_by_ai",
                                 f"[{device.host}] AI 引用 SOP 档案（第 {round_no} 轮）",
                                 status="succeeded",
                                 detail=" ; ".join(
@@ -1580,6 +1588,9 @@ class JobV2Orchestrator:
                                     "device": self._job_device_trace_record(device),
                                     "iteration": round_no,
                                     "referenced_sops": referenced_sops,
+                                    "sop_refs": plan.get("sop_refs") if isinstance(plan.get("sop_refs"), list) else [],
+                                    "why_use_this_sop": str(plan.get("why_use_this_sop", "") or ""),
+                                    "evidence_goal": str(plan.get("evidence_goal", "") or ""),
                                     "plan_title": str(plan.get("title", "") or ""),
                                     "plan_reason": str(plan.get("reason", "") or ""),
                                 },
@@ -1594,6 +1605,16 @@ class JobV2Orchestrator:
 
             decision = str(plan.get("decision", "")).strip().lower()
             if decision == "final":
+                current_job = self._jobs.get(job_id)
+                if current_job is not None and self.sop_archive.record_outcome(f"{job_id}:{device_id}", success=True):
+                    self._append_trace_event(
+                        current_job,
+                        "sop_reference_outcome",
+                        f"[{device.host}] SOP 引用结果",
+                        status="succeeded",
+                        detail="success",
+                        device=device,
+                    )
                 return
 
             next_step = await self._allocate_next_step_no(job_id)

@@ -72,8 +72,16 @@ from app.models.schemas import (
     CommandStatus,
     OperationMode,
     SOPArchiveResponse,
+    SOPArchiveEntryResponse,
+    SOPExtractFromRunRequest,
+    SOPListResponse,
+    SOPPublishResponse,
+    SOPStatus,
+    SOPUpsertRequest,
+    make_id,
 )
 from app.services.exporter import export_timeline_markdown
+from app.services.deepseek_diagnoser import SOP_EXTRACTION_PROMPT_VERSION
 from app.services.job_orchestrator_v2 import JobV2Orchestrator
 from app.services.orchestrator import ConversationOrchestrator
 from app.services.sop_archive import SOPArchive
@@ -96,7 +104,7 @@ sop_archive = SOPArchive()
 
 
 def get_unified_runs_service() -> UnifiedRunService:
-    return UnifiedRunService(store, orchestrator, orchestrator_v2)
+    return UnifiedRunService(store, orchestrator, orchestrator_v2, sop_archive)
 
 
 def _call_with_supported_kwargs(func, **kwargs):
@@ -520,6 +528,7 @@ def require_v2_permission(permission: str):
 async def get_sop_library(
     problem: str | None = None,
     vendor: str | None = None,
+    version_signature: str | None = None,
     actor: ApiKeyRecord = Depends(require_v2_permission("job.read")),
 ) -> SOPArchiveResponse:
     await orchestrator_v2.append_audit(
@@ -528,7 +537,292 @@ async def get_sop_library(
         resource="sop:*",
         status="ok",
     )
-    return sop_archive.response(problem=problem, vendor=vendor)
+    return sop_archive.response(problem=problem, vendor=vendor, version_signature=version_signature)
+
+
+def _normalize_text_list(values) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in values or []:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
+
+
+def _normalize_command_templates(values) -> list[dict]:
+    rows: list[dict] = []
+    for item in values or []:
+        if not isinstance(item, dict):
+            continue
+        vendor = str(item.get("vendor") or "generic").strip() or "generic"
+        commands = _normalize_text_list(item.get("commands") or [])
+        if not commands:
+            continue
+        rows.append({"vendor": vendor, "commands": commands})
+    return rows
+
+
+def _build_sop_extract_payload(run_timeline: RunTimelineResponse) -> dict:
+    timeline = run_timeline.timeline
+    trace = run_timeline.service_trace.steps or []
+    return {
+        "run": {
+            "id": run_timeline.run.id,
+            "source_id": run_timeline.run.source_id,
+            "kind": run_timeline.run.kind.value if hasattr(run_timeline.run.kind, "value") else str(run_timeline.run.kind),
+            "problem": run_timeline.run.problem,
+            "status": run_timeline.run.status.value if hasattr(run_timeline.run.status, "value") else str(run_timeline.run.status),
+            "phase": run_timeline.run.phase,
+            "automation_level": run_timeline.run.automation_level.value if hasattr(run_timeline.run.automation_level, "value") else str(run_timeline.run.automation_level),
+            "operation_mode": run_timeline.run.operation_mode.value if hasattr(run_timeline.run.operation_mode, "value") else str(run_timeline.run.operation_mode),
+        },
+        "device": {
+            "host": timeline.session.device.host,
+            "name": timeline.session.device.name,
+            "protocol": timeline.session.device.protocol.value if hasattr(timeline.session.device.protocol, "value") else str(timeline.session.device.protocol),
+            "version_signature": timeline.session.device.version_signature,
+        },
+        "messages": [
+            {
+                "role": item.role,
+                "content": item.content,
+                "created_at": item.created_at.isoformat(),
+            }
+            for item in timeline.messages
+        ],
+        "commands": [
+            {
+                "step_no": item.step_no,
+                "title": item.title,
+                "command": item.command,
+                "status": item.status.value if hasattr(item.status, "value") else str(item.status),
+                "output": item.output,
+                "error": item.error,
+            }
+            for item in timeline.commands
+        ],
+        "evidences": [
+            {
+                "category": item.category,
+                "conclusion": item.conclusion,
+                "raw_output": item.raw_output,
+                "parsed_data": item.parsed_data,
+            }
+            for item in timeline.evidences
+        ],
+        "summary": timeline.summary.model_dump(mode="json") if timeline.summary else None,
+        "service_trace": [
+            {
+                "seq_no": item.seq_no,
+                "step_type": item.step_type,
+                "title": item.title,
+                "status": item.status,
+                "detail": item.detail,
+                "detail_payload": item.detail_payload,
+            }
+            for item in trace
+        ],
+        "task": "请提炼为一个未来可复用的SOP草稿，而不是复述本次会话。",
+    }
+
+
+def _normalize_sop_upsert_request(parsed: dict, *, source_run_id: str) -> SOPUpsertRequest:
+    return SOPUpsertRequest(
+        name=str(parsed.get("name") or "").strip() or f"SOP-{source_run_id[:8]}",
+        summary=str(parsed.get("summary") or "").strip() or "由 AI 从历史会话提炼的 SOP 草稿",
+        usage_hint=str(parsed.get("usage_hint") or "").strip() or "调用前请人工审核适用条件和最小命令组。",
+        trigger_keywords=_normalize_text_list(parsed.get("trigger_keywords") or []),
+        vendor_tags=_normalize_text_list(parsed.get("vendor_tags") or []),
+        version_signatures=_normalize_text_list(parsed.get("version_signatures") or []),
+        preconditions=_normalize_text_list(parsed.get("preconditions") or []),
+        anti_conditions=_normalize_text_list(parsed.get("anti_conditions") or []),
+        evidence_goals=_normalize_text_list(parsed.get("evidence_goals") or []),
+        command_templates=_normalize_command_templates(parsed.get("command_templates") or []),
+        fallback_commands=_normalize_text_list(parsed.get("fallback_commands") or []),
+        expected_findings=_normalize_text_list(parsed.get("expected_findings") or []),
+        source_run_ids=[source_run_id],
+        generated_by_model=orchestrator.deepseek_diagnoser.status().get("active_model") or orchestrator.deepseek_diagnoser.status().get("model"),
+        generated_by_prompt_version=SOP_EXTRACTION_PROMPT_VERSION,
+        review_notes=str(parsed.get("review_notes") or "").strip() or None,
+    )
+
+
+def _get_sop_or_404(sop_id: str):
+    try:
+        return sop_archive.get_record(sop_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="SOP not found") from exc
+
+
+def _resolve_run_id_for_source(source_run_id: str) -> str:
+    if source_run_id in store.sessions:
+        return UnifiedRunService.single_run_id(source_run_id)
+    try:
+        orchestrator_v2.get_job(source_run_id)
+        return UnifiedRunService.multi_run_id(source_run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source run not found") from exc
+
+
+@router_api.get("/sops", response_model=SOPListResponse)
+async def list_sops_api(
+    status: SOPStatus | None = Query(default=None),
+    actor: ApiKeyRecord = Depends(require_v2_permission("job.read")),
+) -> SOPListResponse:
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="sop.manage.list",
+        resource=f"sop:{status.value if status else '*'}",
+        status="ok",
+    )
+    return sop_archive.list_records(status=status)
+
+
+@router_api.get("/sops/{sop_id}", response_model=SOPArchiveEntryResponse)
+async def get_sop_api(
+    sop_id: str,
+    actor: ApiKeyRecord = Depends(require_v2_permission("job.read")),
+) -> SOPArchiveEntryResponse:
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="sop.read",
+        resource=f"sop:{sop_id}",
+        status="ok",
+    )
+    return _get_sop_or_404(sop_id).to_archive_response()
+
+
+@router_api.post("/sops/extract-from-run", response_model=SOPArchiveEntryResponse)
+async def extract_sop_from_run_api(
+    req: SOPExtractFromRunRequest,
+    actor: ApiKeyRecord = Depends(require_v2_permission("job.write")),
+) -> SOPArchiveEntryResponse:
+    run_id = str(req.run_id or "").strip()
+    try:
+        run_timeline = await get_unified_runs_service().get_timeline(run_id)
+    except KeyError:
+        run_timeline = await get_unified_runs_service().get_timeline(_resolve_run_id_for_source(run_id))
+    source_run_id = run_timeline.run.source_id
+    if sop_archive.has_source_run(source_run_id) and not req.force:
+        raise HTTPException(status_code=409, detail="SOP already extracted from this run; retry with force=true to create a new draft version")
+    if run_timeline.timeline.summary is None:
+        raise HTTPException(status_code=400, detail="cannot extract SOP without final conclusion/summary")
+    if not run_timeline.timeline.commands or not run_timeline.timeline.evidences:
+        raise HTTPException(status_code=400, detail="cannot extract SOP without commands and evidences")
+    draft_payload = await orchestrator.deepseek_diagnoser.extract_sop_draft(
+        run_payload=_build_sop_extract_payload(run_timeline),
+    )
+    if not draft_payload:
+        raise HTTPException(status_code=503, detail="LLM failed to extract SOP draft")
+    _, draft_count, published_count = sop_archive.source_run_counts(source_run_id)
+    version = max(1, draft_count + published_count + 1)
+    record = sop_archive.upsert_record(
+        make_id(),
+        _normalize_sop_upsert_request(draft_payload, source_run_id=source_run_id),
+        status=SOPStatus.draft,
+        version=version,
+    )
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="sop.extract",
+        resource=f"sop:{record.id}",
+        status="ok",
+        detail=f"run={req.run_id}",
+    )
+    return record.to_archive_response()
+
+
+@router_api.post("/sops/{sop_id}/reextract", response_model=SOPArchiveEntryResponse)
+async def reextract_sop_api(
+    sop_id: str,
+    actor: ApiKeyRecord = Depends(require_v2_permission("job.write")),
+) -> SOPArchiveEntryResponse:
+    current = _get_sop_or_404(sop_id)
+    source_run_id = next((item for item in current.source_run_ids if item), "")
+    if not source_run_id:
+        raise HTTPException(status_code=400, detail="SOP has no source run to re-extract")
+    run_id = _resolve_run_id_for_source(source_run_id)
+    return await extract_sop_from_run_api(SOPExtractFromRunRequest(run_id=run_id, force=True), actor)
+
+
+@router_api.put("/sops/{sop_id}", response_model=SOPArchiveEntryResponse)
+async def update_sop_api(
+    sop_id: str,
+    req: SOPUpsertRequest,
+    actor: ApiKeyRecord = Depends(require_v2_permission("job.write")),
+) -> SOPArchiveEntryResponse:
+    current = _get_sop_or_404(sop_id)
+    if current.status == SOPStatus.published:
+        record = sop_archive.upsert_record(
+            make_id(),
+            req,
+            status=SOPStatus.draft,
+            version=current.version + 1,
+        )
+    else:
+        record = sop_archive.upsert_record(sop_id, req, status=current.status, version=current.version)
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="sop.update",
+        resource=f"sop:{record.id}",
+        status="ok",
+    )
+    return record.to_archive_response()
+
+
+@router_api.post("/sops/{sop_id}/publish", response_model=SOPPublishResponse)
+async def publish_sop_api(
+    sop_id: str,
+    actor: ApiKeyRecord = Depends(require_v2_permission("job.write")),
+) -> SOPPublishResponse:
+    _get_sop_or_404(sop_id)
+    payload = sop_archive.publish_record(sop_id)
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="sop.publish",
+        resource=f"sop:{sop_id}",
+        status="ok",
+    )
+    return payload
+
+
+@router_api.post("/sops/{sop_id}/archive", response_model=SOPPublishResponse)
+async def archive_sop_api(
+    sop_id: str,
+    actor: ApiKeyRecord = Depends(require_v2_permission("job.write")),
+) -> SOPPublishResponse:
+    _get_sop_or_404(sop_id)
+    payload = sop_archive.archive_record(sop_id)
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="sop.archive",
+        resource=f"sop:{sop_id}",
+        status="ok",
+    )
+    return payload
+
+
+@router_api.delete("/sops/{sop_id}")
+async def delete_sop_api(
+    sop_id: str,
+    actor: ApiKeyRecord = Depends(require_v2_permission("job.write")),
+) -> dict[str, bool]:
+    deleted = sop_archive.delete_record(sop_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="SOP not found")
+    await orchestrator_v2.append_audit(
+        actor=actor,
+        action="sop.delete",
+        resource=f"sop:{sop_id}",
+        status="ok",
+    )
+    return {"deleted": True}
 
 
 def _operation_mode_to_job_mode(mode: OperationMode) -> JobMode:

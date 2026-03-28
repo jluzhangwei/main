@@ -55,12 +55,16 @@ class UnifiedRunService:
         "session_control",
         "session_adapter",
         "orchestrator_error",
+        "sop_candidates_generated",
+        "sop_referenced_by_ai",
+        "sop_reference_outcome",
     }
 
-    def __init__(self, store, orchestrator, orchestrator_v2):
+    def __init__(self, store, orchestrator, orchestrator_v2, sop_archive=None):
         self.store = store
         self.orchestrator = orchestrator
         self.orchestrator_v2 = orchestrator_v2
+        self.sop_archive = sop_archive
 
     @staticmethod
     def single_run_id(session_id: str) -> str:
@@ -186,6 +190,7 @@ class UnifiedRunService:
     def build_single_run_response(self, session_id: str) -> RunResponse:
         session = self.store.get_session(session_id)
         pending_actions = len(self._single_pending_leader_command_ids(session_id))
+        sop_extracted, sop_draft_count, sop_published_count = self._sop_counts(session.id)
         return RunResponse(
             id=self.single_run_id(session.id),
             source_id=session.id,
@@ -202,9 +207,13 @@ class UnifiedRunService:
             device_count=1,
             device_hosts=[session.device.host],
             pending_actions=pending_actions,
+            sop_extracted=sop_extracted,
+            sop_draft_count=sop_draft_count,
+            sop_published_count=sop_published_count,
         )
 
     def build_multi_run_response_from_job(self, job) -> RunResponse:
+        sop_extracted, sop_draft_count, sop_published_count = self._sop_counts(job.id)
         return RunResponse(
             id=self.multi_run_id(job.id),
             source_id=job.id,
@@ -223,11 +232,15 @@ class UnifiedRunService:
             device_count=job.device_count,
             device_hosts=[],
             pending_actions=job.pending_action_groups,
+            sop_extracted=sop_extracted,
+            sop_draft_count=sop_draft_count,
+            sop_published_count=sop_published_count,
         )
 
     def build_multi_run_response(self, timeline: JobTimelineResponse) -> RunResponse:
         hosts = [str(item.host or "").strip() for item in timeline.job.devices if str(item.host or "").strip()]
         pending_actions = len([item for item in timeline.job.action_groups if self._enum_value(item.status) == "pending_approval"])
+        sop_extracted, sop_draft_count, sop_published_count = self._sop_counts(timeline.job.id)
         return RunResponse(
             id=self.multi_run_id(timeline.job.id),
             source_id=timeline.job.id,
@@ -246,7 +259,18 @@ class UnifiedRunService:
             device_count=len(timeline.job.devices),
             device_hosts=hosts,
             pending_actions=pending_actions,
+            sop_extracted=sop_extracted,
+            sop_draft_count=sop_draft_count,
+            sop_published_count=sop_published_count,
         )
+
+    def _sop_counts(self, source_id: str) -> tuple[bool, int, int]:
+        if self.sop_archive is None:
+            return False, 0, 0
+        try:
+            return self.sop_archive.source_run_counts(source_id)
+        except Exception:
+            return False, 0, 0
 
     async def list_runs(self, kind: RunKind | None = None, offset: int = 0, limit: int = 100) -> RunListResponse:
         rows: list[RunResponse] = []

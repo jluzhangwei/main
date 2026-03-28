@@ -193,17 +193,66 @@ export type SOPArchiveCommandTemplate = {
 
 export type SOPArchiveEntry = {
   id: string
+  status?: SOPStatus
   name: string
   summary: string
   usage_hint: string
   trigger_keywords: string[]
+  vendor_tags: string[]
+  version_signatures: string[]
+  preconditions: string[]
+  anti_conditions: string[]
+  evidence_goals: string[]
   command_templates: SOPArchiveCommandTemplate[]
+  fallback_commands: string[]
+  expected_findings: string[]
+  source_run_ids: string[]
+  version: number
+  matched_count: number
+  referenced_count: number
+  success_count: number
+  review_notes?: string
+  generated_by_model?: string
+  generated_by_prompt_version?: string
+  published_at?: string
+  updated_at?: string
 }
 
 export type SOPArchiveResponse = {
   total: number
   matched: SOPArchiveEntry[]
   items: SOPArchiveEntry[]
+}
+
+export type SOPStatus = 'draft' | 'published' | 'archived'
+
+export type SOPListResponse = {
+  total: number
+  items: SOPArchiveEntry[]
+}
+
+export type SOPExtractFromRunRequest = {
+  run_id: string
+  force?: boolean
+}
+
+export type SOPUpsertRequest = {
+  name: string
+  summary: string
+  usage_hint: string
+  trigger_keywords: string[]
+  vendor_tags: string[]
+  version_signatures: string[]
+  preconditions: string[]
+  anti_conditions: string[]
+  evidence_goals: string[]
+  command_templates: SOPArchiveCommandTemplate[]
+  fallback_commands: string[]
+  expected_findings: string[]
+  source_run_ids: string[]
+  generated_by_model?: string
+  generated_by_prompt_version?: string
+  review_notes?: string
 }
 
 export type RiskPolicy = {
@@ -257,6 +306,9 @@ export type RunSummary = {
   device_count: number
   device_hosts: string[]
   pending_actions: number
+  sop_extracted: boolean
+  sop_draft_count: number
+  sop_published_count: number
 }
 
 export type RunListResponse = {
