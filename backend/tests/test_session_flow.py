@@ -373,6 +373,48 @@ def test_service_trace_endpoint_returns_step_timings():
             assert step.get("completed_at") is not None
 
 
+def test_service_trace_records_ai_sop_reference_when_plan_mentions_archive():
+    class SopReferencingDiagnoser(ScriptedDiagnoser):
+        async def propose_next_step(
+            self,
+            *,
+            session,
+            user_problem: str,
+            commands,
+            evidences,
+            iteration: int,
+            max_iterations: int,
+            conversation_history=None,
+        ):
+            if iteration > 1:
+                return {
+                    "decision": "final",
+                    "root_cause": "SOP trace placeholder",
+                    "impact_scope": "trace test",
+                    "recommendation": "done",
+                    "confidence": 0.5,
+                    "evidence_refs": [],
+                }
+            return {
+                "decision": "run_command",
+                "title": "历史 OSPF 抖动取证",
+                "command": "display ospf peer",
+                "reason": "引用 history_ospf_flap SOP，先确认邻接状态与最近抖动线索。",
+            }
+
+    original = routes.orchestrator.deepseek_diagnoser
+    routes.orchestrator.deepseek_diagnoser = SopReferencingDiagnoser()
+    try:
+        session_id = _create_session("assisted")
+        _stream_message(session_id, "查一下上次 OSPF 闪断的原因")
+        trace = client.get(f"/v1/sessions/{session_id}/trace")
+        assert trace.status_code == 200
+        steps = trace.json()["steps"]
+        assert any("AI 引用 SOP 档案" in str(step.get("title", "")) for step in steps)
+    finally:
+        routes.orchestrator.deepseek_diagnoser = original
+
+
 def test_stop_session_endpoint_appends_stop_message_and_returns_status():
     session_id = _create_session("assisted")
 

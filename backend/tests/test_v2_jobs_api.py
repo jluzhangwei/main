@@ -156,6 +156,11 @@ def test_v2_job_timeline_events_and_report():
     assert timeline_payload["job"]["id"] == job_id
     assert isinstance(timeline_payload["events"], list)
 
+    unified_timeline = client.get(f"/api/runs/run_m:{job_id}/timeline", headers=_auth(admin_key))
+    assert unified_timeline.status_code == 200, unified_timeline.text
+    assert unified_timeline.json()["payload"]["job"]["id"] == job_id
+    assert unified_timeline.json()["payload"]["job"]["id"] == timeline_payload["job"]["id"]
+
     report_json = client.get(f"/v2/jobs/{job_id}/report?format=json", headers=_auth(admin_key))
     assert report_json.status_code == 200
     assert report_json.json()["job"]["id"] == job_id

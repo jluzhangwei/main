@@ -557,6 +557,7 @@ class ConversationOrchestrator:
                 detail=f"decision={str(plan.get('decision', ''))}",
                 detail_payload=self._build_llm_response_payload(plan_debug, plan),
             )
+            referenced_sops = self._referenced_sops_from_plan(plan)
             self._trace_finish(
                 llm_trace,
                 status="succeeded",
@@ -566,7 +567,14 @@ class ConversationOrchestrator:
                     user_problem=user_content,
                     plan_debug=plan_debug,
                     parsed_plan=plan,
+                    referenced_sops=referenced_sops,
                 ),
+            )
+            self._trace_sop_reference(
+                session_id=session_id,
+                iteration=iteration,
+                referenced_sops=referenced_sops,
+                plan=plan,
             )
             plan_text = json.dumps(plan, ensure_ascii=False)
             self.store.append_ai_context(session_id, "assistant", plan_text)
@@ -2406,6 +2414,7 @@ class ConversationOrchestrator:
         user_problem: str,
         plan_debug: dict[str, Any] | None,
         parsed_plan: dict[str, Any] | None,
+        referenced_sops: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         return self._compact_trace_payload(
             {
@@ -2421,7 +2430,49 @@ class ConversationOrchestrator:
                 "user_problem": user_problem,
                 "to_ai": (plan_debug or {}),
                 "ai_response_parsed": parsed_plan,
+                "referenced_sops": referenced_sops or [],
             }
+        )
+
+    def _referenced_sops_from_plan(self, plan: dict[str, Any] | None) -> list[dict[str, Any]]:
+        if not isinstance(plan, dict):
+            return []
+        reference_text = " ".join(
+            part.strip()
+            for part in (
+                str(plan.get("title", "") or ""),
+                str(plan.get("reason", "") or ""),
+            )
+            if part and str(part).strip()
+        )
+        matches = self.sop_archive.referenced_entries(reference_text)
+        return [item.model_dump(mode="json") for item in matches]
+
+    def _trace_sop_reference(
+        self,
+        *,
+        session_id: str,
+        iteration: int,
+        referenced_sops: list[dict[str, Any]],
+        plan: dict[str, Any],
+    ) -> None:
+        if not referenced_sops:
+            return
+        names = [str(item.get("name") or item.get("id") or "").strip() for item in referenced_sops]
+        names = [item for item in names if item]
+        self._trace_decision(
+            session_id=session_id,
+            step_type="scope_decision",
+            title=f"AI 引用 SOP 档案（第 {iteration} 轮）",
+            detail=" ; ".join(names)[:280] or "referenced_sop_archive",
+            detail_payload=self._compact_trace_payload(
+                {
+                    "iteration": iteration,
+                    "referenced_sops": referenced_sops,
+                    "plan_title": str(plan.get("title", "") or ""),
+                    "plan_reason": str(plan.get("reason", "") or ""),
+                }
+            ),
         )
 
     def _build_llm_request_payload(self, plan_debug: Any) -> dict[str, Any]:

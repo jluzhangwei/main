@@ -115,6 +115,134 @@ def _call_with_supported_kwargs(func, **kwargs):
     return func(**supported)
 
 
+def _single_session_response(session_id: str) -> SessionResponse:
+    session = store.get_session(session_id)
+    return SessionResponse(
+        id=session.id,
+        automation_level=session.automation_level,
+        operation_mode=session.operation_mode,
+        status=session.status,
+        created_at=session.created_at,
+    )
+
+
+def _patch_single_session_automation(session_id: str, automation_level: AutomationLevel) -> SessionResponse:
+    if session_id not in store.sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    store.update_session_automation(session_id, automation_level)
+    return _single_session_response(session_id)
+
+
+def _patch_single_session_credentials(session_id: str, req: SessionCredentialUpdateRequest) -> SessionResponse:
+    if session_id not in store.sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    store.update_session_credentials(session_id, req)
+    return _single_session_response(session_id)
+
+
+async def _stop_unified_run(run_id: str, *, actor_name: str | None = None) -> RunStopResponse:
+    kind, source_id = _parse_unified_run_id(run_id)
+    if kind == RunKind.single:
+        if source_id not in store.sessions:
+            raise HTTPException(status_code=404, detail="Run not found")
+        payload = await orchestrator.stop_session(source_id)
+        message = str(payload.get("message") or "Stop requested")
+    else:
+        try:
+            await orchestrator_v2.cancel_job(source_id, reason="manual-stop", actor_name=actor_name)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Run not found") from exc
+        message = "Run stop requested."
+    try:
+        run = await get_unified_runs_service().get_run(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Run not found") from exc
+    return RunStopResponse(
+        run_id=run.id,
+        source_id=run.source_id,
+        kind=run.kind,
+        status=run.status,
+        stop_requested=True,
+        message=message,
+    )
+
+
+async def _decide_single_run_actions(source_id: str, target_ids: list[str], *, approved: bool) -> RunActionDecisionResponse:
+    if source_id not in store.sessions:
+        raise HTTPException(status_code=404, detail="Run not found")
+    results: list[RunActionDecisionItem] = []
+    for item_id in target_ids:
+        resp: ConfirmCommandResponse = await orchestrator.confirm_command(
+            source_id,
+            item_id,
+            ConfirmCommandRequest(approved=approved),
+        )
+        results.append(
+            RunActionDecisionItem(
+                item_id=resp.command_id,
+                status=resp.status.value,
+                message=resp.message,
+            )
+        )
+    return RunActionDecisionResponse(
+        run_id=UnifiedRunService.single_run_id(source_id),
+        total=len(target_ids),
+        updated=len(results),
+        skipped=max(0, len(target_ids) - len(results)),
+        results=results,
+    )
+
+
+async def _decide_multi_run_actions(
+    source_id: str,
+    target_ids: list[str],
+    *,
+    approved: bool,
+    actor: ApiKeyRecord,
+    reason: str | None,
+) -> RunActionDecisionResponse:
+    try:
+        timeline = await orchestrator_v2.get_timeline(source_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Run not found") from exc
+    pending_ids = [
+        item.id
+        for item in timeline.job.action_groups
+        if str(item.status.value if hasattr(item.status, "value") else item.status) == "pending_approval"
+    ]
+    requested_ids = target_ids or pending_ids
+    if approved:
+        results = await orchestrator_v2.bulk_approve_action_groups(
+            source_id,
+            requested_ids,
+            actor_key_id=actor.id,
+            actor_name=actor.name,
+            reason=reason,
+        )
+    else:
+        results = await orchestrator_v2.bulk_reject_action_groups(
+            source_id,
+            requested_ids,
+            actor_key_id=actor.id,
+            actor_name=actor.name,
+            reason=reason,
+        )
+    return RunActionDecisionResponse(
+        run_id=UnifiedRunService.multi_run_id(source_id),
+        total=len(requested_ids),
+        updated=len(results),
+        skipped=max(0, len(requested_ids) - len(results)),
+        results=[
+            RunActionDecisionItem(
+                item_id=item.action_group_id,
+                status=item.status.value,
+                message=item.message,
+            )
+            for item in results
+        ],
+    )
+
+
 @router.post("/sessions", response_model=SessionResponse)
 async def create_session(req: SessionCreateRequest) -> SessionResponse:
     session = store.create_session(req)
@@ -134,32 +262,12 @@ async def list_sessions() -> list[SessionListItem]:
 
 @router.patch("/sessions/{session_id}", response_model=SessionResponse)
 async def update_session(session_id: str, req: SessionUpdateRequest) -> SessionResponse:
-    if session_id not in store.sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    session = store.update_session_automation(session_id, req.automation_level)
-    return SessionResponse(
-        id=session.id,
-        automation_level=session.automation_level,
-        operation_mode=session.operation_mode,
-        status=session.status,
-        created_at=session.created_at,
-    )
+    return _patch_single_session_automation(session_id, req.automation_level)
 
 
 @router.patch("/sessions/{session_id}/credentials", response_model=SessionResponse)
 async def update_session_credentials(session_id: str, req: SessionCredentialUpdateRequest) -> SessionResponse:
-    if session_id not in store.sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    session = store.update_session_credentials(session_id, req)
-    return SessionResponse(
-        id=session.id,
-        automation_level=session.automation_level,
-        operation_mode=session.operation_mode,
-        status=session.status,
-        created_at=session.created_at,
-    )
+    return _patch_single_session_credentials(session_id, req)
 
 
 @router.post("/sessions/{session_id}/messages")
@@ -286,15 +394,17 @@ async def get_llm_prompt_policy() -> LLMPromptPolicyResponse:
 
 @router.post("/sessions/{session_id}/commands/{command_id}/confirm")
 async def confirm_high_risk_command(session_id: str, command_id: str, req: ConfirmCommandRequest):
-    if session_id not in store.sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-
     try:
-        result = await orchestrator.confirm_command(session_id, command_id, req)
+        result = await _decide_single_run_actions(session_id, [command_id], approved=req.approved)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    return result
+    if not result.results:
+        raise HTTPException(status_code=404, detail="Command not found")
+    return {
+        "command_id": result.results[0].item_id,
+        "status": result.results[0].status,
+        "message": result.results[0].message,
+    }
 
 
 @router.get("/sessions/{session_id}/timeline")
@@ -579,9 +689,7 @@ async def patch_run_api(
     kind, source_id = _parse_unified_run_id(run_id)
     if kind != RunKind.single:
         raise HTTPException(status_code=409, detail="run patch currently supports single-device runs only")
-    if source_id not in store.sessions:
-        raise HTTPException(status_code=404, detail="Run not found")
-    store.update_session_automation(source_id, req.automation_level)
+    _patch_single_session_automation(source_id, req.automation_level)
     payload = await get_unified_runs_service().get_run(run_id)
     await orchestrator_v2.append_audit(
         actor=actor,
@@ -602,9 +710,7 @@ async def patch_run_credentials_api(
     kind, source_id = _parse_unified_run_id(run_id)
     if kind != RunKind.single:
         raise HTTPException(status_code=409, detail="run credential patch currently supports single-device runs only")
-    if source_id not in store.sessions:
-        raise HTTPException(status_code=404, detail="Run not found")
-    store.update_session_credentials(source_id, req)
+    _patch_single_session_credentials(source_id, req)
     payload = await get_unified_runs_service().get_run(run_id)
     await orchestrator_v2.append_audit(
         actor=actor,
@@ -790,36 +896,14 @@ async def stop_run_api(
     run_id: str,
     actor: ApiKeyRecord = Depends(require_v2_permission("job.write")),
 ) -> RunStopResponse:
-    kind, source_id = _parse_unified_run_id(run_id)
-    if kind == RunKind.single:
-        if source_id not in store.sessions:
-            raise HTTPException(status_code=404, detail="Run not found")
-        payload = await orchestrator.stop_session(source_id)
-        message = str(payload.get("message") or "Stop requested")
-    else:
-        try:
-            await orchestrator_v2.cancel_job(source_id, reason="manual-stop", actor_name=actor.name)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Run not found") from exc
-        message = "Run stop requested."
-    try:
-        run = await get_unified_runs_service().get_run(run_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Run not found") from exc
+    payload = await _stop_unified_run(run_id, actor_name=actor.name)
     await orchestrator_v2.append_audit(
         actor=actor,
         action="run.stop",
         resource=f"run:{run_id}",
         status="ok",
     )
-    return RunStopResponse(
-        run_id=run.id,
-        source_id=run.source_id,
-        kind=run.kind,
-        status=run.status,
-        stop_requested=True,
-        message=message,
-    )
+    return payload
 
 
 @router_api.post("/runs/{run_id}/actions/approve", response_model=RunActionDecisionResponse)
@@ -830,58 +914,20 @@ async def approve_run_actions_api(
 ) -> RunActionDecisionResponse:
     kind, source_id = _parse_unified_run_id(run_id)
     if kind == RunKind.single:
-        if source_id not in store.sessions:
-            raise HTTPException(status_code=404, detail="Run not found")
         target_ids = req.item_ids or _single_pending_leader_command_ids(source_id)
-        results: list[RunActionDecisionItem] = []
-        for item_id in target_ids:
-            resp: ConfirmCommandResponse = await orchestrator.confirm_command(
-                source_id,
-                item_id,
-                ConfirmCommandRequest(approved=True),
-            )
-            results.append(
-                RunActionDecisionItem(
-                    item_id=resp.command_id,
-                    status=resp.status.value,
-                    message=resp.message,
-                )
-            )
-        return RunActionDecisionResponse(
-            run_id=run_id,
-            total=len(target_ids),
-            updated=len(results),
-            skipped=max(0, len(target_ids) - len(results)),
-            results=results,
-        )
+        result = await _decide_single_run_actions(source_id, target_ids, approved=True)
+        result.run_id = run_id
+        return result
 
-    try:
-        timeline = await orchestrator_v2.get_timeline(source_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Run not found") from exc
-    pending_ids = [item.id for item in timeline.job.action_groups if str(item.status.value if hasattr(item.status, 'value') else item.status) == "pending_approval"]
-    target_ids = req.item_ids or pending_ids
-    results = await orchestrator_v2.bulk_approve_action_groups(
+    result = await _decide_multi_run_actions(
         source_id,
-        target_ids,
-        actor_key_id=actor.id,
-        actor_name=actor.name,
+        req.item_ids or [],
+        approved=True,
+        actor=actor,
         reason=req.reason,
     )
-    return RunActionDecisionResponse(
-        run_id=run_id,
-        total=len(target_ids),
-        updated=len(results),
-        skipped=max(0, len(target_ids) - len(results)),
-        results=[
-            RunActionDecisionItem(
-                item_id=item.action_group_id,
-                status=item.status.value,
-                message=item.message,
-            )
-            for item in results
-        ],
-    )
+    result.run_id = run_id
+    return result
 
 
 @router_api.post("/runs/{run_id}/actions/reject", response_model=RunActionDecisionResponse)
@@ -892,58 +938,20 @@ async def reject_run_actions_api(
 ) -> RunActionDecisionResponse:
     kind, source_id = _parse_unified_run_id(run_id)
     if kind == RunKind.single:
-        if source_id not in store.sessions:
-            raise HTTPException(status_code=404, detail="Run not found")
         target_ids = req.item_ids or _single_pending_leader_command_ids(source_id)
-        results: list[RunActionDecisionItem] = []
-        for item_id in target_ids:
-            resp: ConfirmCommandResponse = await orchestrator.confirm_command(
-                source_id,
-                item_id,
-                ConfirmCommandRequest(approved=False),
-            )
-            results.append(
-                RunActionDecisionItem(
-                    item_id=resp.command_id,
-                    status=resp.status.value,
-                    message=resp.message,
-                )
-            )
-        return RunActionDecisionResponse(
-            run_id=run_id,
-            total=len(target_ids),
-            updated=len(results),
-            skipped=max(0, len(target_ids) - len(results)),
-            results=results,
-        )
+        result = await _decide_single_run_actions(source_id, target_ids, approved=False)
+        result.run_id = run_id
+        return result
 
-    try:
-        timeline = await orchestrator_v2.get_timeline(source_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Run not found") from exc
-    pending_ids = [item.id for item in timeline.job.action_groups if str(item.status.value if hasattr(item.status, 'value') else item.status) == "pending_approval"]
-    target_ids = req.item_ids or pending_ids
-    results = await orchestrator_v2.bulk_reject_action_groups(
+    result = await _decide_multi_run_actions(
         source_id,
-        target_ids,
-        actor_key_id=actor.id,
-        actor_name=actor.name,
+        req.item_ids or [],
+        approved=False,
+        actor=actor,
         reason=req.reason,
     )
-    return RunActionDecisionResponse(
-        run_id=run_id,
-        total=len(target_ids),
-        updated=len(results),
-        skipped=max(0, len(target_ids) - len(results)),
-        results=[
-            RunActionDecisionItem(
-                item_id=item.action_group_id,
-                status=item.status.value,
-                message=item.message,
-            )
-            for item in results
-        ],
-    )
+    result.run_id = run_id
+    return result
 
 
 @router_v2.post("/jobs", response_model=JobResponse)
@@ -1217,7 +1225,7 @@ async def get_job_timeline_v2(
     actor: ApiKeyRecord = Depends(require_v2_permission("job.read")),
 ) -> JobTimelineResponse:
     try:
-        payload = await orchestrator_v2.get_timeline(job_id)
+        run_payload = await get_unified_runs_service().get_timeline(UnifiedRunService.multi_run_id(job_id))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Job not found") from exc
     await orchestrator_v2.append_audit(
@@ -1226,7 +1234,7 @@ async def get_job_timeline_v2(
         resource=f"job:{job_id}",
         status="ok",
     )
-    return payload
+    return JobTimelineResponse.model_validate(run_payload.payload)
 
 
 @router_v2.put("/jobs/{job_id}/topology", response_model=JobResponse)

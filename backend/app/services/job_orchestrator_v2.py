@@ -541,6 +541,7 @@ class JobV2Orchestrator:
         user_problem: str,
         debug: dict[str, Any],
         parsed_plan: dict[str, Any] | None,
+        referenced_sops: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         return self._compact_trace_payload(
             {
@@ -554,11 +555,26 @@ class JobV2Orchestrator:
                 "user_problem": user_problem,
                 "to_ai": debug,
                 "ai_response_parsed": parsed_plan,
+                "referenced_sops": referenced_sops or [],
             },
             max_depth=10,
             max_items=500,
             text_limit=200000,
         )
+
+    def _referenced_sops_from_plan(self, plan: dict[str, Any] | None) -> list[dict[str, Any]]:
+        if not isinstance(plan, dict):
+            return []
+        reference_text = " ".join(
+            part.strip()
+            for part in (
+                str(plan.get("title", "") or ""),
+                str(plan.get("reason", "") or ""),
+            )
+            if part and str(part).strip()
+        )
+        matches = self.sop_archive.referenced_entries(reference_text)
+        return [item.model_dump(mode="json") for item in matches]
 
     def _normalize_idempotency_key(self, key: str | None, actor_key_id: str | None) -> str | None:
         raw = str(key or "").strip()
@@ -1514,6 +1530,7 @@ class JobV2Orchestrator:
                         self._save_state()
                     else:
                         decision_text = str(plan.get("decision", "")).strip() or "-"
+                        referenced_sops = self._referenced_sops_from_plan(plan)
                         self._append_trace_event(
                             job,
                             "llm_response",
@@ -1538,12 +1555,39 @@ class JobV2Orchestrator:
                                 user_problem=user_problem,
                                 debug=plan_debug,
                                 parsed_plan=plan,
+                                referenced_sops=referenced_sops,
                             ),
                             device=device,
                             started_at=llm_started_at,
                             completed_at=llm_finished_at,
                             duration_ms=llm_duration,
                         )
+                        if referenced_sops:
+                            self._append_trace_event(
+                                job,
+                                "scope_decision",
+                                f"[{device.host}] AI 引用 SOP 档案（第 {round_no} 轮）",
+                                status="succeeded",
+                                detail=" ; ".join(
+                                    [
+                                        str(item.get("name") or item.get("id") or "").strip()
+                                        for item in referenced_sops
+                                        if str(item.get("name") or item.get("id") or "").strip()
+                                    ]
+                                )[:280]
+                                or "referenced_sop_archive",
+                                detail_payload={
+                                    "device": self._job_device_trace_record(device),
+                                    "iteration": round_no,
+                                    "referenced_sops": referenced_sops,
+                                    "plan_title": str(plan.get("title", "") or ""),
+                                    "plan_reason": str(plan.get("reason", "") or ""),
+                                },
+                                device=device,
+                                started_at=llm_finished_at,
+                                completed_at=llm_finished_at,
+                                duration_ms=0,
+                            )
                         self._save_state()
             if not plan:
                 return

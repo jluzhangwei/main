@@ -77,6 +77,18 @@ class SOPArchive:
     def list_entries(self) -> list[SOPArchiveEntryResponse]:
         return [entry.to_response() for entry in self._entries]
 
+    def referenced_entries(self, text: str | None) -> list[SOPArchiveEntryResponse]:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return []
+        matched: list[SOPArchiveEntryResponse] = []
+        for entry in self._entries:
+            name = entry.name.strip().lower()
+            entry_id = entry.id.strip().lower()
+            if (entry_id and entry_id in lowered) or (name and name in lowered):
+                matched.append(entry.to_response())
+        return matched
+
     def matched_entries(self, problem: str, vendor: str | None = None) -> list[SOPArchiveEntryResponse]:
         return [entry.to_response() for entry in self._entries if entry.matches(problem, vendor)]
 
