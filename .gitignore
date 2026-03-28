@@ -16,3 +16,4 @@ frontend/*.tsbuildinfo
 # Runtime outputs
 *.log
 tmp/
+.run/
