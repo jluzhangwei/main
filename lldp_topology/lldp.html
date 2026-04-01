@@ -2361,17 +2361,11 @@
   }
 
   function cytoscapeStyleConfig(nodeLabelMode) {
-    const nodeLabelField = nodeLabelMode === 'none'
-      ? ''
-      : (nodeLabelMode === 'full_ip' ? 'data(labelIp)' : (nodeLabelMode === 'full' ? 'data(label)' : 'data(short)'));
-    const groupLabelField = nodeLabelMode === 'none'
-      ? ''
-      : ((nodeLabelMode === 'full' || nodeLabelMode === 'full_ip') ? 'data(labelWithCount)' : 'data(shortWithCount)');
     return [
       {
         selector: 'node',
         style: {
-          'label': nodeLabelField,
+          'label': 'data(displayLabel)',
           'font-size': 10,
           'line-height': 1.15,
           'text-wrap': 'wrap',
@@ -2382,12 +2376,6 @@
           'height': 30,
           'background-color': '#2563eb',
           'border-width': 0
-        }
-      },
-      {
-        selector: 'node[isGroup = true]',
-        style: {
-          'label': groupLabelField
         }
       },
       { selector: 'node[role = "CORE"]', style: { 'background-color': '#7c3aed' } },
@@ -2719,6 +2707,8 @@
       n.ip = primaryIpFromList(n.ips);
       n.short = shortLabel(n.label);
       n.labelIp = n.ips.length ? `${n.label}\n${n.ips.join('\n')}` : n.label;
+      n.labelWithCount = n.label;
+      n.shortWithCount = n.short;
       n.groupKey = '';
       n.groupKind = '';
       n.manualGroupKey = '';
@@ -2758,6 +2748,10 @@
       n.autoGroupKey = groupKey;
     });
     applyCollapsedGroupInfos(nodes, edges, autoGroupInfo.infos, expandedAutoGroupKeys, 'auto');
+
+    nodes.forEach((n) => {
+      n.displayLabel = nodeDisplayLabelData(n, nodeLabelMode);
+    });
 
     $('nNodes').textContent = nodes.size;
     baseEdges = edges.slice(); // 保存原始边
@@ -4985,6 +4979,20 @@
     return String(node?.data('label') || node?.id?.() || '').trim();
   }
 
+  function nodeDisplayLabelData(nodeData, mode) {
+    if (!nodeData) return '';
+    const normalized = ['short', 'full', 'full_ip', 'none'].includes(String(mode || '')) ? String(mode) : 'full';
+    if (normalized === 'none') return '';
+    if (nodeData.isGroup) {
+      return (normalized === 'full' || normalized === 'full_ip')
+        ? String(nodeData.labelWithCount || nodeData.label || '')
+        : String(nodeData.shortWithCount || nodeData.short || nodeData.label || '');
+    }
+    if (normalized === 'full_ip') return String(nodeData.labelIp || nodeData.label || '');
+    if (normalized === 'full') return String(nodeData.label || '');
+    return String(nodeData.short || nodeData.label || '');
+  }
+
   function escapeXmlText(value) {
     return String(value == null ? '' : value)
       .replace(/&/g, '&amp;')
@@ -5349,19 +5357,13 @@
   function updateNodeLabels(mode) {
     if (!cy) return;
     const normalized = ['short', 'full', 'full_ip', 'none'].includes(String(mode || '')) ? String(mode) : 'full';
-    const useFull = normalized === 'full';
-    const useFullIp = normalized === 'full_ip';
-    const hidden = normalized === 'none';
-    const groupLabel = hidden ? '' : ((useFull || useFullIp) ? 'data(labelWithCount)' : 'data(shortWithCount)');
-    cy.style()
-      .selector('node')
-      .style('label', hidden ? '' : (useFullIp ? 'data(labelIp)' : (useFull ? 'data(label)' : 'data(short)')))
-      .selector('node[isGroup = true]')
-      .style('label', groupLabel)
-      .update();
-    if (hidden) setOK('节点标签：隐藏');
-    else if (useFullIp) setOK('节点标签：全名+IP');
-    else setOK(useFull ? '节点标签：全名' : '节点标签：缩略');
+    cy.nodes().forEach((node) => {
+      node.data('displayLabel', nodeDisplayLabelData(node.data(), normalized));
+    });
+    cy.style().selector('node').style('label', 'data(displayLabel)').update();
+    if (normalized === 'none') setOK('节点标签：隐藏');
+    else if (normalized === 'full_ip') setOK('节点标签：全名+IP');
+    else setOK(normalized === 'full' ? '节点标签：全名' : '节点标签：缩略');
   }
 
   function download(filename, text, mime='text/plain') {
@@ -5444,6 +5446,13 @@
     } catch (_) {
       // Ignore browser storage errors.
     }
+    try {
+      if (typeof window.name === 'string' && window.name.startsWith(PAGE_SESSION_WINDOW_NAME_PREFIX)) {
+        window.name = '';
+      }
+    } catch (_) {
+      // Ignore browser storage errors.
+    }
   }
 
   function resetWorkspaceMeta() {
@@ -5459,7 +5468,18 @@
     }
     try {
       const snap = buildSessionSnapshot();
-      sessionStorage.setItem(PAGE_SESSION_KEY, JSON.stringify(snap));
+      const payload = JSON.stringify(snap);
+      try {
+        sessionStorage.setItem(PAGE_SESSION_KEY, payload);
+      } catch (_) {
+        window.name = `${PAGE_SESSION_WINDOW_NAME_PREFIX}${payload}`;
+        return true;
+      }
+      try {
+        if (typeof window.name === 'string' && window.name.startsWith(PAGE_SESSION_WINDOW_NAME_PREFIX)) {
+          window.name = '';
+        }
+      } catch (_) {}
       return true;
     } catch (_) {
       return false;
@@ -5480,6 +5500,15 @@
       raw = String(sessionStorage.getItem(PAGE_SESSION_KEY) || '');
     } catch (_) {
       raw = '';
+    }
+    if (!raw) {
+      try {
+        if (typeof window.name === 'string' && window.name.startsWith(PAGE_SESSION_WINDOW_NAME_PREFIX)) {
+          raw = window.name.slice(PAGE_SESSION_WINDOW_NAME_PREFIX.length);
+        }
+      } catch (_) {
+        raw = '';
+      }
     }
     if (!raw) return false;
     try {
@@ -5589,7 +5618,7 @@
     const pos = (snapshot?.positions && typeof snapshot.positions === 'object') ? snapshot.positions : {};
     buildGraph(pos);
     applyPositions(pos);
-    schedulePersistCurrentPageSession(60);
+    persistCurrentPageSession(true);
   }
 
   function appendSessionSnapshot(snapshot, opts = {}) {
@@ -5617,7 +5646,7 @@
     fillSelect('colLocalIf', autoPickColumn(['localinterface','local_if','src_if','from_if']));
     fillSelect('colRemoteIf', autoPickColumn(['remoteinterface','remote_if','dst_if','to_if']));
     if (rawRows.length) buildGraph(pos);
-    schedulePersistCurrentPageSession(60);
+    persistCurrentPageSession(true);
     return merged;
   }
 
@@ -5853,6 +5882,7 @@
   const ZBX_TOKEN_SESSION_KEY = 'lldp_zabbix_token_session_v1';
   const SQL_PREF_KEY = 'lldp_sql_prefs_v1';
   const PAGE_SESSION_KEY = 'lldp_page_session_snapshot_v1';
+  const PAGE_SESSION_WINDOW_NAME_PREFIX = '__lldp_page_session__=';
   let scopedZbxTargets = null;
   let scopedZbxScopeLabel = '';
   let pageSessionPersistTimer = 0;
@@ -7554,12 +7584,15 @@
     try {
       const text = await f.text();
       const obj = JSON.parse(text);
+      clearPageSessionSnapshot();
       if (importInputAction === 'append') {
         const merged = appendSessionSnapshot(obj, { sourceName: 'session' });
+        persistCurrentPageSession(true);
         setStatus('Json 已追加并生成拓扑');
         setOK(`Json 追加成功：新增 ${merged.added} 行，覆盖 ${merged.replaced} 行，当前 ${rawRows.length} 行。`);
       } else {
         applySessionSnapshot(obj, { source: 'session', actionText: '恢复' });
+        persistCurrentPageSession(true);
         setStatus('Json 已导入并恢复拓扑');
         setOK(`Json 导入成功：${rawRows.length} 行，坐标已恢复。`);
       }
