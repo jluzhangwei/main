@@ -524,8 +524,9 @@
           <button id="saveServerState">保存状态</button>
           <button id="importServerState">导入状态</button>
         </div>
-        <div class="row">
-          <button id="rollbackStep">回到上一步</button>
+        <div class="row inline">
+          <button id="rollbackUndo">撤销</button>
+          <button id="rollbackRedo">恢复</button>
         </div>
       </div>
       </div>
@@ -664,6 +665,9 @@
         <div class="field span-2">
           <label><input id="cliOnly172Modal" type="checkbox" checked style="width:auto; margin-right:8px;" />只递归查询 172.* 网段（跳过 10.* / 143.* 等）</label>
         </div>
+        <div class="field span-2">
+          <label><input id="cliPingPrecheckModal" type="checkbox" style="width:auto; margin-right:8px;" />先 Ping 预检（2 个包，失败即跳过）</label>
+        </div>
 
         <div class="field">
           <label>设备 SSH 用户名</label>
@@ -690,7 +694,7 @@
 
         <div class="field">
           <label>登录超时（秒）</label>
-          <input id="cliConnectTimeoutModal" type="number" min="5" max="300" step="1" value="60" />
+          <input id="cliConnectTimeoutModal" type="number" min="5" max="300" step="1" value="15" />
         </div>
         <div class="field">
           <label>命令超时（秒）</label>
@@ -967,10 +971,10 @@
     active: false,
     threshold: null
   };
+  const MAX_ROLLBACK_STEPS = 5;
   const rollbackState = {
-    before: null,
-    after: null,
-    atBefore: false,
+    undoStack: [],
+    redoStack: [],
   };
   let rollbackApplyInProgress = false;
   let rollbackArmSeq = 0;
@@ -988,6 +992,14 @@
   const setStatus = (t) => $('status').textContent = t;
   const setOK = (t) => $('ok').textContent = t || '';
   const setErr = (t) => $('err').textContent = t || '';
+  function humanizeCliError(msg) {
+    const s = String(msg || '');
+    if (!s) return '';
+    if (s.includes('password_error')) return '设备密码错误';
+    if (s.includes('ping_unreachable')) return 'Ping 不通，已跳过';
+    if (s.includes('ssh_timeout')) return 'SSH 连接超时';
+    return s;
+  }
   const escapeHtml = (value) => String(value == null ? '' : value)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -1105,8 +1117,8 @@
       merge_prefix: '合并多条链路：',
       on: '开启',
       off: '关闭',
-      rollback_prev: '回到上一步',
-      rollback_next: '回到变更后',
+      rollback_prev: '撤销',
+      rollback_next: '恢复',
       import_mode_sql: 'SQL 导入',
       import_mode_cli: 'CLI 导入',
       import_mode_csv: 'CSV 导入',
@@ -1222,8 +1234,8 @@
       merge_prefix: 'Merge Multi-links: ',
       on: 'ON',
       off: 'OFF',
-      rollback_prev: 'Undo Last Step',
-      rollback_next: 'Redo Last Step',
+      rollback_prev: 'Undo',
+      rollback_next: 'Redo',
       import_mode_sql: 'SQL Import',
       import_mode_cli: 'CLI Import',
       import_mode_csv: 'CSV Import',
@@ -1550,11 +1562,16 @@
   }
 
   function updateRollbackButtonState() {
-    const btn = $('rollbackStep');
-    if (!btn) return;
-    const enabled = !!(rollbackState.before && rollbackState.after);
-    btn.disabled = !enabled;
-    btn.textContent = rollbackState.atBefore ? tr('rollback_next') : tr('rollback_prev');
+    const undoBtn = $('rollbackUndo');
+    const redoBtn = $('rollbackRedo');
+    if (undoBtn) {
+      undoBtn.disabled = rollbackState.undoStack.length === 0;
+      undoBtn.textContent = tr('rollback_prev');
+    }
+    if (redoBtn) {
+      redoBtn.disabled = rollbackState.redoStack.length === 0;
+      redoBtn.textContent = tr('rollback_next');
+    }
   }
 
   function captureRollbackSnapshot() {
@@ -1670,9 +1687,11 @@
       if (rollbackApplyInProgress) return;
       const afterSnapshot = captureRollbackSnapshot();
       if (!afterSnapshot) return;
-      rollbackState.before = beforeSnapshot;
-      rollbackState.after = afterSnapshot;
-      rollbackState.atBefore = false;
+      rollbackState.undoStack.push({ before: beforeSnapshot, after: afterSnapshot });
+      if (rollbackState.undoStack.length > MAX_ROLLBACK_STEPS) {
+        rollbackState.undoStack = rollbackState.undoStack.slice(-MAX_ROLLBACK_STEPS);
+      }
+      rollbackState.redoStack = [];
       updateRollbackButtonState();
     }, delay);
   }
@@ -2345,6 +2364,9 @@
     const nodeLabelField = nodeLabelMode === 'none'
       ? ''
       : (nodeLabelMode === 'full_ip' ? 'data(labelIp)' : (nodeLabelMode === 'full' ? 'data(label)' : 'data(short)'));
+    const groupLabelField = nodeLabelMode === 'none'
+      ? ''
+      : ((nodeLabelMode === 'full' || nodeLabelMode === 'full_ip') ? 'data(labelWithCount)' : 'data(shortWithCount)');
     return [
       {
         selector: 'node',
@@ -2362,10 +2384,25 @@
           'border-width': 0
         }
       },
+      {
+        selector: 'node[isGroup = true]',
+        style: {
+          'label': groupLabelField
+        }
+      },
       { selector: 'node[role = "CORE"]', style: { 'background-color': '#7c3aed' } },
       { selector: 'node[role = "AGGR"]', style: { 'background-color': '#2563eb' } },
       { selector: 'node[role = "TOR"]',  style: { 'background-color': '#059669' } },
       { selector: 'node[role = "OTHER"]',style: { 'background-color': '#6b7280' } },
+      {
+        selector: 'node.manual-group-node',
+        style: {
+          'background-color': '#facc15',
+          'border-width': 2,
+          'border-color': '#ca8a04',
+          'color': '#111827'
+        }
+      },
 
       {
         selector: 'edge',
@@ -2744,7 +2781,10 @@
 
     const edgesForCy = mergedMode ? aggregateEdges(baseEdges) : baseEdges;
     const elements = [
-      ...Array.from(nodes.values()).map(n => ({ data: n })),
+      ...Array.from(nodes.values()).map((n) => ({
+        data: n,
+        classes: (n.isGroup && n.isManualGroup) ? 'manual-group-node' : ''
+      })),
       ...edgesForCy
     ];
 
@@ -3517,6 +3557,8 @@
         id: groupId,
         label: info.label,
         short: shortLabel(info.label),
+        labelWithCount: `${info.label}\n${info.members.length} 台`,
+        shortWithCount: `${shortLabel(info.label)}\n${info.members.length} 台`,
         role,
         rank,
         ip: '',
@@ -5310,9 +5352,12 @@
     const useFull = normalized === 'full';
     const useFullIp = normalized === 'full_ip';
     const hidden = normalized === 'none';
+    const groupLabel = hidden ? '' : ((useFull || useFullIp) ? 'data(labelWithCount)' : 'data(shortWithCount)');
     cy.style()
       .selector('node')
       .style('label', hidden ? '' : (useFullIp ? 'data(labelIp)' : (useFull ? 'data(label)' : 'data(short)')))
+      .selector('node[isGroup = true]')
+      .style('label', groupLabel)
       .update();
     if (hidden) setOK('节点标签：隐藏');
     else if (useFullIp) setOK('节点标签：全名+IP');
@@ -5545,6 +5590,35 @@
     buildGraph(pos);
     applyPositions(pos);
     schedulePersistCurrentPageSession(60);
+  }
+
+  function appendSessionSnapshot(snapshot, opts = {}) {
+    const hs = Array.isArray(snapshot?.headers) ? snapshot.headers : [];
+    const srcRows = Array.isArray(snapshot?.source_rows) ? snapshot.source_rows : [];
+    const workRows = Array.isArray(snapshot?.working_rows) ? snapshot.working_rows : [];
+    const rs = workRows.length ? workRows : (Array.isArray(snapshot?.rows) ? snapshot.rows : []);
+    if (!hs.length || !rs.length) {
+      throw new Error('Json 文件缺少有效的表头或数据行');
+    }
+    const pos = capturePositions();
+    const parsed = {
+      headers: hs.slice(),
+      rows: (srcRows.length ? srcRows : rs).slice()
+    };
+    const merged = mergeParsed(parsed, opts.sourceName || 'session');
+    if ((merged.added + merged.replaced) > 0) {
+      sourceRows = rawRows.slice();
+    }
+    markWorkspaceMetaAppend(opts.sourceName || 'session', merged.added, merged.replaced, rawRows.length);
+    $('nRows').textContent = rawRows.length;
+    $('nCols').textContent = headers.length;
+    fillSelect('colLocalHost', autoPickColumn(['localhostname','local_host','src','from']));
+    fillSelect('colRemoteHost', autoPickColumn(['remotehostname','remote_host','dst','to']));
+    fillSelect('colLocalIf', autoPickColumn(['localinterface','local_if','src_if','from_if']));
+    fillSelect('colRemoteIf', autoPickColumn(['remoteinterface','remote_if','dst_if','to_if']));
+    if (rawRows.length) buildGraph(pos);
+    schedulePersistCurrentPageSession(60);
+    return merged;
   }
 
   function closeStateModal() {
@@ -6083,6 +6157,7 @@
       if (p.max_depth) $('cliMaxDepthModal').value = String(p.max_depth);
       if (p.cli_max_workers) $('cliMaxWorkersModal').value = String(p.cli_max_workers);
       if (typeof p.recursive_only_172 === 'boolean') $('cliOnly172Modal').checked = p.recursive_only_172;
+      if (typeof p.ping_precheck === 'boolean') $('cliPingPrecheckModal').checked = p.ping_precheck;
       if (p.device_username) $('cliUsernameModal').value = p.device_username;
       if (p.smc_jump_host) $('cliSmcJumpHostModal').value = p.smc_jump_host;
       if (p.smc_jump_port) $('cliSmcJumpPortModal').value = String(p.smc_jump_port);
@@ -6202,11 +6277,12 @@
         max_depth: payload.max_depth || 3,
         cli_max_workers: payload.cli_max_workers || 4,
         recursive_only_172: payload.recursive_only_172 !== false,
+        ping_precheck: !!payload.ping_precheck,
         device_username: payload.device_username || '',
         smc_jump_host: payload.smc_jump_host || '',
         smc_jump_port: payload.smc_jump_port || 22,
         smc_command: payload.smc_command || '',
-        cli_connect_timeout: payload.cli_connect_timeout || 60,
+        cli_connect_timeout: payload.cli_connect_timeout || 15,
         cli_command_timeout: payload.cli_command_timeout || 45
       };
       localStorage.setItem(CLI_PREF_KEY, JSON.stringify(safe));
@@ -6236,7 +6312,8 @@
     if ($('cliSmcJumpHostModal')) $('cliSmcJumpHostModal').value = '';
     if ($('cliSmcJumpPortModal')) $('cliSmcJumpPortModal').value = '22';
     if ($('cliSmcCommandModal')) $('cliSmcCommandModal').value = 'smc server toc {jump_host}';
-    if ($('cliConnectTimeoutModal')) $('cliConnectTimeoutModal').value = '60';
+    if ($('cliPingPrecheckModal')) $('cliPingPrecheckModal').checked = false;
+    if ($('cliConnectTimeoutModal')) $('cliConnectTimeoutModal').value = '15';
     if ($('cliCommandTimeoutModal')) $('cliCommandTimeoutModal').value = '45';
     if ($('zbxServerUrl')) $('zbxServerUrl').value = '';
     if ($('zbxApiToken')) $('zbxApiToken').value = '';
@@ -6361,8 +6438,9 @@
     const smcJumpPortRaw = parseInt((($('cliSmcJumpPortModal')?.value || '22')).trim(), 10);
     const smcJumpPort = Number.isFinite(smcJumpPortRaw) ? Math.min(65535, Math.max(1, smcJumpPortRaw)) : 22;
     const smcCommand = ($('cliSmcCommandModal')?.value || '').trim();
-    const connectTimeoutRaw = parseInt((($('cliConnectTimeoutModal')?.value || '60')).trim(), 10);
-    const connectTimeout = Number.isFinite(connectTimeoutRaw) ? Math.min(300, Math.max(5, connectTimeoutRaw)) : 60;
+    const pingPrecheck = !!$('cliPingPrecheckModal')?.checked;
+    const connectTimeoutRaw = parseInt((($('cliConnectTimeoutModal')?.value || '15')).trim(), 10);
+    const connectTimeout = Number.isFinite(connectTimeoutRaw) ? Math.min(300, Math.max(5, connectTimeoutRaw)) : 15;
     const commandTimeoutRaw = parseInt((($('cliCommandTimeoutModal')?.value || '45')).trim(), 10);
     const commandTimeout = Number.isFinite(commandTimeoutRaw) ? Math.min(300, Math.max(5, commandTimeoutRaw)) : 45;
     return {
@@ -6371,6 +6449,7 @@
       smc_jump_host: smcJumpHost || null,
       smc_jump_port: smcJumpPort,
       smc_command: smcCommand || null,
+      ping_precheck: pingPrecheck,
       cli_connect_timeout: connectTimeout,
       cli_command_timeout: commandTimeout
     };
@@ -6908,18 +6987,13 @@
     const importBtn = $('openImportModalImport');
     const appendBtn = $('openImportModalAppend');
     if (!importBtn || !appendBtn) return;
-    const isJson = String(mode || '').trim() === 'json';
-    appendBtn.style.display = isJson ? 'none' : '';
+    appendBtn.style.display = '';
   }
 
   function openImportModal(action = 'import') {
     importInputAction = action === 'append' ? 'append' : 'import';
     const mode = $('importMode')?.value || 'sql';
     if (mode === 'json') {
-      if (importInputAction === 'append') {
-        setErr('Json 导入不支持追加，请使用导入。');
-        return;
-      }
       $('importSessionFile').value = '';
       $('importSessionFile').click();
       return;
@@ -7115,14 +7189,23 @@
         const total = Number(prog.total_devices || 0);
         const cur = String(prog.current_device || '');
         const depthNow = Number(prog.current_depth || 0);
+        const activeWorkers = Number(prog.active_workers || 0);
+        const pendingDevices = Number(prog.pending_devices || 0);
+        const layerTotalDevices = Number(prog.layer_total_devices || 0);
+        const layerFinishedDevices = Number(prog.layer_finished_devices || 0);
+        const configuredWorkers = Number(prog.configured_workers || maxWorkers || 0);
         const sec = Math.max(
           Math.floor((Date.now() - cliStartedAt) / 1000),
           Math.floor(Number(prog.elapsed_seconds || 0))
         );
         if (st === 'queued' || st === 'running') {
-          const doneText = total ? `${finished}/${total}` : `${finished}`;
+          const doneText = `${finished} 台`;
+          const discoveredText = total > 0 ? `，当前已发现候选 ${total} 台` : '';
           const depthText = depthNow > 0 ? `，递归层 ${depthNow}` : '';
-          $('cliResultHintModal').textContent = `CLI 查询中，设备进度 ${doneText}${depthText}，已耗时 ${sec}s${cur ? `，当前 ${cur}` : ''}`;
+          const layerText = layerTotalDevices > 0 ? `，本层 ${layerFinishedDevices}/${layerTotalDevices}` : '';
+          const pendingText = pendingDevices > 0 ? `，待处理 ${pendingDevices} 台` : '';
+          const workerText = configuredWorkers > 0 ? `，并发 ${activeWorkers}/${configuredWorkers}` : '';
+          $('cliResultHintModal').textContent = `CLI 查询中，累计完成 ${doneText}${discoveredText}${depthText}${layerText}${pendingText}${workerText}，已耗时 ${sec}s${cur ? `，当前 ${cur}` : ''}`;
           continue;
         }
         if (st === 'failed') {
@@ -7172,7 +7255,13 @@
         setStatus(`CLI 查询已取消（总用时 ${elapsedSec}s）`);
       } else {
         setStatus(`CLI 查询完成（无可用邻接，总用时 ${elapsedSec}s）`);
-        setErr('CLI 查询成功，但未解析到可用 LLDP 邻接记录。请检查原始回显或重新开启调试后排查。');
+        const failedDevices = Array.isArray(data.failed_devices) ? data.failed_devices : [];
+        const passwordFailure = failedDevices.find((x) => String(x?.error || '').includes('password_error'));
+        if (passwordFailure) {
+          setErr(`CLI 查询失败：设备密码错误（${String(passwordFailure.device || addr || '')}）`);
+        } else {
+          setErr('CLI 查询成功，但未解析到可用 LLDP 邻接记录。请检查原始回显或重新开启调试后排查。');
+        }
       }
       const vendors = data.detected_vendors ? Object.values(data.detected_vendors).join(', ') : 'unknown';
       if (wasCancelled) {
@@ -7198,7 +7287,7 @@
     } catch (e) {
       stopCliTimer();
       setStatus(cliLldpTaskCancelling ? 'CLI 查询已取消' : 'CLI 查询失败');
-      setErr(`CLI 查询失败：${String(e && e.message ? e.message : e)}`);
+      setErr(`CLI 查询失败：${humanizeCliError(e && e.message ? e.message : e)}`);
       throw e;
     } finally {
       stopCliTimer();
@@ -7465,12 +7554,21 @@
     try {
       const text = await f.text();
       const obj = JSON.parse(text);
-      applySessionSnapshot(obj, { source: 'session', actionText: '恢复' });
-      setStatus('Json 已导入并恢复拓扑');
-      setOK(`Json 导入成功：${rawRows.length} 行，坐标已恢复。`);
+      if (importInputAction === 'append') {
+        const merged = appendSessionSnapshot(obj, { sourceName: 'session' });
+        setStatus('Json 已追加并生成拓扑');
+        setOK(`Json 追加成功：新增 ${merged.added} 行，覆盖 ${merged.replaced} 行，当前 ${rawRows.length} 行。`);
+      } else {
+        applySessionSnapshot(obj, { source: 'session', actionText: '恢复' });
+        setStatus('Json 已导入并恢复拓扑');
+        setOK(`Json 导入成功：${rawRows.length} 行，坐标已恢复。`);
+      }
       setErr('');
+      closeImportModal();
     } catch (err) {
       setErr(`导入 Json 失败：${String(err && err.message ? err.message : err)}`);
+    } finally {
+      e.target.value = '';
     }
   });
 
@@ -8213,25 +8311,51 @@ $('filter').addEventListener('keydown', (e) => {
       setOK(`已仅保留选中 ${selected.length} 个节点，隐藏其余 ${removeNodes.length} 个节点（可恢复）。`);
     }, { delayMs: 0 });
   });
-  $('rollbackStep').addEventListener('click', () => {
-    if (!rollbackState.before || !rollbackState.after) {
-      setOK('暂无可回退操作。');
+  $('rollbackUndo').addEventListener('click', () => {
+    const entry = rollbackState.undoStack.pop();
+    if (!entry) {
+      setOK('暂无可撤销操作。');
+      updateRollbackButtonState();
       return;
     }
     rollbackArmSeq += 1;
-    const target = rollbackState.atBefore ? rollbackState.after : rollbackState.before;
-    const ok = applyRollbackSnapshot(target);
+    const ok = applyRollbackSnapshot(entry.before);
     if (!ok) {
-      setErr('回退失败：快照不可用。');
+      setErr('撤销失败：快照不可用。');
+      rollbackState.undoStack.push(entry);
+      updateRollbackButtonState();
       return;
     }
-    rollbackState.atBefore = !rollbackState.atBefore;
-    updateRollbackButtonState();
-    if (rollbackState.atBefore) {
-      setOK('已回到上一步，再点一次可回到变更后状态。');
-    } else {
-      setOK('已回到变更后状态。');
+    rollbackState.redoStack.push(entry);
+    if (rollbackState.redoStack.length > MAX_ROLLBACK_STEPS) {
+      rollbackState.redoStack = rollbackState.redoStack.slice(-MAX_ROLLBACK_STEPS);
     }
+    updateRollbackButtonState();
+    setOK('已撤销上一步变更。');
+    schedulePersistCurrentPageSession(80);
+  });
+
+  $('rollbackRedo').addEventListener('click', () => {
+    const entry = rollbackState.redoStack.pop();
+    if (!entry) {
+      setOK('暂无可恢复操作。');
+      updateRollbackButtonState();
+      return;
+    }
+    rollbackArmSeq += 1;
+    const ok = applyRollbackSnapshot(entry.after);
+    if (!ok) {
+      setErr('恢复失败：快照不可用。');
+      rollbackState.redoStack.push(entry);
+      updateRollbackButtonState();
+      return;
+    }
+    rollbackState.undoStack.push(entry);
+    if (rollbackState.undoStack.length > MAX_ROLLBACK_STEPS) {
+      rollbackState.undoStack = rollbackState.undoStack.slice(-MAX_ROLLBACK_STEPS);
+    }
+    updateRollbackButtonState();
+    setOK('已恢复到撤销前状态。');
     schedulePersistCurrentPageSession(80);
   });
   window.addEventListener('pagehide', () => { persistCurrentPageSession(true); });

@@ -321,7 +321,7 @@ TOKEN_RETRY_PATTERN = re.compile(
 OLD_TOKEN_PATTERN = re.compile(r"old\s+token.*?\(y/n\)", re.IGNORECASE | re.DOTALL)
 PASSWORD_PATTERN = re.compile(r"(enter\s+password|password)\s*:\s*$", re.IGNORECASE | re.MULTILINE)
 FAIL_PATTERN = re.compile(
-    r"(permission denied|connection timed out|could not resolve|connection refused|no route to host|closed by remote host)",
+    r"(permission denied|invalid credentials|too many authentication failures|connection timed out|could not resolve|connection refused|no route to host|closed by remote host)",
     re.IGNORECASE,
 )
 ANSI_PATTERN = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
@@ -342,6 +342,7 @@ class SmcShellConfig:
     jump_host: str | None = None
     jump_port: int = 22
     timeout: int = 60
+    ping_precheck: bool = False
     debug: Callable[[str], None] | None = None
 
 
@@ -494,6 +495,10 @@ class SmcShellClient:
 
     def connect(self) -> None:
         self._connect_via_smc_shell()
+        if self.config.ping_precheck:
+            ping_ok, _ = self.ping_target(count=2, timeout=min(4, max(2, self.config.timeout)))
+            if not ping_ok:
+                raise RuntimeError("ping_unreachable")
         self._dbg(f"[LOGIN] ssh to {self.config.username}@{self.config.device_ip}")
         ssh_connect_timeout = max(5, min(int(self.config.timeout or 10), 12))
         ssh_cmd = (
@@ -531,6 +536,9 @@ class SmcShellClient:
                 buffer = ""
                 continue
             if PASSWORD_PATTERN.search(normalized):
+                low = normalized.lower()
+                if "invalid credentials" in low or "too many authentication failures" in low:
+                    raise RuntimeError("SMC jump login failed while ssh to target device: password_error")
                 if password_attempts < max_password_attempts:
                     password_attempts += 1
                     self._dbg(f"[LOGIN] password prompt detected, attempt={password_attempts}")
@@ -556,6 +564,49 @@ class SmcShellClient:
         self._smc_send(cmd + "\n")
         raw_output = self._smc_read_until_prompt_via_smc(timeout=timeout)
         return self._clean_shell_output(raw_output, cmd)
+
+    def _execute_jump_command(self, cmd: str, timeout: int = 10) -> str:
+        if self.master_fd is None:
+            raise RuntimeError("SMC jump shell is not active")
+        self._smc_send(cmd + "\n")
+        deadline = time.time() + max(2, int(timeout))
+        buffer = ""
+        while time.time() < deadline:
+            chunk = self._smc_read_for(1.0)
+            if not chunk:
+                continue
+            buffer += chunk
+            if len(buffer) > 20000:
+                buffer = buffer[-20000:]
+            normalized = self._clean_ansi(buffer)
+            if JUMP_PROMPT_PATTERN.search(normalized[-2000:]):
+                return self._clean_shell_output(normalized, cmd)
+        raise RuntimeError("jump_shell_command_timeout")
+
+    def ping_target(self, count: int = 2, timeout: int = 4) -> tuple[bool, str]:
+        if not self.master_fd:
+            raise RuntimeError("SMC jump shell is not active")
+        per_packet = 1
+        cmd = f"ping -c {max(1, int(count))} -W {max(1, int(per_packet))} {self.config.device_ip}"
+        self._dbg(f"[PING] {cmd}")
+        try:
+            out = self._execute_jump_command(cmd, timeout=max(2, int(timeout)))
+        except Exception as exc:
+            self._dbg(f"[PING] failed: {exc}")
+            return False, str(exc)
+        low = out.lower()
+        ok = (
+            "0% packet loss" in low
+            or re.search(r"\b[12]\s+received\b", low) is not None
+            or re.search(r"\b[12]\s+packets received\b", low) is not None
+        )
+        if not ok and (
+            "100% packet loss" in low
+            or "0 received" in low
+            or "100% loss" in low
+        ):
+            return False, out
+        return ok, out
 
     def exec(self, cmd: str, timeout: int = 30) -> str:
         return self._execute_command_via_smc(cmd, timeout=timeout)
@@ -597,6 +648,7 @@ class CliRuntimeConfig:
     jump_port: int
     command_timeout: int
     connect_timeout: int
+    ping_precheck: bool
 
 
 def get_cli_runtime_config(
@@ -607,6 +659,7 @@ def get_cli_runtime_config(
     smc_command: str | None = None,
     cli_command_timeout: int | None = None,
     cli_connect_timeout: int | None = None,
+    ping_precheck: bool | None = None,
 ) -> CliRuntimeConfig:
     ensure_env_loaded()
     username = (
@@ -645,6 +698,11 @@ def get_cli_runtime_config(
         if cli_connect_timeout is not None
         else get_env("CLI_CONNECT_TIMEOUT", "60")
     )
+    final_ping_precheck = bool(
+        ping_precheck
+        if ping_precheck is not None
+        else str(get_env("CLI_PING_PRECHECK", "false")).strip().lower() in {"1", "true", "yes", "on"}
+    )
 
     if not username or not password:
         raise RuntimeError("Missing CLI device credentials. Set CLI_DEVICE_USERNAME/CLI_DEVICE_PASSWORD")
@@ -659,6 +717,7 @@ def get_cli_runtime_config(
         jump_port=jump_port,
         command_timeout=command_timeout,
         connect_timeout=connect_timeout,
+        ping_precheck=final_ping_precheck,
     )
 
 
@@ -678,6 +737,8 @@ def _looks_like_ip(s: str) -> bool:
 
 def classify_ssh_failure(text: str) -> str:
     low = (text or "").lower()
+    if "invalid credentials" in low or "too many authentication failures" in low:
+        return "password_error"
     if "connection timed out" in low:
         return "ssh_timeout"
     if "permission denied" in low:
@@ -1322,6 +1383,7 @@ def collect_device_lldp_once(source: str, depth: int, cfg: CliRuntimeConfig) -> 
             username=cfg.username,
             password=cfg.password,
             timeout=cfg.connect_timeout,
+            ping_precheck=cfg.ping_precheck,
             debug=dbg,
         )
     )
@@ -1397,6 +1459,7 @@ def build_cli_lldp_rows(
     *,
     cli_max_workers: int | None = None,
     recursive_only_172: bool = False,
+    ping_precheck: bool = False,
     device_username: str | None = None,
     device_password: str | None = None,
     smc_jump_host: str | None = None,
@@ -1416,6 +1479,7 @@ def build_cli_lldp_rows(
         smc_command=smc_command,
         cli_command_timeout=cli_command_timeout,
         cli_connect_timeout=cli_connect_timeout,
+        ping_precheck=ping_precheck,
     )
 
     visited_sources: set[str] = set()
@@ -1434,6 +1498,10 @@ def build_cli_lldp_rows(
     total_devices = len({normalize_device_id(start_device)}) if normalize_device_id(start_device) else 0
     current_device = ""
     current_depth = 0
+    active_workers = 0
+    pending_devices = 0
+    layer_total_devices = 0
+    layer_finished_devices = 0
 
     def emit_progress(status: str) -> None:
         if not progress_cb:
@@ -1446,6 +1514,11 @@ def build_cli_lldp_rows(
                     "total_devices": total_devices,
                     "current_device": current_device,
                     "current_depth": current_depth,
+                    "active_workers": active_workers,
+                    "pending_devices": pending_devices,
+                    "layer_total_devices": layer_total_devices,
+                    "layer_finished_devices": layer_finished_devices,
+                    "configured_workers": workers,
                     "elapsed_seconds": max(0.0, time.perf_counter() - total_start),
                 }
             )
@@ -1467,12 +1540,16 @@ def build_cli_lldp_rows(
 
         next_layer: set[str] = set()
         depth_completed = 0
+        layer_total_devices = len(targets)
+        layer_finished_devices = 0
         with ThreadPoolExecutor(max_workers=min(workers, len(targets))) as pool:
             future_map = {
                 pool.submit(collect_device_lldp_once, source, depth, cfg): source
                 for source in targets
             }
             pending = dict(future_map)
+            pending_devices = len(pending)
+            active_workers = min(len(pending), workers)
             while pending:
                 if cancel_event and cancel_event.is_set():
                     for fut in pending:
@@ -1480,14 +1557,20 @@ def build_cli_lldp_rows(
                             fut.cancel()
                         except Exception:
                             pass
+                    pending_devices = len(pending)
+                    active_workers = min(len(pending), workers)
                     emit_progress("cancelled")
                     break
                 done, _ = wait(list(pending.keys()), timeout=1.0, return_when=FIRST_COMPLETED)
                 if not done:
+                    pending_devices = len(pending)
+                    active_workers = min(len(pending), workers)
                     emit_progress("running")
                     continue
                 for fut in done:
                     source = pending.pop(fut, "")
+                    pending_devices = len(pending)
+                    active_workers = min(len(pending), workers)
                     current_device = str(source or "")
                     emit_progress("running")
                     try:
@@ -1519,6 +1602,7 @@ def build_cli_lldp_rows(
                         )
                         finished_devices += 1
                         depth_completed += 1
+                        layer_finished_devices = depth_completed
                         emit_progress("running")
                         continue
                     source = str(res.get("source", "") or "")
@@ -1546,6 +1630,7 @@ def build_cli_lldp_rows(
                         failed.append({"device": source, "error": error})
                         finished_devices += 1
                         depth_completed += 1
+                        layer_finished_devices = depth_completed
                         emit_progress("running")
                         continue
 
@@ -1575,10 +1660,13 @@ def build_cli_lldp_rows(
                     total_devices = max(total_devices, len(visited_sources) + len(next_layer) + len(pending))
                     finished_devices += 1
                     depth_completed += 1
+                    layer_finished_devices = depth_completed
                     emit_progress("running")
             if cancel_event and cancel_event.is_set():
                 current_layer = []
                 break
+            active_workers = 0
+            pending_devices = 0
 
         current_layer = sorted(next_layer)
         depth_summaries.append(
@@ -1606,6 +1694,7 @@ def build_cli_lldp_rows(
         "total_elapsed_seconds": max(0.0, time.perf_counter() - total_start),
         "finished_devices": finished_devices,
         "total_devices": total_devices,
+        "configured_workers": workers,
         "cancelled": bool(cancel_event and cancel_event.is_set()),
     }
     # Pass 1: fill destination name from same-IP rows where name exists.
@@ -1665,6 +1754,7 @@ class CliQueryRequest(BaseModel):
     max_depth: int = Field(default=3, ge=1, le=5)
     cli_max_workers: int | None = Field(default=None, ge=1, le=16)
     recursive_only_172: bool = False
+    ping_precheck: bool = False
     device_username: str | None = None
     device_password: str | None = None
     smc_jump_host: str | None = None
@@ -4035,6 +4125,11 @@ def _run_cli_query_task(task_id: str) -> None:
                 "total_devices": update.get("total_devices", 0),
                 "current_device": update.get("current_device", ""),
                 "current_depth": update.get("current_depth", 0),
+                "active_workers": update.get("active_workers", 0),
+                "pending_devices": update.get("pending_devices", 0),
+                "layer_total_devices": update.get("layer_total_devices", 0),
+                "layer_finished_devices": update.get("layer_finished_devices", 0),
+                "configured_workers": update.get("configured_workers", payload.get("cli_max_workers", 0)),
                 "elapsed_seconds": update.get("elapsed_seconds", 0.0),
             }
             cur["updated_at"] = time.time()
@@ -4051,12 +4146,13 @@ def _run_cli_query_task(task_id: str) -> None:
             device_password=payload.get("device_password"),
             smc_jump_host=payload.get("smc_jump_host"),
             smc_jump_port=payload.get("smc_jump_port"),
-            smc_command=payload.get("smc_command"),
-            cli_command_timeout=payload.get("cli_command_timeout"),
-            cli_connect_timeout=payload.get("cli_connect_timeout"),
-            progress_cb=progress_cb,
-            cancel_event=cancel_event if isinstance(cancel_event, threading.Event) else None,
-        )
+        smc_command=payload.get("smc_command"),
+        cli_command_timeout=payload.get("cli_command_timeout"),
+        cli_connect_timeout=payload.get("cli_connect_timeout"),
+        ping_precheck=bool(payload.get("ping_precheck", False)),
+        progress_cb=progress_cb,
+        cancel_event=cancel_event if isinstance(cancel_event, threading.Event) else None,
+    )
         safe_name, out_path, csv_text = write_rows_to_csv(
             f"lldp_cli_{device_address.replace('/', '_').replace(' ', '_')}_d{max_depth}",
             rows,
@@ -4105,6 +4201,11 @@ def _run_cli_query_task(task_id: str) -> None:
                 "total_devices": meta.get("total_devices", 0),
                 "current_device": "",
                 "current_depth": max_depth,
+                "active_workers": 0,
+                "pending_devices": 0,
+                "layer_total_devices": 0,
+                "layer_finished_devices": 0,
+                "configured_workers": meta.get("cli_max_workers", 0),
                 "elapsed_seconds": meta.get("total_elapsed_seconds", 0.0),
             }
     except Exception as exc:
@@ -4134,7 +4235,7 @@ def _create_cli_query_task(payload: CliQueryRequest) -> dict[str, Any]:
         "finished_at": 0.0,
         "error": "",
         "response": None,
-        "progress": {"status": "queued", "finished_devices": 0, "total_devices": 0, "current_device": "", "current_depth": 0, "elapsed_seconds": 0.0},
+        "progress": {"status": "queued", "finished_devices": 0, "total_devices": 0, "current_device": "", "current_depth": 0, "active_workers": 0, "pending_devices": 0, "layer_total_devices": 0, "layer_finished_devices": 0, "configured_workers": body.get("cli_max_workers", 0), "elapsed_seconds": 0.0},
         "cancel_event": threading.Event(),
     }
     with CLI_QUERY_JOB_LOCK:
