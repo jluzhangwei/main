@@ -2157,14 +2157,158 @@
     return pos;
   }
 
-  function applyPositions(posMap) {
+  function applyPositions(posMap, opts = {}) {
     if (!cy || !posMap) return;
     cy.nodes().forEach(n => {
       const p = posMap[n.id()];
       if (p && isFinite(p.x) && isFinite(p.y)) n.position(p);
     });
     cy.layout({ name: 'preset', fit: false, padding: 30 }).run();
-    cy.center(); cy.zoom(1.05);
+    if (opts.fitView !== false) {
+      cy.center(); cy.zoom(1.05);
+    }
+  }
+
+  function mergePositionMaps(baseMap, overrideMap) {
+    const merged = { ...(baseMap && typeof baseMap === 'object' ? baseMap : {}) };
+    const extra = (overrideMap && typeof overrideMap === 'object') ? overrideMap : {};
+    Object.entries(extra).forEach(([id, pos]) => {
+      if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) return;
+      merged[id] = { x: Number(pos.x), y: Number(pos.y) };
+    });
+    return merged;
+  }
+
+  function buildSnapshotPositionIndex(snapshot) {
+    const byId = new Map();
+    const byEntityKey = new Map();
+    const byLabel = new Map();
+    const byShort = new Map();
+    const byIp = new Map();
+    const positions = (snapshot?.positions && typeof snapshot.positions === 'object') ? snapshot.positions : {};
+    const nodes = Array.isArray(snapshot?.nodes) ? snapshot.nodes : [];
+    nodes.forEach((node) => {
+      const pos = node?.position || positions[String(node?.id || '').trim()];
+      if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) return;
+      const normalizedPos = { x: Number(pos.x), y: Number(pos.y) };
+      const id = String(node?.id || '').trim();
+      const entityKey = String(node?.entityKey || '').trim();
+      const label = String(node?.label || '').trim();
+      const short = String(node?.short || shortLabel(label)).trim();
+      const ips = mergeIpLists(node?.ips, node?.ip);
+      if (id) byId.set(id, normalizedPos);
+      if (entityKey) byEntityKey.set(entityKey, normalizedPos);
+      if (label) byLabel.set(label.toLowerCase(), normalizedPos);
+      if (short) byShort.set(short.toLowerCase(), normalizedPos);
+      ips.forEach((ip) => byIp.set(ip, normalizedPos));
+    });
+    return { byId, byEntityKey, byLabel, byShort, byIp };
+  }
+
+  function resolveImportedSnapshotPosition(nodeData, index) {
+    if (!nodeData || !index) return null;
+    const id = String(nodeData.id || '').trim();
+    if (id && index.byId.has(id)) return index.byId.get(id);
+    const entityKey = String(nodeData.entityKey || '').trim();
+    if (entityKey && index.byEntityKey.has(entityKey)) return index.byEntityKey.get(entityKey);
+    const label = String(nodeData.label || '').trim().toLowerCase();
+    if (label && index.byLabel.has(label)) return index.byLabel.get(label);
+    const short = String(nodeData.short || shortLabel(nodeData.label || '')).trim().toLowerCase();
+    if (short && index.byShort.has(short)) return index.byShort.get(short);
+    const ips = mergeIpLists(nodeData.ips, nodeData.ip);
+    for (const ip of ips) {
+      if (index.byIp.has(ip)) return index.byIp.get(ip);
+    }
+    return null;
+  }
+
+  function resolveImportedAppendOffset(cyInstance, existingNodeIds, currentPosMap, importedIndex) {
+    if (!cyInstance || !existingNodeIds || !existingNodeIds.size || !importedIndex) return null;
+    let sumDx = 0;
+    let sumDy = 0;
+    let count = 0;
+    cyInstance.nodes().forEach((node) => {
+      if (!existingNodeIds.has(node.id())) return;
+      const currentPos = currentPosMap?.[node.id()];
+      const importedPos = resolveImportedSnapshotPosition(node.data(), importedIndex);
+      if (!currentPos || !importedPos) return;
+      if (!Number.isFinite(currentPos.x) || !Number.isFinite(currentPos.y)) return;
+      if (!Number.isFinite(importedPos.x) || !Number.isFinite(importedPos.y)) return;
+      sumDx += (Number(currentPos.x) - Number(importedPos.x));
+      sumDy += (Number(currentPos.y) - Number(importedPos.y));
+      count += 1;
+    });
+    if (!count) return null;
+    return { x: sumDx / count, y: sumDy / count };
+  }
+
+  function buildVisibleSubgraphSnapshot() {
+    if (!cy) return null;
+    const visibleNodes = cy.nodes(':visible');
+    const visibleEdges = cy.edges(':visible');
+    const rowKeySet = new Set();
+    visibleEdges.forEach((edge) => {
+      const keys = Array.isArray(edge.data('rowKeys')) ? edge.data('rowKeys') : [];
+      keys.forEach((key) => {
+        const s = String(key || '').trim();
+        if (s) rowKeySet.add(s);
+      });
+    });
+    const cols = {
+      colLH: $('colLocalHost')?.value || '',
+      colRH: $('colRemoteHost')?.value || '',
+      colLI: $('colLocalIf')?.value || '',
+      colRI: $('colRemoteIf')?.value || ''
+    };
+    const visibleRows = rawRows.filter((row) => {
+      const ctx = resolveGraphRowContext(row, cols, $('stripDomain').value === 'yes');
+      if (!ctx) return false;
+      return !!(ctx.rowKey && rowKeySet.has(ctx.rowKey));
+    });
+    const visibleNodeIds = new Set(visibleNodes.map((n) => n.id()));
+    const visiblePositions = {};
+    visibleNodes.forEach((n) => {
+      visiblePositions[n.id()] = { ...n.position() };
+    });
+    const visibleNodeMeta = visibleNodes.map((n) => ({
+      id: n.id(),
+      label: String(n.data('label') || '').trim(),
+      short: String(n.data('short') || '').trim(),
+      ip: String(n.data('ip') || '').trim(),
+      ips: mergeIpLists(n.data('ips'), n.data('ip')),
+      entityKey: String(n.data('entityKey') || '').trim(),
+      position: { x: Number(n.position('x')), y: Number(n.position('y')) }
+    }));
+    const visibleCollapsedManualGroupKeys = new Set(
+      visibleNodes
+        .filter((n) => !!n.data('isGroup') && !!n.data('isManualGroup'))
+        .map((n) => String(n.data('groupKey') || n.data('manualGroupKey') || '').trim())
+        .filter(Boolean)
+    );
+    const visibleManualGroups = cloneManualGroups(manualGroups).filter((group) => {
+      const members = Array.isArray(group.members) ? group.members : [];
+      if (members.length < 2) return false;
+      if (visibleCollapsedManualGroupKeys.has(String(group.key || '').trim())) return true;
+      return members.every((id) => visibleNodeIds.has(id));
+    });
+    const visibleExpandedManualGroupKeys = Array.from(expandedManualGroupKeys).filter((key) => (
+      visibleManualGroups.some((group) => group.key === key)
+    ));
+    return {
+      headers: headers.slice(),
+      rows: visibleRows.slice(),
+      positions: visiblePositions,
+      nodes: visibleNodeMeta,
+      ui: {
+        stripDomain: $('stripDomain')?.value || 'yes',
+        colLocalHost: $('colLocalHost')?.value || '',
+        colRemoteHost: $('colRemoteHost')?.value || '',
+        colLocalIf: $('colLocalIf')?.value || '',
+        colRemoteIf: $('colRemoteIf')?.value || '',
+        manualGroups: visibleManualGroups,
+        expandedManualGroupKeys: visibleExpandedManualGroupKeys
+      }
+    };
   }
 
   function loadDataFromText(text, opts = {}) {
@@ -5384,6 +5528,15 @@
       util_key: key,
       ...(value && typeof value === 'object' ? value : {})
     }));
+    const snapshotNodes = cy ? cy.nodes().map((n) => ({
+      id: n.id(),
+      label: String(n.data('label') || '').trim(),
+      short: String(n.data('short') || '').trim(),
+      ip: String(n.data('ip') || '').trim(),
+      ips: mergeIpLists(n.data('ips'), n.data('ip')),
+      entityKey: String(n.data('entityKey') || '').trim(),
+      position: { x: Number(n.position('x')), y: Number(n.position('y')) }
+    })) : [];
     return {
       version: 1,
       exported_at: new Date().toISOString(),
@@ -5397,7 +5550,9 @@
         last_action: String(workspaceMeta.lastAction || ''),
         current_rows: Number(workspaceMeta.currentRows || rawRows.length || 0)
       },
+      nodes: snapshotNodes,
       positions: capturePositions(),
+      visible_subgraph: buildVisibleSubgraphSnapshot(),
       deleted_stack: deletedStack.map((x) => (Array.isArray(x) ? x.slice() : [])),
       view_state: {
         filterTerms: cloneMatchExpression(viewState.filterTerms),
@@ -5622,14 +5777,59 @@
   }
 
   function appendSessionSnapshot(snapshot, opts = {}) {
-    const hs = Array.isArray(snapshot?.headers) ? snapshot.headers : [];
-    const srcRows = Array.isArray(snapshot?.source_rows) ? snapshot.source_rows : [];
-    const workRows = Array.isArray(snapshot?.working_rows) ? snapshot.working_rows : [];
-    const rs = workRows.length ? workRows : (Array.isArray(snapshot?.rows) ? snapshot.rows : []);
+    const hasVisibleSubgraph = !!(
+      snapshot?.visible_subgraph
+      && (
+        (Array.isArray(snapshot.visible_subgraph.rows) && snapshot.visible_subgraph.rows.length)
+        || (Array.isArray(snapshot.visible_subgraph.nodes) && snapshot.visible_subgraph.nodes.length)
+      )
+    );
+    const appendPayload = hasVisibleSubgraph ? snapshot.visible_subgraph : snapshot;
+    const hs = Array.isArray(appendPayload?.headers) ? appendPayload.headers : [];
+    const srcRows = Array.isArray(appendPayload?.source_rows) ? appendPayload.source_rows : [];
+    const workRows = Array.isArray(appendPayload?.working_rows) ? appendPayload.working_rows : [];
+    const rs = workRows.length ? workRows : (Array.isArray(appendPayload?.rows) ? appendPayload.rows : []);
     if (!hs.length || !rs.length) {
       throw new Error('Json 文件缺少有效的表头或数据行');
     }
-    const pos = capturePositions();
+    const currentPos = capturePositions();
+    const importedPos = (appendPayload?.positions && typeof appendPayload.positions === 'object') ? appendPayload.positions : {};
+    const pos = mergePositionMaps(importedPos, currentPos);
+    const importedIndex = buildSnapshotPositionIndex(appendPayload);
+    const existingNodeIds = new Set(cy ? cy.nodes().map((n) => n.id()) : []);
+    const forceNodes = Array.isArray(appendPayload?.nodes)
+      ? appendPayload.nodes.map((node) => {
+          const id = String(node?.id || '').trim();
+          if (!id) return null;
+          const label = String(node?.label || node?.short || id).trim() || id;
+          const short = String(node?.short || shortLabel(label)).trim() || shortLabel(label);
+          const ips = mergeIpLists(node?.ips, node?.ip);
+          const ip = primaryIpFromList(ips);
+          const entityKey = String(node?.entityKey || inferEntityKey(label, ip)).trim();
+          return { id, label, short, ip, ips, entityKey };
+        }).filter(Boolean)
+      : [];
+    const importedUi = (appendPayload?.ui && typeof appendPayload.ui === 'object') ? appendPayload.ui : {};
+    if (Array.isArray(importedUi.manualGroups) && importedUi.manualGroups.length) {
+      const currentGroups = cloneManualGroups(manualGroups);
+      const importedGroups = cloneManualGroups(importedUi.manualGroups);
+      const existingSignatures = new Set(currentGroups.map((g) => (
+        Array.isArray(g.members) ? g.members.map((id) => String(id || '').trim()).filter(Boolean).sort().join('||') : ''
+      )).filter(Boolean));
+      importedGroups.forEach((group) => {
+        const sig = Array.isArray(group.members)
+          ? group.members.map((id) => String(id || '').trim()).filter(Boolean).sort().join('||')
+          : '';
+        if (!sig || existingSignatures.has(sig)) return;
+        currentGroups.push(group);
+        existingSignatures.add(sig);
+      });
+      manualGroups = currentGroups;
+      expandedManualGroupKeys = new Set([
+        ...Array.from(expandedManualGroupKeys),
+        ...((importedUi.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean))
+      ]);
+    }
     const parsed = {
       headers: hs.slice(),
       rows: (srcRows.length ? srcRows : rs).slice()
@@ -5638,6 +5838,10 @@
     if ((merged.added + merged.replaced) > 0) {
       sourceRows = rawRows.slice();
     }
+    const importedNodeIds = new Set(forceNodes.map((node) => node.id));
+    if (importedNodeIds.size) {
+      releaseNodesFromDeletedStack(importedNodeIds);
+    }
     markWorkspaceMetaAppend(opts.sourceName || 'session', merged.added, merged.replaced, rawRows.length);
     $('nRows').textContent = rawRows.length;
     $('nCols').textContent = headers.length;
@@ -5645,7 +5849,26 @@
     fillSelect('colRemoteHost', autoPickColumn(['remotehostname','remote_host','dst','to']));
     fillSelect('colLocalIf', autoPickColumn(['localinterface','local_if','src_if','from_if']));
     fillSelect('colRemoteIf', autoPickColumn(['remoteinterface','remote_if','dst_if','to_if']));
-    if (rawRows.length) buildGraph(pos);
+    if (rawRows.length || forceNodes.length) {
+      buildGraph(pos, { keepExactPositions: true, adjustViewport: false, forceNodes });
+      if (cy) {
+        const appendOffset = resolveImportedAppendOffset(cy, existingNodeIds, currentPos, importedIndex);
+        cy.nodes().forEach((node) => {
+          if (existingNodeIds.has(node.id())) return;
+          const importedPosForNode = resolveImportedSnapshotPosition(node.data(), importedIndex);
+          if (!importedPosForNode) return;
+          const finalPos = appendOffset
+            ? { x: importedPosForNode.x + appendOffset.x, y: importedPosForNode.y + appendOffset.y }
+            : { x: importedPosForNode.x, y: importedPosForNode.y };
+          pos[node.id()] = finalPos;
+          node.position(finalPos);
+        });
+        const newNodes = cy.nodes().filter((n) => !existingNodeIds.has(n.id()));
+        cy.elements(':selected').unselect();
+        if (newNodes.length) newNodes.select().addClass('hit');
+      }
+      applyPositions(pos, { fitView: false });
+    }
     persistCurrentPageSession(true);
     return merged;
   }
