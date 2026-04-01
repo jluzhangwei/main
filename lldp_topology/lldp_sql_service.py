@@ -51,6 +51,7 @@ TMP_DIR.mkdir(parents=True, exist_ok=True)
 STATE_DIR = BASE_DIR / "state_snapshots"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 STATE_LIMIT = int(os.getenv("LLDP_STATE_LIMIT", "15") or "15")
+ZABBIX_CONFIG_FILE = BASE_DIR / "zabbix_config.json"
 LINK_UTIL_CACHE_FILE = TMP_DIR / "link_util_cache.csv"
 LINK_UTIL_CACHE_FIELDS = [
     "util_key",
@@ -84,6 +85,60 @@ ZABBIX_URL_DEFAULT = ""
 ZABBIX_API_TOKEN_DEFAULT = ""
 
 
+class ZabbixConfigSaveRequest(BaseModel):
+    url: str = ""
+    api_token: str = ""
+    verify_ssl: bool = False
+
+
+def _read_saved_zabbix_config() -> dict[str, Any]:
+    if not ZABBIX_CONFIG_FILE.exists():
+        return {}
+    try:
+        raw = json.loads(ZABBIX_CONFIG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        "url": str(raw.get("url", "") or "").strip(),
+        "api_token": str(raw.get("api_token", "") or "").strip(),
+        "verify_ssl": bool(raw.get("verify_ssl", False)),
+    }
+
+
+def _effective_zabbix_config() -> dict[str, Any]:
+    saved = _read_saved_zabbix_config()
+    url = str(saved.get("url") or get_env("ZABBIX_URL", ZABBIX_URL_DEFAULT)).strip()
+    api_token = str(saved.get("api_token") or get_env("ZABBIX_API_TOKEN", ZABBIX_API_TOKEN_DEFAULT)).strip()
+    verify_ssl = saved.get("verify_ssl")
+    if verify_ssl is None:
+        verify_ssl = zabbix_verify_ssl(None)
+    return {
+        "url": url,
+        "api_token": api_token,
+        "verify_ssl": bool(verify_ssl),
+        "source": "file" if saved else "env",
+    }
+
+
+def _save_zabbix_config(payload: ZabbixConfigSaveRequest) -> dict[str, Any]:
+    item = {
+        "url": str(payload.url or "").strip(),
+        "api_token": str(payload.api_token or "").strip(),
+        "verify_ssl": bool(payload.verify_ssl),
+    }
+    ZABBIX_CONFIG_FILE.write_text(json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8")
+    return item
+
+
+def _delete_zabbix_config() -> None:
+    try:
+        ZABBIX_CONFIG_FILE.unlink()
+    except FileNotFoundError:
+        return
+
+
 def load_dotenv_file(path: str) -> None:
     p = Path(path)
     if not p.exists():
@@ -106,7 +161,7 @@ def get_env(name: str, default: str = "") -> str:
 
 
 def zabbix_api_url(url_override: str | None = None) -> str:
-    base = str(url_override or get_env("ZABBIX_URL", ZABBIX_URL_DEFAULT)).strip().rstrip("/")
+    base = str(url_override or _effective_zabbix_config().get("url") or "").strip().rstrip("/")
     if not base:
         return ""
     if base.endswith("/api_jsonrpc.php"):
@@ -115,7 +170,7 @@ def zabbix_api_url(url_override: str | None = None) -> str:
 
 
 def zabbix_api_url_candidates(url_override: str | None = None) -> list[str]:
-    raw = str(url_override or get_env("ZABBIX_URL", ZABBIX_URL_DEFAULT)).strip()
+    raw = str(url_override or _effective_zabbix_config().get("url") or "").strip()
     if not raw:
         return []
     base = raw.rstrip("/")
@@ -148,12 +203,15 @@ def zabbix_api_url_candidates(url_override: str | None = None) -> list[str]:
 
 
 def zabbix_api_token(token_override: str | None = None) -> str:
-    return str(token_override or get_env("ZABBIX_API_TOKEN", ZABBIX_API_TOKEN_DEFAULT)).strip()
+    return str(token_override or _effective_zabbix_config().get("api_token") or "").strip()
 
 
 def zabbix_verify_ssl(verify_ssl_override: bool | None = None) -> bool:
     if isinstance(verify_ssl_override, bool):
         return verify_ssl_override
+    saved = _read_saved_zabbix_config()
+    if "verify_ssl" in saved:
+        return bool(saved.get("verify_ssl"))
     raw = get_env("ZABBIX_VERIFY_SSL", "false").lower()
     return raw in {"1", "true", "yes", "on"}
 
@@ -4290,6 +4348,23 @@ def get_sql_config_defaults() -> dict[str, Any]:
         "ok": True,
         **cfg,
     }
+
+
+@app.get("/api/zabbix/config")
+def get_zabbix_config() -> dict[str, Any]:
+    return {"ok": True, **_effective_zabbix_config()}
+
+
+@app.post("/api/zabbix/config")
+def save_zabbix_config(payload: ZabbixConfigSaveRequest) -> dict[str, Any]:
+    item = _save_zabbix_config(payload)
+    return {"ok": True, **item, "source": "file"}
+
+
+@app.delete("/api/zabbix/config")
+def delete_zabbix_config() -> dict[str, Any]:
+    _delete_zabbix_config()
+    return {"ok": True}
 
 
 @app.get("/api/sql/lldp-csv/tasks/{task_id}")

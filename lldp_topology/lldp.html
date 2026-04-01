@@ -508,6 +508,9 @@
           <button id="clearSelectionHide">恢复显示</button>
           <button id="show172Only">只显示172设备</button>
         </div>
+        <div class="row inline">
+          <button id="selectSingleLinkNodes">单链路节点</button>
+        </div>
       </div>
 
       <div class="action-group">
@@ -1063,6 +1066,7 @@
       btn_isolate: '仅显示邻接',
       btn_clear_visibility: '恢复显示',
       btn_show172: '只显示172设备',
+      btn_single_link: '单链路节点',
       btn_delete_selected: '删除选中',
       btn_delete_unselected: '仅保留选中',
       btn_delete_non_adjacent: '仅保留邻接',
@@ -1146,6 +1150,7 @@
       filter_label: 'Hide: comma=tier, slash=OR group, &=all terms',
       show_only_label: 'Show Only: comma=tier, slash=OR group, &=all terms, press Enter to apply',
       layer_terms_label: 'Layer Keywords (high->low, comma=layer, slash=same layer, &=all terms)',
+      btn_single_link: 'Single-Link Nodes',
       partition_terms_label: 'Partition Keywords (left->right, comma=partition, slash=same partition, &=all terms)',
       layer_terms_hint: 'Uses the same expression syntax as partitions: comma=layer, slash=OR, &=all terms. If partitions are set, layering runs independently inside each partition.',
       partition_terms_hint: 'Uses the same expression syntax as layering: comma=partition, slash=OR, &=all terms. First matching partition wins and later partitions are skipped.',
@@ -1397,6 +1402,7 @@
     setText('isolateSelection', 'btn_isolate');
     setText('clearSelectionHide', 'btn_clear_visibility');
     setText('show172Only', 'btn_show172');
+    setText('selectSingleLinkNodes', 'btn_single_link');
     setText('deleteSelection', 'btn_delete_selected');
     setText('keepSelected', 'btn_delete_unselected');
     setText('keepAdjacentOnly', 'btn_delete_non_adjacent');
@@ -2533,6 +2539,16 @@
           'border-width': 2,
           'border-color': '#ca8a04',
           'color': '#111827'
+        }
+      },
+      {
+        selector: 'node.single-link-hit',
+        style: {
+          'background-color': '#ef4444',
+          'border-width': 3,
+          'border-color': '#991b1b',
+          'z-index-compare': 'manual',
+          'z-index': 1100
         }
       },
 
@@ -4034,8 +4050,38 @@
     if (!cy) return;
     resetViewState();
     saveTopologyUiPrefs();
-    cy.elements().removeClass('sel-hidden onlyHidden filtered dim hit');
+    cy.elements().removeClass('sel-hidden onlyHidden filtered dim hit single-link-hit');
     setOK('已恢复关键字过滤和临时隐藏。链路利用率过滤请使用“清除过滤”。');
+  }
+
+  function selectSingleLinkNodes() {
+    if (!cy) return;
+    const scopeNodes = cy.nodes(':visible').not('.dim').filter((n) => !n.data('isGroup'));
+    cy.nodes().removeClass('single-link-hit');
+    cy.elements(':selected').unselect();
+    if (!scopeNodes.length) {
+      setOK('当前没有可见设备可计算单链路节点。');
+      return;
+    }
+    const hits = [];
+    scopeNodes.forEach((node) => {
+      const visibleNeighborIds = new Set();
+      node.connectedEdges(':visible').forEach((edge) => {
+        if (edge.hasClass('dim') || edge.hasClass('filtered') || edge.hasClass('onlyHidden') || edge.hasClass('utilHidden')) return;
+        const other = edge.source().id() === node.id() ? edge.target() : edge.source();
+        if (!other || other.empty() || other.data('isGroup')) return;
+        if (!other.visible() || other.hasClass('dim') || other.hasClass('filtered') || other.hasClass('onlyHidden') || other.hasClass('utilHidden')) return;
+        visibleNeighborIds.add(other.id());
+      });
+      if (visibleNeighborIds.size === 1) hits.push(node);
+    });
+    if (!hits.length) {
+      setOK('当前视图中没有单链路节点。');
+      return;
+    }
+    const selection = cy.collection(hits);
+    selection.select().addClass('single-link-hit');
+    setOK(`已选中单链路节点：${selection.length} 个。`);
   }
 
   function buildScopedTopologyFromVisible() {
@@ -5973,7 +6019,7 @@
   }
 
   function openZbxConfigModal() {
-    loadZbxPrefs();
+    loadZbxPrefs(true);
     $('zbxConfigModal').style.display = 'flex';
   }
 
@@ -6101,8 +6147,6 @@
   let importInputAction = 'import'; // import | append
   const CLI_PREF_KEY = 'lldp_cli_import_prefs_v1';
   const TOPOLOGY_UI_PREF_KEY = 'lldp_topology_ui_prefs_v1';
-  const ZBX_PREF_KEY = 'lldp_zabbix_prefs_v1';
-  const ZBX_TOKEN_SESSION_KEY = 'lldp_zabbix_token_session_v1';
   const SQL_PREF_KEY = 'lldp_sql_prefs_v1';
   const PAGE_SESSION_KEY = 'lldp_page_session_snapshot_v1';
   const PAGE_SESSION_WINDOW_NAME_PREFIX = '__lldp_page_session__=';
@@ -6479,47 +6523,40 @@
     };
   }
 
-  function loadZbxPrefs() {
+  async function loadZbxPrefs(force = false) {
+    if (!force) {
+      const currentUrl = ($('zbxServerUrl')?.value || '').trim();
+      const currentToken = ($('zbxApiToken')?.value || '').trim();
+      if (currentUrl || currentToken) return;
+    }
     try {
-      const raw = localStorage.getItem(ZBX_PREF_KEY);
-      const p = raw ? JSON.parse(raw) : {};
-      if (typeof p.url === 'string') $('zbxServerUrl').value = p.url;
-      if (typeof p.verify_ssl === 'boolean') $('zbxVerifySsl').checked = p.verify_ssl;
-      let token = '';
-      try {
-        token = String(sessionStorage.getItem(ZBX_TOKEN_SESSION_KEY) || '').trim();
-      } catch (_) {
-        token = '';
-      }
-      if (!token && typeof p.token === 'string') {
-        token = p.token;
-        try {
-          sessionStorage.setItem(ZBX_TOKEN_SESSION_KEY, token);
-        } catch (_) {}
-        try {
-          localStorage.setItem(ZBX_PREF_KEY, JSON.stringify({
-            url: typeof p.url === 'string' ? p.url : '',
-            verify_ssl: !!p.verify_ssl
-          }));
-        } catch (_) {}
-      }
-      if (typeof token === 'string') $('zbxApiToken').value = token;
+      const base = apiBaseUrl();
+      const resp = await fetch(`${base}/api/zabbix/config`, { cache: 'no-store' });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || data?.ok !== true) return;
+      if ($('zbxServerUrl')) $('zbxServerUrl').value = String(data.url || '');
+      if ($('zbxApiToken')) $('zbxApiToken').value = String(data.api_token || '');
+      if ($('zbxVerifySsl')) $('zbxVerifySsl').checked = !!data.verify_ssl;
     } catch (_) {
-      // Ignore local storage errors.
+      // Ignore server load errors.
     }
   }
 
-  function saveZbxPrefs() {
-    try {
-      localStorage.setItem(ZBX_PREF_KEY, JSON.stringify({
-        url: ($('zbxServerUrl')?.value || '').trim(),
-        verify_ssl: !!$('zbxVerifySsl')?.checked
-      }));
-      try {
-        sessionStorage.setItem(ZBX_TOKEN_SESSION_KEY, ($('zbxApiToken')?.value || '').trim());
-      } catch (_) {}
-    } catch (_) {
-      // Ignore local storage errors.
+  async function saveZbxPrefs() {
+    const base = apiBaseUrl();
+    const payload = {
+      url: ($('zbxServerUrl')?.value || '').trim(),
+      api_token: ($('zbxApiToken')?.value || '').trim(),
+      verify_ssl: !!$('zbxVerifySsl')?.checked
+    };
+    const resp = await fetch(`${base}/api/zabbix/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data?.ok !== true) {
+      throw new Error(data?.detail || `HTTP ${resp.status}`);
     }
   }
 
@@ -6544,13 +6581,11 @@
     }
   }
 
-  function clearConnectionPrefs() {
+  async function clearConnectionPrefs() {
     if (!confirm('确认删除当前浏览器保存的连接配置？这会清空 SQL、CLI 与 Zabbix 的本地保存项。')) return;
     try {
       localStorage.removeItem(SQL_PREF_KEY);
       localStorage.removeItem(CLI_PREF_KEY);
-      localStorage.removeItem(ZBX_PREF_KEY);
-      sessionStorage.removeItem(ZBX_TOKEN_SESSION_KEY);
     } catch (_) {
       // Ignore local storage errors.
     }
@@ -6571,6 +6606,12 @@
     if ($('zbxServerUrl')) $('zbxServerUrl').value = '';
     if ($('zbxApiToken')) $('zbxApiToken').value = '';
     if ($('zbxVerifySsl')) $('zbxVerifySsl').checked = false;
+    try {
+      const base = apiBaseUrl();
+      await fetch(`${base}/api/zabbix/config`, { method: 'DELETE' });
+    } catch (_) {
+      // Ignore server delete errors.
+    }
     setOK('已删除当前浏览器保存的连接配置。');
     setErr('');
   }
@@ -6862,7 +6903,6 @@
   }
 
   function readZabbixConfig() {
-    loadZbxPrefs();
     return {
       url: ($('zbxServerUrl')?.value || '').trim(),
       token: ($('zbxApiToken')?.value || '').trim(),
@@ -7076,7 +7116,11 @@
       }
       throw new Error('未配置 Zabbix URL 或 API Token');
     }
-    saveZbxPrefs();
+    try {
+      await saveZbxPrefs();
+    } catch (_) {
+      // Ignore config persistence failure for one-off query execution.
+    }
     const base = apiBaseUrl();
     try {
       const resp = await fetch(`${base}/api/zabbix/link-utilization`, {
@@ -7832,13 +7876,15 @@
   $('openSqlConfigModal').addEventListener('click', async () => {
     await openSqlConfigModal();
   });
-  $('openZbxConfig').addEventListener('click', () => {
+  $('openZbxConfig').addEventListener('click', async () => {
+    await loadZbxPrefs(true);
     openZbxConfigModal();
   });
-  $('refreshUtilizationZbx').addEventListener('click', () => {
+  $('refreshUtilizationZbx').addEventListener('click', async () => {
+    await loadZbxPrefs(true);
     openZbxUtilModal();
   });
-  $('saveZbxConfig').addEventListener('click', () => {
+  $('saveZbxConfig').addEventListener('click', async () => {
     const zabbixUrl = ($('zbxServerUrl')?.value || '').trim();
     const zabbixApiToken = ($('zbxApiToken')?.value || '').trim();
     if (!zabbixUrl) {
@@ -7849,10 +7895,14 @@
       setErr('请先填写 Zabbix API Token');
       return;
     }
-    saveZbxPrefs();
-    closeZbxConfigModal();
-    setOK('Zabbix 配置已保存');
-    setErr('');
+    try {
+      await saveZbxPrefs();
+      closeZbxConfigModal();
+      setOK('Zabbix 配置已保存到服务器');
+      setErr('');
+    } catch (e) {
+      setErr(`保存 Zabbix 配置失败：${String(e && e.message ? e.message : e)}`);
+    }
   });
   $('saveSqlConfig').addEventListener('click', () => {
     const cfg = readSqlConfig();
@@ -8517,6 +8567,9 @@
       saveTopologyUiPrefs();
       applyShowOnly172();
     }, { delayMs: 0 });
+  });
+  $('selectSingleLinkNodes').addEventListener('click', () => {
+    selectSingleLinkNodes();
   });
 $('filter').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
