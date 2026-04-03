@@ -609,12 +609,12 @@ function App() {
     return traceSteps[traceSteps.length - 1]
   }, [traceSteps, selectedTraceStepId, activeFlowStepId])
   const selectedTraceDetailSections = useMemo(
-    () => (selectedTraceStep ? buildTraceDetailSections(selectedTraceStep) : []),
-    [selectedTraceStep],
+    () => (selectedTraceStep ? buildTraceDetailSections(selectedTraceStep, traceSteps) : []),
+    [selectedTraceStep, traceSteps],
   )
   const activeFlowLaneKey = useMemo(() => {
     if (!selectedTraceStep) return undefined
-    return traceLaneKey(selectedTraceStep.step_type)
+    return traceLaneKey(selectedTraceStep)
   }, [selectedTraceStep])
   const sortedTraceSteps = useMemo(
     () => sortTraceStepsByOrder(traceSteps),
@@ -790,10 +790,10 @@ function App() {
     if (selectedActivity?.kind === 'command' && selectedCommandRow) {
       return renderCommandDisplayRowDetail(selectedCommandRow)
     }
-    if (selectedActivity) return renderActivityDetail(selectedActivity)
+    if (selectedActivity) return renderActivityDetail(selectedActivity, traceSteps)
     if (summary) return renderSummaryBrief(summary)
     return '等待 AI 诊断输出...'
-  }, [selectedActivity, selectedCommandRow, summary])
+  }, [selectedActivity, selectedCommandRow, summary, traceSteps])
 
   const blockedRuleRows = useMemo(
     () => buildRuleRows(blockedRules, blockedSearch),
@@ -5391,13 +5391,13 @@ function filterActivityCards(cards: ActivityCard[], mode: ActivityViewMode): Act
   })
 }
 
-function renderActivityDetail(activity: ActivityCard): string {
+function renderActivityDetail(activity: ActivityCard, traceSteps: ServiceTraceStep[] = []): string {
   if (activity.kind === 'message') {
     return activity.message.content
   }
 
   if (activity.kind === 'trace') {
-    return renderTraceActivityDetail(activity.trace)
+    return renderTraceActivityDetail(activity.trace, traceSteps)
   }
 
   if (activity.kind === 'command') {
@@ -5510,8 +5510,8 @@ function activityTracePreview(step: ServiceTraceStep): string {
   return truncateText(String(step.detail || step.title || '').replace(/\n+/g, ' | '), 220)
 }
 
-function renderTraceActivityDetail(step: ServiceTraceStep): string {
-  const sections = buildTraceDetailSections(step)
+function renderTraceActivityDetail(step: ServiceTraceStep, allSteps: ServiceTraceStep[] = []): string {
+  const sections = buildTraceDetailSections(step, allSteps)
   const blocks = [
     `标题: ${step.title}`,
     `状态: ${step.status}`,
@@ -6363,10 +6363,11 @@ function resolveActiveFlowStepId(steps: ServiceTraceStep[]): string | undefined 
 }
 
 function buildFlowLanes(steps: ServiceTraceStep[], mode: FlowLayoutMode): FlowLane[] {
-  const laneOrder = ['user', 'context', 'ai_submit', 'ai_feedback', 'plan', 'policy', 'control', 'execute', 'evidence', 'summary']
+  const laneOrder = ['user', 'context', 'runtime', 'ai_submit', 'ai_feedback', 'plan', 'policy', 'control', 'execute', 'evidence', 'summary']
   const labels: Record<string, string> = {
     user: '用户输入',
     context: '上下文构建',
+    runtime: '运行时约束',
     ai_submit: '提交给AI',
     ai_feedback: 'AI反馈',
     plan: '规划决策',
@@ -6393,7 +6394,7 @@ function buildFlowLanes(steps: ServiceTraceStep[], mode: FlowLayoutMode): FlowLa
   if (mode === 'stair') {
     // Strict stair mode: step N occupies row N.
     for (const step of ordered) {
-      const laneKey = traceLaneKey(step.step_type)
+      const laneKey = traceLaneKey(step)
       for (const key of laneOrder) {
         const column = lanes.get(key)
         if (!column) continue
@@ -6405,7 +6406,7 @@ function buildFlowLanes(steps: ServiceTraceStep[], mode: FlowLayoutMode): FlowLa
     const grouped = new Map<string, ServiceTraceStep[]>()
     for (const key of laneOrder) grouped.set(key, [])
     for (const step of ordered) {
-      const laneKey = traceLaneKey(step.step_type)
+      const laneKey = traceLaneKey(step)
       const list = grouped.get(laneKey) || []
       list.push(step)
       grouped.set(laneKey, list)
@@ -6431,6 +6432,7 @@ function buildTraceLaneCounts(steps: ServiceTraceStep[]): Record<string, number>
   const counts: Record<string, number> = {
     user: 0,
     context: 0,
+    runtime: 0,
     ai_submit: 0,
     ai_feedback: 0,
     plan: 0,
@@ -6441,7 +6443,7 @@ function buildTraceLaneCounts(steps: ServiceTraceStep[]): Record<string, number>
     summary: 0,
   }
   for (const step of steps) {
-    const laneKey = traceLaneKey(step.step_type)
+    const laneKey = traceLaneKey(step)
     counts[laneKey] = (counts[laneKey] || 0) + 1
   }
   return counts
@@ -6485,9 +6487,18 @@ function traceConstraintSourceFromDetail(detail?: string): string {
   return String(matched[1] || '').trim().toLowerCase()
 }
 
-function traceLaneKey(stepType: string): string {
+function traceLaneKey(stepOrType: ServiceTraceStep | string): string {
+  const stepType = typeof stepOrType === 'string' ? stepOrType : stepOrType.step_type
+  const detail = typeof stepOrType === 'string' ? '' : String(stepOrType.detail || '')
   if (stepType === 'user_input') return 'user'
-  if (stepType === 'ai_context_submit' || stepType === 'context_snapshot' || stepType === 'sop_candidates_generated') return 'context'
+  if (stepType === 'ai_context_submit' || stepType === 'context_snapshot') return 'context'
+  if (
+    stepType === 'sop_candidates_generated'
+    || (stepType === 'capability_decision' && detail.includes('planner_context=command_capability'))
+    || (stepType === 'capability_decision' && detail.includes('planner_context=filter_capability'))
+    || (stepType === 'policy_decision' && detail.includes('planner_context=permission_signal'))
+    || (stepType === 'policy_decision' && detail.includes('planner_context=output_compaction'))
+  ) return 'runtime'
   if (stepType === 'llm_request') return 'ai_submit'
   if (stepType === 'llm_response' || stepType === 'sop_referenced_by_ai') return 'ai_feedback'
   if (
@@ -6605,7 +6616,279 @@ function collectTraceCommandResults(payload: Record<string, unknown>): string {
   return lines.join('\n\n').trim()
 }
 
-function buildTraceDetailSections(step: ServiceTraceStep): TraceDetailSection[] {
+function collectTraceMessageContents(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((item) => (isTraceRecord(item) ? String(item.content || '').trim() : ''))
+    .filter(Boolean)
+}
+
+function extractPrefixedLines(texts: string[], prefixes: string[]): string[] {
+  const rows: string[] = []
+  for (const text of texts) {
+    for (const line of String(text || '').split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      if (prefixes.some((prefix) => trimmed.startsWith(prefix))) {
+        rows.push(trimmed)
+      }
+    }
+  }
+  return rows
+}
+
+function summarizePlannerContextText(text: string, maxLines = 5): string {
+  const lines = String(text || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  if (lines.length <= maxLines) return lines.join('\n')
+  return `${lines.slice(0, maxLines).join('\n')}\n...共 ${lines.length} 行`
+}
+
+function extractSopCandidateSummary(texts: string[]): string {
+  const source = texts.find((item) => item.includes('SOP档案候选')) || ''
+  if (!source) return ''
+  const rows = source
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('- '))
+    .slice(0, 4)
+  if (rows.length === 0) return '已生成 SOP 候选，但当前未附加具体条目。'
+  return rows.join('\n')
+}
+
+function extractCommandObjects(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) => {
+    if (isTraceRecord(item)) return [item]
+    if (typeof item === 'string' && item.trim()) return [{ command: item.trim() }]
+    return []
+  })
+}
+
+function detectCommandCompaction(commands: Array<Record<string, unknown>>): string {
+  const commandTexts = commands
+    .map((item) => String(item.command || item.effective_command || '').trim().toLowerCase())
+    .filter(Boolean)
+  if (commandTexts.length === 0) return ''
+  const compacted = commandTexts.filter((text) =>
+    text.includes('| include')
+    || text.includes('| exclude')
+    || text.includes('| begin')
+    || text.includes('| section')
+    || text.includes('| match')
+    || text.includes('| grep')
+    || text.includes('| count')
+    || text.includes(' count ')
+  )
+  if (compacted.length === 0) return '本轮未使用过滤管道，命令已尽量保持为目标对象直查。'
+  return `本轮已采用输出压缩命令 ${compacted.length} 条：\n${compacted.join('\n')}`
+}
+
+function findPreviousSignalStep(
+  steps: ServiceTraceStep[],
+  current: ServiceTraceStep,
+  predicate: (step: ServiceTraceStep) => boolean,
+): ServiceTraceStep | undefined {
+  const currentSeq = Number(current.seq_no || 0)
+  const ordered = sortTraceStepsByOrder(steps)
+  for (let index = ordered.length - 1; index >= 0; index -= 1) {
+    const item = ordered[index]
+    if (item.id === current.id) continue
+    if (Number(item.seq_no || 0) >= currentSeq) continue
+    if (predicate(item)) return item
+  }
+  return undefined
+}
+
+function buildRuntimeSignalSections(step: ServiceTraceStep, allSteps: ServiceTraceStep[] = []): TraceDetailSection[] {
+  const payload = isTraceRecord(step.detail_payload) ? step.detail_payload : undefined
+  if (!payload) return []
+  const stepType = String(step.step_type || '').trim().toLowerCase()
+  const isAiStep = ['llm_request', 'llm_response', 'llm_plan', 'llm_final'].includes(stepType)
+  const sections: TraceDetailSection[] = []
+
+  if (isAiStep) {
+    const requestPayload = isTraceRecord(payload.request_payload)
+      ? payload.request_payload
+      : isTraceRecord(payload.to_ai) && isTraceRecord(payload.to_ai.request_payload)
+        ? payload.to_ai.request_payload
+        : undefined
+    const requestMessages = collectTraceMessageContents(payload.request_messages)
+    const toAiMessages = isTraceRecord(payload.to_ai) ? collectTraceMessageContents(payload.to_ai.request_messages) : []
+    const combinedMessages = [...requestMessages, ...toAiMessages]
+    const signalLines: string[] = []
+
+    const device = isTraceRecord(payload.device)
+      ? payload.device
+      : requestPayload && isTraceRecord(requestPayload.device)
+        ? requestPayload.device
+        : requestPayload && isTraceRecord(requestPayload.session)
+          ? requestPayload.session
+          : undefined
+    const vendor = String(device?.vendor || '').trim()
+    const versionSignature = String(device?.version_signature || '').trim()
+    if (vendor || versionSignature) {
+      signalLines.push(`设备画像: ${vendor || 'unknown'}${versionSignature ? ` · ${versionSignature}` : ''}`)
+    }
+
+    const sessionMode = String(payload.session_mode || requestPayload?.session_mode || '').trim()
+    const automationLevel = String(payload.automation_level || requestPayload?.automation_level || '').trim()
+    if (sessionMode || automationLevel) {
+      signalLines.push(`会话边界: mode=${sessionMode || '-'} ; automation=${automationLevel || '-'}`)
+    }
+
+    const familyHints = extractPrefixedLines(combinedMessages, ['命令家族约束:'])
+    if (familyHints.length > 0) signalLines.push(...familyHints)
+
+    const permissionHints = extractPrefixedLines(combinedMessages, ['权限探测状态:', '权限动作建议:'])
+    if (permissionHints.length > 0) {
+      signalLines.push(...permissionHints)
+    } else {
+      const permissionStep = findPreviousSignalStep(
+        allSteps,
+        step,
+        (item) =>
+          item.step_type === 'policy_decision'
+          && String(item.detail || '').includes('planner_context=permission_signal')
+          && isTraceRecord(item.detail_payload)
+          && Boolean(item.detail_payload.planner_context),
+      )
+      if (permissionStep && isTraceRecord(permissionStep.detail_payload)) {
+        signalLines.push(`权限信号:\n${summarizePlannerContextText(String(permissionStep.detail_payload.planner_context || ''))}`)
+      }
+    }
+
+    const plannerContext = String(requestPayload?.planner_context || '').trim()
+    const filterHints = extractPrefixedLines(combinedMessages, ['过滤语法建议:', '已验证可用过滤:', '已验证失败过滤:', '当前目标对象:', '过滤规则:'])
+    if (filterHints.length > 0) {
+      signalLines.push(`过滤语法能力:\n${filterHints.join('\n')}`)
+    } else {
+      const filterStep = findPreviousSignalStep(
+        allSteps,
+        step,
+        (item) =>
+          item.step_type === 'capability_decision'
+          && String(item.detail || '').includes('planner_context=filter_capability')
+          && isTraceRecord(item.detail_payload)
+          && Boolean(item.detail_payload.planner_context),
+      )
+      if (filterStep && isTraceRecord(filterStep.detail_payload)) {
+        signalLines.push(`过滤语法能力:\n${summarizePlannerContextText(String(filterStep.detail_payload.planner_context || ''))}`)
+      }
+    }
+
+    const compactionHints = extractPrefixedLines(combinedMessages, ['输出压缩状态:', '过长回显命令:', '输出压缩建议:'])
+    if (compactionHints.length > 0) {
+      signalLines.push(`输出压缩信号:\n${compactionHints.join('\n')}`)
+    } else {
+      const compactionStep = findPreviousSignalStep(
+        allSteps,
+        step,
+        (item) =>
+          item.step_type === 'policy_decision'
+          && String(item.detail || '').includes('planner_context=output_compaction')
+          && isTraceRecord(item.detail_payload)
+          && Boolean(item.detail_payload.planner_context),
+      )
+      if (compactionStep && isTraceRecord(compactionStep.detail_payload)) {
+        signalLines.push(`输出压缩信号:\n${summarizePlannerContextText(String(compactionStep.detail_payload.planner_context || ''))}`)
+      }
+    }
+
+    if (plannerContext) {
+      signalLines.push(`运行时约束摘要:\n${summarizePlannerContextText(plannerContext)}`)
+    } else {
+      const capabilityStep = findPreviousSignalStep(
+        allSteps,
+        step,
+        (item) =>
+          item.step_type === 'capability_decision'
+          && String(item.detail || '').includes('planner_context=command_capability')
+          && isTraceRecord(item.detail_payload)
+          && Boolean(item.detail_payload.planner_context),
+      )
+      if (capabilityStep && isTraceRecord(capabilityStep.detail_payload)) {
+        signalLines.push(`命令能力规则:\n${summarizePlannerContextText(String(capabilityStep.detail_payload.planner_context || ''))}`)
+      }
+    }
+
+    const sopSummary = extractSopCandidateSummary(combinedMessages)
+    if (sopSummary) {
+      signalLines.push(`SOP候选:\n${sopSummary}`)
+    } else {
+      const sopStep = findPreviousSignalStep(allSteps, step, (item) => item.step_type === 'sop_candidates_generated')
+      if (sopStep) {
+        signalLines.push('SOP候选: 本轮已匹配到候选 SOP，详情见相邻上下文步骤。')
+      }
+    }
+
+    if (signalLines.length > 0) {
+      sections.push({
+        key: 'runtime-signals',
+        title: '本轮附加给 AI 的信号',
+        body: signalLines.join('\n\n'),
+      })
+    }
+
+    const parsedResponse = isTraceRecord(payload.ai_response_parsed)
+      ? payload.ai_response_parsed
+      : isTraceRecord(payload.plan)
+        ? payload.plan
+        : isTraceRecord(payload.final_summary)
+          ? payload.final_summary
+          : isTraceRecord(payload.to_ai) && isTraceRecord(payload.to_ai.parsed_response)
+            ? payload.to_ai.parsed_response
+            : isTraceRecord(payload.llm) && isTraceRecord(payload.llm.parsed_response)
+              ? payload.llm.parsed_response
+              : undefined
+    if (parsedResponse) {
+      const commandObjects = extractCommandObjects(parsedResponse.commands)
+      const basisLines: string[] = []
+      const reason = String(parsedResponse.reason || '').trim()
+      const evidenceGoal = String(parsedResponse.evidence_goal || '').trim()
+      const whyUseThisSop = String(parsedResponse.why_use_this_sop || '').trim()
+      const sopRefs = Array.isArray(parsedResponse.sop_refs) ? parsedResponse.sop_refs.map((item) => String(item).trim()).filter(Boolean) : []
+      if (reason) basisLines.push(`规划原因: ${reason}`)
+      if (evidenceGoal) basisLines.push(`目标证据: ${evidenceGoal}`)
+      if (sopRefs.length > 0) basisLines.push(`引用SOP: ${sopRefs.join(', ')}`)
+      if (whyUseThisSop) basisLines.push(`引用原因: ${whyUseThisSop}`)
+      const compaction = detectCommandCompaction(commandObjects)
+      if (compaction) basisLines.push(`输出压缩策略: ${compaction}`)
+      if (basisLines.length > 0) {
+        sections.push({
+          key: 'command-basis',
+          title: '本轮命令生成依据',
+          body: basisLines.join('\n\n'),
+        })
+      }
+    }
+  }
+
+  if (
+    step.step_type === 'sop_candidates_generated'
+    || (step.step_type === 'capability_decision' && String(step.detail || '').includes('planner_context=command_capability'))
+    || (step.step_type === 'capability_decision' && String(step.detail || '').includes('planner_context=filter_capability'))
+    || (step.step_type === 'policy_decision' && String(step.detail || '').includes('planner_context=permission_signal'))
+    || (step.step_type === 'policy_decision' && String(step.detail || '').includes('planner_context=output_compaction'))
+  ) {
+    const payloadText = isTraceRecord(step.detail_payload) && step.detail_payload.planner_context
+      ? String(step.detail_payload.planner_context)
+      : ''
+    if (payloadText.trim()) {
+      sections.push({
+        key: 'signal-source',
+        title: '运行时约束内容',
+        body: payloadText.trim(),
+      })
+    }
+  }
+
+  return sections
+}
+
+function buildTraceDetailSections(step: ServiceTraceStep, allSteps: ServiceTraceStep[] = []): TraceDetailSection[] {
   const sections: TraceDetailSection[] = []
   const payload = isTraceRecord(step.detail_payload) ? step.detail_payload : undefined
   const extra = payload && isTraceRecord(payload.extra) ? payload.extra : undefined
@@ -6711,6 +6994,8 @@ function buildTraceDetailSections(step: ServiceTraceStep): TraceDetailSection[] 
       body: stringifyTraceValue(aiFeedbackPayload),
     })
   }
+
+  sections.push(...buildRuntimeSignalSections(step, allSteps))
 
   sections.push({
     key: 'raw-payload',

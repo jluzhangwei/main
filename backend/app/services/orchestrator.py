@@ -34,6 +34,7 @@ from app.services.compound_command_runtime import run_compound_command_batch
 from app.services.adapter_runtime import close_connected_adapter, ensure_connected_adapter
 from app.services.deepseek_diagnoser import DeepSeekDiagnoser
 from app.services.llm_planner_bridge import LLMPlannerBridge
+from app.services.planner_signal_runtime import build_filter_capability_context, build_output_compaction_context
 from app.services.risk_engine import RiskEngine
 from app.services.single_command_runtime import execute_single_command
 from app.services.sop_archive import SOPArchive
@@ -477,6 +478,22 @@ class ConversationOrchestrator:
             commands = self.store.list_commands(session_id)
             evidences = self.store.list_evidence(session_id)
             ai_context = self.store.list_ai_context(session_id)
+            permission_context = self._build_permission_prompt_context(commands)
+            filter_capability_context = self._build_filter_capability_prompt_context(
+                session,
+                commands,
+                problem=user_content,
+            )
+            output_compaction_context = self._build_output_compaction_prompt_context(commands, problem=user_content)
+            planner_context = "\n\n".join(
+                item
+                for item in (
+                    filter_capability_context,
+                    permission_context,
+                    output_compaction_context,
+                )
+                if str(item or "").strip()
+            )
             self._trace_decision(
                 session_id=session_id,
                 step_type="context_snapshot",
@@ -497,9 +514,37 @@ class ConversationOrchestrator:
                         },
                         "latest_command": self._command_trace_record(commands[-1], include_output=True) if commands else None,
                         "latest_evidence": evidences[-1].model_dump(mode="json") if evidences else None,
+                        "planner_context": planner_context or None,
                     }
                 ),
             )
+            if filter_capability_context:
+                self._trace_decision(
+                    session_id=session_id,
+                    step_type="capability_decision",
+                    title="过滤语法能力已装载",
+                    detail="planner_context=filter_capability",
+                    status="succeeded",
+                    detail_payload=self._compact_trace_payload({"planner_context": filter_capability_context}),
+                )
+            if permission_context:
+                self._trace_decision(
+                    session_id=session_id,
+                    step_type="policy_decision",
+                    title="权限信号已装载",
+                    detail="planner_context=permission_signal",
+                    status="succeeded",
+                    detail_payload=self._compact_trace_payload({"planner_context": permission_context}),
+                )
+            if output_compaction_context:
+                self._trace_decision(
+                    session_id=session_id,
+                    step_type="policy_decision",
+                    title="输出压缩信号已装载",
+                    detail="planner_context=output_compaction",
+                    status="succeeded",
+                    detail_payload=self._compact_trace_payload({"planner_context": output_compaction_context}),
+                )
             llm_trace = self._trace_start(
                 session_id=session_id,
                 step_type="llm_plan",
@@ -525,6 +570,7 @@ class ConversationOrchestrator:
                     iteration=iteration,
                     max_iterations=self.max_autonomous_steps,
                     conversation_history=ai_context,
+                    planner_context=planner_context or None,
                 )
             except Exception as exc:
                 self._trace_finish(
@@ -2323,6 +2369,40 @@ class ConversationOrchestrator:
                 "version_signature": str(session.device.version_signature or "").strip(),
             },
         )
+
+    def _derive_permission_signal_from_commands(self, commands: list[CommandExecution]) -> tuple[str, str]:
+        for item in reversed(commands):
+            state, hint = self._derive_permission_signal(
+                str(item.command or ""),
+                str(item.output or ""),
+                str(item.error or ""),
+            )
+            if state:
+                return state, hint
+        return ("", "")
+
+    def _build_permission_prompt_context(self, commands: list[CommandExecution]) -> str:
+        permission_state, permission_hint = self._derive_permission_signal_from_commands(commands)
+        if not permission_state:
+            return ""
+        return (
+            "系统已根据最近命令结果识别当前会话权限状态：\n"
+            f"- 权限探测状态: {permission_state}\n"
+            f"- 权限动作建议: {permission_hint or '-'}\n"
+            "如果权限不足，禁止继续输出明显需要更高权限的查询命令，"
+            "优先使用当前权限可执行的等效观测命令，或先做最小提权并立即复核权限。"
+        )
+
+    def _build_filter_capability_prompt_context(self, session, commands: list[CommandExecution], *, problem: str) -> str:
+        return build_filter_capability_context(
+            vendor=str(session.device.vendor or ""),
+            version_signature=str(session.device.version_signature or ""),
+            commands=commands,
+            problem=problem,
+        )
+
+    def _build_output_compaction_prompt_context(self, commands: list[CommandExecution], *, problem: str) -> str:
+        return build_output_compaction_context(commands=commands, problem=problem)
 
     def _trace_ai_context_submission(
         self,

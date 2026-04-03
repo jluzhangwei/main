@@ -65,6 +65,7 @@ from app.services.command_runtime import (
 )
 from app.services.deepseek_diagnoser import DeepSeekDiagnoser
 from app.services.llm_planner_bridge import LLMPlannerBridge
+from app.services.planner_signal_runtime import build_filter_capability_context, build_output_compaction_context
 from app.services.risk_engine import RiskEngine
 from app.services.single_command_runtime import execute_single_command
 from app.services.sop_archive import SOPArchive
@@ -1427,9 +1428,23 @@ class JobV2Orchestrator:
                     run_key=sop_run_key,
                 )
                 capability_context = self._build_capability_prompt_context(device, problem=job.problem)
+                filter_capability_context = self._build_filter_capability_prompt_context(
+                    device,
+                    commands,
+                    problem=job.problem,
+                )
                 permission_context = self._build_permission_prompt_context(commands)
+                output_compaction_context = self._build_output_compaction_prompt_context(commands, problem=job.problem)
                 planner_context = "\n\n".join(
-                    part for part in (sop_context, capability_context, permission_context) if str(part or "").strip()
+                    part
+                    for part in (
+                        sop_context,
+                        capability_context,
+                        filter_capability_context,
+                        permission_context,
+                        output_compaction_context,
+                    )
+                    if str(part or "").strip()
                 )
                 self._append_trace_event(
                     job,
@@ -1476,6 +1491,19 @@ class JobV2Orchestrator:
                         },
                         device=device,
                     )
+                if filter_capability_context:
+                    self._append_trace_event(
+                        job,
+                        "capability_decision",
+                        f"[{device.host}] 过滤语法能力已装载",
+                        status="succeeded",
+                        detail="planner_context=filter_capability",
+                        detail_payload={
+                            "device": self._job_device_trace_record(device),
+                            "planner_context": filter_capability_context,
+                        },
+                        device=device,
+                    )
                 if permission_context:
                     self._append_trace_event(
                         job,
@@ -1486,6 +1514,19 @@ class JobV2Orchestrator:
                         detail_payload={
                             "device": self._job_device_trace_record(device),
                             "planner_context": permission_context,
+                        },
+                        device=device,
+                    )
+                if output_compaction_context:
+                    self._append_trace_event(
+                        job,
+                        "policy_decision",
+                        f"[{device.host}] 输出压缩信号已装载",
+                        status="succeeded",
+                        detail="planner_context=output_compaction",
+                        detail_payload={
+                            "device": self._job_device_trace_record(device),
+                            "planner_context": output_compaction_context,
                         },
                         device=device,
                     )
@@ -1843,6 +1884,20 @@ class JobV2Orchestrator:
         rows.append("对上面已被 block 的命令，禁止再次原样输出；需要继续取证时请改用同厂商等效命令。")
         return "\n".join(rows)
 
+    def _build_filter_capability_prompt_context(
+        self,
+        device: JobDevice,
+        commands: list[CommandExecution],
+        *,
+        problem: str,
+    ) -> str:
+        return build_filter_capability_context(
+            vendor=str(device.vendor or ""),
+            version_signature=str(device.version_signature or ""),
+            commands=commands,
+            problem=problem,
+        )
+
     def _derive_permission_signal_from_commands(self, commands: list[CommandExecution]) -> tuple[str, str]:
         for item in reversed(commands):
             state, hint = self._derive_permission_signal(
@@ -1865,6 +1920,9 @@ class JobV2Orchestrator:
             "如果权限不足，禁止继续输出明显需要更高权限的查询命令（如 running-config / 特权日志过滤），"
             "优先使用当前权限可执行的等效观测命令，或先做最小提权并立即复核权限。"
         )
+
+    def _build_output_compaction_prompt_context(self, commands: list[CommandExecution], *, problem: str) -> str:
+        return build_output_compaction_context(commands=commands, problem=problem)
 
     def _derive_permission_signal(self, command: str, output: str, error: str) -> tuple[str, str]:
         merged = f"{output}\n{error}".strip()
