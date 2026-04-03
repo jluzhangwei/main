@@ -634,6 +634,7 @@ class JobCommandResult(BaseModel):
     step_no: int
     title: str
     command: str
+    original_command: Optional[str] = None
     effective_command: Optional[str] = None
     risk_level: RiskLevel = RiskLevel.low
     status: JobCommandStatus = JobCommandStatus.queued

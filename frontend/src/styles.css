@@ -1414,7 +1414,7 @@ h6 {
 
 .keyhub-layout {
   height: 100%;
-  grid-template-columns: minmax(0, 1.85fr) minmax(320px, 0.72fr);
+  grid-template-columns: minmax(0, 2.2fr) minmax(320px, 0.8fr);
   align-items: stretch;
 }
 
@@ -1453,7 +1453,7 @@ h6 {
 }
 
 .keyhub-create-row {
-  grid-template-columns: minmax(180px, 0.85fr) minmax(240px, 1.25fr) auto;
+  grid-template-columns: minmax(180px, 0.9fr) minmax(320px, 1.45fr) auto;
   align-items: center;
 }
 
@@ -1532,7 +1532,8 @@ h6 {
 
 .v3-template-list {
   display: grid;
-  gap: 4px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 6px;
 }
 
 .v3-template-item {
@@ -1569,10 +1570,10 @@ h6 {
 .keyhub-head,
 .keyhub-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.7fr) minmax(260px, 0.85fr);
-  gap: 12px;
-  align-items: center;
-  padding: 8px 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: start;
+  padding: 10px 12px;
 }
 
 .keyhub-head {
@@ -1596,9 +1597,20 @@ h6 {
   gap: 4px;
 }
 
+.keyhub-meta-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .keyhub-meta strong {
   font-size: 12px;
   line-height: 1.3;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .keyhub-meta .muted {
@@ -1606,17 +1618,24 @@ h6 {
   line-height: 1.25;
 }
 
-.keyhub-permission-line {
-  font-family: "SFMono-Regular", SFMono-Regular, ui-monospace, Menlo, Consolas, monospace;
+.keyhub-permission-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.keyhub-permission-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid rgba(36, 104, 242, 0.16);
+  border-radius: 999px;
+  background: #f7faff;
+  color: #274772;
   font-size: 11px;
-  line-height: 1.45;
-  color: var(--text);
-  background: #f8fbff;
-  border: 1px dashed var(--line-strong);
-  border-radius: 6px;
-  padding: 4px 6px;
-  white-space: normal;
-  word-break: break-word;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .v3-row-actions {
@@ -1630,6 +1649,7 @@ h6 {
 
 .keyhub-actions {
   justify-self: end;
+  align-self: center;
 }
 
 .keyhub-layout .detail-pre {
@@ -1670,6 +1690,14 @@ h6 {
 .keyhub-info-item {
   border-style: solid;
   background: #fbfcff;
+}
+
+.keyhub-doc-pre {
+  margin-top: 2px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fbfcff;
+  padding: 10px 12px;
 }
 
 .v3-row-actions .ant-switch {
@@ -4049,7 +4077,8 @@ h6 {
 
   .keyhub-head,
   .keyhub-row {
-    grid-template-columns: minmax(0, 1.3fr) minmax(210px, 0.9fr);
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
   }
 
   .v3-command-item {
@@ -4076,5 +4105,10 @@ h6 {
   .keyhub-head,
   .keyhub-row {
     grid-template-columns: 1fr;
+  }
+
+  .keyhub-actions {
+    justify-self: stretch;
+    justify-content: flex-start;
   }
 }

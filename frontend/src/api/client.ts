@@ -570,11 +570,23 @@ export async function rejectRunActions(
 }
 
 export async function stopRun(apiKey: string, runId: string): Promise<RunStopResponse> {
-  const res = await fetch(apiUrl(`/api/runs/${runId}/stop`), {
-    method: 'POST',
-    headers: v2Headers(apiKey),
-  })
-  return parseJsonResponse<RunStopResponse>(res, 'Failed to stop run')
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), 8000)
+  try {
+    const res = await fetch(apiUrl(`/api/runs/${runId}/stop`), {
+      method: 'POST',
+      headers: v2Headers(apiKey),
+      signal: controller.signal,
+    })
+    return await parseJsonResponse<RunStopResponse>(res, 'Failed to stop run')
+  } catch (error) {
+    if ((error as Error).name === 'AbortError') {
+      throw new Error('停止请求超时，界面已先行停止，请稍后刷新确认后端状态。')
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timeout)
+  }
 }
 
 export async function v2CreateApiKey(input: {

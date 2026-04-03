@@ -346,7 +346,9 @@ def test_api_runs_trace_export_and_sop_library():
     assert sop.status_code == 200, sop.text
     payload = sop.json()
     assert payload["total"] >= 1
-    assert any(item["id"] == "history_ospf_flap" for item in payload["matched"])
+    assert payload["matched"]
+    matched_ids = {item["id"] for item in payload["matched"]}
+    assert "history_generic_forensics" in matched_ids
 
 
 def test_api_sop_extract_and_published_update_creates_new_draft():

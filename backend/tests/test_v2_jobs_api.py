@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -9,13 +10,23 @@ from fastapi.testclient import TestClient
 from app.api import routes
 from app.main import app
 from app.models.schemas import (
+    Job,
     JobActionGroup,
     JobActionGroupStatus,
+    JobCommandResult,
+    JobCommandStatus,
+    CommandCapabilityUpsertRequest,
+    JobDevice,
+    JobMode,
     JobPhase,
     JobStatus,
+    JobEvidence,
+    RCAResult,
     RiskLevel,
     now_utc,
 )
+from app.services.job_orchestrator_v2 import JobV2Orchestrator
+from app.services.store import InMemoryStore
 
 
 client = TestClient(app)
@@ -101,8 +112,378 @@ def speed_up_collect(monkeypatch):
     monkeypatch.setattr(
         routes.orchestrator_v2,
         "_baseline_collect_commands",
-        lambda: [("版本探测", "show version"), ("接口摘要", "show ip interface brief"), ("权限探测", "show privilege")],
+        lambda problem=None: [("版本探测", "show version"), ("权限探测", "show privilege")],
     )
+
+
+def test_v2_baseline_collect_commands_is_minimal_and_history_adds_clock():
+    baseline = type(routes.orchestrator_v2)._baseline_collect_commands(routes.orchestrator_v2, "检查 OSPF 状态")
+    assert baseline == [
+        ("版本探测", "show version"),
+        ("版本探测兼容", "display version"),
+        ("权限探测", "show privilege"),
+        ("权限探测兼容", "display users"),
+    ]
+
+    history_baseline = type(routes.orchestrator_v2)._baseline_collect_commands(routes.orchestrator_v2, "检查上次 OSPF 闪断原因")
+    assert history_baseline == [
+        ("版本探测", "show version"),
+        ("版本探测兼容", "display version"),
+        ("权限探测", "show privilege"),
+        ("权限探测兼容", "display users"),
+        ("设备时钟", "show clock"),
+        ("设备时钟兼容", "display clock"),
+    ]
+
+
+def test_v2_llm_device_commands_include_capability_and_original_command():
+    job = Job(
+        name="diag-job",
+        problem="check ospf state",
+        mode=JobMode.diagnosis,
+        devices=[
+            JobDevice(
+                id="dev-1",
+                host="192.0.2.10",
+                protocol="ssh",
+                vendor="huawei",
+                platform="CE12800",
+                software_version="8.180",
+                version_signature="huawei|ce12800|8.180",
+            )
+        ],
+    )
+    job.command_results.append(
+        JobCommandResult(
+            job_id=job.id,
+            device_id="dev-1",
+            step_no=1,
+            title="检查权限",
+            command="display privilege",
+            original_command="display privilege",
+            effective_command="display users",
+            risk_level=RiskLevel.low,
+            status=JobCommandStatus.blocked,
+            error="auto learned from syntax failure",
+            capability_state="block",
+            capability_reason="auto learned from syntax failure",
+            constraint_source="capability_block",
+            constraint_reason="auto learned from syntax failure",
+        )
+    )
+
+    rows = routes.orchestrator_v2._build_llm_device_commands(job, "dev-1")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.original_command == "display privilege"
+    assert row.effective_command == "display users"
+    assert row.capability_state == "block"
+    assert row.capability_reason == "auto learned from syntax failure"
+    assert row.constraint_source == "capability_block"
+    assert row.constraint_reason == "auto learned from syntax failure"
+
+
+def test_v2_capability_prompt_context_prioritizes_problem_relevant_block_rules():
+    store = routes.orchestrator_v2.store
+    rule = store.upsert_command_capability_rule(
+        CommandCapabilityUpsertRequest(
+            scope_type="version",
+            version_signature="huawei|ce12800|8.180",
+            command_key="display ospf event",
+            action="block",
+            reason_text="auto learned from syntax failure",
+            enabled=True,
+            source="manual",
+        )
+    )
+    store.register_command_capability_hit(rule.id)
+
+    device = JobDevice(
+        id="dev-1",
+        host="192.0.2.10",
+        protocol="ssh",
+        vendor="huawei",
+        platform="CE12800",
+        software_version="8.180",
+        version_signature="huawei|ce12800|8.180",
+    )
+
+    context = routes.orchestrator_v2._build_capability_prompt_context(device, problem="查一下上次 ospf 闪断的原因")
+    assert "display ospf event" in context
+    assert "禁止再次原样输出" in context
+
+
+def test_v2_history_evidence_summary_marks_missing_flap_logs_as_insufficient():
+    job = Job(
+        name="history-job",
+        problem="查一下上次ospf闪断的原因",
+        mode=JobMode.diagnosis,
+        devices=[
+            JobDevice(
+                id="dev-hw",
+                host="192.0.2.101",
+                protocol="ssh",
+                vendor="huawei",
+                platform="CE12800",
+                software_version="8.180",
+                version_signature="huawei|ce12800|8.180",
+            ),
+            JobDevice(
+                id="dev-ar",
+                host="192.0.2.102",
+                protocol="ssh",
+                vendor="arista",
+                platform="vEOS-lab",
+                software_version="4.32.4.1M",
+                version_signature="arista|veos-lab|4.32.4.1m",
+            ),
+        ],
+    )
+    job.evidences.extend(
+        [
+            JobEvidence(
+                job_id=job.id,
+                device_id="dev-hw",
+                command_id="cmd1",
+                category="protocol",
+                raw_output="",
+                parsed_data={"ospf_log_count": 0, "ospf_flap_log_count": 0},
+                conclusion="日志中未发现 OSPF 相关历史记录。",
+            ),
+            JobEvidence(
+                job_id=job.id,
+                device_id="dev-ar",
+                command_id="cmd2",
+                category="protocol",
+                raw_output="",
+                parsed_data={"ospf_log_count": 1, "ospf_flap_log_count": 0},
+                conclusion="日志中发现 OSPF 相关记录，但未明确出现 down/up 抖动关键词。",
+            ),
+        ]
+    )
+
+    summary = routes.orchestrator_v2._history_evidence_summary(job)
+    assert summary["history_evidence_sufficient"] is False
+    assert summary["positive_log_hosts"] == ["192.0.2.102"]
+    assert summary["negative_log_hosts"] == ["192.0.2.101"]
+
+
+def test_v2_append_event_refreshes_job_updated_at():
+    job = Job(
+        name="diag-job",
+        problem="check ospf state",
+        mode=JobMode.diagnosis,
+        devices=[
+            JobDevice(
+                id="dev-1",
+                host="192.0.2.10",
+                protocol="ssh",
+                vendor="huawei",
+                platform="CE12800",
+                software_version="8.180",
+                version_signature="huawei|ce12800|8.180",
+            )
+        ],
+    )
+    previous_updated_at = job.updated_at
+    time.sleep(0.01)
+    routes.orchestrator_v2._append_event(job, "phase_changed", {"phase": "collect"})
+    assert job.updated_at > previous_updated_at
+
+
+@pytest.mark.asyncio
+async def test_v2_collect_filters_known_block_rules_before_command_execution(monkeypatch):
+    store = InMemoryStore()
+    orchestrator = JobV2Orchestrator(store, allow_simulation=True)
+    orchestrator.deepseek_diagnoser.api_key = "test-key"
+
+    device = JobDevice(
+        id="dev-1",
+        host="192.0.2.10",
+        protocol="ssh",
+        vendor="huawei",
+        platform="CE12800",
+        software_version="8.180",
+        version_signature="huawei|ce12800|8.180",
+    )
+    job = Job(
+        name="diag-job",
+        problem="检查 OSPF 状态",
+        mode=JobMode.diagnosis,
+        devices=[device],
+    )
+    orchestrator._jobs[job.id] = job
+    orchestrator._events[job.id] = []
+
+    store.upsert_command_capability_rule(
+        CommandCapabilityUpsertRequest(
+            scope_type="version",
+            version_signature="huawei|ce12800|8.180",
+            command_key="display ospf",
+            action="block",
+            reason_text="auto learned from syntax failure",
+            enabled=True,
+            source="manual",
+        )
+    )
+
+    async def _fake_propose(*args, **kwargs):
+        return (
+            {
+                "decision": "collect",
+                "title": "检查OSPF进程状态",
+                "commands": ["display ospf"],
+                "reason": "collect more ospf facts",
+            },
+            {"request_payload": {"planner_context": kwargs.get("planner_context")}},
+        )
+
+    executed: list[str] = []
+
+    async def _fake_run_device_command(job_id, device_id, *, title, command_text, **kwargs):
+        executed.append(command_text)
+        return None
+
+    monkeypatch.setattr(orchestrator.llm_planner_bridge, "propose_next_step_with_debug", _fake_propose)
+    monkeypatch.setattr(orchestrator, "_run_device_command", _fake_run_device_command)
+
+    await orchestrator._collect_device_with_llm(job.id, device.id)
+
+    assert executed == []
+    trace_steps = [event for event in orchestrator._events[job.id] if event.event_type == "capability_decision"]
+    assert any(str(event.payload.get("detail", "")).startswith("decision=filtered_block_hit") for event in trace_steps)
+
+
+@pytest.mark.asyncio
+async def test_v2_collect_filters_privileged_read_commands_when_permission_is_low(monkeypatch):
+    store = InMemoryStore()
+    orchestrator = JobV2Orchestrator(store, allow_simulation=True)
+    orchestrator.deepseek_diagnoser.api_key = "test-key"
+
+    device = JobDevice(
+        id="dev-1",
+        host="192.0.2.20",
+        protocol="ssh",
+        vendor="arista",
+        platform="vEOS-lab",
+        software_version="4.32.4.1M",
+        version_signature="arista|veos-lab|4.32.4.1m",
+    )
+    job = Job(
+        name="diag-job",
+        problem="检查 OSPF 状态",
+        mode=JobMode.diagnosis,
+        devices=[device],
+    )
+    job.command_results.append(
+        JobCommandResult(
+            job_id=job.id,
+            device_id=device.id,
+            step_no=1,
+            title="权限探测",
+            command="show privilege",
+            original_command="show privilege",
+            effective_command="show privilege",
+            risk_level=RiskLevel.low,
+            status=JobCommandStatus.succeeded,
+            output="Current privilege level is 1",
+        )
+    )
+    orchestrator._jobs[job.id] = job
+    orchestrator._events[job.id] = []
+
+    async def _fake_propose(*args, **kwargs):
+        return (
+            {
+                "decision": "collect",
+                "title": "补采配置侧信息",
+                "commands": ["show running-config | include router ospf"],
+                "reason": "collect config facts",
+            },
+            {"request_payload": {"planner_context": kwargs.get("planner_context")}},
+        )
+
+    executed: list[str] = []
+
+    async def _fake_run_device_command(job_id, device_id, *, title, command_text, **kwargs):
+        executed.append(command_text)
+        return None
+
+    monkeypatch.setattr(orchestrator.llm_planner_bridge, "propose_next_step_with_debug", _fake_propose)
+    monkeypatch.setattr(orchestrator, "_run_device_command", _fake_run_device_command)
+
+    await orchestrator._collect_device_with_llm(job.id, device.id)
+
+    assert executed == []
+    trace_steps = [event for event in orchestrator._events[job.id] if event.event_type == "policy_decision"]
+    assert any(str(event.payload.get("detail", "")).startswith("decision=permission_filtered") for event in trace_steps)
+
+
+def test_v2_llm_rca_payload_includes_history_evidence_summary():
+    orchestrator = JobV2Orchestrator(InMemoryStore(), allow_simulation=True)
+    job = Job(
+        name="history-job",
+        problem="查一下上次ospf闪断的原因",
+        mode=JobMode.diagnosis,
+        devices=[
+            JobDevice(
+                id="dev-hw",
+                host="192.0.2.101",
+                protocol="ssh",
+                vendor="huawei",
+                platform="CE12800",
+                software_version="8.180",
+                version_signature="huawei|ce12800|8.180",
+            ),
+            JobDevice(
+                id="dev-ar",
+                host="192.0.2.102",
+                protocol="ssh",
+                vendor="arista",
+                platform="vEOS-lab",
+                software_version="4.32.4.1M",
+                version_signature="arista|veos-lab|4.32.4.1m",
+            ),
+        ],
+    )
+    job.status = JobStatus.executing
+    job.phase = JobPhase.correlate
+    job.evidences.extend(
+        [
+            JobEvidence(
+                job_id=job.id,
+                device_id="dev-hw",
+                command_id="cmd1",
+                category="protocol",
+                raw_output="",
+                parsed_data={"ospf_log_count": 0, "ospf_flap_log_count": 0},
+                conclusion="日志中未发现 OSPF 相关历史记录。",
+            ),
+            JobEvidence(
+                job_id=job.id,
+                device_id="dev-ar",
+                command_id="cmd2",
+                category="protocol",
+                raw_output="",
+                parsed_data={"ospf_log_count": 1, "ospf_flap_log_count": 0},
+                conclusion="日志中发现 OSPF 相关记录，但未明确出现 down/up 抖动关键词。",
+            ),
+        ]
+    )
+    job.rca_result = RCAResult(
+        job_id=job.id,
+        root_device_host="192.0.2.101",
+        root_cause="旧结论",
+        impact_scope="影响 2 台设备",
+        confidence=0.7,
+        summary="旧摘要",
+        recommendation="旧建议",
+    )
+    payload = orchestrator._build_llm_rca_payload(job)
+    history = payload["history_evidence"]
+    assert history["history_evidence_sufficient"] is False
+    assert history["positive_log_hosts"] == ["192.0.2.102"]
+    assert history["negative_log_hosts"] == ["192.0.2.101"]
 
 
 def test_v2_key_bootstrap_and_permission_checks():
@@ -178,6 +559,129 @@ def test_v2_job_timeline_events_and_report():
     )
     assert unified_export.status_code == 200, unified_export.text
     assert unified_export.json()["content"] == md_payload["content"]
+
+
+def test_v2_diagnosis_job_finishes_without_plan_phase_after_final_summary(monkeypatch):
+    orchestrator = routes.orchestrator_v2
+    job = Job(
+        name="diag-job",
+        problem="check ospf state",
+        mode=JobMode.diagnosis,
+        devices=[
+            JobDevice(
+                host="192.0.2.10",
+                protocol="api",
+                status="collected",
+                vendor="arista",
+                platform="vEOS-lab",
+                version_signature="arista|veos-lab|4.32.4.1m",
+            )
+        ],
+    )
+    job.status = JobStatus.queued
+    job.phase = JobPhase.collect
+    job.rca_result = RCAResult(
+        job_id=job.id,
+        root_device_host="192.0.2.10",
+        root_cause="OSPF 邻接缺失",
+        impact_scope="影响 1 台设备",
+        confidence=0.8,
+        summary="检测到 OSPF 邻接缺失",
+        recommendation="继续检查配置和日志",
+    )
+    orchestrator._jobs[job.id] = job
+    orchestrator._events[job.id] = []
+
+    async def _fake_collect(job_id: str):
+        return None
+
+    async def _fake_correlate(job_id: str):
+        async with orchestrator._state_lock:
+            current = orchestrator._jobs[job_id]
+            current.rca_result = job.rca_result
+            orchestrator._append_trace_event(
+                current,
+                "llm_final",
+                "多设备总结输出",
+                status="succeeded",
+                detail="confidence=0.8; root_device=192.0.2.10",
+                detail_payload={"final_summary": current.rca_result.model_dump(mode='json')},
+            )
+
+    async def _fake_close(job_id: str):
+        return None
+
+    monkeypatch.setattr(orchestrator, "_collect_phase", _fake_collect)
+    monkeypatch.setattr(orchestrator, "_correlate_phase", _fake_correlate)
+    monkeypatch.setattr(orchestrator, "_close_job_adapters", _fake_close)
+
+    asyncio.run(orchestrator._run_job(job.id))
+
+    updated = orchestrator._jobs[job.id]
+    assert updated.status == JobStatus.completed
+    assert updated.phase == JobPhase.conclude
+    event_types = [item.event_type for item in orchestrator._events[job.id]]
+    assert "llm_final" in event_types
+    assert "plan_completed" not in event_types
+    llm_final_index = event_types.index("llm_final")
+    assert "phase_changed" not in event_types[llm_final_index + 1:]
+
+
+def test_v2_command_with_cli_error_output_is_marked_failed():
+    orchestrator = routes.orchestrator_v2
+    job = Job(
+        name="diag-job",
+        problem="check ospf state",
+        mode=JobMode.diagnosis,
+        devices=[
+            JobDevice(
+                host="192.0.2.10",
+                protocol="ssh",
+                status="collecting",
+                vendor="huawei",
+                platform="CE12800",
+                version_signature="huawei|ce12800|8.180",
+                username="tester",
+                password="secret",
+            )
+        ],
+    )
+    orchestrator._jobs[job.id] = job
+    orchestrator._events[job.id] = []
+
+    class _CliErrorAdapter:
+        def __init__(self):
+            self.last_command_meta = {}
+
+        async def run_command(self, command: str):
+            self.last_command_meta = {
+                "original_command": command,
+                "translated_command": command,
+                "effective_command": command,
+                "retry_used": False,
+                "simulated": False,
+            }
+            return "        ^\nError: Unrecognized command found at '^' position."
+
+    async def _fake_get_adapter(job_id: str, device_id: str):
+        return _CliErrorAdapter()
+
+    orchestrator._get_adapter = _fake_get_adapter  # type: ignore[method-assign]
+
+    command = asyncio.run(
+        orchestrator._run_device_command(
+            job.id,
+            job.devices[0].id,
+            title="协议探测",
+            command_text="display ospf",
+            step_no=1,
+            action_group_id=None,
+            phase="collect",
+        )
+    )
+
+    assert command.status == JobCommandStatus.failed
+    assert "unrecognized command" in (command.error or "").lower()
 
 
 def test_v2_keys_and_audit_endpoints():

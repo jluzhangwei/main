@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
+import os
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -17,6 +19,7 @@ async def execute_single_command(
     adapter: Any,
     command_text: str,
     *,
+    timeout_seconds: float | None = None,
     should_stop: Callable[[], Any] | None = None,
     on_rejected: Callable[[str], Any] | None = None,
     on_running: Callable[[], Any] | None = None,
@@ -33,7 +36,18 @@ async def execute_single_command(
         await _maybe_await(on_running())
 
     try:
-        output = await _maybe_await(adapter.run_command(command_text))
+        timeout = timeout_seconds
+        if timeout is None:
+            timeout = float(os.getenv("COMMAND_EXECUTION_TIMEOUT", "20"))
+        if timeout and timeout > 0:
+            output = await asyncio.wait_for(_maybe_await(adapter.run_command(command_text)), timeout=float(timeout))
+        else:
+            output = await _maybe_await(adapter.run_command(command_text))
+    except asyncio.TimeoutError:
+        message = f"Command execution timeout after {float(timeout):.0f}s"
+        if on_failure is not None:
+            await _maybe_await(on_failure(message))
+        return SingleCommandRuntimeResult(stopped=False, succeeded=False, output="", error=message)
     except Exception as exc:
         message = str(exc)
         if on_failure is not None:

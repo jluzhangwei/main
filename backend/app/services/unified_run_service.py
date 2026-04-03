@@ -692,31 +692,11 @@ class UnifiedRunService:
             return [self._build_synthetic_command_trace_step(session_id, seq_base, command, device_host, "running")]
         if event_type in {"command_completed", "command_failed"} and command is not None:
             status = self._enum_value(command.status) or ("failed" if event_type == "command_failed" else "succeeded")
-            rows = [self._build_synthetic_command_trace_step(session_id, seq_base, command, device_host, status)]
-            category = str(payload.get("category") or "").strip()
-            conclusion = str(payload.get("conclusion") or "").strip()
-            if category or conclusion:
-                rows.append(
-                    ServiceTraceStep(
-                        id=f"runtrace:{session_id}:legacy:{event.id}:evidence",
-                        session_id=session_id,
-                        seq_no=seq_base + 1,
-                        step_type="evidence_parse",
-                        title="证据解析",
-                        status="succeeded",
-                        started_at=command.completed_at or command.created_at,
-                        completed_at=command.completed_at or command.created_at,
-                        duration_ms=0,
-                        command_id=f"v2cmd:{command.id}",
-                        detail=f"category={category or '-'}; conclusion={conclusion[:180]}",
-                        detail_payload={"command": self._build_trace_command_payload(command), "parser_result": {"category": category, "conclusion": conclusion}},
-                    )
-                )
-            return rows
+            return [self._build_synthetic_command_trace_step(session_id, seq_base, command, device_host, status)]
         if event_type == "command_blocked":
             return [ServiceTraceStep(id=f"runtrace:{session_id}:legacy:{event.id}", session_id=session_id, seq_no=seq_base, step_type="policy_decision", title="命令被策略阻断", status="blocked", started_at=created_at, completed_at=created_at, duration_ms=0, command_id=f"v2cmd:{command.id}" if command else None, detail=str(payload.get('reason') or 'blocked')[:280], detail_payload={**payload, "command": self._build_trace_command_payload(command) if command else None})]
         if event_type == "correlate_completed":
-            return [ServiceTraceStep(id=f"runtrace:{session_id}:legacy:{event.id}", session_id=session_id, seq_no=seq_base, step_type="evidence_parse", title="多设备关联分析完成", status="succeeded", started_at=created_at, completed_at=created_at, duration_ms=0, detail=f"clusters={payload.get('cluster_count', 0)}; incidents={payload.get('incident_count', 0)}; root_device={payload.get('root_device_id', '-')}", detail_payload=payload)]
+            return [ServiceTraceStep(id=f"runtrace:{session_id}:legacy:{event.id}", session_id=session_id, seq_no=seq_base, step_type="plan_decision", title="多设备关联分析完成", status="succeeded", started_at=created_at, completed_at=created_at, duration_ms=0, detail=f"clusters={payload.get('cluster_count', 0)}; incidents={payload.get('incident_count', 0)}; root_device={payload.get('root_device_id', '-')}", detail_payload=payload)]
         if event_type == "llm_rca_refined":
             return [ServiceTraceStep(id=f"runtrace:{session_id}:legacy:{event.id}", session_id=session_id, seq_no=seq_base, step_type="llm_response", title="AI RCA 精炼回复", status="succeeded", started_at=created_at, completed_at=created_at, duration_ms=0, detail=str(payload.get('summary') or '')[:220], detail_payload={"ai_response_parsed": {"summary": payload.get('summary'), "confidence": payload.get('confidence'), "root_device_id": payload.get('root_device_id')}, "llm": {"parsed_response": payload}})]
         if event_type == "plan_completed":

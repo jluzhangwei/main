@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.models.schemas import JobCommandResult
 from app.services import command_runtime
 
 
@@ -33,6 +34,26 @@ class _Device:
 
 def test_apply_adapter_command_meta_reads_transport_metadata():
     command = _Command()
+    adapter = type(
+        "Adapter",
+        (),
+        {"last_command_meta": {"effective_command": "display version", "original_command": "show version"}},
+    )()
+
+    command_runtime.apply_adapter_command_meta(command, adapter)
+
+    assert command.effective_command == "display version"
+    assert command.original_command == "show version"
+
+
+def test_apply_adapter_command_meta_supports_job_command_result():
+    command = JobCommandResult(
+        job_id="job-1",
+        device_id="device-1",
+        step_no=1,
+        title="版本探测",
+        command="show version",
+    )
     adapter = type(
         "Adapter",
         (),

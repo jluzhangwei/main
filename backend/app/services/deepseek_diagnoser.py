@@ -16,11 +16,20 @@ from app.models.schemas import CommandExecution, Evidence, IncidentSummary, Sess
 OUTPUT_COMPACTION_RULES = (
     "为减少命令回显长度并提升执行效率，生成命令时必须优先使用“最小化输出”策略。"
     "优先使用设备支持的过滤语法，例如 include/exclude/begin/section/count/match/grep/regex。"
+    "你必须优先从命令设计上压缩输出，而不是依赖系统对回显做二次摘要。"
+    "若当前输出过长或信号分散，下一轮应优先改写为带过滤条件的查询命令。"
     "若不确定过滤语法是否支持，先用简短探测命令确认，再选择等效过滤写法。"
+    "未验证命令语法前，禁止在同一条命令里叠加多种过滤/截断方式（如 include/grep 与 last/tail/section 同时使用）。"
     "先执行摘要型命令，再按命中结果执行细节命令，避免直接抓取全量输出。"
     "每轮命令应控制在2-5条，且每条命令都要有明确目标，禁止无目标全量采集。"
     "commands数组建议使用对象结构{title, command}，title需简述该命令要验证的信号。"
     "当decision=final时，仅引用关键证据行，禁止粘贴大段原始回显。"
+)
+
+RAW_OUTPUT_GROUNDING_RULES = (
+    "最终判断必须优先依据命令原始回显（commands.output / error），不要把系统中间提炼摘要当成最终事实。"
+    "若某条命令回显仍不足以支撑判断，应继续设计更精准的过滤命令，而不是放大模糊摘要。"
+    "当原始回显与任何中间摘要不一致时，必须以原始回显为准。"
 )
 
 PERMISSION_PRECHECK_RULES = (
@@ -31,6 +40,8 @@ PERMISSION_PRECHECK_RULES = (
     "若探测结果显示权限不足，不要继续盲目下发后续命令，应先输出明确的提权或放权需求。"
     "若最近证据已显示在特权/配置模式，禁止重复输出enable或system-view这类提权命令。"
     "当用户可确认放行时，应将待执行命令组一次性给出，避免逐条失败后再补权限。"
+    "对Huawei/华为设备，若基线已提供display users或等效会话信息，应优先利用该证据判断会话权限/授权状态；"
+    "不要凭空假设display privilege可用，除非已有证据明确显示该命令被设备支持。"
 )
 
 ACTION_MARKER_RULES = (
@@ -56,6 +67,13 @@ BASELINE_CONTEXT_RULES = (
     "仅在证据不足或状态可能变化时，再追加必要复核命令。"
 )
 
+CAPABILITY_CONTEXT_RULES = (
+    "若历史命令结果中已包含 capability_state/capability_reason/constraint_source/constraint_reason，"
+    "必须将其视为已验证的命令能力证据。"
+    "对于已被标记为block_hit、blocked、command_error、syntax failure、wrong parameter、unrecognized command 的命令，"
+    "下一轮禁止重复输出相同命令；如需继续取证，必须改用同厂商等效命令，并在reason中说明替代依据。"
+)
+
 VENDOR_COMMAND_FAMILY_RULES = (
     "当会话中已识别厂商/平台/版本（如厂商不为unknown，或存在版本指纹）时，必须遵循命令家族一致性。"
     "Huawei/华为设备优先使用display家族命令；Arista/Cisco-like设备优先使用show家族命令。"
@@ -68,6 +86,9 @@ HISTORY_FORENSICS_RULES = (
     "当用户问题包含“上次/历史/曾经/闪断/flap/间歇”这类历史性故障诉求时："
     "下一轮命令必须优先包含历史取证命令（设备日志、告警、协议邻接变化记录），不能只看当前瞬时状态。"
     "若协议相关（如OSPF/BGP），应优先给出协议事件日志与邻接变化证据采集命令。"
+    "历史取证应优先选择稳定、基础、广兼容的命令；在未验证语法前，不要猜测带子参数/后缀的协议历史命令（如 peer history-record、event detail 等）。"
+    "对Huawei/华为设备采集历史日志时，优先使用 display logbuffer 或 display logbuffer | include 关键词；"
+    "不要在 display logbuffer 后附加 last/tail 之类的 Unix 风格截断片段。"
     "若日志命令不可用或无记录，必须在reason中明确说明“日志证据不足/不可得”，再给出替代取证路径。"
 )
 
@@ -108,9 +129,11 @@ NEXT_STEP_SYSTEM_PROMPT_WITH_HISTORY = (
     f"{ACTION_MARKER_RULES}"
     f"{MINIMAL_CHANGE_RULES}"
     f"{BASELINE_CONTEXT_RULES}"
+    f"{CAPABILITY_CONTEXT_RULES}"
     f"{VENDOR_COMMAND_FAMILY_RULES}"
     f"{HISTORY_FORENSICS_RULES}"
     f"{SOP_ARCHIVE_RULES}"
+    f"{RAW_OUTPUT_GROUNDING_RULES}"
 )
 
 NEXT_STEP_SYSTEM_PROMPT = (
@@ -135,15 +158,18 @@ NEXT_STEP_SYSTEM_PROMPT = (
     f"{ACTION_MARKER_RULES}"
     f"{MINIMAL_CHANGE_RULES}"
     f"{BASELINE_CONTEXT_RULES}"
+    f"{CAPABILITY_CONTEXT_RULES}"
     f"{VENDOR_COMMAND_FAMILY_RULES}"
     f"{HISTORY_FORENSICS_RULES}"
     f"{SOP_ARCHIVE_RULES}"
+    f"{RAW_OUTPUT_GROUNDING_RULES}"
 )
 
 PRIMARY_SUMMARY_SYSTEM_PROMPT = (
     "你是网络故障诊断引擎。"
     "严格依据输入证据判断，不得猜测。"
     "若证据不足以确认根因，必须明确说明不确定。"
+    f"{RAW_OUTPUT_GROUNDING_RULES}"
     "只输出JSON对象。"
     "字段必须是: root_cause, impact_scope, recommendation, confidence, evidence_refs。"
     "confidence是0到1的小数。"
@@ -595,15 +621,8 @@ class DeepSeekDiagnoser:
                 }
                 for cmd in commands
             ],
-            "evidences": [
-                {
-                    "category": evidence.category,
-                    "conclusion": evidence.conclusion,
-                    "raw_output": evidence.raw_output[:2500],
-                    "parsed_data": evidence.parsed_data,
-                }
-                for evidence in evidences
-            ],
+            "evidences": [],
+            "evidence_handling": "ignore_intermediate_summaries_use_raw_command_outputs",
             "task": (
                 "请给出根因、影响范围、建议。"
                 "只能依据证据，不得增加未出现的假设。"
@@ -635,21 +654,20 @@ class DeepSeekDiagnoser:
                     "step_no": cmd.step_no,
                     "title": cmd.title,
                     "command": cmd.command,
+                    "original_command": getattr(cmd, "original_command", None),
+                    "effective_command": getattr(cmd, "effective_command", None),
                     "status": cmd.status.value,
                     "output": (cmd.output or "")[:2500],
                     "error": cmd.error,
+                    "capability_state": getattr(cmd, "capability_state", None),
+                    "capability_reason": getattr(cmd, "capability_reason", None),
+                    "constraint_source": getattr(cmd, "constraint_source", None),
+                    "constraint_reason": getattr(cmd, "constraint_reason", None),
                 }
                 for cmd in commands
             ],
-            "evidences": [
-                {
-                    "category": evidence.category,
-                    "conclusion": evidence.conclusion,
-                    "raw_output": evidence.raw_output[:2500],
-                    "parsed_data": evidence.parsed_data,
-                }
-                for evidence in evidences
-            ],
+            "evidences": [],
+            "evidence_handling": "ignore_intermediate_summaries_use_raw_command_outputs",
         }
         if str(planner_context or "").strip():
             payload["planner_context"] = str(planner_context).strip()

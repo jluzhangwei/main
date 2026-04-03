@@ -469,6 +469,7 @@ class ConversationOrchestrator:
                 vendor=session.device.vendor,
                 version_signature=session.device.version_signature,
             )
+            self._append_capability_context_to_ai_context(session_id=session_id)
 
         for iteration in range(1, self.max_autonomous_steps + 1):
             if self._is_stop_requested(session_id):
@@ -1874,26 +1875,6 @@ class ConversationOrchestrator:
             return
 
         parsed = parse_command_runtime(command.effective_command or command.command, output)
-        self._trace_decision(
-            session_id=command.session_id,
-            step_type="evidence_parse",
-            title="证据解析",
-            detail=(
-                f"command={command.command[:120]}; "
-                f"category={parsed.category}; "
-                f"conclusion={str(parsed.conclusion)[:140]}"
-            ),
-            detail_payload=self._compact_trace_payload(
-                {
-                    "command": self._command_trace_record(command, include_output=False),
-                    "parser_result": {
-                        "category": parsed.category,
-                        "conclusion": parsed.conclusion,
-                        "parsed_data": parsed.parsed_data,
-                    },
-                }
-            ),
-        )
         apply_device_profile_to_session_store(self.store, command.session_id, parsed.device_profile)
 
         command.output = output
@@ -2298,6 +2279,48 @@ class ConversationOrchestrator:
                 "problem": self._sanitize_for_llm(problem)[:1200],
                 "vendor": str(vendor or "").strip(),
                 "version_signature": str(version_signature or "").strip(),
+            },
+        )
+
+    def _append_capability_context_to_ai_context(self, *, session_id: str) -> None:
+        session = self.store.get_session(session_id)
+        rules = self.store.list_command_capability_rules(version_signature=session.device.version_signature)
+        enabled_rules = [item for item in rules if bool(getattr(item, "enabled", True))]
+        if not enabled_rules:
+            return
+        lines = [
+            "系统已学习到当前版本的命令能力规则。规划下一轮命令时，优先利用这些规则，避免重复尝试已知不可用命令："
+        ]
+        for rule in enabled_rules[:6]:
+            command_text = str(rule.command_key or "").strip()
+            if not command_text:
+                continue
+            reason = str(rule.reason_text or "").strip()
+            if str(rule.action or "").strip().lower() == "rewrite" and str(rule.rewrite_to or "").strip():
+                lines.append(
+                    f"- rewrite: {command_text} -> {str(rule.rewrite_to).strip()}"
+                    + (f"；原因：{reason}" if reason else "")
+                )
+            else:
+                lines.append(f"- block: {command_text}" + (f"；原因：{reason}" if reason else ""))
+        lines.append("对已被 block 的命令，不要再次原样输出；需要继续取证时请改用同厂商等效命令。")
+        text = "\n".join(lines)
+        self.store.append_ai_context(session_id, "user", text)
+        self._trace_decision(
+            session_id=session_id,
+            step_type="capability_decision",
+            title="命令能力规则已装载",
+            detail="planner_context=command_capability",
+            status="succeeded",
+        )
+        self._trace_ai_context_submission(
+            session_id=session_id,
+            title="系统提交上下文（命令能力规则）",
+            role="user",
+            source="command_capability",
+            content=text,
+            extra_payload={
+                "version_signature": str(session.device.version_signature or "").strip(),
             },
         )
 

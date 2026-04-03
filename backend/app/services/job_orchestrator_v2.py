@@ -81,6 +81,8 @@ class JobV2Orchestrator:
         self.deepseek_diagnoser = DeepSeekDiagnoser()
         self.llm_planner_bridge = LLMPlannerBridge()
         self.sop_archive = SOPArchive()
+        default_llm_timeout = getattr(self.deepseek_diagnoser, "timeout", 30.0)
+        self.llm_plan_timeout = float(os.getenv("LLM_PLAN_TIMEOUT", str(default_llm_timeout)))
 
         self._jobs: dict[str, Job] = {}
         self._events: dict[str, list[JobEvent]] = defaultdict(list)
@@ -241,6 +243,7 @@ class JobV2Orchestrator:
         rows = self._events[job.id]
         event = JobEvent(job_id=job.id, seq_no=len(rows) + 1, event_type=event_type, payload=payload)
         rows.append(event)
+        job.updated_at = now_utc()
         self._dispatch_webhook(job, event)
         return event
 
@@ -1114,6 +1117,16 @@ class JobV2Orchestrator:
 
             await self._collect_phase(job_id)
             await self._correlate_phase(job_id)
+            async with self._state_lock:
+                job = self._jobs.get(job_id)
+                if not job:
+                    return
+                if job.status == JobStatus.cancelled:
+                    return
+                mode = job.mode
+            if mode != JobMode.repair:
+                await self._complete_non_repair_job(job_id)
+                return
             await self._plan_phase(job_id)
             await self._resume_job_execution(job_id)
         except asyncio.CancelledError:
@@ -1163,6 +1176,32 @@ class JobV2Orchestrator:
                 )
                 self._save_state()
             await self._close_job_adapters(job_id)
+
+    async def _complete_non_repair_job(self, job_id: str) -> None:
+        async with self._state_lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return
+            if job.status == JobStatus.cancelled:
+                return
+            job.phase = JobPhase.conclude
+            job.status = JobStatus.completed
+            job.completed_at = now_utc()
+            job.updated_at = now_utc()
+            self._append_event_with_trace(
+                job,
+                "job_completed",
+                {"mode": job.mode.value},
+                step_type="session_control",
+                title="多设备协同完成",
+                status="succeeded",
+                detail=f"mode={job.mode.value}",
+                detail_payload={"mode": job.mode.value},
+                completed_at=job.completed_at,
+                duration_ms=0,
+            )
+            self._save_state()
+        await self._close_job_adapters(job_id)
 
     async def _collect_phase(self, job_id: str) -> None:
         async with self._state_lock:
@@ -1217,16 +1256,18 @@ class JobV2Orchestrator:
 
         try:
             await self._get_adapter(job_id, device_id)
-            collect_commands = self._baseline_collect_commands()
+            collect_commands = self._baseline_collect_commands(job.problem)
             for title, command_text in collect_commands:
                 normalized_cmd = " ".join(str(command_text or "").strip().lower().split())
-                if "version" not in normalized_cmd:
-                    async with self._state_lock:
-                        current_job = self._jobs[job_id]
-                        current_device = self._find_device(current_job, device_id)
-                        current_vendor = (current_device.vendor if current_device else "") or ""
-                    if self._should_skip_collect_command_by_vendor(current_vendor, normalized_cmd):
-                        continue
+                async with self._state_lock:
+                    current_job = self._jobs[job_id]
+                    current_device = self._find_device(current_job, device_id)
+                    current_vendor = (current_device.vendor if current_device else "") or ""
+                    current_version_signature = (current_device.version_signature if current_device else "") or ""
+                if "version" in normalized_cmd and current_version_signature:
+                    continue
+                if self._should_skip_collect_command_by_vendor(current_vendor, normalized_cmd):
+                    continue
                 step_no = await self._allocate_next_step_no(job_id)
                 await self._run_device_command(
                     job_id,
@@ -1286,23 +1327,21 @@ class JobV2Orchestrator:
                     self._append_event(job, "device_collect_failed", {"device_id": device_id, "error": str(exc)[:260]})
                 self._save_state()
 
-    def _baseline_collect_commands(self) -> list[tuple[str, str]]:
-        return [
+    def _baseline_collect_commands(self, problem: str | None = None) -> list[tuple[str, str]]:
+        commands: list[tuple[str, str]] = [
             ("版本探测", "show version"),
             ("版本探测兼容", "display version"),
-            ("接口摘要", "show ip interface brief"),
-            ("接口摘要兼容", "display interface brief"),
-            ("路由摘要", "show ip route"),
-            ("路由摘要兼容", "display ip routing-table"),
-            ("邻接采集", "show lldp neighbors detail"),
-            ("邻接采集兼容", "display lldp neighbor"),
-            ("协议邻接", "show ospf neighbor"),
-            ("协议邻接兼容", "display ospf peer"),
-            ("设备时钟", "show clock"),
-            ("设备时钟兼容", "display clock"),
             ("权限探测", "show privilege"),
             ("权限探测兼容", "display users"),
         ]
+        if self._is_history_problem(problem or ""):
+            commands.extend(
+                [
+                    ("设备时钟", "show clock"),
+                    ("设备时钟兼容", "display clock"),
+                ]
+            )
+        return commands
 
     def _is_history_problem(self, problem: str) -> bool:
         lowered = str(problem or "").strip().lower()
@@ -1363,8 +1402,8 @@ class JobV2Orchestrator:
     async def _collect_device_with_llm(self, job_id: str, device_id: str) -> None:
         if not self.deepseek_diagnoser.enabled:
             return
-        max_rounds = max(1, int(os.getenv("V2_COLLECT_LLM_MAX_ROUNDS", "3")))
-        max_commands_per_round = max(1, int(os.getenv("V2_COLLECT_LLM_MAX_COMMANDS_PER_ROUND", "4")))
+        max_rounds = max(1, int(os.getenv("V2_COLLECT_LLM_MAX_ROUNDS", "2")))
+        max_commands_per_round = max(1, int(os.getenv("V2_COLLECT_LLM_MAX_COMMANDS_PER_ROUND", "3")))
         repeated_guard: dict[str, int] = {}
         planner_context = ""
 
@@ -1381,11 +1420,16 @@ class JobV2Orchestrator:
                 session = self._build_llm_device_session(job, device)
                 user_problem = f"{job.problem}\n目标设备: {device.host}"
                 sop_run_key = f"{job.id}:{device.id}"
-                planner_context = self.sop_archive.prompt_context(
+                sop_context = self.sop_archive.prompt_context(
                     job.problem,
                     vendor=device.vendor,
                     version_signature=device.version_signature,
                     run_key=sop_run_key,
+                )
+                capability_context = self._build_capability_prompt_context(device, problem=job.problem)
+                permission_context = self._build_permission_prompt_context(commands)
+                planner_context = "\n\n".join(
+                    part for part in (sop_context, capability_context, permission_context) if str(part or "").strip()
                 )
                 self._append_trace_event(
                     job,
@@ -1406,7 +1450,7 @@ class JobV2Orchestrator:
                     },
                     device=device,
                 )
-                if planner_context:
+                if sop_context:
                     self._append_trace_event(
                         job,
                         "sop_candidates_generated",
@@ -1415,7 +1459,33 @@ class JobV2Orchestrator:
                         detail="planner_context=sop_archive",
                         detail_payload={
                             "device": self._job_device_trace_record(device),
-                            "planner_context": planner_context,
+                            "planner_context": sop_context,
+                        },
+                        device=device,
+                    )
+                if capability_context:
+                    self._append_trace_event(
+                        job,
+                        "capability_decision",
+                        f"[{device.host}] 命令能力规则已装载",
+                        status="succeeded",
+                        detail="planner_context=command_capability",
+                        detail_payload={
+                            "device": self._job_device_trace_record(device),
+                            "planner_context": capability_context,
+                        },
+                        device=device,
+                    )
+                if permission_context:
+                    self._append_trace_event(
+                        job,
+                        "policy_decision",
+                        f"[{device.host}] 权限信号已装载",
+                        status="succeeded",
+                        detail="planner_context=permission_signal",
+                        detail_payload={
+                            "device": self._job_device_trace_record(device),
+                            "planner_context": permission_context,
                         },
                         device=device,
                     )
@@ -1432,6 +1502,7 @@ class JobV2Orchestrator:
                     iteration=round_no,
                     max_iterations=max_rounds,
                     planner_context=planner_context or None,
+                    timeout_seconds=self.llm_plan_timeout,
                 )
             except Exception as exc:
                 llm_finished_at = now_utc()
@@ -1629,6 +1700,63 @@ class JobV2Orchestrator:
                     continue
                 if repeated_guard.get(normalized, 0) >= 2:
                     continue
+                blocked_rule = None
+                permission_filter_reason = ""
+                async with self._state_lock:
+                    current_job = self._jobs.get(job_id)
+                    current_device = self._find_device(current_job, device_id) if current_job else None
+                    if current_device is not None:
+                        current_commands = self._build_llm_device_commands(current_job, device_id) if current_job else []
+                        permission_state, permission_hint = self._derive_permission_signal_from_commands(current_commands)
+                        if permission_state.startswith("insufficient") and self._command_requires_privileged_read(command_text):
+                            permission_filter_reason = permission_hint or "权限不足，已过滤需要特权的只读命令。"
+                            self._append_trace_event(
+                                current_job,
+                                "policy_decision",
+                                f"[{current_device.host}] AI 规划命令因权限不足被过滤",
+                                status="blocked",
+                                detail=f"decision=permission_filtered; command={command_text}",
+                                detail_payload={
+                                    "decision": "permission_filtered",
+                                    "command": command_text,
+                                    "permission_state": permission_state,
+                                    "reason": permission_filter_reason,
+                                    "device": self._job_device_trace_record(current_device),
+                                },
+                                device=current_device,
+                            )
+                            self._save_state()
+                        else:
+                            matched = self.store.resolve_command_capability(
+                                host=current_device.host,
+                                protocol=current_device.protocol,
+                                device_type=current_device.device_type,
+                                vendor=current_device.vendor,
+                                version_signature=current_device.version_signature,
+                                command_text=command_text,
+                            )
+                            if matched is not None and str(matched.rule.action or "").strip().lower() == "block":
+                                blocked_rule = matched.rule
+                                self.store.register_command_capability_hit(blocked_rule.id)
+                                self._append_trace_event(
+                                    current_job,
+                                    "capability_decision",
+                                    f"[{current_device.host}] AI 规划命令被已知规则过滤",
+                                    status="blocked",
+                                    detail=f"decision=filtered_block_hit; rule_id={blocked_rule.id}; command={command_text}",
+                                    detail_payload={
+                                        "decision": "filtered_block_hit",
+                                        "rule_id": blocked_rule.id,
+                                        "reason": str(blocked_rule.reason_text or "Blocked by capability rule"),
+                                        "command": command_text,
+                                        "device": self._job_device_trace_record(current_device),
+                                    },
+                                    device=current_device,
+                                )
+                                self._save_state()
+                if blocked_rule is not None or permission_filter_reason:
+                    repeated_guard[normalized] = repeated_guard.get(normalized, 0) + 1
+                    continue
                 repeated_guard[normalized] = repeated_guard.get(normalized, 0) + 1
                 step_no = await self._allocate_next_step_no(job_id)
                 await self._run_device_command(
@@ -1675,6 +1803,130 @@ class JobV2Orchestrator:
             operation_mode=operation_mode,
         )
 
+    def _build_capability_prompt_context(
+        self,
+        device: JobDevice,
+        *,
+        problem: str | None = None,
+        max_rules: int = 8,
+    ) -> str:
+        rules = self.store.list_command_capability_rules(version_signature=device.version_signature)
+        enabled_rules = [item for item in rules if bool(getattr(item, "enabled", True))]
+        if not enabled_rules:
+            return ""
+        focus_tokens = self._capability_focus_tokens(problem or "")
+
+        def _priority(rule) -> tuple[int, int, int, str]:
+            command_text = str(rule.command_key or "").strip().lower()
+            action = str(rule.action or "").strip().lower()
+            hit_count = int(getattr(rule, "hit_count", 0) or 0)
+            focus_hit = 1 if any(token in command_text for token in focus_tokens) else 0
+            action_rank = 1 if action == "block" else 0
+            return (-focus_hit, -action_rank, -hit_count, command_text)
+
+        enabled_rules = sorted(enabled_rules, key=_priority)
+        rows: list[str] = [
+            "系统已学习到当前版本的命令能力规则。下面是与当前问题最相关的已知限制/改写规则："
+        ]
+        for rule in enabled_rules[: max(1, int(max_rules))]:
+            command_text = str(rule.command_key or "").strip()
+            if not command_text:
+                continue
+            reason = str(rule.reason_text or "").strip()
+            if str(rule.action or "").strip().lower() == "rewrite" and str(rule.rewrite_to or "").strip():
+                rows.append(
+                    f"- rewrite: {command_text} -> {str(rule.rewrite_to).strip()}"
+                    + (f"；原因：{reason}" if reason else "")
+                )
+            else:
+                rows.append(f"- block: {command_text}" + (f"；原因：{reason}" if reason else ""))
+        rows.append("对上面已被 block 的命令，禁止再次原样输出；需要继续取证时请改用同厂商等效命令。")
+        return "\n".join(rows)
+
+    def _derive_permission_signal_from_commands(self, commands: list[CommandExecution]) -> tuple[str, str]:
+        for item in reversed(commands):
+            state, hint = self._derive_permission_signal(
+                str(item.command or ""),
+                str(item.output or ""),
+                str(item.error or ""),
+            )
+            if state:
+                return state, hint
+        return ("", "")
+
+    def _build_permission_prompt_context(self, commands: list[CommandExecution]) -> str:
+        permission_state, permission_hint = self._derive_permission_signal_from_commands(commands)
+        if not permission_state:
+            return ""
+        return (
+            "系统已根据最近命令结果识别当前会话权限状态：\n"
+            f"- permission_state: {permission_state}\n"
+            f"- permission_action_hint: {permission_hint or '-'}\n"
+            "如果权限不足，禁止继续输出明显需要更高权限的查询命令（如 running-config / 特权日志过滤），"
+            "优先使用当前权限可执行的等效观测命令，或先做最小提权并立即复核权限。"
+        )
+
+    def _derive_permission_signal(self, command: str, output: str, error: str) -> tuple[str, str]:
+        merged = f"{output}\n{error}".strip()
+        lowered = merged.lower()
+        normalized_command = command.strip().lower()
+
+        level_match = re.search(r"(?i)current\s+privilege\s+level\s+is\s+(\d+)", merged)
+        if level_match:
+            level = int(level_match.group(1))
+            if level >= 15:
+                return ("privileged(level=15)", "已具备高权限，禁止重复enable，继续目标命令。")
+            return (f"insufficient(level={level})", "权限不足，下一步应先最小提权（如enable）并立即复核权限。")
+
+        if any(
+            token in lowered
+            for token in (
+                "permission denied",
+                "insufficient privileges",
+                "not authorized",
+                "authorization failed",
+                "privilege level insufficient",
+                "not enough privileges",
+                "privileged mode required",
+                "requires privileged",
+                "权限不足",
+                "无权限",
+            )
+        ):
+            return ("insufficient", "权限不足，下一步应先最小提权并立即复核权限。")
+
+        if normalized_command == "enable":
+            if any(token in lowered for token in ("already in privileged mode", "privilege level is 15")):
+                return ("privileged(level=15)", "已经在特权模式，禁止重复enable。")
+            if "#" in merged:
+                return ("privileged", "已进入特权模式，可继续执行目标命令。")
+
+        return ("", "")
+
+    def _command_requires_privileged_read(self, command_text: str) -> bool:
+        normalized = " ".join(str(command_text or "").strip().lower().split())
+        if not normalized:
+            return False
+        return any(
+            token in normalized
+            for token in (
+                "show running-config",
+                "show startup-config",
+                "show logging | grep",
+            )
+        )
+
+    def _capability_focus_tokens(self, problem: str) -> list[str]:
+        lowered = str(problem or "").strip().lower()
+        tokens: list[str] = []
+        if any(token in lowered for token in ("ospf", "邻接", "flap", "闪断", "history", "历史")):
+            tokens.extend(["ospf", "neighbor", "peer", "logbuffer", "logging"])
+        if any(token in lowered for token in ("接口", "端口", "interface", "port", "shutdown", "admin")):
+            tokens.extend(["interface", "ethernet", "shutdown"])
+        if any(token in lowered for token in ("路由", "route", "routing", "下一跳", "next-hop")):
+            tokens.extend(["route", "routing", "next-hop"])
+        return list(dict.fromkeys(tokens))
+
     def _build_llm_device_commands(self, job: Job, device_id: str) -> list[CommandExecution]:
         rows: list[CommandExecution] = []
         device = self._find_device(job, device_id)
@@ -1699,8 +1951,12 @@ class JobV2Orchestrator:
                         started_at=item.started_at,
                         completed_at=item.completed_at,
                         duration_ms=item.duration_ms,
-                        original_command=item.command,
+                        original_command=item.original_command or item.command,
                         effective_command=item.effective_command,
+                        capability_state=item.capability_state,
+                        capability_reason=item.capability_reason,
+                        constraint_source=item.constraint_source,
+                        constraint_reason=item.constraint_reason,
                     )
                 )
             except Exception:
@@ -2193,64 +2449,57 @@ class JobV2Orchestrator:
                 )
                 job.evidences.append(evidence)
 
-                command.status = JobCommandStatus.succeeded
                 command.output = output
                 command.capability_state = capability_state
                 command.capability_reason = capability_reason
                 command.completed_at = finished_at
                 command.duration_ms = max(0, int((command.completed_at - command.started_at).total_seconds() * 1000)) if command.started_at else 0
 
+                command_failed = parsed.category == "command_error"
+                command.status = JobCommandStatus.failed if command_failed else JobCommandStatus.succeeded
+                if command_failed:
+                    command.error = str(parsed.parsed_data.get("reason") or parsed.conclusion or "Command execution failed").strip()
+                else:
+                    command.error = None
+
                 apply_device_profile_to_job_device(device, parsed.device_profile)
                 self._apply_incidents_from_evidence(job, device, evidence)
                 self._collect_topology_hints(job, device, command_to_run, output)
 
                 self._learn_capability_from_command(job, device, command, parsed.category)
-                self._touch_command_profile(device.version_signature, command_text, success=True, error=None, rewritten=bool(capability_state == "rewrite"))
+                self._touch_command_profile(
+                    device.version_signature,
+                    command_text,
+                    success=not command_failed,
+                    error=command.error if command_failed else None,
+                    rewritten=bool(capability_state == "rewrite"),
+                )
 
+                event_name = "command_failed" if command_failed else "command_completed"
                 self._append_event(
                     job,
-                    "command_completed",
+                    event_name,
                     {
                         "command_id": command.id,
                         "device_id": device_id,
                         "status": command.status.value,
                         "category": parsed.category,
                         "conclusion": parsed.conclusion[:220],
+                        "error": (command.error or "")[:220],
                     },
                 )
                 self._append_trace_event(
                     job,
                     "command_execution",
                     f"设备执行命令 #{command.step_no}: {title}",
-                    status="succeeded",
-                    detail=(command.effective_command or command.command)[:280],
+                    status="failed" if command_failed else "succeeded",
+                    detail=((command.error or parsed.conclusion) if command_failed else (command.effective_command or command.command))[:280],
                     detail_payload={"command": self._job_command_trace_record(command, include_output=True)},
                     command=command,
                     device=device,
                     started_at=command.started_at,
                     completed_at=command.completed_at,
                     duration_ms=command.duration_ms,
-                )
-                self._append_trace_event(
-                    job,
-                    "evidence_parse",
-                    "证据解析",
-                    status="succeeded",
-                    detail=f"category={parsed.category}; conclusion={str(parsed.conclusion)[:180]}",
-                    detail_payload={
-                        "command": self._job_command_trace_record(command, include_output=False),
-                        "parser_result": {
-                            "category": parsed.category,
-                            "conclusion": parsed.conclusion,
-                            "parsed_data": parsed.parsed_data,
-                        },
-                        "evidence": evidence.model_dump(mode="json"),
-                    },
-                    command=command,
-                    device=device,
-                    started_at=command.completed_at or finished_at,
-                    completed_at=command.completed_at or finished_at,
-                    duration_ms=0,
                 )
                 self._save_state()
 
@@ -2615,7 +2864,7 @@ class JobV2Orchestrator:
                     "incident_count": len(job.incidents),
                     "root_device_id": job.rca_result.root_device_id if job.rca_result else None,
                 },
-                step_type="evidence_parse",
+                step_type="plan_decision",
                 title="多设备关联分析完成",
                 status="succeeded",
                 detail=(
@@ -2895,6 +3144,18 @@ class JobV2Orchestrator:
             return "routing"
         return "generic"
 
+    def _infer_problem_intent(self, problem: str) -> str:
+        lowered = str(problem or "").strip().lower()
+        if not lowered:
+            return "generic"
+        if any(token in lowered for token in ("修复", "恢复", "打开", "关闭", "配置", "变更", "repair", "fix", "configure", "shutdown", "no shutdown")):
+            return "repair"
+        if any(token in lowered for token in ("原因", "根因", "定位", "为什么", "闪断", "抖动", "关联", "root cause", "why", "history", "flap", "incident")):
+            return "root_cause"
+        if any(token in lowered for token in ("状态", "检查", "查看", "查询", "show", "status", "check", "inspect", "query")):
+            return "status_check"
+        return "generic"
+
     def _incident_matches_focus(self, incident: IncidentEvent, focus: str) -> bool:
         if focus == "generic":
             return True
@@ -3000,6 +3261,32 @@ class JobV2Orchestrator:
         }
         return (labels_zh if prefer_zh else labels_en).get(key, key or ("未知异常" if prefer_zh else "unknown incident"))
 
+    def _history_evidence_summary(self, job: Job) -> dict[str, Any]:
+        positive_hosts: set[str] = set()
+        negative_hosts: set[str] = set()
+        flap_hosts: set[str] = set()
+        host_by_device_id = {str(device.id): str(device.host or device.id or "-") for device in job.devices}
+        for evidence in job.evidences or []:
+            conclusion = str(evidence.conclusion or "").strip().lower()
+            parsed_data = evidence.parsed_data or {}
+            host = host_by_device_id.get(str(evidence.device_id), str(evidence.device_id or "-"))
+            ospf_logs = int(parsed_data.get("ospf_log_count", 0) or 0)
+            ospf_flaps = int(parsed_data.get("ospf_flap_log_count", 0) or 0)
+            if ospf_flaps > 0:
+                flap_hosts.add(host)
+                positive_hosts.add(host)
+                continue
+            if ospf_logs > 0:
+                positive_hosts.add(host)
+            if "未发现 ospf" in conclusion or "未发现ospf" in conclusion or "no ospf" in conclusion:
+                negative_hosts.add(host)
+        return {
+            "positive_log_hosts": sorted(positive_hosts),
+            "flap_log_hosts": sorted(flap_hosts),
+            "negative_log_hosts": sorted(negative_hosts),
+            "history_evidence_sufficient": bool(flap_hosts),
+        }
+
     async def _llm_refine_rca(self, job_id: str) -> None:
         if not self.deepseek_diagnoser.enabled:
             return
@@ -3010,6 +3297,7 @@ class JobV2Orchestrator:
                 return
             payload = self._build_llm_rca_payload(job)
             prefer_zh = self._prefer_chinese_output(job.problem)
+            intent = self._infer_problem_intent(job.problem)
             representative = job.devices[0] if job.devices else None
             if representative is not None:
                 self._append_trace_event(
@@ -3037,21 +3325,49 @@ class JobV2Orchestrator:
                 )
                 self._save_state()
 
-        system_prompt = (
-            "你是网络运维RCA助手。"
-            "请严格基于给定多设备证据包输出JSON，不得编造证据。"
-            "如果证据不足，必须明确写“证据不足/不确定”。"
-            "输出字段: summary, recommendation, confidence, root_device_host, root_cause, impact_scope。"
-            "confidence 范围 0~1。"
-        )
-        if not prefer_zh:
-            system_prompt = (
-                "You are a network RCA assistant. "
-                "Return strict JSON based only on provided multi-device evidence. "
-                "If evidence is insufficient, explicitly say uncertain/insufficient evidence. "
-                "Fields: summary, recommendation, confidence, root_device_host, root_cause, impact_scope. "
-                "confidence must be between 0 and 1."
-            )
+        if prefer_zh:
+            if intent == "status_check":
+                system_prompt = (
+                    "你是网络运维状态分析助手。"
+                    "请严格基于给定多设备证据包输出JSON，不得编造证据。"
+                    "当前任务重点是状态检查/现状判断，不要强行输出根因候选设备。"
+                    "请优先总结每台设备的实际状态、是否正常、异常点在哪里；"
+                    "只有在证据明确指向单一源头时，root_device_host 才可填写，否则必须为空。"
+                    "如果证据不足，必须明确写“证据不足/不确定”。"
+                    "输出字段: summary, recommendation, confidence, root_device_host, root_cause, impact_scope。"
+                    "confidence 范围 0~1。"
+                )
+            else:
+                system_prompt = (
+                    "你是网络运维RCA助手。"
+                    "请严格基于给定多设备证据包输出JSON，不得编造证据。"
+                    "如果证据不足，必须明确写“证据不足/不确定”。"
+                    "如果任务本身是历史/闪断类问题，而 history_evidence.history_evidence_sufficient=false，"
+                    "则禁止输出明确根因设备；root_device_host 必须为空，root_cause/summary 必须明确说明历史证据不足。"
+                    "输出字段: summary, recommendation, confidence, root_device_host, root_cause, impact_scope。"
+                    "confidence 范围 0~1。"
+                )
+        else:
+            if intent == "status_check":
+                system_prompt = (
+                    "You are a network status analysis assistant. "
+                    "Return strict JSON based only on provided multi-device evidence. "
+                    "This task is primarily a status/health check, so do not force a root device. "
+                    "Summarize actual device status first; only set root_device_host when evidence clearly identifies a single source. "
+                    "If evidence is insufficient, explicitly say uncertain/insufficient evidence. "
+                    "Fields: summary, recommendation, confidence, root_device_host, root_cause, impact_scope. "
+                    "confidence must be between 0 and 1."
+                )
+            else:
+                system_prompt = (
+                    "You are a network RCA assistant. "
+                    "Return strict JSON based only on provided multi-device evidence. "
+                    "If evidence is insufficient, explicitly say uncertain/insufficient evidence. "
+                    "If the task is historical/flap-oriented and history_evidence.history_evidence_sufficient=false, "
+                    "you must not assign a root_device_host; root_cause and summary must explicitly state that historical evidence is insufficient. "
+                    "Fields: summary, recommendation, confidence, root_device_host, root_cause, impact_scope. "
+                    "confidence must be between 0 and 1."
+                )
 
         llm_started_at = now_utc()
         try:
@@ -3191,8 +3507,29 @@ class JobV2Orchestrator:
             job = self._jobs.get(job_id)
             if job is None:
                 return
+            history_summary = self._history_evidence_summary(job) if self._is_history_problem(job.problem) else None
             if job.rca_result is None:
                 job.rca_result = RCAResult(job_id=job.id)
+
+            if history_summary and not bool(history_summary.get("history_evidence_sufficient")):
+                root_host = ""
+                if self._prefer_chinese_output(job.problem):
+                    root_cause_text = "不确定。历史日志/事件证据不足，暂不能确认上次 OSPF 闪断的单一根因设备。"
+                    summary_text = (
+                        "不确定。当前仅观察到 OSPF 邻居缺失或调试日志，但缺少明确的历史 down/up 抖动证据，"
+                        "暂不能确认上次闪断的单一根因设备。"
+                    )
+                    recommendation_text = "建议补采更长时间窗的协议历史日志、邻接变化记录与链路事件，再重新进行根因分析。"
+                else:
+                    root_cause_text = (
+                        "Uncertain. Historical protocol evidence is insufficient to identify a single root device for the prior OSPF flap."
+                    )
+                    summary_text = (
+                        "Uncertain. Current evidence shows missing OSPF adjacency or debug records, but lacks explicit historical down/up flap evidence."
+                    )
+                    recommendation_text = (
+                        "Collect a longer protocol history window, adjacency change records, and link events before rerunning RCA."
+                    )
 
             job.rca_result.summary = summary_text
             job.rca_result.recommendation = recommendation_text
@@ -3210,6 +3547,10 @@ class JobV2Orchestrator:
                 job.rca_result.root_device_id = mapped.id
                 job.rca_result.root_device_host = mapped.host
                 job.rca_result.root_device_name = mapped.name
+            else:
+                job.rca_result.root_device_id = None
+                job.rca_result.root_device_host = None
+                job.rca_result.root_device_name = None
 
             job.updated_at = now_utc()
             representative = job.devices[0] if job.devices else None
@@ -3249,11 +3590,14 @@ class JobV2Orchestrator:
         incidents = sorted(job.incidents, key=lambda item: item.timestamp)
         evidences = sorted(job.evidences, key=lambda item: item.created_at)
         commands = sorted(job.command_results, key=lambda item: (item.step_no, item.created_at))
+        history_summary = self._history_evidence_summary(job) if self._is_history_problem(job.problem) else None
         return {
             "job": {
                 "id": job.id,
                 "mode": job.mode.value,
                 "problem": job.problem,
+                "focus": self._infer_problem_focus(job.problem),
+                "intent": self._infer_problem_intent(job.problem),
                 "max_gap_seconds": job.max_gap_seconds,
                 "topology_mode": job.topology_mode.value,
                 "time_window": {
@@ -3261,6 +3605,7 @@ class JobV2Orchestrator:
                     "end": job.window_end.isoformat() if job.window_end else None,
                 },
             },
+            "history_evidence": history_summary,
             "devices": [
                 {
                     "id": item.id,

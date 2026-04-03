@@ -2542,7 +2542,10 @@ function App() {
       setMultiSessionActiveJobId(created.source_id)
       setV3SelectedJobId(created.source_id)
       multiJobAbortRef.current = { aborted: false, jobId: created.source_id }
-      await monitorMultiJobUntilPauseOrDone(created.source_id)
+      const state = await monitorMultiJobUntilPauseOrDone(created.source_id)
+      if (state === 'done' || state === 'stopped') {
+        setMultiSessionActiveJobId(undefined)
+      }
       await refreshV3Jobs()
       await refreshSessionHistory()
     } catch (error) {
@@ -2656,13 +2659,12 @@ function App() {
     if (!session?.id) return
     if (sessionRuntimeKind === 'multi') {
       setStoppingSession(true)
+      const activeJobId = multiSessionActiveJobId
       try {
         if (multiJobAbortRef.current) {
           multiJobAbortRef.current.aborted = true
         }
-        if (multiSessionActiveJobId) {
-          await stopRun(resolveV3ApiKey(), toUnifiedMultiRunId(multiSessionActiveJobId))
-        }
+        setMultiSessionActiveJobId(undefined)
         setBusy(false)
         setMessages((prev) => [
           ...prev,
@@ -2673,9 +2675,12 @@ function App() {
             created_at: new Date().toISOString(),
           },
         ])
+        if (activeJobId) {
+          await stopRun(resolveV3ApiKey(), toUnifiedMultiRunId(activeJobId))
+        }
         antMessage.success('当前多设备协同已停止')
       } catch (error) {
-        antMessage.error((error as Error).message || '停止多设备协同失败')
+        antMessage.warning((error as Error).message || '停止请求已发出，请稍后刷新确认状态')
       } finally {
         setStoppingSession(false)
       }
@@ -2684,14 +2689,15 @@ function App() {
     setStoppingSession(true)
     try {
       streamAbortRef.current?.abort()
-      await stopRun(resolveV3ApiKey(), toUnifiedSingleRunId(session.id))
+      setBusy(false)
       setResumedSessionId(undefined)
       setContinueExecutionState(null)
+      await stopRun(resolveV3ApiKey(), toUnifiedSingleRunId(session.id))
       await Promise.all([refreshTimeline(session.id), refreshServiceTrace(session.id)])
       setBusy(false)
       antMessage.success('当前会话已停止')
     } catch (error) {
-      antMessage.error((error as Error).message || '停止会话失败')
+      antMessage.warning((error as Error).message || '停止请求已发出，请稍后刷新确认状态')
     } finally {
       setStoppingSession(false)
     }
@@ -2967,11 +2973,17 @@ function App() {
         const targetIds = actionIds.length > 0 ? actionIds : [v2ActionGroupId]
         if (approved) {
           await approveRunActions(key, toUnifiedMultiRunId(multiSessionActiveJobId), targetIds, 'workbench-confirm')
-          await monitorMultiJobUntilPauseOrDone(multiSessionActiveJobId)
+          const state = await monitorMultiJobUntilPauseOrDone(multiSessionActiveJobId)
+          if (state === 'done' || state === 'stopped') {
+            setMultiSessionActiveJobId(undefined)
+          }
           antMessage.success(targetIds.length > 1 ? '已确认并执行命令组' : '已确认执行命令组')
         } else {
           await rejectRunActions(key, toUnifiedMultiRunId(multiSessionActiveJobId), targetIds, 'workbench-reject')
-          await monitorMultiJobUntilPauseOrDone(multiSessionActiveJobId)
+          const state = await monitorMultiJobUntilPauseOrDone(multiSessionActiveJobId)
+          if (state === 'done' || state === 'stopped') {
+            setMultiSessionActiveJobId(undefined)
+          }
           antMessage.info(targetIds.length > 1 ? '已拒绝命令组' : '已拒绝命令组')
         }
       } catch (error) {
@@ -3233,7 +3245,7 @@ function App() {
                       >
                         <div className="activity-meta">
                           <span className={`activity-kind ${item.kind}`}>{item.label}</span>
-                          <span className="activity-time">{formatTime(item.createdAt)}</span>
+                          <span className="activity-time">{item.kind === 'trace' ? formatTraceTime(item.createdAt) : formatTime(item.createdAt)}</span>
                         </div>
                         <div className="activity-title">{item.title}</div>
                         {item.kind === 'command' && (
@@ -3695,9 +3707,18 @@ function App() {
                   {v3ApiKeys.map((item) => (
                     <div key={item.id} className="keyhub-row">
                       <div className="keyhub-meta">
-                        <strong>{item.name}</strong>
-                        <div className="keyhub-permission-line">{item.permissions.join(', ') || '*'}</div>
-                        <span className="muted">前缀：{item.key_prefix}（仅用于识别）</span>
+                        <div className="keyhub-meta-head">
+                          <strong>{item.name}</strong>
+                          <span className="meta-pill">{item.key_prefix}</span>
+                        </div>
+                        <div className="keyhub-permission-chips">
+                          {(item.permissions.length ? item.permissions : ['*']).map((permission) => (
+                            <span key={`${item.id}-${permission}`} className="keyhub-permission-chip">
+                              {permission}
+                            </span>
+                          ))}
+                        </div>
+                        <span className="muted">前缀仅用于识别；完整 Key 仅在创建或轮换后展示一次。</span>
                       </div>
                       <div className="v3-row-actions keyhub-actions">
                         <span className={`status-chip ${item.enabled ? 'ok' : 'warn'}`}>{item.enabled ? '启用' : '停用'}</span>
@@ -3735,21 +3756,18 @@ function App() {
                     <code>按系统/团队分配独立 Key，权限最小化，定期轮换；正式环境建议固定 Key，不依赖临时 Key。</code>
                   </div>
                 </div>
-                <pre className="detail-pre">{`# 直接调用统一 Run API
-# 注意：
-# 1) JSON 必须使用英文双引号 "
-# 2) X-API-Key 填真实 Key，不要把 < > 一起复制进去
+                <pre className="detail-pre keyhub-doc-pre">{`# 直接调用统一 Run API
 curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
   -H 'X-API-Key: your_real_key_here' \\
   -H 'Content-Type: application/json' \\
   -d '{
     "problem":"多设备异常关联分析",
     "operation_mode":"diagnosis",
-    "automation_level":"assisted", 
+    "automation_level":"assisted",
     "devices":[{"host":"192.168.0.88","protocol":"ssh","username":"***","password":"***"}]
   }'
 
-# 使用统一 Python 客户端（未传 --api-key 时默认先尝试自动创建临时 Key）
+# 使用统一 Python 客户端
 ./.venv/bin/python scripts/unified_diag_client.py \\
   --base-url http://127.0.0.1:8000 \\
   --host 192.168.0.102 \\
@@ -4543,8 +4561,8 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
                       <div className="flow-detail-grid">
                         <div><span>类型</span><strong>{traceTypeLabel(selectedTraceStep.step_type)}</strong></div>
                         <div><span>约束判定</span><strong>{traceConstraintLabel(selectedTraceStep) || '-'}</strong></div>
-                        <div><span>开始</span><strong>{formatTime(selectedTraceStep.started_at)}</strong></div>
-                        <div><span>结束</span><strong>{selectedTraceStep.completed_at ? formatTime(selectedTraceStep.completed_at) : '-'}</strong></div>
+                        <div><span>开始</span><strong>{formatTraceTime(selectedTraceStep.started_at)}</strong></div>
+                        <div><span>结束</span><strong>{selectedTraceStep.completed_at ? formatTraceTime(selectedTraceStep.completed_at) : '-'}</strong></div>
                         <div><span>耗时</span><strong>{selectedTraceStep.duration_ms !== undefined ? formatDuration(selectedTraceStep.duration_ms) : '-'}</strong></div>
                       </div>
                       {selectedTraceDetailSections.length > 0 ? (
@@ -4614,8 +4632,8 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
                             )}
                           </div>
                           <span className={`trace-status ${traceStatusClass(step.status)}`}>{step.status}</span>
-                          <span>{formatTime(step.started_at)}</span>
-                          <span>{step.completed_at ? formatTime(step.completed_at) : '-'}</span>
+                          <span>{formatTraceTime(step.started_at)}</span>
+                          <span>{step.completed_at ? formatTraceTime(step.completed_at) : '-'}</span>
                           <span>{step.duration_ms !== undefined ? formatDuration(step.duration_ms) : '-'}</span>
                         </div>
                       )
@@ -5196,6 +5214,15 @@ function formatTime(ts: string): string {
   }
 }
 
+function formatTraceTime(ts: string): string {
+  try {
+    const date = new Date(ts)
+    return `${date.toLocaleTimeString('zh-CN', { hour12: false })}.${String(date.getMilliseconds()).padStart(3, '0')}`
+  } catch {
+    return '-'
+  }
+}
+
 function statusClass(status: string): string {
   if (status === 'succeeded') return 'ok'
   if (status === 'failed' || status === 'rejected' || status === 'blocked') return 'err'
@@ -5317,7 +5344,7 @@ function buildActivityCards(
   for (let index = 0; index < traceSteps.length; index += 1) {
     const step = traceSteps[index]
     if (!shouldDisplayTraceAsActivity(step)) continue
-    const createdAt = step.completed_at || step.started_at || ''
+    const createdAt = step.started_at || step.completed_at || ''
     cards.push({
       key: `trace:${step.id}`,
       kind: 'trace',
@@ -5333,11 +5360,7 @@ function buildActivityCards(
 
   if (summary) {
     const createdAt = summary.created_at || ''
-    const latestTraceSortAt = traceSteps.reduce((latest, step, index) => {
-      if (!shouldDisplayTraceAsActivity(step)) return latest
-      const ts = parseSortTime(step.completed_at || step.started_at || '', messages.length + commands.length + step.seq_no + index)
-      return Math.max(latest, ts)
-    }, Number.MIN_SAFE_INTEGER)
+    const latestExistingSortAt = cards.reduce((latest, card) => Math.max(latest, card.sortAt), Number.MIN_SAFE_INTEGER)
     cards.push({
       key: 'summary:latest',
       kind: 'summary',
@@ -5346,7 +5369,7 @@ function buildActivityCards(
       title: summary.mode === 'query' || summary.mode === 'config' ? '查询结果' : '最终诊断',
       preview: truncateText(renderSummaryBrief(summary), 170),
       summary,
-      sortAt: Math.max(parseSortTime(createdAt, messages.length + commands.length + 1), latestTraceSortAt),
+      sortAt: Math.max(parseSortTime(createdAt, messages.length + commands.length + 1), latestExistingSortAt + 1),
       sortIdx: Number.MAX_SAFE_INTEGER - 1,
     })
   }
@@ -6715,7 +6738,7 @@ function traceTypeLabel(stepType: string): string {
   if (stepType === 'policy_decision') return '策略判定'
   if (stepType === 'capability_decision') return '能力判定'
   if (stepType === 'scope_decision') return '模式范围判定'
-  if (stepType === 'evidence_parse') return '证据解析'
+  if (stepType === 'evidence_parse') return '回显结果提炼'
   if (stepType === 'command_execution') return '命令执行'
   if (stepType === 'command_confirm_execution') return '确认后执行'
   if (stepType === 'session_control') return '会话控制'
