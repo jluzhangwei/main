@@ -5822,7 +5822,7 @@ function renderCommandOutputBody(command: Pick<CommandExecution, 'output' | 'err
   const error = (command.error || '').trim()
   if (error) return error
   if (command.status === 'pending_confirm') return '(待确认，尚未执行)'
-  if (command.status === 'succeeded') return '(命令已执行，设备未返回文本回显)'
+  if (command.status === 'succeeded') return '(成功，无文本回显)'
   if (command.status === 'failed') return '(执行失败，设备未返回文本回显)'
   return '(无回显)'
 }
@@ -5844,6 +5844,8 @@ function renderCommandRowOutput(row: CommandDisplayRow): string {
 function renderCommandDisplayRowDetail(row: CommandDisplayRow): string {
   const constraintLabels = summarizeCommandConstraintLabels(row.members)
   const constraintReason = summarizeCommandConstraintReasons(row.members)
+  const blockedCommands = collectBlockedCommands(row.members)
+  const emptySuccessCommands = collectEmptySuccessCommands(row.members)
   const header = [
     `标题: ${row.title}`,
     `状态: ${row.status}`,
@@ -5854,7 +5856,20 @@ function renderCommandDisplayRowDetail(row: CommandDisplayRow): string {
   ].join('\n')
   const sequence = renderCommandSequence(row.members)
   const body = renderCommandRowOutput(row)
-  return `${header}\n\n命令序列（按执行顺序）:\n${sequence}\n\n输出:\n${body}`
+  const blockedSection = blockedCommands.length > 0
+    ? `被规则阻断的命令:\n${blockedCommands.map((item) => item.text).join('\n')}`
+    : ''
+  const emptySuccessSection = emptySuccessCommands.length > 0
+    ? `成功但无回显的命令:\n${emptySuccessCommands.map((item) => item.text).join('\n')}`
+    : ''
+  const sections = [
+    header,
+    blockedSection,
+    emptySuccessSection,
+    `命令序列（按执行顺序）:\n${sequence}`,
+    `输出:\n${body}`,
+  ].filter(Boolean)
+  return sections.join('\n\n')
 }
 
 function groupCommandsForDisplay(commands: CommandExecution[]): CommandDisplayRow[] {
@@ -6105,6 +6120,36 @@ function summarizeCommandConstraintLabels(commands: CommandExecution[]): string 
 function summarizeCommandConstraintReasons(commands: CommandExecution[]): string {
   const reasons = Array.from(new Set(commands.map((item) => commandConstraintReason(item)).filter(Boolean)))
   return reasons.join('；')
+}
+
+function collectBlockedCommands(commands: CommandExecution[]): Array<{ text: string }> {
+  return commands
+    .filter((item) => isRuleBlockedCommand(item))
+    .map((item) => {
+      const reason = commandConstraintReason(item) || '命中命令执行纠正规则，未实际下发。'
+      return { text: `- #${item.step_no} ${item.command}\n  原因: ${reason}` }
+    })
+}
+
+function collectEmptySuccessCommands(commands: CommandExecution[]): Array<{ text: string }> {
+  return commands
+    .filter((item) => isEmptySuccessCommand(item))
+    .map((item) => ({ text: `- #${item.step_no} ${item.command}` }))
+}
+
+function isEmptySuccessCommand(command: Pick<CommandExecution, 'status' | 'output' | 'error'>): boolean {
+  return command.status === 'succeeded'
+    && !String(command.output || '').trim()
+    && !String(command.error || '').trim()
+}
+
+function isRuleBlockedCommand(
+  command: Pick<CommandExecution, 'status' | 'constraint_source' | 'capability_state'>,
+): boolean {
+  if (command.status === 'blocked') return true
+  const constraintSource = String(command.constraint_source || '').trim().toLowerCase()
+  const capabilityState = String(command.capability_state || '').trim().toLowerCase()
+  return constraintSource.includes('block') || capabilityState === 'block_hit'
 }
 
 function constraintTagClass(command: Pick<CommandExecution, 'constraint_source' | 'status'>): string {
