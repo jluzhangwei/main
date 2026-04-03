@@ -657,7 +657,8 @@ class ConversationOrchestrator:
                 referenced_sops=referenced_sops,
                 plan=plan,
             )
-            plan_text = json.dumps(plan, ensure_ascii=False)
+            preview_plan_commands = self._extract_plan_commands(plan, next_step_no=step_no + 1)
+            plan_text = self._compact_plan_context_text(plan, preview_plan_commands)
             self.store.append_ai_context(session_id, "assistant", plan_text)
             self._trace_ai_context_submission(
                 session_id=session_id,
@@ -753,6 +754,38 @@ class ConversationOrchestrator:
                     }
                 ),
             )
+
+            existing_commands = self.store.list_commands(session_id)
+            filtered_plan_commands: list[tuple[str, str]] = []
+            for title, next_command in plan_commands:
+                recent_failure_reason = self._recent_failed_plan_reason(existing_commands, next_command)
+                if recent_failure_reason:
+                    self._trace_decision(
+                        session_id=session_id,
+                        step_type="policy_decision",
+                        title="AI 规划命令因近期失败被过滤",
+                        detail=f"command={next_command}",
+                        status="blocked",
+                        detail_payload=self._compact_trace_payload(
+                            {
+                                "command": next_command,
+                                "reason": recent_failure_reason,
+                                "decision": "recent_failed_command_filtered",
+                            }
+                        ),
+                    )
+                    continue
+                filtered_plan_commands.append((title, next_command))
+            plan_commands = self._dedupe_plan_commands(filtered_plan_commands)
+            if not plan_commands:
+                self._trace_decision(
+                    session_id=session_id,
+                    step_type="loop_control",
+                    title="循环控制判定",
+                    detail="recent_failed_commands_filtered_all",
+                    status="blocked",
+                )
+                continue
 
             batch_group_enabled = self._batch_execution_enabled() and len(plan_commands) > 1
             self._trace_decision(
@@ -1995,6 +2028,37 @@ class ConversationOrchestrator:
             return [(title, single_command)]
         return [(f"{title}.{idx}", cmd) for idx, cmd in enumerate(expanded_single, start=1)]
 
+    def _recent_failed_plan_reason(self, commands: list[CommandExecution], command_text: str) -> str:
+        normalized = " ".join(str(command_text or "").strip().lower().split())
+        if not normalized:
+            return ""
+        for cmd in reversed(commands[-12:]):
+            status = str(getattr(cmd.status, "value", cmd.status) or "").strip().lower()
+            if status not in {"failed", "blocked", "rejected"}:
+                continue
+            existing = " ".join(
+                str(getattr(cmd, "effective_command", None) or getattr(cmd, "original_command", None) or cmd.command or "")
+                .strip()
+                .lower()
+                .split()
+            )
+            if existing != normalized:
+                continue
+            reason = str(cmd.error or cmd.constraint_reason or cmd.capability_reason or "recent_failed_command").strip()
+            return reason[:240]
+        return ""
+
+    def _dedupe_plan_commands(self, commands: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        seen: set[str] = set()
+        deduped: list[tuple[str, str]] = []
+        for title, command_text in commands:
+            normalized = " ".join(str(command_text or "").strip().lower().split())
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append((title, command_text))
+        return deduped
+
     def _split_compound_commands(self, command_text: str) -> list[str]:
         text = (command_text or "").strip()
         if not text:
@@ -2277,7 +2341,7 @@ class ConversationOrchestrator:
         if command.error:
             text += f"- error: {self._sanitize_for_llm(command.error)[:1200]}\n"
         if command.output:
-            text += f"- output:\n{self._sanitize_for_llm(command.output)[:2500]}"
+            text += f"- output:\n{self._compress_output_for_ai_context(command.output)}"
         self.store.append_ai_context(session_id, "user", text)
         self._trace_ai_context_submission(
             session_id=session_id,
@@ -2327,6 +2391,27 @@ class ConversationOrchestrator:
                 "version_signature": str(version_signature or "").strip(),
             },
         )
+
+    def _compress_output_for_ai_context(self, text: str) -> str:
+        value = self._sanitize_for_llm(text)
+        if len(value) <= 1400:
+            return value[:1400]
+        lines = value.splitlines()
+        if len(lines) <= 12:
+            return value[:1400]
+        kept = "\n".join([*lines[:5], "...(omitted middle lines)...", *lines[-5:]])
+        return kept[:1400]
+
+    def _compact_plan_context_text(self, plan: dict[str, Any], plan_commands: list[tuple[str, str]]) -> str:
+        compact = {
+            "decision": str(plan.get("decision", "")).strip(),
+            "title": str(plan.get("title", "")).strip(),
+            "reason": str(plan.get("reason", "")).strip()[:300],
+            "commands": [cmd for _title, cmd in plan_commands[:5]],
+            "sop_refs": plan.get("sop_refs") if isinstance(plan.get("sop_refs"), list) else [],
+            "why_use_this_sop": str(plan.get("why_use_this_sop", "")).strip()[:240],
+        }
+        return json.dumps(compact, ensure_ascii=False)
 
     def _append_capability_context_to_ai_context(self, *, session_id: str) -> None:
         session = self.store.get_session(session_id)

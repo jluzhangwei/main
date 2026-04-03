@@ -213,6 +213,21 @@ def test_v2_capability_prompt_context_prioritizes_problem_relevant_block_rules()
     assert "禁止再次原样输出" in context
 
 
+def test_v2_dedupe_plan_commands_removes_same_round_duplicates():
+    deduped = routes.orchestrator_v2._dedupe_plan_commands(
+        [
+            ("检查版本", "show version"),
+            ("再次检查版本", " show   version "),
+            ("检查路由", "show ip route ospf | count"),
+        ]
+    )
+
+    assert deduped == [
+        ("检查版本", "show version"),
+        ("检查路由", "show ip route ospf | count"),
+    ]
+
+
 def test_v2_history_evidence_summary_marks_missing_flap_logs_as_insufficient():
     job = Job(
         name="history-job",

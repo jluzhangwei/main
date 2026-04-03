@@ -605,6 +605,7 @@ class DeepSeekDiagnoser:
         commands: list[CommandExecution],
         evidences: list[Evidence],
     ) -> dict[str, Any]:
+        selected_commands = self._select_relevant_commands(commands)
         return {
             "session": {
                 "id": session.id,
@@ -619,10 +620,10 @@ class DeepSeekDiagnoser:
                     "command": cmd.command,
                     "status": cmd.status.value,
                     "risk_level": cmd.risk_level.value,
-                    "output": (cmd.output or "")[:2500],
+                    "output": self._compress_output_for_llm(cmd.output, limit=1400),
                     "error": cmd.error,
                 }
-                for cmd in commands
+                for cmd in selected_commands
             ],
             "evidences": [],
             "evidence_handling": "ignore_intermediate_summaries_use_raw_command_outputs",
@@ -643,6 +644,7 @@ class DeepSeekDiagnoser:
         max_iterations: int,
         planner_context: Optional[str] = None,
     ) -> dict[str, Any]:
+        selected_commands = self._select_relevant_commands(commands)
         payload = {
             "session": {
                 "id": session.id,
@@ -660,14 +662,14 @@ class DeepSeekDiagnoser:
                     "original_command": getattr(cmd, "original_command", None),
                     "effective_command": getattr(cmd, "effective_command", None),
                     "status": cmd.status.value,
-                    "output": (cmd.output or "")[:2500],
+                    "output": self._compress_output_for_llm(cmd.output, limit=1400),
                     "error": cmd.error,
                     "capability_state": getattr(cmd, "capability_state", None),
                     "capability_reason": getattr(cmd, "capability_reason", None),
                     "constraint_source": getattr(cmd, "constraint_source", None),
                     "constraint_reason": getattr(cmd, "constraint_reason", None),
                 }
-                for cmd in commands
+                for cmd in selected_commands
             ],
             "evidences": [],
             "evidence_handling": "ignore_intermediate_summaries_use_raw_command_outputs",
@@ -784,13 +786,54 @@ class DeepSeekDiagnoser:
 
     def _normalize_history_messages(self, messages: list[dict[str, str]]) -> list[dict[str, str]]:
         history = []
-        for item in messages:
+        for item in messages[-12:]:
             role = str(item.get("role", "")).strip()
             content = str(item.get("content", "")).strip()
             if role not in {"user", "assistant"} or not content:
                 continue
-            history.append({"role": role, "content": content})
+            history.append({"role": role, "content": self._clip_trace_text(content, 1600)})
         return history
+
+    def _compress_output_for_llm(self, text: Any, *, limit: int = 1400) -> str:
+        value = str(text or "")
+        if len(value) <= limit:
+            return value
+        lines = value.splitlines()
+        if len(lines) <= 12:
+            return self._clip_trace_text(value, limit)
+        head = lines[:5]
+        tail = lines[-5:]
+        kept = "\n".join([*head, "...(omitted middle lines)...", *tail])
+        return self._clip_trace_text(kept, limit)
+
+    def _select_relevant_commands(self, commands: list[CommandExecution]) -> list[CommandExecution]:
+        if not commands:
+            return []
+        recent = commands[-6:]
+        failed: list[CommandExecution] = []
+        constrained: list[CommandExecution] = []
+        filtered_success: list[CommandExecution] = []
+        for cmd in reversed(commands):
+            status = str(getattr(cmd.status, "value", cmd.status) or "").strip().lower()
+            command_text = str(getattr(cmd, "effective_command", None) or cmd.command or "")
+            if status in {"failed", "blocked", "rejected"} and len(failed) < 2:
+                failed.append(cmd)
+            if (getattr(cmd, "capability_state", None) or getattr(cmd, "constraint_source", None)) and len(constrained) < 2:
+                constrained.append(cmd)
+            if any(token in command_text.lower() for token in ("| include", "| exclude", "| begin", "| section", "| match", "| grep", "| count")) and len(filtered_success) < 2:
+                filtered_success.append(cmd)
+            if len(failed) >= 2 and len(constrained) >= 2 and len(filtered_success) >= 2:
+                break
+        picked = [*recent, *reversed(failed), *reversed(constrained), *reversed(filtered_success)]
+        out: list[CommandExecution] = []
+        seen: set[str] = set()
+        for cmd in picked:
+            key = str(getattr(cmd, "id", "") or f"{cmd.step_no}:{cmd.command}")
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(cmd)
+        return out[-10:]
 
     def _clip_trace_text(self, value: Any, limit: int) -> str:
         text = str(value or "")

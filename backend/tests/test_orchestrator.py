@@ -627,3 +627,40 @@ async def test_config_mode_allows_mutating_command_to_continue_policy_pipeline()
     assert target
     assert target[0].status == CommandStatus.succeeded
     assert target[0].constraint_source in {"full_auto_allow", "policy_allow", "default_allow"}
+
+
+def test_recent_failed_plan_reason_detects_same_recent_failed_command():
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    failed_command = CommandExecution(
+        session_id="s1",
+        step_no=1,
+        title="失败命令",
+        command="show ip ospf",
+        adapter_type=DeviceProtocol.ssh,
+        risk_level=RiskLevel.low,
+        status=CommandStatus.failed,
+        error="% Invalid input",
+    )
+
+    reason = orchestrator._recent_failed_plan_reason([failed_command], "show ip ospf")
+
+    assert "Invalid input" in reason
+
+
+def test_dedupe_plan_commands_removes_same_round_duplicates():
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+
+    deduped = orchestrator._dedupe_plan_commands(
+        [
+            ("检查版本", "show version"),
+            ("再次检查版本", " show   version "),
+            ("检查接口", "show interfaces status"),
+        ]
+    )
+
+    assert deduped == [
+        ("检查版本", "show version"),
+        ("检查接口", "show interfaces status"),
+    ]

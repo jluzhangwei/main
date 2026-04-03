@@ -198,3 +198,43 @@ def test_nvidia_base_url_prefers_nvidia_api_key(tmp_path, monkeypatch):
         base_url="https://integrate.api.nvidia.com/v1",
     )
     assert selected == "nvapi-token"
+
+
+def test_next_step_payload_trims_commands_and_long_outputs():
+    session, commands, evidences = _sample_session_bundle()
+    for idx in range(2, 15):
+        commands.append(
+            CommandExecution(
+                session_id=session.id,
+                step_no=idx,
+                title=f"命令{idx}",
+                command=f"show logging {idx}",
+                adapter_type=DeviceProtocol.ssh,
+                risk_level=RiskLevel.low,
+                status=CommandStatus.failed if idx % 4 == 0 else CommandStatus.succeeded,
+                output="\n".join(f"line {n} {'x'*40}" for n in range(60)),
+                error="% Invalid input" if idx % 4 == 0 else "",
+            )
+        )
+
+    diagnoser = DeepSeekDiagnoser()
+    payload = diagnoser._build_next_step_payload(
+        session=session,
+        user_problem="检查接口状态",
+        commands=commands,
+        evidences=evidences,
+        iteration=2,
+        max_iterations=8,
+        planner_context="test",
+    )
+
+    assert len(payload["commands"]) <= 10
+    assert any("omitted middle lines" in str(item.get("output")) for item in payload["commands"])
+
+
+def test_history_messages_are_capped_and_clipped():
+    diagnoser = DeepSeekDiagnoser()
+    messages = [{"role": "user", "content": "x" * 3000} for _ in range(20)]
+    normalized = diagnoser._normalize_history_messages(messages)
+    assert len(normalized) == 12
+    assert all(len(item["content"]) <= 1625 for item in normalized)

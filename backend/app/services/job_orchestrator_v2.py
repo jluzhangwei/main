@@ -1733,6 +1733,34 @@ class JobV2Orchestrator:
             planned = self._extract_plan_commands(plan, next_step_no=next_step)
             if not planned:
                 return
+            filtered_planned: list[tuple[str, str]] = []
+            for title, command_text in planned:
+                recent_failure_reason = self._recent_failed_plan_reason(commands, command_text)
+                if recent_failure_reason:
+                    async with self._state_lock:
+                        current_job = self._jobs.get(job_id)
+                        current_device = self._find_device(current_job, device_id) if current_job else None
+                        if current_job is not None and current_device is not None:
+                            self._append_trace_event(
+                                current_job,
+                                "policy_decision",
+                                f"[{current_device.host}] AI 规划命令因近期失败被过滤",
+                                status="blocked",
+                                detail=f"command={command_text}",
+                                detail_payload={
+                                    "decision": "recent_failed_command_filtered",
+                                    "command": command_text,
+                                    "reason": recent_failure_reason,
+                                    "device": self._job_device_trace_record(current_device),
+                                },
+                                device=current_device,
+                            )
+                            self._save_state()
+                    continue
+                filtered_planned.append((title, command_text))
+            planned = self._dedupe_plan_commands(filtered_planned)
+            if not planned:
+                return
 
             executed_any = False
             for title, command_text in planned[:max_commands_per_round]:
@@ -2083,6 +2111,37 @@ class JobV2Orchestrator:
         if len(expanded_single) <= 1:
             return [(title, single_command)]
         return [(f"{title}.{idx}", cmd) for idx, cmd in enumerate(expanded_single, start=1)]
+
+    def _recent_failed_plan_reason(self, commands: list[CommandExecution], command_text: str) -> str:
+        normalized = " ".join(str(command_text or "").strip().lower().split())
+        if not normalized:
+            return ""
+        for cmd in reversed(commands[-12:]):
+            status = str(getattr(cmd.status, "value", cmd.status) or "").strip().lower()
+            if status not in {"failed", "blocked", "rejected"}:
+                continue
+            existing = " ".join(
+                str(getattr(cmd, "effective_command", None) or getattr(cmd, "original_command", None) or cmd.command or "")
+                .strip()
+                .lower()
+                .split()
+            )
+            if existing != normalized:
+                continue
+            reason = str(cmd.error or cmd.constraint_reason or cmd.capability_reason or "recent_failed_command").strip()
+            return reason[:240]
+        return ""
+
+    def _dedupe_plan_commands(self, commands: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        seen: set[str] = set()
+        deduped: list[tuple[str, str]] = []
+        for title, command_text in commands:
+            normalized = " ".join(str(command_text or "").strip().lower().split())
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append((title, command_text))
+        return deduped
 
     def _split_compound_commands(self, command_text: str) -> list[str]:
         text = str(command_text or "").strip()
