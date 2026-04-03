@@ -309,6 +309,7 @@ export type RunSummary = {
   sop_extracted: boolean
   sop_draft_count: number
   sop_published_count: number
+  primary_sop_id?: string
 }
 
 export type RunListResponse = {

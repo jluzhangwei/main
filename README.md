@@ -18,6 +18,7 @@
 ## 用户文档
 
 - 图文用户说明书（中文）：[`docs/USER_GUIDE.zh-CN.md`](docs/USER_GUIDE.zh-CN.md)
+- Docker 部署说明：[`docs/DOCKER_DEPLOY.zh-CN.md`](docs/DOCKER_DEPLOY.zh-CN.md)
 - 统一 Run API 接入说明：[`docs/UNIFIED_RUN_API.zh-CN.md`](docs/UNIFIED_RUN_API.zh-CN.md)
 - V3 运维说明（多设备任务编排）：[`docs/V3_OPERATIONS.zh-CN.md`](docs/V3_OPERATIONS.zh-CN.md)
 - V3 对外 API 接入说明：[`docs/V3_API_EXTERNAL.zh-CN.md`](docs/V3_API_EXTERNAL.zh-CN.md)
@@ -48,6 +49,22 @@ npm run dev
 ```bash
 docker compose up --build
 ```
+
+也可以直接用项目自带脚本：
+
+```bash
+./docker_netops.sh start
+```
+
+启动后：
+
+- 前端：[http://127.0.0.1:5173](http://127.0.0.1:5173)
+- 后端 OpenAPI：[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+
+说明：
+
+- Docker 部署会持久化运行状态到 Docker volume `netops_data`
+- 详细操作请看 [`docs/DOCKER_DEPLOY.zh-CN.md`](docs/DOCKER_DEPLOY.zh-CN.md)
 
 ## API
 
@@ -119,9 +136,14 @@ curl -sS -X POST 'http://127.0.0.1:8000/v2/keys' \
 
 ### 2) 创建统一 Run（单设备）
 
+注意：
+
+- `X-API-Key` 要填真实 Key，本身不要带 `< >`
+- JSON 体内所有引号都必须是英文双引号 `"`
+
 ```bash
 curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \
-  -H 'X-API-Key: <YOUR_API_KEY>' \
+  -H 'X-API-Key: your_real_key_here' \
   -H 'Content-Type: application/json' \
   -d '{
     "problem": "帮我检查最近一次 OSPF 闪断原因",
@@ -137,7 +159,7 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \
 
 ```bash
 curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \
-  -H 'X-API-Key: <YOUR_API_KEY>' \
+  -H 'X-API-Key: your_real_key_here' \
   -H 'Idempotency-Key: job-20260325-rca-001' \
   -H 'Content-Type: application/json' \
   -d '{
@@ -239,11 +261,12 @@ cd backend
 . .venv/bin/activate
 python scripts/unified_diag_client.py \
   --base-url http://127.0.0.1:8000 \
-  --hosts "192.168.0.88 192.168.0.101" \
+  --host 192.168.0.88 \
+  --host 192.168.0.101 \
   --username zhangwei \
   --password 'Huawei@123' \
-  --question '查一下上次 OSPF 闪断原因' \
-  --api-key <YOUR_API_KEY> \
+  --problem '查一下上次 OSPF 闪断原因' \
+  --api-key your_real_key_here \
   --auto-approve
 ```
 

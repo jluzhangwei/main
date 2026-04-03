@@ -122,12 +122,12 @@ class SOPArchive:
         version_signature: str | None = None,
         run_key: str | None = None,
     ) -> str:
-        matched = self.matched_entries(
+        matched = self.store.dedupe_entries_for_runtime(self.matched_entries(
             problem,
             vendor,
             version_signature=version_signature,
             run_key=run_key,
-        )
+        ))
         if not matched:
             return ""
         lines = [

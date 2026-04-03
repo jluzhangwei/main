@@ -20,7 +20,14 @@ def parse_args() -> argparse.Namespace:
         description="Unified NetOps run client: one host => single run, multiple hosts => multi-device coordinated run"
     )
     parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="Backend API base URL")
-    parser.add_argument("--hosts", required=True, help="Host list, split by comma/space/newline")
+    parser.add_argument("--hosts", default="", help="Host list, split by comma/space/newline")
+    parser.add_argument(
+        "--host",
+        action="append",
+        dest="host_items",
+        default=[],
+        help="Single host, repeatable. Can be used multiple times as an alias of --hosts",
+    )
     parser.add_argument("--username", required=True, help="Shared SSH username")
     parser.add_argument("--password", required=True, help="Shared SSH password")
     parser.add_argument("--protocol", default="ssh", choices=["ssh", "telnet", "api"], help="Device protocol")
@@ -32,12 +39,13 @@ def parse_args() -> argparse.Namespace:
         choices=["read_only", "assisted", "full_auto"],
         help="Automation level",
     )
-    parser.add_argument("--question", required=True, help="User question / problem statement")
+    parser.add_argument("--question", default="", help="User question / problem statement")
+    parser.add_argument("--problem", default="", help="Alias of --question")
     parser.add_argument("--api-key", default="", help="Unified API key")
     parser.add_argument(
         "--auto-create-key",
         action="store_true",
-        help="Try creating a temporary API key when --api-key is empty",
+        help="Force creating a temporary API key when --api-key is empty (default behavior also tries this automatically)",
     )
     parser.add_argument(
         "--auto-approve",
@@ -53,7 +61,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Stream unified run events from /api/runs/{runId}/events while waiting",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.question = str(args.question or args.problem or "").strip()
+    merged_hosts: list[str] = []
+    if str(args.hosts or "").strip():
+      merged_hosts.append(str(args.hosts or "").strip())
+    merged_hosts.extend(str(item or "").strip() for item in (args.host_items or []) if str(item or "").strip())
+    args.hosts = " ".join(merged_hosts).strip()
+    if not args.hosts:
+        parser.error("the following arguments are required: --hosts or --host")
+    if not args.question:
+        parser.error("the following arguments are required: --question or --problem")
+    return args
 
 
 def parse_hosts(raw: str) -> list[str]:
@@ -192,10 +211,19 @@ def main() -> int:
     try:
         with httpx.Client() as client:
             api_key = str(args.api_key or "").strip()
-            if not api_key and args.auto_create_key:
-                api_key = try_create_api_key(client, args.base_url)
             if not api_key:
-                print("Missing --api-key (or use --auto-create-key)")
+                try:
+                    api_key = try_create_api_key(client, args.base_url)
+                except Exception as exc:
+                    detail = str(exc).strip() or "unknown error"
+                    print("[auth] 未提供 --api-key，已自动尝试创建临时 API key，但失败。")
+                    print(f"[auth] 自动创建失败原因: {detail}")
+                    print("[auth] 请重试以下任一方式：")
+                    print("        1) 增加 --auto-create-key（强制显式使用自动建 key 模式）")
+                    print("        2) 在前端“第三方 Key 服务”页面创建后，通过 --api-key 传入")
+                    return 2
+            if not api_key:
+                print("[auth] 缺少 API key。可直接增加 --api-key，或让客户端自动创建临时 key。")
                 return 2
 
             run = create_run(client, args, hosts, api_key)

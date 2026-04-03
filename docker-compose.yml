@@ -1,39 +1,39 @@
 version: "3.9"
 
 services:
-  postgres:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: netops
-      POSTGRES_PASSWORD: netops
-      POSTGRES_DB: netops
-    ports:
-      - "5432:5432"
-
-  redis:
-    image: redis:7
-    ports:
-      - "6379:6379"
-
   backend:
     build:
       context: ./backend
+      dockerfile: Dockerfile
+    container_name: netops-ai-backend
     environment:
+      HOME: /data
+      NETOPS_ENVIRONMENT: docker
       NETOPS_POSTGRES_DSN: postgresql+asyncpg://netops:netops@postgres:5432/netops
       NETOPS_REDIS_URL: redis://redis:6379/0
+    volumes:
+      - netops_data:/data
     ports:
       - "8000:8000"
-    depends_on:
-      - postgres
-      - redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   frontend:
-    image: node:20
-    working_dir: /app
-    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
-    volumes:
-      - ./frontend:/app
-    ports:
-      - "5173:5173"
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: netops-ai-frontend
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    ports:
+      - "5173:80"
+    restart: unless-stopped
+
+volumes:
+  netops_data:

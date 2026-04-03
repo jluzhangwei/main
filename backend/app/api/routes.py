@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import os
+import re
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -541,6 +542,8 @@ async def get_sop_library(
 
 
 def _normalize_text_list(values) -> list[str]:
+    if isinstance(values, str):
+        values = re.split(r"[\n;,|]+", values)
     seen: set[str] = set()
     result: list[str] = []
     for item in values or []:
@@ -557,7 +560,11 @@ def _normalize_text_list(values) -> list[str]:
 
 def _normalize_command_templates(values) -> list[dict]:
     rows: list[dict] = []
+    if isinstance(values, str):
+        values = [{"vendor": "generic", "commands": re.split(r"[;\n]+", values)}]
     for item in values or []:
+        if isinstance(item, str):
+            item = {"vendor": "generic", "commands": re.split(r"[;\n]+", item)}
         if not isinstance(item, dict):
             continue
         vendor = str(item.get("vendor") or "generic").strip() or "generic"
@@ -568,9 +575,54 @@ def _normalize_command_templates(values) -> list[dict]:
     return rows
 
 
+def _truncate_text(value: object, limit: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(0, limit - 1)].rstrip()}…"
+
+
+def _compact_json_value(value: object, *, max_string: int = 320, max_items: int = 6, depth: int = 0):
+    if depth >= 2:
+        return _truncate_text(value, max_string)
+    if isinstance(value, dict):
+        compacted: dict[str, object] = {}
+        for idx, (key, item) in enumerate(value.items()):
+            if idx >= max_items:
+                compacted["__truncated__"] = f"+{len(value) - max_items} keys"
+                break
+            compacted[str(key)] = _compact_json_value(item, max_string=max_string, max_items=max_items, depth=depth + 1)
+        return compacted
+    if isinstance(value, list):
+        items = [
+            _compact_json_value(item, max_string=max_string, max_items=max_items, depth=depth + 1)
+            for item in value[:max_items]
+        ]
+        if len(value) > max_items:
+            items.append(f"... +{len(value) - max_items} items")
+        return items
+    return _truncate_text(value, max_string)
+
+
 def _build_sop_extract_payload(run_timeline: RunTimelineResponse) -> dict:
     timeline = run_timeline.timeline
     trace = run_timeline.service_trace.steps or []
+    relevant_trace = [
+        item
+        for item in trace
+        if item.step_type in {
+            "user_input",
+            "context_snapshot",
+            "ai_context_submit",
+            "llm_request",
+            "llm_response",
+            "llm_plan",
+            "policy_decision",
+            "command_execution",
+            "evidence_parse",
+            "llm_final",
+        }
+    ]
     return {
         "run": {
             "id": run_timeline.run.id,
@@ -591,10 +643,10 @@ def _build_sop_extract_payload(run_timeline: RunTimelineResponse) -> dict:
         "messages": [
             {
                 "role": item.role,
-                "content": item.content,
+                "content": _truncate_text(item.content, 600),
                 "created_at": item.created_at.isoformat(),
             }
-            for item in timeline.messages
+            for item in timeline.messages[-6:]
         ],
         "commands": [
             {
@@ -602,31 +654,34 @@ def _build_sop_extract_payload(run_timeline: RunTimelineResponse) -> dict:
                 "title": item.title,
                 "command": item.command,
                 "status": item.status.value if hasattr(item.status, "value") else str(item.status),
-                "output": item.output,
-                "error": item.error,
+                "output": _truncate_text(item.output, 800),
+                "error": _truncate_text(item.error, 300),
             }
-            for item in timeline.commands
+            for item in timeline.commands[-12:]
         ],
         "evidences": [
             {
                 "category": item.category,
-                "conclusion": item.conclusion,
-                "raw_output": item.raw_output,
-                "parsed_data": item.parsed_data,
+                "conclusion": _truncate_text(item.conclusion, 300),
+                "raw_output": _truncate_text(item.raw_output, 800),
+                "parsed_data": _compact_json_value(item.parsed_data, max_string=240, max_items=6),
             }
-            for item in timeline.evidences
+            for item in timeline.evidences[-10:]
         ],
         "summary": timeline.summary.model_dump(mode="json") if timeline.summary else None,
+        "service_trace_stats": {
+            "total_steps": len(trace),
+            "included_steps": len(relevant_trace[-18:]),
+        },
         "service_trace": [
             {
                 "seq_no": item.seq_no,
                 "step_type": item.step_type,
                 "title": item.title,
                 "status": item.status,
-                "detail": item.detail,
-                "detail_payload": item.detail_payload,
+                "detail": _truncate_text(item.detail, 260),
             }
-            for item in trace
+            for item in relevant_trace[-18:]
         ],
         "task": "请提炼为一个未来可复用的SOP草稿，而不是复述本次会话。",
     }
@@ -719,7 +774,7 @@ async def extract_sop_from_run_api(
         run_payload=_build_sop_extract_payload(run_timeline),
     )
     if not draft_payload:
-        raise HTTPException(status_code=503, detail="LLM failed to extract SOP draft")
+        raise HTTPException(status_code=503, detail=orchestrator.deepseek_diagnoser.last_error or "LLM failed to extract SOP draft")
     _, draft_count, published_count = sop_archive.source_run_counts(source_run_id)
     version = max(1, draft_count + published_count + 1)
     record = sop_archive.upsert_record(
@@ -920,7 +975,10 @@ async def create_run_api(
             status="ok",
             detail="kind=single",
         )
-        return get_unified_runs_service().build_single_run_response(session.id)
+        response = get_unified_runs_service().build_single_run_response(session.id)
+        if problem and not str(response.problem or "").strip():
+            response.problem = problem
+        return response
 
     problem = str(req.problem or "").strip()
     if not problem:

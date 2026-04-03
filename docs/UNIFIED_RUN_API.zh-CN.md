@@ -32,7 +32,12 @@
 
 统一 Run API 使用：
 
-- `X-API-Key: <YOUR_API_KEY>`
+- `X-API-Key: your_real_key_here`
+
+注意：
+
+- `X-API-Key` 要填真实 Key，本身不要带 `< >`
+- 所有 `curl -d` 里的 JSON 必须使用英文双引号 `"`，不要混入中文引号 `“ ”`
 
 管理员 Key 仍通过 `/v2/keys` 管理，因为安全与权限标签体系当前仍复用 `/v2` 的能力。
 
@@ -50,7 +55,7 @@ curl -sS -X POST 'http://127.0.0.1:8000/v2/keys' \
 
 ```bash
 curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \
-  -H 'X-API-Key: <YOUR_API_KEY>' \
+  -H 'X-API-Key: your_real_key_here' \
   -H 'Content-Type: application/json' \
   -d '{
     "problem": "帮我检查设备版本",
@@ -71,7 +76,7 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \
 
 ```bash
 curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \
-  -H 'X-API-Key: <YOUR_API_KEY>' \
+  -H 'X-API-Key: your_real_key_here' \
   -H 'Idempotency-Key: run-20260327-001' \
   -H 'Content-Type: application/json' \
   -d '{
@@ -228,7 +233,7 @@ curl -sS -H 'X-API-Key: <YOUR_API_KEY>' \
 
 ```bash
 curl -sS -X POST 'http://127.0.0.1:8000/api/runs/<RUN_ID>/stop' \
-  -H 'X-API-Key: <YOUR_API_KEY>'
+  -H 'X-API-Key: your_real_key_here'
 ```
 
 ## Python 小客户端
@@ -244,13 +249,20 @@ cd backend
 . .venv/bin/activate
 python scripts/unified_diag_client.py \
   --base-url http://127.0.0.1:8000 \
-  --hosts "192.168.0.83 192.168.0.84" \
+  --host 192.168.0.83 \
+  --host 192.168.0.84 \
   --username zhangwei \
   --password 'Huawei@123' \
-  --question '查一下上次 OSPF 闪断的原因' \
-  --api-key <YOUR_API_KEY> \
+  --problem '查一下上次 OSPF 闪断的原因' \
+  --api-key your_real_key_here \
   --auto-approve
 ```
+
+说明：
+
+- 同时支持 `--host` / `--hosts`
+- 同时支持 `--problem` / `--question`
+- 未传 `--api-key` 时，客户端会优先尝试自动创建临时 Key
 
 ## 兼容策略
 

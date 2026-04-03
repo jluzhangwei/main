@@ -181,6 +181,7 @@ def test_api_runs_single_create_and_reject_pending_action():
     assert created.status_code == 200, created.text
     run = created.json()
     assert run["kind"] == "single"
+    assert run["problem"] == "检查接口并继续诊断"
     run_id = run["id"]
 
     waiting = _wait_run_status(run_id, {"waiting_approval", "completed"})
@@ -445,7 +446,6 @@ def test_api_sop_extract_accepts_legacy_source_id():
     )
     assert extracted.status_code == 200, extracted.text
     assert extracted.json()["status"] == "draft"
-
 
 def test_api_runs_events_stream_for_single_and_multi():
     single = client.post(

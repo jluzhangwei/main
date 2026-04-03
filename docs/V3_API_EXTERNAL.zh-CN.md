@@ -10,9 +10,14 @@
 
 ## 1. 鉴权
 
-- 头部：`X-API-Key: <KEY>`
+- 头部：`X-API-Key: your_real_key_here`
 - 首次引导（系统尚无 key）：可直接调用 `POST /v2/keys` 创建管理员 key。
 - 内置前端 UI 已支持“免填 API Key”工作模式（通过受信任 UI 头部转发），该模式仅用于同站 UI；第三方系统接入仍建议使用 API Key。
+
+注意：
+
+- `X-API-Key` 要填真实 Key，本身不要带 `< >`
+- 所有 `curl -d` 里的 JSON 必须使用英文双引号 `"`，不要混入中文引号 `“ ”`
 
 ## 2. 核心流程
 
@@ -30,7 +35,7 @@
 
 ```bash
 curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \
-  -H 'X-API-Key: <KEY>' \
+  -H 'X-API-Key: your_real_key_here' \
   -H 'Idempotency-Key: ext-job-001' \
   -H 'Content-Type: application/json' \
   -d '{
@@ -52,7 +57,7 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \
 
 ```bash
 curl -sS -X POST 'http://127.0.0.1:8000/api/runs/<RUN_ID>/actions/approve' \
-  -H 'X-API-Key: <KEY>' \
+  -H 'X-API-Key: your_real_key_here' \
   -H 'Content-Type: application/json' \
   -d '{"item_ids":["<ITEM_ID_1>","<ITEM_ID_2>"],"reason":"approved by ticket #123"}'
 ```

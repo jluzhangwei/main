@@ -38,6 +38,7 @@ import {
   v2DeleteApiKey,
   v2GetPermissionTemplates,
   v2ListApiKeys,
+  v2RotateApiKey,
   v2UpdateApiKey,
   updateCommandPolicy,
   updateRiskPolicy,
@@ -83,6 +84,8 @@ type PageId =
 type PersistedUiState = {
   activePage?: PageId
   rightPanelWidth?: number
+  sopListWidth?: number
+  sopListDensity?: SopListDensity
   terminalSplitRatio?: number
   statusCollapsed?: boolean
   directionInput?: string
@@ -111,6 +114,7 @@ type HistorySessionItem = {
   sop_extracted?: boolean
   sop_draft_count?: number
   sop_published_count?: number
+  primary_sop_id?: string
 }
 
 const UI_STATE_KEY = 'netops_ui_prefs_v1'
@@ -126,18 +130,38 @@ type DeviceAuthRecord = {
   api_token?: string
   updated_at?: string
 }
-const NAV_ITEMS: Array<{ id: PageId; title: string }> = [
-  { id: 'workbench', title: '诊断工作台' },
-  { id: 'control', title: '连接控制' },
-  { id: 'command_policy', title: '命令执行控制' },
-  { id: 'sessions', title: '会话历史' },
-  { id: 'service_trace', title: '流程追踪' },
-  { id: 'sop_library', title: 'SOP 档案库' },
-  { id: 'ai_settings', title: 'AI 设置' },
-  { id: 'learning', title: '命令学习库' },
-  { id: 'third_party_keys', title: '第三方 Key 服务' },
-  { id: 'lab', title: 'Lab 对抗' },
+const NAV_SECTIONS: Array<{ key: string; label: string; items: Array<{ id: PageId; title: string }> }> = [
+  {
+    key: 'session',
+    label: '会话',
+    items: [
+      { id: 'workbench', title: '诊断工作台' },
+      { id: 'control', title: '连接控制' },
+      { id: 'sessions', title: '会话历史' },
+      { id: 'service_trace', title: '流程追踪' },
+    ],
+  },
+  {
+    key: 'control',
+    label: '控制',
+    items: [
+      { id: 'command_policy', title: '命令执行控制' },
+      { id: 'ai_settings', title: 'AI 设置' },
+      { id: 'third_party_keys', title: '第三方 Key 服务' },
+    ],
+  },
+  {
+    key: 'learning',
+    label: '迭代',
+    items: [
+      { id: 'sop_library', title: 'SOP 档案库' },
+      { id: 'learning', title: '命令执行纠正' },
+      { id: 'lab', title: 'Lab 对抗' },
+    ],
+  },
 ]
+
+const NAV_ITEMS = NAV_SECTIONS.flatMap((section) => section.items)
 
 const MODEL_OPTIONS = [
   { value: 'deepseek-chat', label: 'DeepSeek Chat' },
@@ -161,6 +185,25 @@ const SOP_HARDENING_HINTS = [
   '给 SOP 增加适用前提、禁用条件、推荐最小命令组和证据目标。',
   '按厂商、版本指纹、场景标签拆得更细，减少 AI 自行改写成本。',
   '给 SOP 增加“引用成功率 / 命中率 / 误用率”统计，便于长期优化。',
+]
+
+const SOP_SEMANTIC_ALIAS_GROUPS = [
+  {
+    label: '接口 / 端口',
+    aliases: ['接口', '端口', 'interface', 'port', 'ethernet', 'gigabitethernet', 'et'],
+  },
+  {
+    label: '管理性关闭',
+    aliases: ['shutdown', 'admin shutdown', 'admin down', 'administratively down', 'disabled', 'disable'],
+  },
+  {
+    label: '物理断链',
+    aliases: ['物理断链', '断链', '链路断开', 'link down', 'physical down', 'los'],
+  },
+  {
+    label: 'OSPF 邻接',
+    aliases: ['ospf', '邻接', 'neighbor', 'adjacency'],
+  },
 ]
 
 type ActivityCard =
@@ -225,6 +268,7 @@ type FlowLane = {
 type FlowLayoutMode = 'compact' | 'stair'
 type ActivityViewMode = 'full' | 'compact'
 type SopTab = 'draft' | 'published' | 'archived' | 'logic'
+type SopListDensity = 'compact' | 'expanded'
 
 type TraceDetailSection = {
   key: string
@@ -324,6 +368,7 @@ function App() {
   const [v3Jobs, setV3Jobs] = useState<V2JobSummary[]>([])
   const [v3SelectedJobId, setV3SelectedJobId] = useState<string | undefined>(undefined)
   const [v3PermissionTemplates, setV3PermissionTemplates] = useState<Record<string, string[]>>({})
+  const [v3SelectedTemplateName, setV3SelectedTemplateName] = useState<string | undefined>(undefined)
   const [commandPolicy, setCommandPolicy] = useState<CommandPolicy | null>(null)
   const [blockedRules, setBlockedRules] = useState<string[]>([])
   const [executableRules, setExecutableRules] = useState<string[]>([])
@@ -373,7 +418,10 @@ function App() {
   const [activePage, setActivePage] = useState<PageId>('workbench')
   const [statusCollapsed, setStatusCollapsed] = useState(false)
   const [rightPanelWidth, setRightPanelWidth] = useState(getDefaultWorkbenchRightWidth)
+  const [sopListWidth, setSopListWidth] = useState(420)
+  const [sopListDensity, setSopListDensity] = useState<SopListDensity>('compact')
   const [resizing, setResizing] = useState(false)
+  const [sopResizing, setSopResizing] = useState(false)
   const [terminalSplitRatio, setTerminalSplitRatio] = useState(0.5)
   const [terminalResizing, setTerminalResizing] = useState(false)
   const [directionInput, setDirectionInput] = useState('')
@@ -384,8 +432,10 @@ function App() {
   const [sessionHistory, setSessionHistory] = useState<HistorySessionItem[]>([])
   const [selectedHistorySessionId, setSelectedHistorySessionId] = useState<string | undefined>(undefined)
   const [selectedHistorySnapshot, setSelectedHistorySnapshot] = useState<Timeline | null>(null)
+  const [selectedHistorySnapshotTrace, setSelectedHistorySnapshotTrace] = useState<ServiceTraceStep[]>([])
   const [historySnapshotLoading, setHistorySnapshotLoading] = useState(false)
   const historySnapshotCacheRef = useRef<Record<string, Timeline>>({})
+  const historySnapshotTraceCacheRef = useRef<Record<string, ServiceTraceStep[]>>({})
   const historySnapshotRequestRef = useRef(0)
   const [sessionsLoading, setSessionsLoading] = useState(false)
   const [initialSessionId, setInitialSessionId] = useState<string | undefined>(undefined)
@@ -423,6 +473,10 @@ function App() {
   const continuePreview = useMemo<ContinuePreview>(
     () => buildContinuePreview(commands, summary),
     [commands, summary],
+  )
+  const latestAiDecision = useMemo(
+    () => extractLatestAiDecision(traceSteps),
+    [traceSteps],
   )
   const activityCards = useMemo(
     () => filterActivityCards(buildActivityCards(messages, commands, summary, traceSteps), activityViewMode),
@@ -696,6 +750,24 @@ function App() {
     () => computeSessionLastUpdatedAt(selectedHistorySnapshotView),
     [selectedHistorySnapshotView],
   )
+  const snapshotTraceView = useMemo<ServiceTraceStep[]>(() => {
+    if (selectedHistorySessionId && selectedHistorySnapshotTrace.length > 0) {
+      return selectedHistorySnapshotTrace
+    }
+    if (selectedHistorySessionId && session?.id === selectedHistorySessionId) {
+      return traceSteps
+    }
+    return selectedHistorySnapshotTrace
+  }, [selectedHistorySessionId, selectedHistorySnapshotTrace, session?.id, traceSteps])
+  const snapshotSopCandidateHits = useMemo(
+    () => snapshotTraceView.filter((step) => step.step_type === 'sop_candidates_generated').length,
+    [snapshotTraceView],
+  )
+  const snapshotSopReferencedCount = useMemo(
+    () => snapshotTraceView.filter((step) => step.step_type === 'sop_referenced_by_ai').length,
+    [snapshotTraceView],
+  )
+  const snapshotPrimarySopId = selectedHistoryItem?.primary_sop_id
   const v3SelectedJobSummary = useMemo(
     () => v3Jobs.find((item) => item.id === v3SelectedJobId),
     [v3Jobs, v3SelectedJobId],
@@ -793,6 +865,12 @@ function App() {
       } else {
         setRightPanelWidth(getDefaultWorkbenchRightWidth())
       }
+      if (typeof parsed.sopListWidth === 'number' && Number.isFinite(parsed.sopListWidth)) {
+        setSopListWidth(Math.min(640, Math.max(320, parsed.sopListWidth)))
+      }
+      if (parsed.sopListDensity === 'compact' || parsed.sopListDensity === 'expanded') {
+        setSopListDensity(parsed.sopListDensity)
+      }
       if (typeof parsed.terminalSplitRatio === 'number' && Number.isFinite(parsed.terminalSplitRatio)) {
         setTerminalSplitRatio(Math.min(0.75, Math.max(0.25, parsed.terminalSplitRatio)))
       }
@@ -823,6 +901,8 @@ function App() {
     const payload: PersistedUiState = {
       activePage,
       rightPanelWidth,
+      sopListWidth,
+      sopListDensity,
       terminalSplitRatio,
       statusCollapsed,
       directionInput,
@@ -832,7 +912,7 @@ function App() {
       activityViewMode,
     }
     localStorage.setItem(UI_STATE_KEY, JSON.stringify(payload))
-  }, [activePage, rightPanelWidth, terminalSplitRatio, statusCollapsed, directionInput, session?.id, traceListExpanded, flowLayoutMode, activityViewMode])
+  }, [activePage, rightPanelWidth, sopListWidth, sopListDensity, terminalSplitRatio, statusCollapsed, directionInput, session?.id, traceListExpanded, flowLayoutMode, activityViewMode])
 
   useEffect(() => {
     if (commands.length === 0) {
@@ -993,6 +1073,25 @@ function App() {
   }, [terminalResizing])
 
   useEffect(() => {
+    if (!sopResizing) return
+
+    const onMove = (event: MouseEvent) => {
+      const min = 320
+      const max = Math.max(420, Math.min(720, window.innerWidth - 420))
+      setSopListWidth(Math.max(min, Math.min(max, event.clientX - 120)))
+    }
+
+    const onUp = () => setSopResizing(false)
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [sopResizing])
+
+  useEffect(() => {
     if (activePage !== 'service_trace') return
     if (!traceTargetSessionId) return
     void refreshServiceTraceForTarget(traceTargetSessionId, true)
@@ -1097,6 +1196,35 @@ function App() {
       }
     }
   }, [tracePlaybackActive, activePage, sortedTraceSteps, selectedTraceIndex])
+
+  useEffect(() => {
+    if (activePage !== 'service_trace') return
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const tagName = String(target?.tagName || '').toLowerCase()
+      const isEditable = Boolean(
+        target?.isContentEditable
+        || tagName === 'input'
+        || tagName === 'textarea'
+        || tagName === 'select',
+      )
+      if (isEditable) return
+
+      if (event.key === 'ArrowLeft' && previousTraceStep) {
+        event.preventDefault()
+        jumpToTraceStep(previousTraceStep.id)
+        return
+      }
+      if (event.key === 'ArrowRight' && nextTraceStep) {
+        event.preventDefault()
+        jumpToTraceStep(nextTraceStep.id)
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [activePage, previousTraceStep, nextTraceStep])
 
   useEffect(() => {
     if (!bootstrapped) return
@@ -1222,6 +1350,7 @@ function App() {
         offset: 0,
         limit: 200,
       }).then((payload) => payload.items).catch(() => [] as RunSummary[])
+      const historyItems = buildHistorySessionItemsFromRuns(runs)
       const multiJobs = runs
         .filter((item) => item.kind === 'multi')
         .map((item) => mapRunToV2JobSummary(item))
@@ -1230,10 +1359,12 @@ function App() {
         if (prev && multiJobs.some((item) => item.id === prev)) return prev
         return multiJobs[0]?.id
       })
-      setSessionHistory(buildHistorySessionItemsFromRuns(runs))
+      setSessionHistory(historyItems)
+      return historyItems
     } catch {
       setV3Jobs([])
       setSessionHistory([])
+      return [] as HistorySessionItem[]
     } finally {
       setSessionsLoading(false)
     }
@@ -1298,7 +1429,58 @@ function App() {
     }
   }
 
+  async function resolveSopForHistoryItem(item: HistorySessionItem): Promise<{ id: string; tab: SopTab } | null> {
+    if (item.primary_sop_id) {
+      return {
+        id: item.primary_sop_id,
+        tab: item.sop_published_count ? 'published' : 'draft',
+      }
+    }
+    const candidateSourceIds = [
+      item.source_id,
+      item.run_id,
+      parseV2HistoryJobId(item.id),
+      item.id,
+    ]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+    const statuses: SOPStatus[] = ['published', 'draft', 'archived']
+    for (const status of statuses) {
+      const payload = await listSops(resolveV3ApiKey(), status)
+      const matched = payload.items.find((entry) =>
+        (entry.source_run_ids || []).some((sourceId) => candidateSourceIds.includes(String(sourceId || '').trim())),
+      )
+      if (matched) {
+        return {
+          id: matched.id,
+          tab: (matched.status || status) as SopTab,
+        }
+      }
+    }
+    return null
+  }
+
   async function handleExtractSop(item: HistorySessionItem) {
+    const hasExtractedSop = Boolean(item.primary_sop_id || item.sop_extracted || item.sop_draft_count || item.sop_published_count)
+    if (hasExtractedSop) {
+      let target = await resolveSopForHistoryItem(item)
+      if (!target) {
+        const refreshedHistory = await refreshSessionHistory()
+        const refreshedItem = refreshedHistory.find((entry) => entry.id === item.id || entry.run_id === item.run_id || entry.source_id === item.source_id)
+        if (refreshedItem) {
+          target = await resolveSopForHistoryItem(refreshedItem)
+        }
+      }
+      if (!target) {
+        antMessage.warning('该历史会话已提取 SOP，但暂未定位到对应档案。')
+        return
+      }
+      setActivePage('sop_library')
+      setSopTab(target.tab)
+      setSelectedSopId(target.id)
+      await handleSelectSop(target.id)
+      return
+    }
     const runId = item.run_id || resolveUnifiedRunId({
       targetId: item.id,
       sessionHistory,
@@ -1309,10 +1491,6 @@ function App() {
     if (!runId) {
       antMessage.warning('当前历史记录缺少统一运行 ID，暂时无法提取 SOP')
       return
-    }
-    if (item.sop_extracted) {
-      const confirmed = window.confirm('该历史会话已提取过 SOP。继续会基于同一来源生成新的 draft 版本，是否继续？')
-      if (!confirmed) return
     }
     setExtractingSopHistoryId(item.id)
     try {
@@ -1534,6 +1712,15 @@ function App() {
     }
   }
 
+  function handleV3ApplyPermissionTemplate(name: string, perms: string[]) {
+    setV3SelectedTemplateName(name)
+    setV3ApiKeyPermissions(perms.join(','))
+    if (!v3ApiKeyName.trim() || v3ApiKeyName.trim() === 'ops-admin') {
+      setV3ApiKeyName(name)
+    }
+    antMessage.success(`已应用权限模板：${name}`)
+  }
+
   async function handleV3DeleteApiKey(keyId: string) {
     const key = resolveV3ApiKey()
     if (!window.confirm('确认删除该 API Key 吗？')) return
@@ -1560,6 +1747,25 @@ function App() {
       await refreshV3ApiKeys()
     } catch (error) {
       antMessage.error((error as Error).message || '更新 API Key 状态失败')
+    } finally {
+      setV3ApiKeyLoading(false)
+    }
+  }
+
+  async function handleV3RotateApiKey(item: V2ApiKey) {
+    const key = resolveV3ApiKey()
+    if (!window.confirm(`确认轮换 Key「${item.name}」吗？旧 Key 将立即失效。`)) return
+    setV3ApiKeyLoading(true)
+    try {
+      const rotated = await v2RotateApiKey(key, item.id, {
+        name: item.name,
+        permissions: item.permissions,
+      })
+      setV3LastCreatedSecret(rotated.api_key)
+      await refreshV3ApiKeys()
+      antMessage.success('Key 已轮换，新的完整 Key 已显示在上方，请立即复制')
+    } catch (error) {
+      antMessage.error((error as Error).message || '轮换 API Key 失败')
     } finally {
       setV3ApiKeyLoading(false)
     }
@@ -2587,8 +2793,10 @@ function App() {
     const runId = historyItem?.run_id
     const v2JobId = parseV2HistoryJobId(target)
     const cached = historySnapshotCacheRef.current[target]
+    const cachedTrace = historySnapshotTraceCacheRef.current[target]
     if (cached && !forceRefresh) {
       setSelectedHistorySnapshot(cached)
+      setSelectedHistorySnapshotTrace(cachedTrace || [])
       setHistorySnapshotLoading(false)
       return
     }
@@ -2597,16 +2805,23 @@ function App() {
     setHistorySnapshotLoading(true)
     if (!cached || forceRefresh) {
       setSelectedHistorySnapshot((prev) => (prev && prev.session.id === target ? prev : null))
+      setSelectedHistorySnapshotTrace([])
     }
     try {
       const resolvedRunId = runId || (v2JobId ? toUnifiedMultiRunId(v2JobId) : toUnifiedSingleRunId(target))
-      const data = await buildTimelineSnapshotFromRun(resolvedRunId, target)
+      const [data, traceData] = await Promise.all([
+        buildTimelineSnapshotFromRun(resolvedRunId, target),
+        getRunTrace(resolveV3ApiKey(), resolvedRunId),
+      ])
       if (historySnapshotRequestRef.current !== requestId) return
       historySnapshotCacheRef.current[target] = data
+      historySnapshotTraceCacheRef.current[target] = (traceData.steps || []).map((item) => ({ ...item, session_id: target }))
       setSelectedHistorySnapshot(data)
+      setSelectedHistorySnapshotTrace(historySnapshotTraceCacheRef.current[target])
     } catch {
       if (historySnapshotRequestRef.current !== requestId) return
       setSelectedHistorySnapshot(null)
+      setSelectedHistorySnapshotTrace([])
     } finally {
       if (historySnapshotRequestRef.current !== requestId) return
       setHistorySnapshotLoading(false)
@@ -2814,6 +3029,7 @@ function App() {
 
   function shouldShowContinueAction(summaryData: DiagnosisSummary): boolean {
     if (!summaryData) return false
+    if (latestAiDecision === 'final') return false
     if (summaryData.mode === 'error' || summaryData.mode === 'unavailable') return true
     if (summaryData.mode === 'config') {
       const actionText = `${summaryData.query_result || ''} ${summaryData.follow_up_action || ''} ${summaryData.recommendation || ''}`
@@ -2927,17 +3143,24 @@ function App() {
 
       <div className="shell-body">
         <nav className="icon-rail" aria-label="Pages">
-          {NAV_ITEMS.map((item) => (
-            <button
-              key={item.id}
-              className={`rail-btn ${activePage === item.id ? 'active' : ''}`}
-              type="button"
-              title={item.title}
-              aria-current={activePage === item.id ? 'page' : undefined}
-              onClick={() => setActivePage(item.id)}
-            >
-              {renderNavIcon(item.id)}
-            </button>
+          {NAV_SECTIONS.map((section) => (
+            <div key={section.key} className="rail-section">
+              <div className="rail-section-label">{section.label}</div>
+              <div className="rail-section-items">
+                {section.items.map((item) => (
+                  <button
+                    key={item.id}
+                    className={`rail-btn ${activePage === item.id ? 'active' : ''}`}
+                    type="button"
+                    title={item.title}
+                    aria-current={activePage === item.id ? 'page' : undefined}
+                    onClick={() => setActivePage(item.id)}
+                  >
+                    {renderNavIcon(item.id)}
+                  </button>
+                ))}
+              </div>
+            </div>
           ))}
         </nav>
 
@@ -3238,7 +3461,7 @@ function App() {
                           />
                         </div>
                         <div className="composer-inline-toggle">
-                          <span className="composer-inline-label">{activityViewMode === 'compact' ? '精简模式' : '完整模式'}</span>
+                          <span className="composer-inline-label">精简模式</span>
                           <Switch
                             size="small"
                             checked={activityViewMode === 'compact'}
@@ -3395,22 +3618,19 @@ function App() {
 
           {activePage === 'third_party_keys' && (
             <div className="page-grid keyhub-layout">
-              <div className="panel-card v3-card">
+              <div className="panel-card v3-card keyhub-main-card">
                 <div className="policy-overview-head">
                   <div>
                     <h3>第三方 Key 服务中心</h3>
-                    <p className="muted">在这里创建、查看、启停和共享给第三方系统的 API Key，并查看最小权限模板。</p>
+                    <p className="muted">创建和管理提供给第三方系统的 API Key。完整 Key 仅在创建或轮换后展示一次。</p>
                   </div>
                   <div className="policy-actions">
                     <Button size="small" loading={v3ApiKeyLoading} onClick={() => void refreshV3ApiKeys()}>
-                      刷新 Key
-                    </Button>
-                    <Button size="small" onClick={() => void refreshV3PermissionTemplates()}>
-                      刷新权限模板
+                      刷新
                     </Button>
                   </div>
                 </div>
-                <div className="v3-grid-3">
+                <div className="v3-grid-3 keyhub-create-row">
                   <Input
                     size="small"
                     value={v3ApiKeyName}
@@ -3433,23 +3653,31 @@ function App() {
                   </Button>
                 </div>
                 <div className="v3-template-box">
-                  <span className="muted">最小权限模板</span>
+                  <div className="keyhub-section-head">
+                    <strong>最小权限模板</strong>
+                    <span className="muted">用于快速填写常见第三方接入权限组合。</span>
+                  </div>
                   {Object.keys(v3PermissionTemplates).length === 0 ? (
                     <div className="muted">-</div>
                   ) : (
                     <div className="v3-template-list">
                       {Object.entries(v3PermissionTemplates).map(([name, perms]) => (
-                        <div key={name} className="v3-template-item">
+                        <button
+                          key={name}
+                          type="button"
+                          className={`v3-template-item keyhub-template-item ${v3SelectedTemplateName === name ? 'active' : ''}`}
+                          onClick={() => handleV3ApplyPermissionTemplate(name, perms)}
+                        >
                           <strong>{name}</strong>
                           <code>{perms.join(', ')}</code>
-                        </div>
+                        </button>
                       ))}
                     </div>
                   )}
                 </div>
                 {v3LastCreatedSecret && (
-                  <div className="v3-secret-box">
-                    <span className="muted">最新创建的 Key（仅展示一次，请复制给第三方）</span>
+                  <div className="v3-secret-box keyhub-secret-box">
+                    <span className="muted">最新创建或轮换后的完整 Key（仅展示一次，请立即复制给第三方）。列表中显示的前缀仅用于识别，不可直接用于鉴权。</span>
                     <div className="v3-secret-actions">
                       <code>{v3LastCreatedSecret}</code>
                       <Button size="small" onClick={() => void handleCopyText(v3LastCreatedSecret, 'Key 已复制')}>
@@ -3458,37 +3686,29 @@ function App() {
                     </div>
                   </div>
                 )}
-                <div className="policy-rule-table v3-table">
-                  <div className="policy-rule-row policy-rule-head v3-key-head">
-                    <span>ID</span>
-                    <span>名称 / 权限</span>
-                    <span>状态 / 操作</span>
+                <div className="policy-rule-table v3-table keyhub-table">
+                  <div className="keyhub-head">
+                    <span>Key 信息</span>
+                    <span>状态 / 管理</span>
                   </div>
                   {v3ApiKeys.length === 0 && <div className="policy-empty muted">暂无 API Key</div>}
                   {v3ApiKeys.map((item) => (
-                    <div key={item.id} className="policy-rule-row v3-key-row">
-                      <span>
-                        <code>{item.id.slice(0, 8)}...</code>
-                      </span>
-                      <span className="v3-col-stack">
+                    <div key={item.id} className="keyhub-row">
+                      <div className="keyhub-meta">
                         <strong>{item.name}</strong>
-                        <code>{item.permissions.join(', ') || '*'}</code>
-                        <span className="muted">{item.key_prefix}</span>
-                      </span>
-                      <span className="v3-row-actions">
-                        <Button
-                          size="small"
-                          onClick={() => void handleCopyText(item.key_prefix, 'Key 前缀已复制')}
-                        >
-                          复制前缀
-                        </Button>
+                        <div className="keyhub-permission-line">{item.permissions.join(', ') || '*'}</div>
+                        <span className="muted">前缀：{item.key_prefix}（仅用于识别）</span>
+                      </div>
+                      <div className="v3-row-actions keyhub-actions">
+                        <span className={`status-chip ${item.enabled ? 'ok' : 'warn'}`}>{item.enabled ? '启用' : '停用'}</span>
+                        <Button size="small" onClick={() => void handleV3RotateApiKey(item)}>轮换 Key</Button>
                         <Switch
                           size="small"
                           checked={item.enabled}
                           onChange={(checked) => void handleV3ToggleApiKey(item.id, checked)}
                         />
                         <Button size="small" danger onClick={() => void handleV3DeleteApiKey(item.id)}>删除</Button>
-                      </span>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -3496,38 +3716,48 @@ function App() {
 
               <div className="panel-card v3-card">
                 <h3>第三方接入说明</h3>
-                <p className="muted">内置诊断工作台和会话历史通过受信任 UI 通道访问统一 Run API，不需要你在前端手动配置 API Key。这里的 Key 仅用于共享给第三方系统或外部脚本。</p>
+                <p className="muted">内置诊断工作台和会话历史通过受信任 UI 通道访问统一 Run API，不需要你在前端手动配置 API Key。这里的 Key 仅用于共享给第三方系统、自动化脚本或测试客户端。</p>
                 <div className="v3-template-box">
-                  <div className="v3-template-item">
-                    <strong>服务地址</strong>
-                    <code>POST /api/runs, GET /api/runs, GET /api/runs/{'{runId}'}/timeline</code>
+                  <div className="v3-template-item keyhub-info-item">
+                    <strong>统一入口</strong>
+                    <code>POST /api/runs, GET /api/runs, GET /api/runs/{'{runId}'}, GET /api/runs/{'{runId}'}/timeline</code>
                   </div>
-                  <div className="v3-template-item">
+                  <div className="v3-template-item keyhub-info-item">
                     <strong>鉴权方式</strong>
-                    <code>X-API-Key: {'<YOUR_KEY>'}</code>
+                    <code>X-API-Key: your_real_key_here</code>
                   </div>
-                  <div className="v3-template-item">
+                  <div className="v3-template-item keyhub-info-item">
+                    <strong>客户端提示</strong>
+                    <code>统一 Python 客户端支持 --host/--hosts、--problem/--question；未传 --api-key 时会优先自动创建临时 Key。</code>
+                  </div>
+                  <div className="v3-template-item keyhub-info-item">
                     <strong>建议</strong>
-                    <code>按系统/团队分配独立 Key，权限最小化，定期轮换。</code>
+                    <code>按系统/团队分配独立 Key，权限最小化，定期轮换；正式环境建议固定 Key，不依赖临时 Key。</code>
                   </div>
                 </div>
-                <pre className="detail-pre">{`curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
-  -H 'X-API-Key: <YOUR_KEY>' \\
+                <pre className="detail-pre">{`# 直接调用统一 Run API
+# 注意：
+# 1) JSON 必须使用英文双引号 "
+# 2) X-API-Key 填真实 Key，不要把 < > 一起复制进去
+curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
+  -H 'X-API-Key: your_real_key_here' \\
   -H 'Content-Type: application/json' \\
   -d '{
     "problem":"多设备异常关联分析",
     "operation_mode":"diagnosis",
-    "automation_level":"assisted",
+    "automation_level":"assisted", 
     "devices":[{"host":"192.168.0.88","protocol":"ssh","username":"***","password":"***"}]
-  }'`}</pre>
-                <div className="policy-actions">
-                  <Button size="small" onClick={() => setActivePage('workbench')}>
-                    返回工作台
-                  </Button>
-                  <Button size="small" onClick={() => setActivePage('control')}>
-                    返回连接控制
-                  </Button>
-                </div>
+  }'
+
+# 使用统一 Python 客户端（未传 --api-key 时默认先尝试自动创建临时 Key）
+./.venv/bin/python scripts/unified_diag_client.py \\
+  --base-url http://127.0.0.1:8000 \\
+  --host 192.168.0.102 \\
+  --username zhangwei \\
+  --password Admin@123 \\
+  --problem "接口 Eth2 接口 disable问题" \\
+  --stream-events \\
+  --timeout 120`}</pre>
               </div>
             </div>
           )}
@@ -4037,7 +4267,6 @@ function App() {
                           )}
                           {item.sop_draft_count ? <span className="meta-pill">草稿 {item.sop_draft_count}</span> : null}
                           {item.sop_published_count ? <span className="meta-pill">已发布 {item.sop_published_count}</span> : null}
-                          {!item.sop_extracted ? <span className="meta-pill">未提取</span> : null}
                         </div>
                         <div className="session-history-meta">
                           <span>{item.source_id.slice(0, 8)}...</span>
@@ -4048,13 +4277,13 @@ function App() {
                         <Button
                           size="small"
                           onClick={() => void handleExtractSop(item)}
+                          type={(item.primary_sop_id || item.sop_extracted || item.sop_draft_count || item.sop_published_count) ? 'default' : 'primary'}
                           loading={extractingSopHistoryId === item.id}
+                          className={(item.primary_sop_id || item.sop_extracted || item.sop_draft_count || item.sop_published_count) ? 'history-sop-link-btn' : undefined}
                           disabled={Boolean(extractingSopHistoryId && extractingSopHistoryId !== item.id)}
+                          title={(item.primary_sop_id || item.sop_extracted || item.sop_draft_count || item.sop_published_count) ? '该历史会话已提取 SOP，点击查看对应档案' : '从该历史会话提取 SOP 草稿'}
                         >
-                          AI 提取 SOP
-                        </Button>
-                        <Button size="small" type="primary" onClick={() => void handleRestoreSession(item.id, item.host)}>
-                          {item.kind === 'multi' ? '恢复任务' : '恢复'}
+                          {(item.primary_sop_id || item.sop_extracted || item.sop_draft_count || item.sop_published_count) ? '查看 SOP' : '提取 SOP'}
                         </Button>
                       </div>
                     </div>
@@ -4075,6 +4304,9 @@ function App() {
                 <div className="kv"><span>消息数</span><strong>{selectedHistorySnapshotView?.messages.length ?? 0}</strong></div>
                 <div className="kv"><span>命令数</span><strong>{selectedHistorySnapshotView?.commands.length ?? 0}</strong></div>
                 <div className="kv"><span>证据数</span><strong>{selectedHistorySnapshotView?.evidences.length ?? 0}</strong></div>
+                <div className="kv"><span>SOP 候选命中</span><strong>{snapshotSopCandidateHits > 0 ? `是（${snapshotSopCandidateHits} 次）` : '否'}</strong></div>
+                <div className="kv"><span>AI 已引用 SOP</span><strong>{snapshotSopReferencedCount > 0 ? `是（${snapshotSopReferencedCount} 次）` : '否'}</strong></div>
+                <div className="kv"><span>关联 SOP</span><strong>{snapshotPrimarySopId || '-'}</strong></div>
                 <div className="snapshot-text-block">
                   <span>用户问题</span>
                   <p>{snapshotLatestUserQuestion}</p>
@@ -4358,13 +4590,13 @@ function App() {
                           data-trace-step-id={step.id}
                           data-trace-list-step-id={step.id}
                           className={`trace-row trace-row-item ${selectedTraceStep?.id === step.id ? 'active' : ''} ${traceNodeRelationClass(step, selectedTraceStep)}`}
-                          onClick={() => setSelectedTraceStepId(step.id)}
+                          onClick={() => jumpToTraceStep(step.id)}
                           role="button"
                           tabIndex={0}
                           onKeyDown={(event) => {
                             if (event.key === 'Enter' || event.key === ' ') {
                               event.preventDefault()
-                              setSelectedTraceStepId(step.id)
+                              jumpToTraceStep(step.id)
                             }
                           }}
                         >
@@ -4422,7 +4654,7 @@ function App() {
                     <button
                       key={tab.key}
                       type="button"
-                      className={`policy-tab-button ${sopTab === tab.key ? 'active' : ''}`}
+                      className={`sop-tab-button ${sopTab === tab.key ? 'active' : ''}`}
                       onClick={() => setSopTab(tab.key as SopTab)}
                     >
                       {tab.label}
@@ -4454,38 +4686,86 @@ function App() {
                         ))}
                       </ol>
                     </section>
+                    <section className="panel-card sop-logic-card">
+                      <div className="sop-logic-head">
+                        <h4>语义别名匹配</h4>
+                        <span className="meta-pill">系统内置</span>
+                      </div>
+                      <p className="muted">当前触发词、适用前提、不适用条件会先做语义别名匹配，再做命中判断。下面这些同类表达会被系统视为一组。</p>
+                      <div className="sop-alias-grid">
+                        {SOP_SEMANTIC_ALIAS_GROUPS.map((group) => (
+                          <div key={group.label} className="sop-alias-card">
+                            <strong>{group.label}</strong>
+                            <div className="sop-alias-tags">
+                              {group.aliases.map((alias) => (
+                                <span key={alias} className="meta-pill">{alias}</span>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
                   </div>
                 ) : (
-                  <div className="sop-library-grid">
+                  <div className="sop-library-grid" style={{ gridTemplateColumns: `${sopListWidth}px 10px minmax(0, 1fr)` }}>
                     <section className="panel-card sop-list-panel">
-                      <div className="learning-sop-section-head">
+                      <div className="learning-sop-section-head compact">
                         <strong>{sopTab === 'draft' ? '草稿列表' : sopTab === 'published' ? '已发布列表' : '已归档列表'}</strong>
-                        <span className="muted">{currentSopItems.length} 条</span>
+                        <div className="sop-list-head-actions">
+                          <span className="muted">{currentSopItems.length} 条</span>
+                          <div className="sop-density-toggle" role="tablist" aria-label="SOP列表密度">
+                            <button
+                              type="button"
+                              className={sopListDensity === 'compact' ? 'active' : ''}
+                              onClick={() => setSopListDensity('compact')}
+                            >
+                              紧凑
+                            </button>
+                            <button
+                              type="button"
+                              className={sopListDensity === 'expanded' ? 'active' : ''}
+                              onClick={() => setSopListDensity('expanded')}
+                            >
+                              展开
+                            </button>
+                          </div>
+                        </div>
                       </div>
-                      <div className="learning-sop-list">
+                      <div className={`learning-sop-list ${sopListDensity === 'compact' ? 'is-compact' : 'is-expanded'}`}>
                         {currentSopItems.length === 0 && <div className="policy-empty muted">当前分组暂无 SOP 记录</div>}
                         {currentSopItems.map((entry) => (
                           <button
                             key={entry.id}
                             type="button"
-                            className={`sop-record-item ${selectedSopId === entry.id ? 'active' : ''}`}
+                            className={`sop-record-item ${selectedSopId === entry.id ? 'active' : ''} ${sopListDensity === 'compact' ? 'compact' : 'expanded'}`}
                             onClick={() => void handleSelectSop(entry.id)}
                           >
-                            <div className="sop-record-head">
-                              <strong>{entry.name}</strong>
-                              <span className="meta-pill">v{entry.version}</span>
+                            <div className="sop-record-row">
+                              <div className="sop-record-main compact">
+                                <strong>{entry.name}</strong>
+                                <span className="meta-pill">v{entry.version}</span>
+                                <span>{`命 ${entry.matched_count || 0}`}</span>
+                                <span>{`引 ${entry.referenced_count || 0}`}</span>
+                                <span>{`成 ${entry.success_count || 0}`}</span>
+                              </div>
                             </div>
-                            <span className="muted">{entry.id}</span>
-                            <span className="muted">{truncateText(entry.summary, 96)}</span>
-                            <div className="sop-record-metrics">
-                              <span>命中 {entry.matched_count || 0}</span>
-                              <span>引用 {entry.referenced_count || 0}</span>
-                              <span>成功 {entry.success_count || 0}</span>
-                            </div>
+                            {sopListDensity === 'expanded' ? (
+                              <span className="muted">{truncateText(entry.id, 42)}</span>
+                            ) : null}
+                            {sopListDensity === 'expanded' ? (
+                              <span className="muted">{truncateText(entry.summary, 96)}</span>
+                            ) : null}
                           </button>
                         ))}
                       </div>
                     </section>
+
+                    <div
+                      className="sop-drag-divider"
+                      role="separator"
+                      aria-orientation="vertical"
+                      onMouseDown={() => setSopResizing(true)}
+                    />
 
                     <section className="panel-card sop-detail-panel">
                       {!selectedSop || !sopEditor ? (
@@ -4498,73 +4778,130 @@ function App() {
                               <p className="muted">{selectedSop.id} · 状态 {selectedSop.status || sopTab}</p>
                             </div>
                             <div className="capability-toolbar-actions">
-                              {sopTab === 'draft' && <Button size="small" type="primary" loading={sopSaving} onClick={() => void handlePublishSop()}>发布</Button>}
-                              {sopTab === 'published' && <Button size="small" loading={sopSaving} onClick={() => void handleSaveSop()}>编辑并生成草稿</Button>}
-                              {(sopTab === 'draft' || sopTab === 'published') && <Button size="small" loading={sopSaving} onClick={() => void handleArchiveSop()}>归档</Button>}
-                              <Button size="small" loading={sopSaving} onClick={() => void handleReextractSop()}>重新提炼</Button>
-                              {sopTab !== 'published' && <Button size="small" danger loading={sopSaving} onClick={() => void handleDeleteSop()}>删除</Button>}
+                              {sopTab === 'draft' && <Button size="small" type="primary" className="sop-action-btn sop-action-btn-primary" loading={sopSaving} onClick={() => void handlePublishSop()}>发布</Button>}
+                              {sopTab === 'published' && <Button size="small" className="sop-action-btn" loading={sopSaving} onClick={() => void handleSaveSop()}>编辑并生成草稿</Button>}
+                              {(sopTab === 'draft' || sopTab === 'published') && <Button size="small" className="sop-action-btn" loading={sopSaving} onClick={() => void handleArchiveSop()}>归档</Button>}
+                              <Button size="small" className="sop-action-btn" loading={sopSaving} onClick={() => void handleReextractSop()}>重新提炼</Button>
+                              {sopTab !== 'published' && <Button size="small" danger className="sop-action-btn sop-action-btn-danger" loading={sopSaving} onClick={() => void handleDeleteSop()}>删除</Button>}
                             </div>
                           </div>
 
-                          <div className="sop-detail-grid">
-                            <label className="sop-field">
-                              <span>名称</span>
-                              <Input value={sopEditor.name} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, name: event.target.value } : prev)} />
-                            </label>
-                            <label className="sop-field">
-                              <span>来源会话</span>
-                              <Input value={(sopEditor.source_run_ids || []).join(', ')} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, source_run_ids: parseTagInput(event.target.value) } : prev)} />
-                            </label>
-                            <label className="sop-field sop-field-span-2">
-                              <span>摘要</span>
-                              <Input.TextArea rows={3} value={sopEditor.summary} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, summary: event.target.value } : prev)} />
-                            </label>
-                            <label className="sop-field sop-field-span-2">
-                              <span>使用提示</span>
-                              <Input.TextArea rows={3} value={sopEditor.usage_hint} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, usage_hint: event.target.value } : prev)} />
-                            </label>
-                            <label className="sop-field">
-                              <span>触发关键词</span>
-                              <Input.TextArea rows={3} value={joinTagInput(sopEditor.trigger_keywords)} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, trigger_keywords: parseTagInput(event.target.value) } : prev)} />
-                            </label>
-                            <label className="sop-field">
-                              <span>厂商标签</span>
-                              <Input.TextArea rows={3} value={joinTagInput(sopEditor.vendor_tags)} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, vendor_tags: parseTagInput(event.target.value) } : prev)} />
-                            </label>
-                            <label className="sop-field">
-                              <span>版本指纹</span>
-                              <Input.TextArea rows={3} value={joinTagInput(sopEditor.version_signatures)} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, version_signatures: parseTagInput(event.target.value) } : prev)} />
-                            </label>
-                            <label className="sop-field">
-                              <span>证据目标</span>
-                              <Input.TextArea rows={3} value={joinTagInput(sopEditor.evidence_goals)} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, evidence_goals: parseTagInput(event.target.value) } : prev)} />
-                            </label>
-                            <label className="sop-field">
-                              <span>适用前提</span>
-                              <Input.TextArea rows={3} value={joinTagInput(sopEditor.preconditions)} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, preconditions: parseTagInput(event.target.value) } : prev)} />
-                            </label>
-                            <label className="sop-field">
-                              <span>禁用条件</span>
-                              <Input.TextArea rows={3} value={joinTagInput(sopEditor.anti_conditions)} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, anti_conditions: parseTagInput(event.target.value) } : prev)} />
-                            </label>
-                            <label className="sop-field sop-field-span-2">
-                              <span>最小命令组</span>
-                              <Input.TextArea rows={5} value={joinCommandTemplatesInput(sopEditor.command_templates)} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, command_templates: parseCommandTemplatesInput(event.target.value) } : prev)} />
-                              <small className="muted">每行格式：vendor | cmd1 ; cmd2 ; cmd3</small>
-                            </label>
-                            <label className="sop-field">
-                              <span>替代命令</span>
-                              <Input.TextArea rows={3} value={joinTagInput(sopEditor.fallback_commands)} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, fallback_commands: parseTagInput(event.target.value) } : prev)} />
-                            </label>
-                            <label className="sop-field">
-                              <span>预期发现</span>
-                              <Input.TextArea rows={3} value={joinTagInput(sopEditor.expected_findings)} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, expected_findings: parseTagInput(event.target.value) } : prev)} />
-                            </label>
-                            <label className="sop-field sop-field-span-2">
-                              <span>审核备注</span>
-                              <Input.TextArea rows={4} value={sopEditor.review_notes || ''} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, review_notes: event.target.value } : prev)} />
-                            </label>
-                          </div>
+                          <section className="sop-section-card">
+                            <div className="sop-section-head">
+                              <strong>基础信息</strong>
+                              <span className="muted">描述这条 SOP 是什么、从哪次会话沉淀而来。</span>
+                            </div>
+                            <div className="sop-detail-grid">
+                              <label className="sop-field">
+                                <span>SOP 名称</span>
+                                <Input value={sopEditor.name} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, name: event.target.value } : prev)} />
+                                <small className="muted">这条 SOP 的主标题，建议直接写成问题类型或排查主题。</small>
+                              </label>
+                              <label className="sop-field">
+                                <span>来源会话 ID</span>
+                                <Input value={(sopEditor.source_run_ids || []).join(', ')} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, source_run_ids: parseTagInput(event.target.value) } : prev)} />
+                                <small className="muted">记录这条 SOP 是从哪些历史会话提炼而来，便于回溯证据来源。</small>
+                              </label>
+                              <label className="sop-field">
+                                <span>适用场景摘要</span>
+                                <Input.TextArea rows={3} value={sopEditor.summary} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, summary: event.target.value } : prev)} />
+                                <small className="muted">一句话说明这条 SOP 解决什么问题、适用于什么场景。</small>
+                              </label>
+                              <label className="sop-field">
+                                <span>AI 使用提示</span>
+                                <Input.TextArea rows={3} value={sopEditor.usage_hint} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, usage_hint: event.target.value } : prev)} />
+                                <small className="muted">告诉 AI 何时优先参考这条 SOP，以及调用时要注意什么。</small>
+                              </label>
+                            </div>
+                          </section>
+
+                          <section className="sop-section-card">
+                            <div className="sop-section-head">
+                              <strong>匹配条件</strong>
+                              <span className="muted">决定 AI 何时可能参考这条 SOP。</span>
+                            </div>
+                            <div className="sop-detail-grid">
+                              <label className="sop-field">
+                                <span>问题触发词</span>
+                                <Input.TextArea rows={2} value={joinTagInput(sopEditor.trigger_keywords)} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, trigger_keywords: parseTagInput(event.target.value) } : prev)} />
+                                <small className="muted">用于按用户问题匹配候选 SOP，建议填写故障关键词而不是整句原话。</small>
+                              </label>
+                              <label className="sop-field">
+                                <span>厂商 / 平台标签</span>
+                                <Input.TextArea rows={2} value={joinTagInput(sopEditor.vendor_tags)} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, vendor_tags: parseTagInput(event.target.value) } : prev)} />
+                                <small className="muted">限定适用厂商或命令家族，例如 `huawei`、`arista`。</small>
+                              </label>
+                              <label className="sop-field">
+                                <span>版本指纹匹配</span>
+                                <Input.TextArea rows={2} value={joinTagInput(sopEditor.version_signatures)} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, version_signatures: parseTagInput(event.target.value) } : prev)} />
+                                <small className="muted">限定具体软硬件版本或指纹片段，减少跨版本误用。</small>
+                              </label>
+                              <label className="sop-field">
+                                <span>目标证据</span>
+                                <Input.TextArea rows={2} value={joinTagInput(sopEditor.evidence_goals)} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, evidence_goals: parseTagInput(event.target.value) } : prev)} />
+                                <small className="muted">执行这条 SOP 后，理想情况下应该验证到哪些关键信号。</small>
+                              </label>
+                              <label className="sop-field">
+                                <span>适用前提</span>
+                                <Input.TextArea rows={3} value={joinTagInput(sopEditor.preconditions)} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, preconditions: parseTagInput(event.target.value) } : prev)} />
+                                <small className="muted">列出调用这条 SOP 前必须满足的条件，例如设备类型、权限、对象已知等。</small>
+                              </label>
+                              <label className="sop-field">
+                                <span>不适用条件</span>
+                                <Input.TextArea rows={3} value={joinTagInput(sopEditor.anti_conditions)} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, anti_conditions: parseTagInput(event.target.value) } : prev)} />
+                                <small className="muted">列出不应调用这条 SOP 的场景，避免 AI 在错误上下文中引用。</small>
+                              </label>
+                            </div>
+                            <div className="sop-alias-inline-note">
+                              <div className="sop-alias-inline-head">
+                                <strong>语义别名匹配</strong>
+                                <span className="muted">触发词 / 适用前提 / 不适用条件会按下列同义词一起判断。</span>
+                              </div>
+                              <div className="sop-alias-tags">
+                                {SOP_SEMANTIC_ALIAS_GROUPS.map((group) => (
+                                  <span key={group.label} className="meta-pill">{`${group.label}: ${group.aliases.join(' / ')}`}</span>
+                                ))}
+                              </div>
+                            </div>
+                          </section>
+
+                          <section className="sop-section-card">
+                            <div className="sop-section-head">
+                              <strong>命令策略</strong>
+                              <span className="muted">建议 AI 优先参考的最小命令组与补充证据。</span>
+                            </div>
+                            <div className="sop-detail-grid">
+                              <label className="sop-field sop-field-span-2">
+                                <span>建议最小命令组</span>
+                                <Input.TextArea rows={4} value={joinCommandTemplatesInput(sopEditor.command_templates)} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, command_templates: parseCommandTemplatesInput(event.target.value) } : prev)} />
+                                <small className="muted">AI 参考这条 SOP 时优先考虑的最小排查命令组。每行格式：vendor | cmd1 ; cmd2 ; cmd3</small>
+                              </label>
+                              <label className="sop-field">
+                                <span>备选查询命令</span>
+                                <Input.TextArea rows={2} value={joinTagInput(sopEditor.fallback_commands)} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, fallback_commands: parseTagInput(event.target.value) } : prev)} />
+                                <small className="muted">当主命令组不兼容、权限不足或输出过大时，可供 AI 退一步参考的备选查询命令。</small>
+                              </label>
+                              <label className="sop-field">
+                                <span>预期证据信号</span>
+                                <Input.TextArea rows={2} value={joinTagInput(sopEditor.expected_findings)} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, expected_findings: parseTagInput(event.target.value) } : prev)} />
+                                <small className="muted">调用后通常会看到的结果，用来帮助 AI 判断是否命中预期路径。</small>
+                              </label>
+                            </div>
+                          </section>
+
+                          <section className="sop-section-card">
+                            <div className="sop-section-head">
+                              <strong>审核信息</strong>
+                              <span className="muted">沉淀过程中的人工补充和复核备注。</span>
+                            </div>
+                            <div className="sop-detail-grid">
+                              <label className="sop-field sop-field-span-2">
+                                <span>审核备注</span>
+                                <Input.TextArea rows={3} value={sopEditor.review_notes || ''} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, review_notes: event.target.value } : prev)} />
+                                <small className="muted">记录人工复核时的注意事项、风险提醒或后续待完善点。</small>
+                              </label>
+                            </div>
+                          </section>
 
                           <div className="sop-metrics-grid">
                             <div className="policy-stat-card"><span className="muted">命中</span><strong>{selectedSop.matched_count || 0}</strong></div>
@@ -4594,7 +4931,7 @@ function App() {
               <div className="panel-card learning-toolbar-card">
                 <div className="learning-toolbar-main">
                   <div>
-                    <h3>命令学习库（版本级：失败阻断 / 替代改写）</h3>
+                    <h3>命令执行纠正（版本级：失败阻断 / 替代改写）</h3>
                     <p className="muted learning-subtitle">按版本指纹维护命令替代与阻断规则，避免重复试错；这部分是系统执行前的能力修正，不等同于 SOP 档案。</p>
                   </div>
                   <div className="capability-toolbar-actions">
@@ -4793,9 +5130,20 @@ function App() {
               <div className="panel-card ai-prompt-panel">
                 <h3>提示词与策略</h3>
                 <p className="muted">展示系统当前提供给 AI 的提示词模板（只读）。</p>
-                <div className="kv"><span>模型</span><strong>{llmPromptPolicy?.model || llmStatus?.model || '-'}</strong></div>
-                <div className="kv"><span>Base URL</span><strong>{llmPromptPolicy?.base_url || llmStatus?.base_url || '-'}</strong></div>
-                <div className="kv"><span>NVIDIA Base URL</span><strong>{llmPromptPolicy?.nvidia_base_url || llmStatus?.nvidia_base_url || '-'}</strong></div>
+                <div className="prompt-policy-meta-grid">
+                  <div className="prompt-policy-meta-card">
+                    <span>模型</span>
+                    <strong>{llmPromptPolicy?.model || llmStatus?.model || '-'}</strong>
+                  </div>
+                  <div className="prompt-policy-meta-card">
+                    <span>Base URL</span>
+                    <strong title={llmPromptPolicy?.base_url || llmStatus?.base_url || '-'}>{llmPromptPolicy?.base_url || llmStatus?.base_url || '-'}</strong>
+                  </div>
+                  <div className="prompt-policy-meta-card">
+                    <span>NVIDIA Base URL</span>
+                    <strong title={llmPromptPolicy?.nvidia_base_url || llmStatus?.nvidia_base_url || '-'}>{llmPromptPolicy?.nvidia_base_url || llmStatus?.nvidia_base_url || '-'}</strong>
+                  </div>
+                </div>
                 <div className="prompt-policy-list">
                   {llmPromptPolicy && Object.keys(llmPromptPolicy.prompts || {}).length > 0 ? (
                     Object.entries(llmPromptPolicy.prompts).map(([key, value]) => (
@@ -4985,6 +5333,11 @@ function buildActivityCards(
 
   if (summary) {
     const createdAt = summary.created_at || ''
+    const latestTraceSortAt = traceSteps.reduce((latest, step, index) => {
+      if (!shouldDisplayTraceAsActivity(step)) return latest
+      const ts = parseSortTime(step.completed_at || step.started_at || '', messages.length + commands.length + step.seq_no + index)
+      return Math.max(latest, ts)
+    }, Number.MIN_SAFE_INTEGER)
     cards.push({
       key: 'summary:latest',
       kind: 'summary',
@@ -4993,8 +5346,8 @@ function buildActivityCards(
       title: summary.mode === 'query' || summary.mode === 'config' ? '查询结果' : '最终诊断',
       preview: truncateText(renderSummaryBrief(summary), 170),
       summary,
-      sortAt: parseSortTime(createdAt, messages.length + commands.length + 1),
-      sortIdx: messages.length + commands.length + 1,
+      sortAt: Math.max(parseSortTime(createdAt, messages.length + commands.length + 1), latestTraceSortAt),
+      sortIdx: Number.MAX_SAFE_INTEGER - 1,
     })
   }
 
@@ -5335,6 +5688,7 @@ function buildHistorySessionItemsFromRuns(runs: RunSummary[]): HistorySessionIte
         sop_extracted: run.sop_extracted,
         sop_draft_count: run.sop_draft_count,
         sop_published_count: run.sop_published_count,
+        primary_sop_id: run.primary_sop_id,
       }
     }
     return {
@@ -5356,6 +5710,7 @@ function buildHistorySessionItemsFromRuns(runs: RunSummary[]): HistorySessionIte
       sop_extracted: run.sop_extracted,
       sop_draft_count: run.sop_draft_count,
       sop_published_count: run.sop_published_count,
+      primary_sop_id: run.primary_sop_id,
     }
   })
   return items.sort((left, right) => {
@@ -5574,6 +5929,38 @@ function buildContinuePreview(commands: CommandExecution[], summary?: DiagnosisS
     items: [],
     totalCommands: 0,
   }
+}
+
+function extractLatestAiDecision(traceSteps: ServiceTraceStep[]): 'run_command' | 'final' | undefined {
+  const ordered = [...traceSteps].sort((a, b) => {
+    const aTime = parseSortTime(a.completed_at || a.started_at || '', a.seq_no)
+    const bTime = parseSortTime(b.completed_at || b.started_at || '', b.seq_no)
+    if (aTime === bTime) return a.seq_no - b.seq_no
+    return aTime - bTime
+  })
+  for (let index = ordered.length - 1; index >= 0; index -= 1) {
+    const step = ordered[index]
+    if (step.step_type !== 'llm_response' && step.step_type !== 'llm_final' && step.step_type !== 'llm_plan') continue
+    const payload = isTraceRecord(step.detail_payload) ? step.detail_payload : undefined
+    const detailText = `${step.detail || ''} ${step.title || ''}`.toLowerCase()
+    if (detailText.includes('decision=final')) return 'final'
+    if (detailText.includes('decision=run_command')) return 'run_command'
+    const candidates = [
+      payload,
+      isTraceRecord(payload?.llm) ? payload?.llm : undefined,
+      isTraceRecord(payload?.to_ai) ? payload?.to_ai : undefined,
+      isTraceRecord(payload?.plan) ? payload?.plan : undefined,
+      isTraceRecord(payload?.ai_response_parsed) ? payload?.ai_response_parsed : undefined,
+      isTraceRecord(payload?.final_summary) ? payload?.final_summary : undefined,
+    ].filter((item): item is Record<string, unknown> => Boolean(item))
+    for (const candidate of candidates) {
+      const decision = String(candidate.decision || '').trim().toLowerCase()
+      if (decision === 'final' || decision === 'run_command') {
+        return decision
+      }
+    }
+  }
+  return undefined
 }
 
 function buildContinuePreviewItems(commands: CommandExecution[]): ContinuePreviewItem[] {
@@ -5883,6 +6270,9 @@ function formatTraceStepTitle(step: ServiceTraceStep): string {
   text = text.replace(/^系统提交上下文（会话头）$/, '会话初始化上下文')
   text = text.replace(/^系统提交上下文（命令结果 #(\d+)）$/, '命令结果写入 #$1')
   text = text.replace(/^系统提交上下文（基线汇总）$/, '基线汇总写入')
+  text = text.replace(/^SOP 候选已生成$/, 'SOP候选匹配')
+  text = text.replace(/^\[([^\]]+)\]\s*SOP档案候选已装载$/, '[$1] SOP候选匹配')
+  text = text.replace(/^SOP 引用结果$/, 'SOP引用结果')
 
   text = text.replace(/^执行前策略判定$/, '命令安全与风险判定')
   text = text.replace(/^执行前会话范围判定$/, '会话模式范围校验')
@@ -6074,15 +6464,16 @@ function traceConstraintSourceFromDetail(detail?: string): string {
 
 function traceLaneKey(stepType: string): string {
   if (stepType === 'user_input') return 'user'
-  if (stepType === 'ai_context_submit' || stepType === 'context_snapshot') return 'context'
+  if (stepType === 'ai_context_submit' || stepType === 'context_snapshot' || stepType === 'sop_candidates_generated') return 'context'
   if (stepType === 'llm_request') return 'ai_submit'
-  if (stepType === 'llm_response') return 'ai_feedback'
+  if (stepType === 'llm_response' || stepType === 'sop_referenced_by_ai') return 'ai_feedback'
   if (
     stepType === 'llm_plan'
     || stepType === 'llm_status'
     || stepType === 'plan_decision'
     || stepType === 'plan_parse'
     || stepType === 'loop_control'
+    || stepType === 'sop_reference_outcome'
   ) return 'plan'
   if (stepType === 'policy_decision' || stepType === 'capability_decision' || stepType === 'scope_decision') return 'policy'
   if (stepType === 'command_execution' || stepType === 'command_confirm_execution') return 'execute'
@@ -6102,7 +6493,7 @@ function traceLaneActorLabel(laneKey: string): string {
 function traceStepActorLabel(stepType: string): string {
   if (stepType === 'user_input') return '用户'
   if (stepType === 'command_execution' || stepType === 'command_confirm_execution') return '设备'
-  if (stepType === 'llm_response' || stepType === 'llm_plan' || stepType === 'llm_final' || stepType === 'llm_status') return 'AI'
+  if (stepType === 'llm_response' || stepType === 'llm_plan' || stepType === 'llm_final' || stepType === 'llm_status' || stepType === 'sop_referenced_by_ai') return 'AI'
   return '系统'
 }
 
@@ -6310,8 +6701,11 @@ function traceTypeLabel(stepType: string): string {
   if (stepType === 'user_input') return '用户请求'
   if (stepType === 'context_snapshot') return '上下文快照'
   if (stepType === 'ai_context_submit') return '系统提交上下文'
+  if (stepType === 'sop_candidates_generated') return 'SOP候选匹配'
   if (stepType === 'llm_request') return '提交给 AI'
   if (stepType === 'llm_response') return 'AI 原始回复'
+  if (stepType === 'sop_referenced_by_ai') return 'AI引用SOP'
+  if (stepType === 'sop_reference_outcome') return 'SOP引用结果'
   if (stepType === 'llm_plan') return 'LLM 规划'
   if (stepType === 'llm_final') return 'LLM 总结'
   if (stepType === 'llm_status') return 'LLM 可用性'

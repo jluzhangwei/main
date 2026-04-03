@@ -889,6 +889,7 @@ class RunResponse(BaseModel):
     sop_extracted: bool = False
     sop_draft_count: int = 0
     sop_published_count: int = 0
+    primary_sop_id: Optional[str] = None
 
 
 class RunListResponse(BaseModel):

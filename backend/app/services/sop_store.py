@@ -127,6 +127,26 @@ class SOPStore:
                     published_count += 1
             return bool(record_ids), draft_count, published_count
 
+    def primary_record_id_for_source_run(self, source_run_id: str) -> str | None:
+        with self._lock:
+            record_ids = self._source_run_index.get(source_run_id, set())
+            if not record_ids:
+                return None
+            records = [self._records[item_id] for item_id in record_ids if item_id in self._records]
+            if not records:
+                return None
+            published = [item for item in records if item.status == SOPStatus.published]
+            target = published or records
+            target.sort(
+                key=lambda item: (
+                    0 if item.status == SOPStatus.published else 1,
+                    -(item.published_at.timestamp() if item.published_at else 0),
+                    -(item.updated_at.timestamp() if item.updated_at else 0),
+                    -item.version,
+                )
+            )
+            return target[0].id
+
     def upsert_record(
         self,
         record_id: str,
@@ -319,11 +339,31 @@ class SOPStore:
             ),
         )
 
+    def dedupe_entries_for_runtime(self, entries: Iterable[SOPArchiveEntryResponse]) -> list[SOPArchiveEntryResponse]:
+        grouped: dict[tuple[object, ...], SOPArchiveEntryResponse] = {}
+        for entry in entries:
+            key = (
+                entry.name.strip().lower(),
+                entry.summary.strip().lower(),
+                tuple(sorted(item.strip().lower() for item in entry.vendor_tags)),
+                tuple(sorted(item.strip().lower() for item in entry.version_signatures)),
+                tuple(sorted(item.strip().lower() for item in entry.trigger_keywords)),
+            )
+            existing = grouped.get(key)
+            if existing is None:
+                grouped[key] = entry
+                continue
+            existing_ts = existing.published_at or existing.updated_at or existing.created_at
+            current_ts = entry.published_at or entry.updated_at or entry.created_at
+            if current_ts and (existing_ts is None or current_ts > existing_ts):
+                grouped[key] = entry
+        return list(grouped.values())
+
     def _matches_record(self, record: SOPRecord, *, problem: str, vendor: str | None, version_signature: str | None) -> bool:
         lowered = str(problem or "").strip().lower()
         if not lowered:
             return False
-        if record.trigger_keywords and not any(token.lower() in lowered for token in record.trigger_keywords):
+        if record.trigger_keywords and not any(self._text_matches_token(lowered, token) for token in record.trigger_keywords):
             return False
         normalized_vendor = str(vendor or "").strip().lower()
         if record.vendor_tags and normalized_vendor and not any(token.lower() in normalized_vendor for token in record.vendor_tags):
@@ -332,11 +372,38 @@ class SOPStore:
         if record.version_signatures and normalized_signature:
             if not any(token.lower() in normalized_signature for token in record.version_signatures):
                 return False
-        if record.preconditions and not all(token.lower() in lowered for token in record.preconditions):
+        if record.preconditions and not all(self._text_matches_token(lowered, token) for token in record.preconditions):
             return False
-        if record.anti_conditions and any(token.lower() in lowered for token in record.anti_conditions):
+        if record.anti_conditions and any(self._text_matches_token(lowered, token) for token in record.anti_conditions):
             return False
         return True
+
+    @staticmethod
+    def _text_matches_token(text: str, token: str) -> bool:
+        lowered_text = str(text or "").strip().lower()
+        lowered_token = str(token or "").strip().lower()
+        if not lowered_text or not lowered_token:
+            return False
+        if lowered_token in lowered_text:
+            return True
+        for alias in SOPStore._token_aliases(lowered_token):
+            if alias and alias in lowered_text:
+                return True
+        return False
+
+    @staticmethod
+    def _token_aliases(token: str) -> tuple[str, ...]:
+        alias_groups: tuple[tuple[str, ...], ...] = (
+            ("接口", "端口", "interface", "port", "ethernet", "gigabitethernet", "et"),
+            ("shutdown", "admin shutdown", "admin down", "administratively down", "disabled", "disable"),
+            ("物理断链", "断链", "链路断开", "link down", "physical down", "los"),
+            ("ospf", "邻接", "neighbor", "adjacency"),
+        )
+        for group in alias_groups:
+            lowered_group = tuple(item.lower() for item in group)
+            if token in lowered_group:
+                return lowered_group
+        return (token,)
 
     def _normalize_text_list(self, values: Iterable[str]) -> list[str]:
         seen: set[str] = set()

@@ -191,6 +191,7 @@ class UnifiedRunService:
         session = self.store.get_session(session_id)
         pending_actions = len(self._single_pending_leader_command_ids(session_id))
         sop_extracted, sop_draft_count, sop_published_count = self._sop_counts(session.id)
+        primary_sop_id = self._primary_sop_id(session.id)
         return RunResponse(
             id=self.single_run_id(session.id),
             source_id=session.id,
@@ -210,10 +211,12 @@ class UnifiedRunService:
             sop_extracted=sop_extracted,
             sop_draft_count=sop_draft_count,
             sop_published_count=sop_published_count,
+            primary_sop_id=primary_sop_id,
         )
 
     def build_multi_run_response_from_job(self, job) -> RunResponse:
         sop_extracted, sop_draft_count, sop_published_count = self._sop_counts(job.id)
+        primary_sop_id = self._primary_sop_id(job.id)
         return RunResponse(
             id=self.multi_run_id(job.id),
             source_id=job.id,
@@ -235,12 +238,14 @@ class UnifiedRunService:
             sop_extracted=sop_extracted,
             sop_draft_count=sop_draft_count,
             sop_published_count=sop_published_count,
+            primary_sop_id=primary_sop_id,
         )
 
     def build_multi_run_response(self, timeline: JobTimelineResponse) -> RunResponse:
         hosts = [str(item.host or "").strip() for item in timeline.job.devices if str(item.host or "").strip()]
         pending_actions = len([item for item in timeline.job.action_groups if self._enum_value(item.status) == "pending_approval"])
         sop_extracted, sop_draft_count, sop_published_count = self._sop_counts(timeline.job.id)
+        primary_sop_id = self._primary_sop_id(timeline.job.id)
         return RunResponse(
             id=self.multi_run_id(timeline.job.id),
             source_id=timeline.job.id,
@@ -262,6 +267,7 @@ class UnifiedRunService:
             sop_extracted=sop_extracted,
             sop_draft_count=sop_draft_count,
             sop_published_count=sop_published_count,
+            primary_sop_id=primary_sop_id,
         )
 
     def _sop_counts(self, source_id: str) -> tuple[bool, int, int]:
@@ -271,6 +277,14 @@ class UnifiedRunService:
             return self.sop_archive.source_run_counts(source_id)
         except Exception:
             return False, 0, 0
+
+    def _primary_sop_id(self, source_id: str) -> str | None:
+        if self.sop_archive is None:
+            return None
+        try:
+            return self.sop_archive.primary_record_id_for_source_run(source_id)
+        except Exception:
+            return None
 
     async def list_runs(self, kind: RunKind | None = None, offset: int = 0, limit: int = 100) -> RunListResponse:
         rows: list[RunResponse] = []
