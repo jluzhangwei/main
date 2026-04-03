@@ -134,6 +134,10 @@ class ConnectFailAdapter:
         return None
 
 
+class _PassiveAdapter:
+    last_command_meta = {}
+
+
 class _StatefulSessionAdapter:
     def __init__(self):
         self.connected = False
@@ -664,3 +668,41 @@ def test_dedupe_plan_commands_removes_same_round_duplicates():
         ("检查版本", "show version"),
         ("检查接口", "show interfaces status"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_record_command_output_marks_cli_error_as_failed():
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(host="10.0.0.44", protocol=DeviceProtocol.ssh),
+            automation_level=AutomationLevel.assisted,
+            operation_mode=OperationMode.diagnosis,
+        )
+    )
+    command = CommandExecution(
+        session_id=session.id,
+        step_no=1,
+        title="检查OSPF路由数量",
+        command="show ip route ospf | count",
+        adapter_type=DeviceProtocol.ssh,
+        risk_level=RiskLevel.low,
+        status=CommandStatus.running,
+    )
+    store.add_command(command)
+
+    await orchestrator._record_command_output(
+        _PassiveAdapter(),
+        command,
+        "/bin/sh: line 1: count: command not found",
+    )
+
+    saved = store.get_command(session.id, command.id)
+    assert saved.status == CommandStatus.failed
+    assert "command not found" in (saved.error or "").lower()
+
+    evidences = store.list_evidence(session.id)
+    assert evidences
+    assert evidences[-1].category == "command_error"

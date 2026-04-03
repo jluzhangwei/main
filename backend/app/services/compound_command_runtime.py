@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
+import os
 import re
 from datetime import datetime
 from typing import Any, Callable
@@ -25,7 +27,18 @@ async def run_compound_command_batch(
 
     combined = " ; ".join(get_command_text(command).strip() for command in commands if get_command_text(command).strip())
     try:
-        output = await _maybe_await(adapter.run_command(combined))
+        timeout = float(os.getenv("COMMAND_EXECUTION_TIMEOUT", "20"))
+        if timeout > 0:
+            output = await asyncio.wait_for(_maybe_await(adapter.run_command(combined)), timeout=timeout)
+        else:
+            output = await _maybe_await(adapter.run_command(combined))
+    except asyncio.TimeoutError:
+        failed_at = now_factory()
+        base_error = f"Command execution timeout after {timeout:.0f}s"
+        for idx, command in enumerate(commands):
+            error = base_error if idx == 0 else f"{base_error} (skipped subsequent command in same batch)"
+            await _maybe_await(mark_failed(command, error, failed_at))
+        raise TimeoutError(base_error)
     except Exception as exc:
         failed_at = now_factory()
         base_error = str(exc)

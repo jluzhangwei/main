@@ -1957,7 +1957,9 @@ class ConversationOrchestrator:
         apply_device_profile_to_session_store(self.store, command.session_id, parsed.device_profile)
 
         command.output = output
-        command.status = CommandStatus.succeeded
+        command_failed = parsed.category == "command_error"
+        command.status = CommandStatus.failed if command_failed else CommandStatus.succeeded
+        command.error = str(parsed.parsed_data.get("reason") or parsed.conclusion or "Command execution failed").strip() if command_failed else None
         command.completed_at = now_utc()
         if command.started_at:
             command.duration_ms = max(0, int((command.completed_at - command.started_at).total_seconds() * 1000))

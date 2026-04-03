@@ -71,6 +71,16 @@ def test_parse_command_error_output_for_invalid_input():
     assert "failed" in conclusion.lower()
 
 
+def test_parse_command_error_output_for_shell_command_not_found():
+    output = "/bin/sh: line 1: count: command not found"
+    category, parsed, conclusion = parse_command_output("show ip route ospf | count", output)
+
+    assert category == "command_error"
+    assert parsed["cli_error"] is True
+    assert "command not found" in parsed["reason"].lower()
+    assert "failed" in conclusion.lower()
+
+
 def test_parse_version_extracts_device_name_from_uptime_line():
     output = """Cisco IOS Software
 R1 uptime is 3 weeks, 1 day

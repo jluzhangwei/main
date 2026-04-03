@@ -307,6 +307,9 @@ def _extract_cli_error(output: str) -> str | None:
         "error: wrong parameter",
         "error: incomplete command",
         "unknown command",
+        "command not found",
+        "is not recognized as an internal or external command",
+        "syntax error near unexpected token",
         "invalid input detected",
         "% invalid input",
         "invalid input",
@@ -316,7 +319,14 @@ def _extract_cli_error(output: str) -> str | None:
 
     for line in output.splitlines():
         normalized = line.lower()
-        if "error:" in normalized or "invalid input" in normalized or "unknown command" in normalized:
+        if (
+            "error:" in normalized
+            or "invalid input" in normalized
+            or "unknown command" in normalized
+            or "command not found" in normalized
+            or "is not recognized as an internal or external command" in normalized
+            or "syntax error near unexpected token" in normalized
+        ):
             return line.strip()
     return "CLI command parsing failed"
 
