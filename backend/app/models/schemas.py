@@ -270,6 +270,7 @@ class LLMConfigResponse(BaseModel):
     failover_enabled: bool = True
     batch_execution_enabled: bool = True
     model_candidates: list[str] = Field(default_factory=list)
+    deepseek_enabled: bool = False
     nvidia_enabled: bool = False
     last_error: Optional[str] = None
     last_error_code: Optional[str] = None

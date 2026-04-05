@@ -1396,6 +1396,23 @@ h6 {
   gap: 8px;
 }
 
+.ai-setting-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.ai-setting-field {
+  display: grid;
+  gap: 6px;
+}
+
+.ai-setting-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
 .ai-prompt-panel {
   display: grid;
   grid-template-rows: auto auto auto minmax(0, 1fr);
@@ -1654,6 +1671,109 @@ h6 {
 
 .keyhub-layout .detail-pre {
   font-size: 11px;
+}
+
+.prompt-policy-group {
+  display: grid;
+  gap: 10px;
+}
+
+.prompt-policy-group + .prompt-policy-group {
+  margin-top: 14px;
+}
+
+.prompt-policy-group-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.prompt-policy-group-head strong {
+  display: block;
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.prompt-policy-group-head .muted {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.prompt-policy-group-count {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #f4f7ff;
+  border: 1px solid rgba(67, 97, 238, 0.16);
+  color: #35518a;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.prompt-policy-group-list {
+  display: grid;
+  gap: 8px;
+}
+
+.prompt-policy-item-head {
+  display: grid;
+  gap: 6px;
+}
+
+.prompt-policy-item-head strong {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.prompt-policy-item-desc {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.prompt-policy-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.prompt-policy-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 1;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.prompt-policy-tag-node {
+  background: #eef5ff;
+  color: #34558f;
+  border-color: rgba(56, 110, 231, 0.16);
+}
+
+.prompt-policy-tag-type {
+  background: #f8f4ff;
+  color: #61459a;
+  border-color: rgba(104, 72, 186, 0.14);
+}
+
+.prompt-policy-tag-scope {
+  background: #f3faf7;
+  color: #2f6a4f;
+  border-color: rgba(46, 140, 95, 0.14);
 }
 
 .keyhub-template-item {

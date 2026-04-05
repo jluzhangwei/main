@@ -145,6 +145,16 @@ class ConversationOrchestrator:
                 "若仍需继续执行，结论中应包含“建议执行/修复/打开/变更”；"
                 "若任务已闭环，结论中应包含“已完成/无需”。"
             ),
+            "runtime_route_delivery_closure_policy": (
+                "运行时路由传递闭环策略："
+                "当问题明确为设备A收不到设备B的目标前缀/网段路由时，若只确认了接收端未学到该前缀，仍不能直接收口；"
+                "必须继续核实源端是否存在该前缀，以及是否通过目标协议发布/重分发该前缀。"
+            ),
+            "runtime_multi_run_rca_root_cause_policy": (
+                "多设备RCA根因表达策略："
+                "若原始回显已确认源端存在目标前缀、接收端未学到该前缀、且源端目标协议数据库/路由表未见该前缀，"
+                "则根因表达应收敛为更可能未通过该协议发布该前缀；未确认的仅是具体发布机制（如network、redistribute或策略过滤）。"
+            ),
             "runtime_sop_archive_policy": self.sop_archive.prompt_policy(),
         }
 

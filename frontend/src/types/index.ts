@@ -104,6 +104,7 @@ export type LLMStatus = {
   failover_enabled?: boolean
   batch_execution_enabled?: boolean
   model_candidates?: string[]
+  deepseek_enabled?: boolean
   nvidia_enabled?: boolean
   last_error?: string
   last_error_code?: string

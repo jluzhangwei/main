@@ -171,6 +171,18 @@ const MODEL_OPTIONS = [
   { value: 'gpt-5.4', label: 'GPT-5.4' },
 ]
 
+type LlmVendor = 'deepseek' | 'nvidia'
+
+const LLM_VENDOR_OPTIONS = [
+  { value: 'deepseek', label: 'DeepSeek' },
+  { value: 'nvidia', label: 'NVIDIA' },
+] satisfies Array<{ value: LlmVendor; label: string }>
+
+const LLM_VENDOR_MODEL_OPTIONS: Record<LlmVendor, Array<{ value: string; label: string }>> = {
+  deepseek: MODEL_OPTIONS.filter((option) => option.value.startsWith('deepseek-')),
+  nvidia: MODEL_OPTIONS.filter((option) => !option.value.startsWith('deepseek-')),
+}
+
 const SOP_CURRENT_LOGIC_ITEMS = [
   '按用户问题关键词匹配 SOP 档案候选，例如“上次 / 历史 / 闪断 / OSPF”。',
   '命中的 SOP 不会直接执行，而是被整理成 planner_context 注入给 AI。',
@@ -353,9 +365,10 @@ function App() {
 
   const [llmStatus, setLlmStatus] = useState<LLMStatus | null>(null)
   const [llmPromptPolicy, setLlmPromptPolicy] = useState<LLMPromptPolicy | null>(null)
-  const [apiKeyInput, setApiKeyInput] = useState('')
-  const [nvidiaApiKeyInput, setNvidiaApiKeyInput] = useState('')
+  const [llmVendorInput, setLlmVendorInput] = useState<LlmVendor>('deepseek')
+  const [llmSettingsApiKeyInput, setLlmSettingsApiKeyInput] = useState('')
   const [llmModelInput, setLlmModelInput] = useState('deepseek-chat')
+  const [llmSettingsModelInput, setLlmSettingsModelInput] = useState('deepseek-chat')
   const [llmFailoverEnabled, setLlmFailoverEnabled] = useState(true)
   const [llmBatchExecutionEnabled, setLlmBatchExecutionEnabled] = useState(true)
   const [llmSaving, setLlmSaving] = useState(false)
@@ -1292,8 +1305,13 @@ function App() {
       try {
         const status = await getLlmStatus()
         setLlmStatus(status)
+        const nextVendor = inferLlmVendor(status)
+        setLlmVendorInput(nextVendor)
         if (status.model) {
           setLlmModelInput(status.model)
+          setLlmSettingsModelInput(resolveVendorModel(nextVendor, status.model))
+        } else {
+          setLlmSettingsModelInput(resolveVendorModel(nextVendor))
         }
         if (typeof status.failover_enabled === 'boolean') {
           setLlmFailoverEnabled(status.failover_enabled)
@@ -1939,24 +1957,28 @@ function App() {
   }
 
   async function handleSaveApiKey() {
-    const primaryKey = apiKeyInput.trim()
-    const nvidiaKey = nvidiaApiKeyInput.trim()
-    if (!primaryKey && !nvidiaKey) {
-      antMessage.warning('请至少输入一个 API Key')
+    const apiKey = llmSettingsApiKeyInput.trim()
+    if (!apiKey) {
+      antMessage.warning('请输入 API Key')
       return
     }
 
     setLlmSaving(true)
     try {
+      const nextModel = resolveVendorModel(llmVendorInput, llmSettingsModelInput)
       const status = await configureLlm({
-        apiKey: primaryKey || undefined,
-        nvidiaApiKey: nvidiaKey || undefined,
-        model: llmModelInput,
+        apiKey: llmVendorInput === 'deepseek' ? apiKey : undefined,
+        nvidiaApiKey: llmVendorInput === 'nvidia' ? apiKey : undefined,
+        model: nextModel,
         failoverEnabled: llmFailoverEnabled,
         batchExecutionEnabled: llmBatchExecutionEnabled,
-        modelCandidates: resolveModelCandidates(llmModelInput, llmStatus?.model_candidates),
+        modelCandidates: resolveModelCandidates(nextModel, llmStatus?.model_candidates),
       })
       setLlmStatus(status)
+      const savedVendor = inferLlmVendor(status)
+      setLlmVendorInput(savedVendor)
+      setLlmModelInput(status.model)
+      setLlmSettingsModelInput(resolveVendorModel(savedVendor, status.model))
       if (typeof status.failover_enabled === 'boolean') {
         setLlmFailoverEnabled(status.failover_enabled)
       }
@@ -1964,8 +1986,7 @@ function App() {
         setLlmBatchExecutionEnabled(status.batch_execution_enabled)
       }
       await refreshPromptPolicy()
-      setApiKeyInput('')
-      setNvidiaApiKeyInput('')
+      setLlmSettingsApiKeyInput('')
       antMessage.success(status.enabled ? '大模型已启用，Key 已保存到服务器' : '大模型已禁用')
     } catch (error) {
       antMessage.error((error as Error).message)
@@ -1988,6 +2009,9 @@ function App() {
     try {
       const status = await configureLlm({ model: nextModel })
       setLlmStatus(status)
+      const nextVendor = inferLlmVendor(status)
+      setLlmVendorInput(nextVendor)
+      setLlmSettingsModelInput(resolveVendorModel(nextVendor, status.model))
       if (typeof status.failover_enabled === 'boolean') {
         setLlmFailoverEnabled(status.failover_enabled)
       }
@@ -2009,6 +2033,10 @@ function App() {
     try {
       const status = await deleteLlmConfig()
       setLlmStatus(status)
+      const nextVendor = inferLlmVendor(status)
+      setLlmVendorInput(nextVendor)
+      setLlmModelInput(status.model)
+      setLlmSettingsModelInput(resolveVendorModel(nextVendor, status.model))
       if (typeof status.failover_enabled === 'boolean') {
         setLlmFailoverEnabled(status.failover_enabled)
       }
@@ -2016,8 +2044,7 @@ function App() {
         setLlmBatchExecutionEnabled(status.batch_execution_enabled)
       }
       await refreshPromptPolicy()
-      setApiKeyInput('')
-      setNvidiaApiKeyInput('')
+      setLlmSettingsApiKeyInput('')
       antMessage.success('已删除服务器保存的 Key')
     } catch (error) {
       antMessage.error((error as Error).message)
@@ -5097,6 +5124,7 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
                 <div className="kv"><span>状态</span><strong>{llmStatus?.enabled ? '已启用' : '未启用'}</strong></div>
                 <div className="kv"><span>主模型</span><strong>{llmStatus?.model || '-'}</strong></div>
                 <div className="kv"><span>当前生效模型</span><strong>{llmStatus?.active_model || llmStatus?.model || '-'}</strong></div>
+                <div className="kv"><span>DeepSeek Key</span><strong>{llmStatus?.deepseek_enabled ? '已配置' : '未配置'}</strong></div>
                 <div className="kv"><span>NVIDIA Key</span><strong>{llmStatus?.nvidia_enabled ? '已配置' : '未配置'}</strong></div>
                 <div className="kv"><span>自动切换</span><strong>{llmFailoverEnabled ? '开启' : '关闭'}</strong></div>
                 <div className="kv"><span>批量执行提示</span><strong>{llmBatchExecutionEnabled ? '开启' : '关闭'}</strong></div>
@@ -5118,24 +5146,39 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
                     {llmStatus.last_error}
                   </div>
                 )}
-                <Input.Password
-                  value={apiKeyInput}
-                  onChange={(event) => setApiKeyInput(event.target.value)}
-                  placeholder="输入 DeepSeek API Key (sk-...)"
-                />
-                <Input.Password
-                  style={{ marginTop: 8 }}
-                  value={nvidiaApiKeyInput}
-                  onChange={(event) => setNvidiaApiKeyInput(event.target.value)}
-                  placeholder="输入 NVIDIA API Key"
-                />
-                <Select
-                  style={{ marginTop: 8 }}
-                  value={llmModelInput}
-                  options={MODEL_OPTIONS}
-                  onChange={(value) => void handleModelChange(value)}
-                  disabled={llmSaving || llmControlsLocked}
-                />
+                <div className="ai-setting-form">
+                  <div className="ai-setting-field">
+                    <span className="ai-setting-label">厂商</span>
+                    <Select
+                      value={llmVendorInput}
+                      options={LLM_VENDOR_OPTIONS}
+                      onChange={(value) => {
+                        const nextVendor = value as LlmVendor
+                        setLlmVendorInput(nextVendor)
+                        setLlmSettingsModelInput((current) => resolveVendorModel(nextVendor, current))
+                        setLlmSettingsApiKeyInput('')
+                      }}
+                      disabled={llmSaving || llmControlsLocked}
+                    />
+                  </div>
+                  <div className="ai-setting-field">
+                    <span className="ai-setting-label">大模型</span>
+                    <Select
+                      value={resolveVendorModel(llmVendorInput, llmSettingsModelInput)}
+                      options={LLM_VENDOR_MODEL_OPTIONS[llmVendorInput]}
+                      onChange={(value) => setLlmSettingsModelInput(value)}
+                      disabled={llmSaving || llmControlsLocked}
+                    />
+                  </div>
+                  <div className="ai-setting-field">
+                    <span className="ai-setting-label">API Key</span>
+                    <Input.Password
+                      value={llmSettingsApiKeyInput}
+                      onChange={(event) => setLlmSettingsApiKeyInput(event.target.value)}
+                      placeholder={llmVendorInput === 'deepseek' ? '输入 DeepSeek API Key (sk-...)' : '输入 NVIDIA API Key'}
+                    />
+                  </div>
+                </div>
                 <div className="ai-setting-actions">
                   <Button type="primary" loading={llmSaving} onClick={() => void handleSaveApiKey()}>
                     保存 API Key
@@ -5164,12 +5207,45 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
                 </div>
                 <div className="prompt-policy-list">
                   {llmPromptPolicy && Object.keys(llmPromptPolicy.prompts || {}).length > 0 ? (
-                    Object.entries(llmPromptPolicy.prompts).map(([key, value]) => (
-                      <details key={key} className="prompt-policy-item">
-                        <summary>{formatPromptKey(key)}</summary>
-                        <pre>{value}</pre>
-                      </details>
-                    ))
+                    PROMPT_POLICY_GROUP_ORDER.map((group) => {
+                      const entries = Object.entries(llmPromptPolicy.prompts || {}).filter(([key]) => {
+                        const descriptor = describePromptPolicy(key)
+                        return descriptor.group === group.id
+                      })
+                      if (entries.length === 0) return null
+                      return (
+                        <section key={group.id} className="prompt-policy-group">
+                          <div className="prompt-policy-group-head">
+                            <div>
+                              <strong>{group.title}</strong>
+                              <p className="muted">{group.description}</p>
+                            </div>
+                            <span className="prompt-policy-group-count">{entries.length} 项</span>
+                          </div>
+                          <div className="prompt-policy-group-list">
+                            {entries.map(([key, value]) => {
+                              const descriptor = describePromptPolicy(key)
+                              return (
+                                <details key={key} className="prompt-policy-item">
+                                  <summary>
+                                    <div className="prompt-policy-item-head">
+                                      <strong>{descriptor.label}</strong>
+                                      <div className="prompt-policy-tags">
+                                        <span className="prompt-policy-tag prompt-policy-tag-node">节点：{descriptor.node}</span>
+                                        <span className="prompt-policy-tag prompt-policy-tag-type">类型：{descriptor.kind}</span>
+                                        <span className="prompt-policy-tag prompt-policy-tag-scope">范围：{descriptor.scope}</span>
+                                      </div>
+                                    </div>
+                                    <span className="prompt-policy-item-desc">{descriptor.description}</span>
+                                  </summary>
+                                  <pre>{value}</pre>
+                                </details>
+                              )
+                            })}
+                          </div>
+                        </section>
+                      )
+                    })
                   ) : (
                     <p className="muted">当前系统未返回可展示的提示词模板。</p>
                   )}
@@ -5231,6 +5307,30 @@ function statusClass(status: string): string {
 }
 
 function formatPromptKey(key: string): string {
+  return describePromptPolicy(key).label
+}
+
+type PromptPolicyGroupId = 'decision' | 'summary' | 'runtime_template' | 'runtime_policy' | 'knowledge' | 'other'
+
+type PromptPolicyDescriptor = {
+  label: string
+  group: PromptPolicyGroupId
+  node: string
+  kind: string
+  scope: string
+  description: string
+}
+
+const PROMPT_POLICY_GROUP_ORDER: Array<{ id: PromptPolicyGroupId; title: string; description: string }> = [
+  { id: 'decision', title: 'AI 规划提示词', description: '控制 AI 在诊断过程中如何决定下一轮命令。' },
+  { id: 'summary', title: '总结与审校提示词', description: '控制最终结论如何组织、审阅与改写。' },
+  { id: 'runtime_template', title: '运行时模板', description: '运行过程中拼装给 AI 的上下文模板。' },
+  { id: 'runtime_policy', title: '运行时策略', description: '执行期约束与收口规则，帮助解释系统为什么这样调用 AI。' },
+  { id: 'knowledge', title: '知识与旁挂策略', description: 'SOP 等知识库如何进入 AI 参考链路。' },
+  { id: 'other', title: '其他', description: '未归类的提示项。' },
+]
+
+function describePromptPolicy(key: string): PromptPolicyDescriptor {
   const map: Record<string, string> = {
     next_step_history: '多轮对话决策提示词',
     next_step_default: '默认决策提示词',
@@ -5243,11 +5343,169 @@ function formatPromptKey(key: string): string {
     runtime_batch_confirm_policy: '运行时批量确认策略',
     runtime_output_compaction_policy: '运行时输出压缩策略',
     runtime_permission_precheck_policy: '运行时权限预检策略',
+    runtime_baseline_collection_policy: '运行时基线采集策略',
+    runtime_vendor_command_family_policy: '运行时厂商命令家族策略',
+    runtime_history_forensics_policy: '运行时历史取证策略',
     runtime_mode_scope_policy: '运行时模式范围策略',
     runtime_capability_precheck_policy: '运行时命令能力预检策略',
     runtime_final_action_marker_policy: '运行时结论动作词策略',
+    runtime_route_delivery_closure_policy: '运行时路由传递闭环策略',
+    runtime_multi_run_rca_root_cause_policy: '多设备RCA根因表达策略',
+    runtime_sop_archive_policy: '运行时 SOP 参考策略',
   }
-  return map[key] || key
+  const baseLabel = map[key] || key
+  const descriptorMap: Record<string, Omit<PromptPolicyDescriptor, 'label'>> = {
+    next_step_history: {
+      group: 'decision',
+      node: 'AI规划',
+      kind: '提示词',
+      scope: '单设备/多设备',
+      description: '用于会话内多轮诊断，要求 AI 结合已有上下文决定下一步命令或结束。',
+    },
+    next_step_default: {
+      group: 'decision',
+      node: 'AI规划',
+      kind: '提示词',
+      scope: '单设备/多设备',
+      description: '用于默认决策场景，约束 AI 在证据不足时继续排查，在证据充分时收口。',
+    },
+    summary_primary: {
+      group: 'summary',
+      node: '总结输出',
+      kind: '提示词',
+      scope: '单设备',
+      description: '控制主结论如何围绕原始回显生成根因、影响范围和建议。',
+    },
+    summary_review: {
+      group: 'summary',
+      node: '总结输出',
+      kind: '提示词',
+      scope: '单设备',
+      description: '对诊断总结做二次审稿，防止结论超出证据。',
+    },
+    summary_rewrite: {
+      group: 'summary',
+      node: '总结输出',
+      kind: '提示词',
+      scope: '单设备',
+      description: '当总结不够贴证据时，约束模型重写表达而不改变方向。',
+    },
+    runtime_session_header_template: {
+      group: 'runtime_template',
+      node: '上下文构建',
+      kind: '模板',
+      scope: '单设备',
+      description: '定义每轮提交给 AI 的会话头信息，包含目标、模式与当前请求。',
+    },
+    runtime_command_result_template: {
+      group: 'runtime_template',
+      node: '设备执行结果回流',
+      kind: '模板',
+      scope: '单设备',
+      description: '定义命令执行结果如何回流给 AI，包括原始命令、改写命令和执行状态。',
+    },
+    runtime_finalization_prompt_template: {
+      group: 'runtime_template',
+      node: '总结输出',
+      kind: '模板',
+      scope: '单设备',
+      description: '在系统要求直接收口时，限制 AI 只输出最终结论而不再继续规划。',
+    },
+    runtime_batch_confirm_policy: {
+      group: 'runtime_policy',
+      node: '策略判定',
+      kind: '运行时策略',
+      scope: '单设备',
+      description: '说明批量命令中“先执行、后确认”的处理顺序。',
+    },
+    runtime_output_compaction_policy: {
+      group: 'runtime_policy',
+      node: 'AI规划',
+      kind: '运行时策略',
+      scope: '单设备',
+      description: '约束 AI 优先生成更短、更聚焦的查询命令，减少无效大输出。',
+    },
+    runtime_permission_precheck_policy: {
+      group: 'runtime_policy',
+      node: '策略判定',
+      kind: '运行时策略',
+      scope: '单设备',
+      description: '规定在可能受限的命令前先检查权限与模式，避免盲目试错。',
+    },
+    runtime_baseline_collection_policy: {
+      group: 'runtime_policy',
+      node: '基础采集',
+      kind: '运行时策略',
+      scope: '单设备',
+      description: '规定首轮优先采集版本、时间和权限等基线信息，再交给 AI 规划。',
+    },
+    runtime_vendor_command_family_policy: {
+      group: 'runtime_policy',
+      node: 'AI规划',
+      kind: '运行时策略',
+      scope: '单设备',
+      description: '约束已识别厂商后尽量保持命令家族一致，减少 show/display 来回切换。',
+    },
+    runtime_history_forensics_policy: {
+      group: 'runtime_policy',
+      node: 'AI规划',
+      kind: '运行时策略',
+      scope: '单设备',
+      description: '当问题带有历史/闪断诉求时，优先要求日志和历史证据，而不是只看当前状态。',
+    },
+    runtime_mode_scope_policy: {
+      group: 'runtime_policy',
+      node: '策略判定',
+      kind: '运行时策略',
+      scope: '单设备',
+      description: '限定 diagnosis/query/config 三种模式下允许执行的命令范围。',
+    },
+    runtime_capability_precheck_policy: {
+      group: 'runtime_policy',
+      node: '策略判定',
+      kind: '运行时策略',
+      scope: '单设备',
+      description: '说明命令 rewrite/block 学习规则在执行前如何生效。',
+    },
+    runtime_final_action_marker_policy: {
+      group: 'runtime_policy',
+      node: '总结输出',
+      kind: '运行时策略',
+      scope: '单设备',
+      description: '要求最终结论明确标出是“已完成”还是“仍需执行动作”。',
+    },
+    runtime_route_delivery_closure_policy: {
+      group: 'runtime_policy',
+      node: '多设备RCA',
+      kind: '运行时策略',
+      scope: '多设备',
+      description: '针对“设备A收不到设备B前缀”的问题，限制在源端前缀存在性和发布性未核实前不能过早收口。',
+    },
+    runtime_multi_run_rca_root_cause_policy: {
+      group: 'runtime_policy',
+      node: '多设备RCA',
+      kind: '运行时策略',
+      scope: '多设备',
+      description: '约束多设备 RCA 在证据已支持某个因果方向时，root cause 要更清晰，不要被笼统“不确定”冲淡。',
+    },
+    runtime_sop_archive_policy: {
+      group: 'knowledge',
+      node: 'AI规划',
+      kind: '运行时策略',
+      scope: '单设备/多设备',
+      description: '说明 SOP 只作为旁挂知识参考，不会被系统自动执行。',
+    },
+  }
+  const descriptor = descriptorMap[key]
+  if (descriptor) return { label: baseLabel, ...descriptor }
+  return {
+    label: baseLabel,
+    group: 'other',
+    node: '未分类',
+    kind: '提示词/策略',
+    scope: '未标注',
+    description: '当前策略项尚未完成分类说明。',
+  }
 }
 
 function formatLlmUnavailableReason(reason?: string): string {
@@ -5259,6 +5517,20 @@ function formatLlmUnavailableReason(reason?: string): string {
   if (reason === 'provider_unavailable') return '模型服务暂不可用'
   if (reason === 'provider_http_error') return '模型服务返回异常状态'
   return reason
+}
+
+function inferLlmVendor(input?: Pick<LLMStatus, 'model' | 'deepseek_enabled' | 'nvidia_enabled'> | null): LlmVendor {
+  const model = String(input?.model || '').trim().toLowerCase()
+  if (model.startsWith('deepseek-')) return 'deepseek'
+  if (input?.nvidia_enabled && !input?.deepseek_enabled) return 'nvidia'
+  return 'deepseek'
+}
+
+function resolveVendorModel(vendor: LlmVendor, currentModel?: string): string {
+  const options = LLM_VENDOR_MODEL_OPTIONS[vendor]
+  const current = String(currentModel || '').trim()
+  if (options.some((option) => option.value === current)) return current
+  return options[0]?.value || 'deepseek-chat'
 }
 
 function resolveModelCandidates(currentModel: string, existing?: string[]): string[] {

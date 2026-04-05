@@ -328,6 +328,7 @@ class DeepSeekDiagnoser:
             "failover_enabled": self.failover_enabled,
             "batch_execution_enabled": self.batch_execution_enabled,
             "model_candidates": list(self.model_candidates),
+            "deepseek_enabled": bool(self.api_key),
             "nvidia_enabled": bool(self.nvidia_api_key),
             "last_error": self.last_error,
             "last_error_code": self.last_error_code,
