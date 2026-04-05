@@ -238,3 +238,33 @@ def test_history_messages_are_capped_and_clipped():
     normalized = diagnoser._normalize_history_messages(messages)
     assert len(normalized) == 12
     assert all(len(item["content"]) <= 1625 for item in normalized)
+
+
+def test_final_with_missing_evidence_and_actionable_commands_is_promoted():
+    diagnoser = DeepSeekDiagnoser()
+    plan = {
+        "decision": "final",
+        "mode": "diagnosis",
+        "root_cause": "证据不足/不确定。尚未执行源端前缀发布性验证，无法确定具体根因。",
+        "recommendation": (
+            "1. 在设备192.168.0.103上执行'show ip ospf database'。"
+            "2. 在设备192.168.0.103上执行'show run section ospf'。"
+        ),
+    }
+    promoted = diagnoser._promote_final_to_run_command_if_actionable(plan, iteration=2, max_iterations=6)
+    assert promoted is not None
+    assert promoted["plan"]["decision"] == "run_command"
+    assert len(promoted["plan"]["commands"]) == 2
+    assert promoted["plan"]["commands"][0]["command"] == "show ip ospf database"
+
+
+def test_final_without_actionable_commands_is_not_promoted():
+    diagnoser = DeepSeekDiagnoser()
+    plan = {
+        "decision": "final",
+        "mode": "diagnosis",
+        "root_cause": "证据不足/不确定。尚未执行关键验证。",
+        "recommendation": "建议联系管理员进一步检查。",
+    }
+    promoted = diagnoser._promote_final_to_run_command_if_actionable(plan, iteration=2, max_iterations=6)
+    assert promoted is None

@@ -3349,6 +3349,100 @@ class JobV2Orchestrator:
             "history_evidence_sufficient": bool(flap_hosts),
         }
 
+    def _has_rca_followup_attempt(self, job: Job) -> bool:
+        return any(item.event_type == "rca_followup_started" for item in self._events.get(job.id, []))
+
+    def _extract_rca_followup_commands(self, job: Job, recommendation_text: str) -> list[tuple[JobDevice, str]]:
+        extractor = getattr(self.deepseek_diagnoser, "_extract_actionable_commands_from_text", None)
+        if extractor is None:
+            return []
+        extracted = extractor(recommendation_text)
+        if not extracted:
+            return []
+        segments = [
+            segment.strip()
+            for segment in re.split(r"[\n。；;]+", str(recommendation_text or ""))
+            if segment.strip()
+        ]
+        plans: list[tuple[JobDevice, str]] = []
+        seen: set[tuple[str, str]] = set()
+        plural_markers = ("双方", "分别", "两台设备", "两端", "both devices", "both", "each device", "分别执行")
+        for _title, command in extracted:
+            segment = next((line for line in segments if command in line), recommendation_text)
+            mentioned = [device for device in job.devices if str(device.host or "") and str(device.host) in segment]
+            lowered_segment = str(segment or "").lower()
+            target_devices: list[JobDevice]
+            if mentioned:
+                target_devices = mentioned
+            elif any(marker in lowered_segment for marker in plural_markers):
+                target_devices = list(job.devices)
+            else:
+                target_devices = []
+            for device in target_devices:
+                key = (str(device.id), str(command))
+                if key in seen:
+                    continue
+                seen.add(key)
+                plans.append((device, command))
+        return plans[:6]
+
+    async def _execute_rca_followup_commands(self, job_id: str, commands: list[tuple[JobDevice, str]]) -> bool:
+        if not commands:
+            return False
+        async with self._state_lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return False
+            if self._has_rca_followup_attempt(job):
+                return False
+            representative = job.devices[0] if job.devices else None
+            self._append_event_with_trace(
+                job,
+                "rca_followup_started",
+                {"count": len(commands)},
+                step_type="session_control",
+                title="多设备 RCA 补充验证开始",
+                status="running",
+                detail=f"count={len(commands)}",
+                detail_payload={
+                    "count": len(commands),
+                    "commands": [{"host": device.host, "command": command} for device, command in commands],
+                },
+                device=representative,
+            )
+            self._save_state()
+        for index, (device, command_text) in enumerate(commands, start=1):
+            step_no = await self._allocate_next_step_no(job_id)
+            await self._run_device_command(
+                job_id,
+                device.id,
+                title=f"RCA补充验证 #{index}",
+                command_text=command_text,
+                step_no=step_no,
+                action_group_id=None,
+                phase="collect",
+            )
+        async with self._state_lock:
+            job = self._jobs.get(job_id)
+            if job is not None:
+                representative = job.devices[0] if job.devices else None
+                self._append_event_with_trace(
+                    job,
+                    "rca_followup_completed",
+                    {"count": len(commands)},
+                    step_type="session_control",
+                    title="多设备 RCA 补充验证完成",
+                    status="succeeded",
+                    detail=f"count={len(commands)}",
+                    detail_payload={
+                        "count": len(commands),
+                        "commands": [{"host": device.host, "command": command} for device, command in commands],
+                    },
+                    device=representative,
+                )
+                self._save_state()
+        return True
+
     async def _llm_refine_rca(self, job_id: str) -> None:
         if not self.deepseek_diagnoser.enabled:
             return
@@ -3396,6 +3490,16 @@ class JobV2Orchestrator:
                     "请优先总结每台设备的实际状态、是否正常、异常点在哪里；"
                     "只有在证据明确指向单一源头时，root_device_host 才可填写，否则必须为空。"
                     "如果证据不足，必须明确写“证据不足/不确定”。"
+                    "summary/root_cause 必须先写已确认事实，再写尚未确认的环节；"
+                    "涉及多设备时，逐设备事实必须逐设备锚定；禁止把单侧证据扩写成‘双方/两端/所有设备’共同状态。"
+                    "recommendation 必须直接对应当前缺失证据的核查动作，避免泛泛地写“检查配置/检查网络”。"
+                    "当问题明确是‘设备A收不到设备B的目标前缀/网段路由’时，"
+                    "若原始命令只证明了邻接正常、且接收端未学到该前缀，则仍不能视为闭环；"
+                    "必须进一步确认源端是否存在该前缀、以及是否通过目标协议发布/重分发该前缀，"
+                    "否则只能明确写出‘尚未执行源端前缀存在性/发布性验证’，不得把任务表述成已找到根因。"
+                    "如果原始回显已经确认源端存在该前缀，且源端目标协议数据库/目标协议路由表中未见该前缀，"
+                    "必须把这两条作为已确认事实写出；可以表述为‘当前证据未显示该前缀被目标协议发布’，"
+                    "但不得把它扩写成未被原始回显直接支持的具体配置错误。"
                     "输出字段: summary, recommendation, confidence, root_device_host, root_cause, impact_scope。"
                     "confidence 范围 0~1。"
                 )
@@ -3407,6 +3511,17 @@ class JobV2Orchestrator:
                     "如果当前任务不是历史/闪断类问题，则禁止把结论写成“历史证据不足”或“上次闪断原因不明”。"
                     "如果任务本身是历史/闪断类问题，而 history_evidence.history_evidence_sufficient=false，"
                     "则禁止输出明确根因设备；root_device_host 必须为空，root_cause/summary 必须明确说明历史证据不足。"
+                    "summary/root_cause 必须先写已确认事实，再写仍未确认的关键证据；"
+                    "涉及多设备时，逐设备事实必须逐设备锚定；禁止把单侧证据扩写成‘双方/两端/所有设备’共同状态。"
+                    "禁止只列笼统可能原因。若写可能性，必须直接锚定到当前缺失证据。"
+                    "recommendation 必须直接对应缺失证据的下一步核查动作。"
+                    "当问题明确是‘设备A收不到设备B的目标前缀/网段路由’时，"
+                    "若原始命令只证明了邻接正常、且接收端未学到该前缀，则仍不能视为根因闭环；"
+                    "必须进一步确认源端是否存在该前缀、以及是否通过目标协议发布/重分发该前缀，"
+                    "否则只能明确写出‘尚未执行源端前缀存在性/发布性验证’，不得把任务表述成已找到根因。"
+                    "如果原始回显已经确认源端存在该前缀，且源端目标协议数据库/目标协议路由表中未见该前缀，"
+                    "必须把这两条作为已确认事实写出；可以表述为‘当前证据未显示该前缀被目标协议发布’，"
+                    "但不得把它扩写成未被原始回显直接支持的具体配置错误。"
                     "输出字段: summary, recommendation, confidence, root_device_host, root_cause, impact_scope。"
                     "confidence 范围 0~1。"
                 )
@@ -3418,6 +3533,16 @@ class JobV2Orchestrator:
                     "This task is primarily a status/health check, so do not force a root device. "
                     "Summarize actual device status first; only set root_device_host when evidence clearly identifies a single source. "
                     "If evidence is insufficient, explicitly say uncertain/insufficient evidence. "
+                    "summary/root_cause must first state confirmed facts, then state what remains unverified. "
+                    "For multi-device statements, anchor each fact to the specific device(s); do not expand single-sided evidence into a bilateral/all-devices claim. "
+                    "recommendation must directly map to the missing evidence check instead of generic advice. "
+                    "When the problem explicitly states that device A does not receive a target prefix/network from device B, "
+                    "proof of healthy adjacency plus absence of the prefix on the receiving device is still not a closed root-cause loop. "
+                    "You must additionally verify, from raw command outputs, whether the source device actually has the prefix and whether it advertises/redistributes it via the target protocol; "
+                    "otherwise explicitly say that source-side prefix existence/advertisement verification was not executed, and do not present the task as root-caused. "
+                    "If raw outputs already confirm that the source device has the prefix while the source-side target-protocol database/route table does not show it, "
+                    "you must state both as confirmed facts; you may say that current evidence does not show the prefix being advertised by the target protocol, "
+                    "but you must not expand that into a specific configuration error unless raw outputs directly support it. "
                     "Fields: summary, recommendation, confidence, root_device_host, root_cause, impact_scope. "
                     "confidence must be between 0 and 1."
                 )
@@ -3429,6 +3554,17 @@ class JobV2Orchestrator:
                     "If the current task is not a historical/flap-oriented problem, do not frame the result as missing historical evidence or unknown prior flap cause. "
                     "If the task is historical/flap-oriented and history_evidence.history_evidence_sufficient=false, "
                     "you must not assign a root_device_host; root_cause and summary must explicitly state that historical evidence is insufficient. "
+                    "summary/root_cause must first state confirmed facts, then explicitly name the still-missing key evidence. "
+                    "For multi-device statements, anchor each fact to the specific device(s); do not expand single-sided evidence into a bilateral/all-devices claim. "
+                    "Do not output a broad speculative cause list unless each item is directly tied to missing evidence. "
+                    "recommendation must map directly to the missing evidence check. "
+                    "When the problem explicitly states that device A does not receive a target prefix/network from device B, "
+                    "proof of healthy adjacency plus absence of the prefix on the receiving device is still not a closed root-cause loop. "
+                    "You must additionally verify, from raw command outputs, whether the source device actually has the prefix and whether it advertises/redistributes it via the target protocol; "
+                    "otherwise explicitly say that source-side prefix existence/advertisement verification was not executed, and do not present the task as root-caused. "
+                    "If raw outputs already confirm that the source device has the prefix while the source-side target-protocol database/route table does not show it, "
+                    "you must state both as confirmed facts; you may say that current evidence does not show the prefix being advertised by the target protocol, "
+                    "but you must not expand that into a specific configuration error unless raw outputs directly support it. "
                     "Fields: summary, recommendation, confidence, root_device_host, root_cause, impact_scope. "
                     "confidence must be between 0 and 1."
                 )
@@ -3571,6 +3707,29 @@ class JobV2Orchestrator:
             job = self._jobs.get(job_id)
             if job is None:
                 return
+            should_continue = False
+            followup_commands: list[tuple[JobDevice, str]] = []
+            if not self._has_rca_followup_attempt(job):
+                combined_missing = "\n".join(
+                    part for part in (root_cause_text, summary_text, recommendation_text) if part
+                ).lower()
+                missing_markers = (
+                    "证据不足",
+                    "不确定",
+                    "未验证",
+                    "尚未执行",
+                    "缺失证据",
+                    "无法确定",
+                    "insufficient evidence",
+                    "uncertain",
+                    "not verified",
+                    "not executed",
+                    "missing evidence",
+                    "cannot determine",
+                )
+                if any(marker in combined_missing for marker in missing_markers):
+                    followup_commands = self._extract_rca_followup_commands(job, recommendation_text)
+                    should_continue = bool(followup_commands)
             history_summary = self._history_evidence_summary(job) if self._is_history_problem(job.problem) else None
             if job.rca_result is None:
                 job.rca_result = RCAResult(job_id=job.id)
@@ -3595,6 +3754,16 @@ class JobV2Orchestrator:
                         "Collect a longer protocol history window, adjacency change records, and link events before rerunning RCA."
                     )
 
+        if should_continue and followup_commands:
+            executed = await self._execute_rca_followup_commands(job_id, followup_commands)
+            if executed:
+                await self._llm_refine_rca(job_id)
+                return
+
+        async with self._state_lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return
             job.rca_result.summary = summary_text
             job.rca_result.recommendation = recommendation_text
             if root_cause_text:

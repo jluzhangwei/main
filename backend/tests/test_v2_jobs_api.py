@@ -259,6 +259,31 @@ def test_v2_filtered_ospf_no_match_does_not_create_missing_incident():
     assert not any(item.title == "ospf_neighbor_missing" for item in job.incidents)
 
 
+def test_v2_extract_rca_followup_commands_maps_recommendation_to_target_devices():
+    job = Job(
+        name="diag-job",
+        problem="192.168.0.102没有收到192.168.0.103的OSPF路由2.0.0.0/24，查一下原因",
+        mode=JobMode.diagnosis,
+        devices=[
+            JobDevice(id="dev-102", host="192.168.0.102", protocol="ssh"),
+            JobDevice(id="dev-103", host="192.168.0.103", protocol="ssh"),
+        ],
+    )
+
+    recommendation = (
+        "1. 在设备192.168.0.103上执行'show running-config | section ospf'。"
+        "2. 在设备192.168.0.103和192.168.0.102上分别执行'show ip ospf neighbor detail'。"
+    )
+
+    plans = routes.orchestrator_v2._extract_rca_followup_commands(job, recommendation)
+
+    assert [(device.host, command) for device, command in plans] == [
+        ("192.168.0.103", "show running-config | section ospf"),
+        ("192.168.0.102", "show ip ospf neighbor detail"),
+        ("192.168.0.103", "show ip ospf neighbor detail"),
+    ]
+
+
 def test_v2_history_evidence_summary_marks_missing_flap_logs_as_insufficient():
     job = Job(
         name="history-job",

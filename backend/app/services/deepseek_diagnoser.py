@@ -35,6 +35,25 @@ RAW_OUTPUT_GROUNDING_RULES = (
     "当原始回显与任何中间摘要不一致时，必须以原始回显为准。"
 )
 
+ROUTE_DELIVERY_CLOSURE_RULES = (
+    "当用户问题明确描述为‘设备A收不到设备B的某个目标前缀/网段路由’这类路由传递问题时，"
+    "在final前必须确保原始命令回显至少覆盖以下关键验证之一：源端是否存在该目标前缀；源端是否通过目标协议发布/重分发该前缀。"
+    "如果尚未覆盖上述关键验证，禁止把任务表述成‘已找到根因’；应继续返回run_command，或在final中明确写出‘尚未执行源端前缀存在性/发布性验证’，不得用笼统结论替代。"
+    "已确认邻接正常、且接收端未学习到目标前缀，只能说明传播链存在缺口；这不足以单独构成根因闭环。"
+    "如果原始回显已经确认‘源端存在该前缀’，且‘源端目标协议数据库/目标协议路由表中未见该前缀’，必须把这两条作为已确认事实明确写出。"
+    "在这种情况下，允许将‘当前证据未显示该前缀被目标协议发布’作为事实化表述，但不得扩写成未被原始回显直接支持的具体配置错误。"
+    "该规则只约束结论闭环完整性，不代表预设根因方向；最终判断仍必须完全依据原始命令回显。"
+)
+
+FINAL_EXPRESSION_RULES = (
+    "当输出final且mode=diagnosis时，只允许优化表达，不允许改变证据支持的方向。"
+    "root_cause必须先写已确认事实，再写无法确认的环节；若无法确认唯一根因，必须明确指出仍缺失哪条关键证据。"
+    "禁止只写笼统的“证据不足”或大而泛的可能原因列表；若写可能性，必须直接锚定到当前缺失证据。"
+    "涉及多设备时，逐设备事实必须逐设备锚定；禁止把单侧证据扩写成‘双方/两端/所有设备’共同状态。"
+    "impact_scope只描述已观察到的影响，禁止扩展成未被证据支持的泛化影响。"
+    "recommendation或follow_up_action必须直接对应缺失证据的下一步核查动作，避免泛泛地写“检查配置/检查网络”。"
+)
+
 PERMISSION_PRECHECK_RULES = (
     "执行查询前必须先评估当前会话是否具备所需执行权限。"
     "在基线识别命令（如show version/display version）完成后，下一步优先检查当前权限级别与会话模式。"
@@ -137,6 +156,8 @@ NEXT_STEP_SYSTEM_PROMPT_WITH_HISTORY = (
     f"{HISTORY_FORENSICS_RULES}"
     f"{SOP_ARCHIVE_RULES}"
     f"{RAW_OUTPUT_GROUNDING_RULES}"
+    f"{FINAL_EXPRESSION_RULES}"
+    f"{ROUTE_DELIVERY_CLOSURE_RULES}"
 )
 
 NEXT_STEP_SYSTEM_PROMPT = (
@@ -166,6 +187,8 @@ NEXT_STEP_SYSTEM_PROMPT = (
     f"{HISTORY_FORENSICS_RULES}"
     f"{SOP_ARCHIVE_RULES}"
     f"{RAW_OUTPUT_GROUNDING_RULES}"
+    f"{FINAL_EXPRESSION_RULES}"
+    f"{ROUTE_DELIVERY_CLOSURE_RULES}"
 )
 
 PRIMARY_SUMMARY_SYSTEM_PROMPT = (
@@ -173,6 +196,8 @@ PRIMARY_SUMMARY_SYSTEM_PROMPT = (
     "严格依据输入证据判断，不得猜测。"
     "若证据不足以确认根因，必须明确说明不确定。"
     f"{RAW_OUTPUT_GROUNDING_RULES}"
+    f"{FINAL_EXPRESSION_RULES}"
+    f"{ROUTE_DELIVERY_CLOSURE_RULES}"
     "只输出JSON对象。"
     "字段必须是: root_cause, impact_scope, recommendation, confidence, evidence_refs。"
     "confidence是0到1的小数。"
@@ -546,6 +571,14 @@ class DeepSeekDiagnoser:
                 debug["parsed_response"] = parsed
                 return None, debug
             parsed["decision"] = decision
+            promoted = self._promote_final_to_run_command_if_actionable(
+                parsed,
+                iteration=iteration,
+                max_iterations=max_iterations,
+            )
+            if promoted is not None:
+                debug["promotion"] = promoted
+                parsed = promoted["plan"]
             debug["parsed_response"] = parsed
             return parsed, debug
 
@@ -581,8 +614,98 @@ class DeepSeekDiagnoser:
             debug["parsed_response"] = parsed
             return None, debug
         parsed["decision"] = decision
+        promoted = self._promote_final_to_run_command_if_actionable(
+            parsed,
+            iteration=iteration,
+            max_iterations=max_iterations,
+        )
+        if promoted is not None:
+            debug["promotion"] = promoted
+            parsed = promoted["plan"]
         debug["parsed_response"] = parsed
         return parsed, debug
+
+    def _promote_final_to_run_command_if_actionable(
+        self,
+        plan: dict[str, Any],
+        *,
+        iteration: int,
+        max_iterations: int,
+    ) -> dict[str, Any] | None:
+        if iteration >= max_iterations:
+            return None
+        if str(plan.get("decision", "")).strip().lower() != "final":
+            return None
+
+        mode = str(plan.get("mode", "")).strip().lower()
+        if mode and mode != "diagnosis":
+            return None
+
+        root_cause = str(plan.get("root_cause") or "")
+        recommendation = str(plan.get("recommendation") or "")
+        follow_up_action = str(plan.get("follow_up_action") or "")
+        reason = str(plan.get("reason") or "")
+        combined = "\n".join(part for part in (root_cause, recommendation, follow_up_action, reason) if part).lower()
+
+        missing_markers = (
+            "证据不足",
+            "不确定",
+            "未验证",
+            "尚未执行",
+            "缺失证据",
+            "无法确定",
+            "insufficient evidence",
+            "uncertain",
+            "not verified",
+            "not executed",
+            "missing evidence",
+            "cannot determine",
+        )
+        if not any(marker in combined for marker in missing_markers):
+            return None
+
+        extracted = self._extract_actionable_commands_from_text("\n".join([recommendation, follow_up_action]))
+        if not extracted:
+            return None
+
+        promoted_plan = dict(plan)
+        promoted_plan["decision"] = "run_command"
+        promoted_plan.pop("query_result", None)
+        promoted_plan["title"] = str(plan.get("title") or "补充关键验证").strip() or "补充关键验证"
+        promoted_plan["reason"] = (
+            str(plan.get("reason") or "").strip()
+            + ("；" if str(plan.get("reason") or "").strip() else "")
+            + "当前final明确承认仍缺关键验证，已按AI给出的建议命令继续执行补证。"
+        ).strip("；")
+        promoted_plan["commands"] = [
+            {"title": title, "command": command}
+            for title, command in extracted[:5]
+        ]
+        return {
+            "trigger": "final_with_actionable_missing_evidence",
+            "commands": [command for _title, command in extracted[:5]],
+            "plan": promoted_plan,
+        }
+
+    def _extract_actionable_commands_from_text(self, text: str) -> list[tuple[str, str]]:
+        content = str(text or "").strip()
+        if not content:
+            return []
+        matches = re.findall(r"[`'\"“”‘’]([^`'\"“”‘’]{3,160})[`'\"“”‘’]", content)
+        commands: list[str] = []
+        seen: set[str] = set()
+        for raw in matches:
+            candidate = str(raw).strip()
+            lowered = candidate.lower()
+            if not candidate or " " not in candidate:
+                continue
+            if not re.match(r"^(show|display|ping|traceroute|enable|terminal|screen-length|show run|display current-configuration)\b", lowered):
+                continue
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            commands.append(candidate)
+        return [(f"补充关键验证 {idx+1}", command) for idx, command in enumerate(commands[:5])]
 
     async def extract_sop_draft(
         self,
