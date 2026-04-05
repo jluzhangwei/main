@@ -470,7 +470,6 @@ class ConversationOrchestrator:
                 vendor=session.device.vendor,
                 version_signature=session.device.version_signature,
             )
-            self._append_capability_context_to_ai_context(session_id=session_id)
 
         for iteration in range(1, self.max_autonomous_steps + 1):
             if self._is_stop_requested(session_id):
@@ -478,22 +477,6 @@ class ConversationOrchestrator:
             commands = self.store.list_commands(session_id)
             evidences = self.store.list_evidence(session_id)
             ai_context = self.store.list_ai_context(session_id)
-            permission_context = self._build_permission_prompt_context(commands)
-            filter_capability_context = self._build_filter_capability_prompt_context(
-                session,
-                commands,
-                problem=user_content,
-            )
-            output_compaction_context = self._build_output_compaction_prompt_context(commands, problem=user_content)
-            planner_context = "\n\n".join(
-                item
-                for item in (
-                    filter_capability_context,
-                    permission_context,
-                    output_compaction_context,
-                )
-                if str(item or "").strip()
-            )
             self._trace_decision(
                 session_id=session_id,
                 step_type="context_snapshot",
@@ -514,37 +497,9 @@ class ConversationOrchestrator:
                         },
                         "latest_command": self._command_trace_record(commands[-1], include_output=True) if commands else None,
                         "latest_evidence": evidences[-1].model_dump(mode="json") if evidences else None,
-                        "planner_context": planner_context or None,
                     }
                 ),
             )
-            if filter_capability_context:
-                self._trace_decision(
-                    session_id=session_id,
-                    step_type="capability_decision",
-                    title="过滤语法能力已装载",
-                    detail="planner_context=filter_capability",
-                    status="succeeded",
-                    detail_payload=self._compact_trace_payload({"planner_context": filter_capability_context}),
-                )
-            if permission_context:
-                self._trace_decision(
-                    session_id=session_id,
-                    step_type="policy_decision",
-                    title="权限信号已装载",
-                    detail="planner_context=permission_signal",
-                    status="succeeded",
-                    detail_payload=self._compact_trace_payload({"planner_context": permission_context}),
-                )
-            if output_compaction_context:
-                self._trace_decision(
-                    session_id=session_id,
-                    step_type="policy_decision",
-                    title="输出压缩信号已装载",
-                    detail="planner_context=output_compaction",
-                    status="succeeded",
-                    detail_payload=self._compact_trace_payload({"planner_context": output_compaction_context}),
-                )
             llm_trace = self._trace_start(
                 session_id=session_id,
                 step_type="llm_plan",
@@ -570,7 +525,7 @@ class ConversationOrchestrator:
                     iteration=iteration,
                     max_iterations=self.max_autonomous_steps,
                     conversation_history=ai_context,
-                    planner_context=planner_context or None,
+                    planner_context=None,
                 )
             except Exception as exc:
                 self._trace_finish(

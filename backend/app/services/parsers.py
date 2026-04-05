@@ -16,16 +16,20 @@ def parse_command_output(command: str, output: str) -> tuple[str, dict[str, Any]
 
     if "version" in cmd:
         return _parse_version(output)
-    if ("ospf" in cmd and ("peer" in cmd or "neighbor" in cmd)) or cmd.startswith("display ospf"):
-        return _parse_ospf(output)
+    if (
+        ("ospf" in cmd and ("peer" in cmd or "neighbor" in cmd or "interface brief" in cmd))
+        or cmd.startswith("display ospf")
+        or cmd.startswith("show ip ospf")
+    ):
+        return _parse_ospf(command, output)
     if "logbuffer" in cmd or (cmd.startswith("show logging")) or ("alarm" in cmd and ("display" in cmd or "show" in cmd)):
         return _parse_history_log(output)
     if "running-config interface" in cmd or "current-configuration interface" in cmd:
         return _parse_interface_config(command, output)
     if "interface" in cmd:
         return _parse_interface(output)
-    if "route" in cmd:
-        return _parse_route(output)
+    if re.search(r"\b(route|routes|routing)\b", cmd):
+        return _parse_route(command, output)
     if cmd.startswith("ping"):
         return _parse_ping(output)
 
@@ -146,9 +150,34 @@ def _parse_interface_config(command: str, output: str) -> tuple[str, dict[str, A
     )
 
 
-def _parse_route(output: str) -> tuple[str, dict[str, Any], str]:
+def _parse_route(command: str, output: str) -> tuple[str, dict[str, Any], str]:
+    command_lower = command.lower()
+    target_tokens = _extract_route_targets(command_lower)
     static_routes = len(re.findall(r"\bS\b|static", output, flags=re.IGNORECASE))
     missing_default = "0.0.0.0/0" not in output and "Gateway of last resort" not in output
+
+    if target_tokens and not any(token in {"0.0.0.0", "0.0.0.0/0"} for token in target_tokens):
+        matched_targets = [token for token in target_tokens if token in output]
+        missing_targets = [token for token in target_tokens if token not in output]
+        has_no_route_hint = bool(
+            re.search(r"(?i)\b(network|route|prefix)\b.*\b(not in table|not found|unknown|does not exist)\b", output)
+        )
+        if matched_targets:
+            conclusion = f"Detected routing-table entries matching target: {', '.join(matched_targets[:4])}."
+        elif has_no_route_hint or not output.strip():
+            conclusion = f"Target route not detected for: {', '.join(missing_targets[:4])}."
+        else:
+            conclusion = f"Current routing output did not confirm target route: {', '.join(missing_targets[:4])}."
+        return (
+            "routing",
+            {
+                "static_route_hits": static_routes,
+                "target_routes": target_tokens,
+                "matched_targets": matched_targets,
+                "missing_target_route": bool(missing_targets) and not matched_targets,
+            },
+            conclusion,
+        )
 
     if missing_default:
         conclusion = "Default route appears missing; routing may fail for external destinations."
@@ -160,6 +189,15 @@ def _parse_route(output: str) -> tuple[str, dict[str, Any], str]:
         {"static_route_hits": static_routes, "missing_default_route": missing_default},
         conclusion,
     )
+
+
+def _extract_route_targets(command: str) -> list[str]:
+    matches = re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}(?:/\d{1,2})?\b", command)
+    targets: list[str] = []
+    for item in matches:
+        if item not in targets:
+            targets.append(item)
+    return targets
 
 
 def _parse_ping(output: str) -> tuple[str, dict[str, Any], str]:
@@ -187,13 +225,60 @@ def _parse_ping(output: str) -> tuple[str, dict[str, Any], str]:
     )
 
 
-def _parse_ospf(output: str) -> tuple[str, dict[str, Any], str]:
+def _parse_ospf(command: str, output: str) -> tuple[str, dict[str, Any], str]:
+    filtered_lookup = bool(re.search(r"\|\s*(include|exclude|begin|section|grep|match|count)\b", command, flags=re.IGNORECASE))
+    if not (output or "").strip():
+        parsed = {
+            "neighbor_count": None if filtered_lookup else 0,
+            "states": [],
+            "full_count": 0,
+            "non_full_count": 0,
+            "has_down_hint": False,
+            "filtered_lookup": filtered_lookup,
+            "empty_output": True,
+        }
+        if filtered_lookup:
+            return (
+                "protocol",
+                parsed,
+                "当前过滤条件下未匹配到 OSPF 输出，不能仅据此判断邻居缺失。",
+            )
+        return (
+            "protocol",
+            parsed,
+            "未检测到 OSPF 邻居，可能存在邻接未建立或已中断情况。",
+        )
+
     states = re.findall(r"(?im)\bstate\s*:\s*([A-Za-z]+)\b", output)
     norm_states = [item.strip().lower() for item in states if item.strip()]
+    table_states = re.findall(
+        r"(?im)^\s*\d+\.\d+\.\d+\.\d+\s+\d+\s+\S+\s+\d+\s+([A-Z0-9]+(?:/[A-Z0-9]+)?)\b",
+        output,
+    )
+    for state in table_states:
+        primary = state.strip().split("/", 1)[0].lower()
+        if primary:
+            norm_states.append(primary)
+
+    nbr_counts: list[int] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        lowered = stripped.lower()
+        if not stripped or "nbrs" in lowered or "interface" in lowered:
+            continue
+        if "default" in lowered and "/" in stripped:
+            tokens = stripped.split()
+            if tokens:
+                last = tokens[-1]
+                if last.isdigit():
+                    nbr_counts.append(int(last))
+
     full_count = sum(1 for item in norm_states if item == "full")
     non_full = [item for item in norm_states if item != "full"]
     neighbor_lines = re.findall(r"(?im)^\s*router id\s*:\s*([0-9.]+)", output)
     neighbor_count = len(neighbor_lines) if neighbor_lines else len(norm_states)
+    if nbr_counts:
+        neighbor_count = max(neighbor_count, max(nbr_counts))
     has_down_hint = bool(re.search(r"(?im)\b(ospf|adj)\b.*\b(down|flap|flapping|reset)\b", output))
 
     parsed = {
@@ -202,6 +287,8 @@ def _parse_ospf(output: str) -> tuple[str, dict[str, Any], str]:
         "full_count": full_count,
         "non_full_count": len(non_full),
         "has_down_hint": has_down_hint,
+        "filtered_lookup": filtered_lookup,
+        "empty_output": False,
     }
 
     if has_down_hint:
@@ -221,6 +308,12 @@ def _parse_ospf(output: str) -> tuple[str, dict[str, Any], str]:
             "protocol",
             parsed,
             f"检测到 OSPF 邻居非 Full 状态: {', '.join(non_full[:6])}",
+        )
+    if neighbor_count > 0 and full_count == 0:
+        return (
+            "protocol",
+            parsed,
+            f"当前检测到 OSPF 邻居/接口关联数量 {neighbor_count}，未从当前输出中提取到显式 Full 状态。",
         )
     return (
         "protocol",

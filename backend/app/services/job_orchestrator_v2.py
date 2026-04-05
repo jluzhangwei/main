@@ -1406,8 +1406,6 @@ class JobV2Orchestrator:
         max_rounds = max(1, int(os.getenv("V2_COLLECT_LLM_MAX_ROUNDS", "2")))
         max_commands_per_round = max(1, int(os.getenv("V2_COLLECT_LLM_MAX_COMMANDS_PER_ROUND", "3")))
         repeated_guard: dict[str, int] = {}
-        planner_context = ""
-
         for round_no in range(1, max_rounds + 1):
             async with self._state_lock:
                 job = self._jobs.get(job_id)
@@ -1427,25 +1425,7 @@ class JobV2Orchestrator:
                     version_signature=device.version_signature,
                     run_key=sop_run_key,
                 )
-                capability_context = self._build_capability_prompt_context(device, problem=job.problem)
-                filter_capability_context = self._build_filter_capability_prompt_context(
-                    device,
-                    commands,
-                    problem=job.problem,
-                )
-                permission_context = self._build_permission_prompt_context(commands)
-                output_compaction_context = self._build_output_compaction_prompt_context(commands, problem=job.problem)
-                planner_context = "\n\n".join(
-                    part
-                    for part in (
-                        sop_context,
-                        capability_context,
-                        filter_capability_context,
-                        permission_context,
-                        output_compaction_context,
-                    )
-                    if str(part or "").strip()
-                )
+                planner_context = str(sop_context or "").strip()
                 self._append_trace_event(
                     job,
                     "context_snapshot",
@@ -1461,7 +1441,6 @@ class JobV2Orchestrator:
                         },
                         "latest_command": self._job_command_trace_record(commands[-1], include_output=True) if commands else None,
                         "latest_evidence": evidences[-1].model_dump(mode="json") if evidences else None,
-                        "planner_context": planner_context or None,
                     },
                     device=device,
                 )
@@ -1475,58 +1454,6 @@ class JobV2Orchestrator:
                         detail_payload={
                             "device": self._job_device_trace_record(device),
                             "planner_context": sop_context,
-                        },
-                        device=device,
-                    )
-                if capability_context:
-                    self._append_trace_event(
-                        job,
-                        "capability_decision",
-                        f"[{device.host}] 命令能力规则已装载",
-                        status="succeeded",
-                        detail="planner_context=command_capability",
-                        detail_payload={
-                            "device": self._job_device_trace_record(device),
-                            "planner_context": capability_context,
-                        },
-                        device=device,
-                    )
-                if filter_capability_context:
-                    self._append_trace_event(
-                        job,
-                        "capability_decision",
-                        f"[{device.host}] 过滤语法能力已装载",
-                        status="succeeded",
-                        detail="planner_context=filter_capability",
-                        detail_payload={
-                            "device": self._job_device_trace_record(device),
-                            "planner_context": filter_capability_context,
-                        },
-                        device=device,
-                    )
-                if permission_context:
-                    self._append_trace_event(
-                        job,
-                        "policy_decision",
-                        f"[{device.host}] 权限信号已装载",
-                        status="succeeded",
-                        detail="planner_context=permission_signal",
-                        detail_payload={
-                            "device": self._job_device_trace_record(device),
-                            "planner_context": permission_context,
-                        },
-                        device=device,
-                    )
-                if output_compaction_context:
-                    self._append_trace_event(
-                        job,
-                        "policy_decision",
-                        f"[{device.host}] 输出压缩信号已装载",
-                        status="succeeded",
-                        detail="planner_context=output_compaction",
-                        detail_payload={
-                            "device": self._job_device_trace_record(device),
-                            "planner_context": output_compaction_context,
                         },
                         device=device,
                     )
@@ -2818,6 +2745,21 @@ class JobV2Orchestrator:
                     evidence_id=evidence.id,
                 )
             )
+        elif evidence.category == "routing" and bool(parsed.get("missing_target_route")):
+            targets = parsed.get("target_routes") or []
+            target_text = ", ".join(str(item) for item in targets[:4]) or evidence.conclusion[:240]
+            job.incidents.append(
+                IncidentEvent(
+                    job_id=job.id,
+                    device_id=device.id,
+                    timestamp=now_ts,
+                    severity="high",
+                    category="routing",
+                    title="missing_target_route",
+                    detail=target_text,
+                    evidence_id=evidence.id,
+                )
+            )
 
         if evidence.category == "connectivity" and bool(parsed.get("packet_loss_100")):
             job.incidents.append(
@@ -2851,6 +2793,7 @@ class JobV2Orchestrator:
             flap_count = int(parsed.get("ospf_flap_log_count") or 0)
             non_full_count = int(parsed.get("non_full_count") or 0)
             neighbor_count = int(parsed.get("neighbor_count") or 0)
+            filtered_lookup = bool(parsed.get("filtered_lookup"))
 
             if flap_count > 0:
                 job.incidents.append(
@@ -2878,7 +2821,7 @@ class JobV2Orchestrator:
                         evidence_id=evidence.id,
                     )
                 )
-            elif neighbor_count == 0 and ("ospf" in (evidence.conclusion or "").lower()):
+            elif (not filtered_lookup) and neighbor_count == 0 and ("ospf" in (evidence.conclusion or "").lower()):
                 job.incidents.append(
                     IncidentEvent(
                         job_id=job.id,
@@ -3360,6 +3303,7 @@ class JobV2Orchestrator:
             "interface_admin_down": "管理性关闭接口",
             "interface_down": "接口down",
             "missing_default_route": "默认路由缺失",
+            "missing_target_route": "目标路由缺失",
             "packet_loss": "高丢包",
             "command_error": "命令失败",
             "ospf_flap_history": "OSPF历史抖动",
@@ -3370,6 +3314,7 @@ class JobV2Orchestrator:
             "interface_admin_down": "admin-down interface",
             "interface_down": "interface down",
             "missing_default_route": "missing default route",
+            "missing_target_route": "missing target route",
             "packet_loss": "packet loss",
             "command_error": "command error",
             "ospf_flap_history": "OSPF flap history",
@@ -3459,6 +3404,7 @@ class JobV2Orchestrator:
                     "你是网络运维RCA助手。"
                     "请严格基于给定多设备证据包输出JSON，不得编造证据。"
                     "如果证据不足，必须明确写“证据不足/不确定”。"
+                    "如果当前任务不是历史/闪断类问题，则禁止把结论写成“历史证据不足”或“上次闪断原因不明”。"
                     "如果任务本身是历史/闪断类问题，而 history_evidence.history_evidence_sufficient=false，"
                     "则禁止输出明确根因设备；root_device_host 必须为空，root_cause/summary 必须明确说明历史证据不足。"
                     "输出字段: summary, recommendation, confidence, root_device_host, root_cause, impact_scope。"
@@ -3480,6 +3426,7 @@ class JobV2Orchestrator:
                     "You are a network RCA assistant. "
                     "Return strict JSON based only on provided multi-device evidence. "
                     "If evidence is insufficient, explicitly say uncertain/insufficient evidence. "
+                    "If the current task is not a historical/flap-oriented problem, do not frame the result as missing historical evidence or unknown prior flap cause. "
                     "If the task is historical/flap-oriented and history_evidence.history_evidence_sufficient=false, "
                     "you must not assign a root_device_host; root_cause and summary must explicitly state that historical evidence is insufficient. "
                     "Fields: summary, recommendation, confidence, root_device_host, root_cause, impact_scope. "
@@ -3704,10 +3651,7 @@ class JobV2Orchestrator:
             self._save_state()
 
     def _build_llm_rca_payload(self, job: Job) -> dict[str, Any]:
-        incidents = sorted(job.incidents, key=lambda item: item.timestamp)
-        evidences = sorted(job.evidences, key=lambda item: item.created_at)
         commands = sorted(job.command_results, key=lambda item: (item.step_no, item.created_at))
-        history_summary = self._history_evidence_summary(job) if self._is_history_problem(job.problem) else None
         return {
             "job": {
                 "id": job.id,
@@ -3722,7 +3666,6 @@ class JobV2Orchestrator:
                     "end": job.window_end.isoformat() if job.window_end else None,
                 },
             },
-            "history_evidence": history_summary,
             "devices": [
                 {
                     "id": item.id,
@@ -3736,35 +3679,15 @@ class JobV2Orchestrator:
                 }
                 for item in job.devices
             ],
-            "incidents": [
+            "topology_hints": [
                 {
-                    "device_id": item.device_id,
-                    "severity": item.severity,
-                    "category": item.category,
-                    "title": item.title,
-                    "detail": item.detail,
-                    "timestamp": item.timestamp.isoformat(),
-                }
-                for item in incidents[-180:]
-            ],
-            "clusters": [
-                {
-                    "start_at": item.start_at.isoformat(),
-                    "end_at": item.end_at.isoformat(),
-                    "device_ids": item.device_ids,
-                    "incident_count": item.incident_count,
-                }
-                for item in job.clusters[-60:]
-            ],
-            "causal_edges": [
-                {
-                    "source_device_id": item.source_device_id,
-                    "target_device_id": item.target_device_id,
+                    "source": item.source,
+                    "target": item.target,
                     "kind": item.kind,
                     "confidence": item.confidence,
                     "reason": item.reason,
                 }
-                for item in job.causal_edges[-120:]
+                for item in job.external_topology_edges[-120:]
             ],
             "commands": [
                 {
@@ -3780,27 +3703,6 @@ class JobV2Orchestrator:
                 }
                 for item in commands[-220:]
             ],
-            "evidence_conclusions": [
-                {
-                    "device_id": item.device_id,
-                    "category": item.category,
-                    "conclusion": item.conclusion,
-                    "parsed_data": item.parsed_data,
-                }
-                for item in evidences[-180:]
-            ],
-            "deterministic_rca": (
-                {
-                    "root_device_id": job.rca_result.root_device_id if job.rca_result else None,
-                    "root_device_host": job.rca_result.root_device_host if job.rca_result else None,
-                    "root_cause": job.rca_result.root_cause if job.rca_result else None,
-                    "impact_scope": job.rca_result.impact_scope if job.rca_result else None,
-                    "confidence": job.rca_result.confidence if job.rca_result else None,
-                    "summary": job.rca_result.summary if job.rca_result else None,
-                    "recommendation": job.rca_result.recommendation if job.rca_result else None,
-                    "score_breakdown": job.rca_result.score_breakdown if job.rca_result else {},
-                }
-            ),
         }
 
     def _normalize_llm_confidence(self, value: Any) -> float | None:

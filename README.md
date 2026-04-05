@@ -21,6 +21,7 @@
 - Docker 部署说明：[`docs/DOCKER_DEPLOY.zh-CN.md`](docs/DOCKER_DEPLOY.zh-CN.md)
 - 统一 Run API 接入说明：[`docs/UNIFIED_RUN_API.zh-CN.md`](docs/UNIFIED_RUN_API.zh-CN.md)
 - 主链与分支判定说明：[`docs/MAINLINE_BRANCH_LOGIC.zh-CN.md`](docs/MAINLINE_BRANCH_LOGIC.zh-CN.md)
+  - 该文档明确约束：AI 主诊断链仅接收基线、原始命令/回显与执行状态，不接收回显派生解释字段
 - V3 运维说明（多设备任务编排）：[`docs/V3_OPERATIONS.zh-CN.md`](docs/V3_OPERATIONS.zh-CN.md)
 - V3 对外 API 接入说明：[`docs/V3_API_EXTERNAL.zh-CN.md`](docs/V3_API_EXTERNAL.zh-CN.md)
 - V4 预研计划：[`docs/V4_RESEARCH_PLAN.zh-CN.md`](docs/V4_RESEARCH_PLAN.zh-CN.md)

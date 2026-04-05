@@ -228,6 +228,37 @@ def test_v2_dedupe_plan_commands_removes_same_round_duplicates():
     ]
 
 
+def test_v2_filtered_ospf_no_match_does_not_create_missing_incident():
+    job = Job(
+        name="diag-job",
+        problem="check ospf state",
+        mode=JobMode.diagnosis,
+        devices=[JobDevice(id="dev-1", host="192.0.2.10", protocol="ssh")],
+    )
+    device = job.devices[0]
+    evidence = JobEvidence(
+        job_id=job.id,
+        device_id=device.id,
+        command_id="cmd-1",
+        category="protocol",
+        raw_output="",
+        parsed_data={
+            "neighbor_count": None,
+            "states": [],
+            "full_count": 0,
+            "non_full_count": 0,
+            "has_down_hint": False,
+            "filtered_lookup": True,
+            "empty_output": True,
+        },
+        conclusion="当前过滤条件下未匹配到 OSPF 输出，不能仅据此判断邻居缺失。",
+    )
+
+    routes.orchestrator_v2._apply_incidents_from_evidence(job, device, evidence)
+
+    assert not any(item.title == "ospf_neighbor_missing" for item in job.incidents)
+
+
 def test_v2_history_evidence_summary_marks_missing_flap_logs_as_insufficient():
     job = Job(
         name="history-job",
@@ -434,7 +465,7 @@ async def test_v2_collect_filters_privileged_read_commands_when_permission_is_lo
     assert any(str(event.payload.get("detail", "")).startswith("decision=permission_filtered") for event in trace_steps)
 
 
-def test_v2_llm_rca_payload_includes_history_evidence_summary():
+def test_v2_llm_rca_payload_excludes_derived_history_and_incident_fields():
     orchestrator = JobV2Orchestrator(InMemoryStore(), allow_simulation=True)
     job = Job(
         name="history-job",
@@ -494,11 +525,23 @@ def test_v2_llm_rca_payload_includes_history_evidence_summary():
         summary="旧摘要",
         recommendation="旧建议",
     )
+    job.command_results.append(
+        JobCommandResult(
+            job_id=job.id,
+            device_id="dev-ar",
+            step_no=1,
+            title="检查 OSPF 邻居",
+            command="show ip ospf neighbor",
+            status=JobCommandStatus.succeeded,
+            risk_level=RiskLevel.low,
+            output="Neighbor ID 12.1.1.2 FULL/DR",
+        )
+    )
     payload = orchestrator._build_llm_rca_payload(job)
-    history = payload["history_evidence"]
-    assert history["history_evidence_sufficient"] is False
-    assert history["positive_log_hosts"] == ["192.0.2.102"]
-    assert history["negative_log_hosts"] == ["192.0.2.101"]
+    assert "history_evidence" not in payload
+    assert "incident_facts" not in payload
+    assert payload["commands"]
+    assert payload["commands"][0]["command"] == "show ip ospf neighbor"
 
 
 def test_v2_key_bootstrap_and_permission_checks():
