@@ -573,13 +573,22 @@ class UnifiedRunService:
         session_id = self.history_session_id_for_multi(raw.job.id)
         steps: list[ServiceTraceStep] = []
         events = sorted(list(raw.events or []), key=lambda item: int(item.seq_no or 0))
+        native_command_ids: set[str] = set()
+        if events:
+            for event in events:
+                payload = event.payload if isinstance(event.payload, dict) else {}
+                trace_step_type = str(payload.get("trace_step_type") or event.event_type or "").strip()
+                if trace_step_type == "command_execution":
+                    command_id = str(payload.get("command_id") or "").strip()
+                    if command_id:
+                        native_command_ids.add(command_id)
         if events:
             for event in events:
                 native = self._build_native_trace_step(event, session_id)
                 if native is not None:
                     steps.append(native)
                     continue
-                steps.extend(self._build_legacy_trace_steps(event, raw, session_id))
+                steps.extend(self._build_legacy_trace_steps(event, raw, session_id, native_command_ids=native_command_ids))
         else:
             problem = str(raw.job.problem or "").strip()
             if problem:
@@ -664,7 +673,14 @@ class UnifiedRunService:
             detail_payload=detail_payload,
         )
 
-    def _build_legacy_trace_steps(self, event: JobEvent, raw: JobTimelineResponse, session_id: str) -> list[ServiceTraceStep]:
+    def _build_legacy_trace_steps(
+        self,
+        event: JobEvent,
+        raw: JobTimelineResponse,
+        session_id: str,
+        *,
+        native_command_ids: set[str] | None = None,
+    ) -> list[ServiceTraceStep]:
         payload = event.payload if isinstance(event.payload, dict) else {}
         seq_base = int(event.seq_no or 0) * 10
         command_results = {str(item.id): item for item in raw.job.command_results or []}
@@ -678,6 +694,7 @@ class UnifiedRunService:
         device_host = device_map.get(device_id, {}).get("host") or str(payload.get("host") or payload.get("device_host") or device_id or "-")
         created_at = event.created_at or raw.job.updated_at or raw.job.created_at
         event_type = str(event.event_type or "")
+        native_command_ids = native_command_ids or set()
         if event_type == "job_created":
             return [ServiceTraceStep(id=f"runtrace:{session_id}:legacy:{event.id}", session_id=session_id, seq_no=seq_base, step_type="session_control", title="创建多设备协同", status="succeeded", started_at=created_at, completed_at=created_at, duration_ms=0, detail=f"devices={payload.get('device_count', len(raw.job.devices))}; mode={payload.get('mode', raw.job.mode)}", detail_payload=payload)]
         if event_type == "phase_changed":
@@ -689,8 +706,12 @@ class UnifiedRunService:
         if event_type == "device_collect_failed":
             return [ServiceTraceStep(id=f"runtrace:{session_id}:legacy:{event.id}", session_id=session_id, seq_no=seq_base, step_type="session_control", title=f"[{device_host}] 设备采集失败", status="failed", started_at=created_at, completed_at=created_at, duration_ms=0, detail=str(payload.get('error') or 'device_collect_failed')[:280], detail_payload=payload)]
         if event_type == "command_started" and command is not None:
+            if command_id in native_command_ids:
+                return []
             return [self._build_synthetic_command_trace_step(session_id, seq_base, command, device_host, "running")]
         if event_type in {"command_completed", "command_failed"} and command is not None:
+            if command_id in native_command_ids:
+                return []
             status = self._enum_value(command.status) or ("failed" if event_type == "command_failed" else "succeeded")
             return [self._build_synthetic_command_trace_step(session_id, seq_base, command, device_host, status)]
         if event_type == "command_blocked":

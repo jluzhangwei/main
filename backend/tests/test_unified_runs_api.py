@@ -310,6 +310,20 @@ def test_api_runs_multi_create_list_and_timeline():
         str(step.get("id", "")).find(":evt:") >= 0 and str(step.get("title", "")).startswith("阶段切换：")
         for step in payload["trace"]
     )
+    command_steps = [
+        step for step in payload["trace"]
+        if step.get("step_type") == "command_execution" and str(step.get("command_id") or "").startswith("v2cmd:")
+    ]
+    command_step_keys = {
+        (
+            step.get("command_id"),
+            step.get("status"),
+            step.get("started_at"),
+            step.get("completed_at"),
+        )
+        for step in command_steps
+    }
+    assert len(command_steps) == len(command_step_keys)
 
 
 def test_api_runs_trace_export_and_sop_library():
