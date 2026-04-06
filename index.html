@@ -16,9 +16,27 @@
       --sea-gray: #e5e7eb;
     }
     body { margin: 0; font-family: "Segoe UI", -apple-system, system-ui, Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f8fafc; }
-    .wrap { display: grid; grid-template-columns: 430px 1fr; height: calc(100vh - 106px); }
-    .panel { padding: 14px; border-right: 1px solid #e5e7eb; overflow: auto; background: #ffffff; box-shadow: 4px 0 24px rgba(0,0,0,0.04); }
-    #cy { height: 100%; width: 100%; background: #ffffff; }
+    .wrap { display: flex; height: calc(100vh - 106px); }
+    .wrap.collapsed .panel { display: none; }
+    .panel { width: 430px; flex-shrink: 0; padding: 14px; border-right: 1px solid #e5e7eb; overflow: auto; background: #ffffff; box-shadow: 4px 0 24px rgba(0,0,0,0.04); scrollbar-width: none; -ms-overflow-style: none; }
+    .panel::-webkit-scrollbar { display: none; }
+    button#togglePanel { 
+      position: absolute; 
+      left: 434px; 
+      top: 50%; 
+      transform: translateY(-50%); 
+      z-index: 10; 
+      width: 30px; 
+      height: 30px; 
+      padding: 0; 
+      font-size: 16px; 
+      background: none; 
+      border: none; 
+      cursor: pointer; 
+      color: #374151; 
+    }
+    .wrap.collapsed button#togglePanel { left: 0; transform: translateY(-50%); }
+    #cy { flex: 1; height: 100%; width: 100%; background: #ffffff; }
 
     h1 { font-size: 17px; margin: 0 0 10px; letter-spacing: 0.2px; }
     h2 { font-size: 13px; margin: 14px 0 6px; color: #374151; }
@@ -318,20 +336,15 @@
 <div class="top-hero">
   <div class="app-topbar">
     <div class="app-brand">
-<img class="infra-logo"
-     src="https://icon.icepanel.io/GCP/svg/Network-Topology.svg"
-     alt="infra network logo" />
     </div>
     <div class="app-top-links">
-      <a id="manualLink" class="app-circle-btn" href="lldp-manual.html" target="_blank" title="查看使用手册">?</a>
-      <button id="lang_toggle_btn" class="app-circle-btn" type="button" title="切换语言">EN</button>
     </div>
   </div>
   <div class="app-mainnav">
-    <div id="appTitle" class="app-title">AIOps - LLDP Topology Runner</div>
   </div>
 </div>
 <div class="wrap">
+  <button id="togglePanel">《</button>
   <div class="panel">
     <div class="box">
       <div><b id="statusLabel">状态：</b><span id="status">等待导入</span></div>
@@ -356,8 +369,8 @@
         <div>
           <label id="lblImportMode">导入方式</label>
           <select id="importMode">
-            <option value="csv">CSV 导入</option>
             <option value="json">Json 导入</option>
+            <option value="csv">CSV 导入</option>
           </select>
         </div>
         <div>
@@ -927,6 +940,11 @@
 </div>
 
 <script>
+  document.getElementById('togglePanel').addEventListener('click', function() {
+    const wrap = document.querySelector('.wrap');
+    wrap.classList.toggle('collapsed');
+    this.textContent = wrap.classList.contains('collapsed') ? '》' : '《';
+  });
   let sourceRows = [];
   let rawRows = [];
   let workspaceMeta = {
