@@ -1203,6 +1203,8 @@ def parse_lldp_neighbors_cisco(output: str) -> list[dict[str, str]]:
             }
         )
 
+    wait_mgmt_value = False
+
     for raw in lines:
         line = raw.strip()
         if not line:
@@ -1224,7 +1226,7 @@ def parse_lldp_neighbors_cisco(output: str) -> list[dict[str, str]]:
             cur["chassis"] = m.group(1).strip()
             continue
 
-        m = re.match(r"(?i)^local\s+interface\s*:\s*(.+)$", line)
+        m = re.match(r"(?i)^local\s+(?:interface|intf)\s*:\s*(.+)$", line)
         if m:
             cur["local_if"] = m.group(1).strip()
             continue
@@ -1244,12 +1246,24 @@ def parse_lldp_neighbors_cisco(output: str) -> list[dict[str, str]]:
             cur["remote_host"] = m.group(1).strip()
             continue
 
+        if wait_mgmt_value:
+            ip_match = IPV4_PATTERN.search(line)
+            if ip_match:
+                cur["remote_ip"] = ip_match.group(0)
+            wait_mgmt_value = False
+            continue
+
         # NX-OS single-line
         m = re.match(r"(?i)^management\s+address\s*:\s*(.+)$", line)
         if m:
             ip_match = IPV4_PATTERN.search(m.group(1))
             if ip_match:
                 cur["remote_ip"] = ip_match.group(0)
+            continue
+
+        # NX-OS / IOS-style multi-line header
+        if re.match(r"(?i)^management\s+addresses\s*:\s*$", line):
+            wait_mgmt_value = True
             continue
 
         # IOS-XR multi-line section
