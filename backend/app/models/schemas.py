@@ -251,10 +251,12 @@ class EventEnvelope(BaseModel):
 
 
 class LLMConfigRequest(BaseModel):
+    provider: Optional[str] = None
     api_key: Optional[str] = None
     nvidia_api_key: Optional[str] = None
     base_url: Optional[str] = None
     nvidia_base_url: Optional[str] = None
+    provider_base_url: Optional[str] = None
     model: Optional[str] = None
     failover_enabled: Optional[bool] = None
     model_candidates: Optional[list[str]] = None
@@ -263,6 +265,7 @@ class LLMConfigRequest(BaseModel):
 
 class LLMConfigResponse(BaseModel):
     enabled: bool
+    provider: Optional[str] = None
     base_url: str
     nvidia_base_url: Optional[str] = None
     model: str
@@ -270,6 +273,7 @@ class LLMConfigResponse(BaseModel):
     failover_enabled: bool = True
     batch_execution_enabled: bool = True
     model_candidates: list[str] = Field(default_factory=list)
+    configured_providers: list[str] = Field(default_factory=list)
     deepseek_enabled: bool = False
     nvidia_enabled: bool = False
     last_error: Optional[str] = None

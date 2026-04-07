@@ -490,6 +490,119 @@ async def test_v2_collect_filters_privileged_read_commands_when_permission_is_lo
     assert any(str(event.payload.get("detail", "")).startswith("decision=permission_filtered") for event in trace_steps)
 
 
+@pytest.mark.asyncio
+async def test_v2_collect_device_marks_failed_when_llm_plan_returns_no_plan(monkeypatch):
+    store = InMemoryStore()
+    orchestrator = JobV2Orchestrator(store, allow_simulation=True)
+    orchestrator.deepseek_diagnoser.api_key = "test-key"
+
+    device = JobDevice(
+        id="dev-1",
+        host="192.0.2.10",
+        protocol="ssh",
+        vendor="arista",
+        platform="vEOS-lab",
+        software_version="4.32.4.1M",
+        version_signature="arista|veos-lab|4.32.4.1m",
+    )
+    job = Job(
+        name="diag-job",
+        problem="检查 OSPF 状态",
+        mode=JobMode.diagnosis,
+        devices=[device],
+    )
+    orchestrator._jobs[job.id] = job
+    orchestrator._events[job.id] = []
+
+    async def _fake_get_adapter(job_id: str, device_id: str):
+        class _Adapter:
+            pass
+
+        return _Adapter()
+
+    async def _fake_run_device_command(job_id, device_id, *, title, command_text, **kwargs):
+        current_job = orchestrator._jobs[job_id]
+        current_device = next(item for item in current_job.devices if item.id == device_id)
+        current_job.command_results.append(
+            JobCommandResult(
+                job_id=job_id,
+                device_id=device_id,
+                step_no=kwargs.get("step_no", 1),
+                title=title,
+                command=command_text,
+                original_command=command_text,
+                effective_command=command_text,
+                risk_level=RiskLevel.low,
+                status=JobCommandStatus.succeeded,
+                output="ok",
+            )
+        )
+        current_job.evidences.append(
+            JobEvidence(
+                job_id=job_id,
+                device_id=device_id,
+                command_id=current_job.command_results[-1].id,
+                category="generic",
+                raw_output="ok",
+                parsed_data={"raw": "ok"},
+                conclusion="ok",
+            )
+        )
+        current_device.status = "collecting"
+        return None
+
+    async def _fake_propose(*args, **kwargs):
+        return None, {"error": "empty_response"}
+
+    monkeypatch.setattr(orchestrator, "_get_adapter", _fake_get_adapter)
+    monkeypatch.setattr(orchestrator, "_run_device_command", _fake_run_device_command)
+    monkeypatch.setattr(orchestrator.llm_planner_bridge, "propose_next_step_with_debug", _fake_propose)
+    monkeypatch.setattr(type(orchestrator), "_baseline_collect_commands", lambda self, problem: [("版本探测", "show version")])
+
+    await orchestrator._collect_device(job.id, device.id)
+
+    updated = orchestrator._jobs[job.id].devices[0]
+    assert updated.status == "failed"
+    assert "empty_response" in str(updated.last_error)
+
+
+def test_v2_empty_incidents_prefers_collection_failure_summary():
+    orchestrator = routes.orchestrator_v2
+    job = Job(
+        name="diag-job",
+        problem="检查 OSPF 状态",
+        mode=JobMode.diagnosis,
+        devices=[
+            JobDevice(
+                id="dev-1",
+                host="192.0.2.10",
+                protocol="ssh",
+                status="failed",
+                last_error="llm_timeout",
+                vendor="arista",
+                platform="vEOS-lab",
+                version_signature="arista|veos-lab|4.32.4.1m",
+            ),
+            JobDevice(
+                id="dev-2",
+                host="192.0.2.11",
+                protocol="ssh",
+                status="failed",
+                last_error="empty_response",
+                vendor="arista",
+                platform="vEOS-lab",
+                version_signature="arista|veos-lab|4.32.4.1m",
+            ),
+        ],
+    )
+
+    orchestrator._resolve_causal_graph_and_root(job)
+
+    assert job.rca_result is not None
+    assert "设备采集未完成" in job.rca_result.root_cause
+    assert "llm_timeout" in job.rca_result.recommendation
+
+
 def test_v2_llm_rca_payload_excludes_derived_history_and_incident_fields():
     orchestrator = JobV2Orchestrator(InMemoryStore(), allow_simulation=True)
     job = Job(

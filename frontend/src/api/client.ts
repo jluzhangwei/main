@@ -142,11 +142,13 @@ export async function getLlmStatus(): Promise<LLMStatus> {
 }
 
 export async function configureLlm(input: {
+  provider?: string
   apiKey?: string
   nvidiaApiKey?: string
   model?: string
   baseUrl?: string
   nvidiaBaseUrl?: string
+  providerBaseUrl?: string
   failoverEnabled?: boolean
   batchExecutionEnabled?: boolean
   modelCandidates?: string[]
@@ -155,11 +157,13 @@ export async function configureLlm(input: {
     method: 'POST',
     headers,
     body: JSON.stringify({
+      provider: input.provider,
       api_key: input.apiKey,
       nvidia_api_key: input.nvidiaApiKey,
       model: input.model,
       base_url: input.baseUrl,
       nvidia_base_url: input.nvidiaBaseUrl,
+      provider_base_url: input.providerBaseUrl,
       failover_enabled: input.failoverEnabled,
       batch_execution_enabled: input.batchExecutionEnabled,
       model_candidates: input.modelCandidates,

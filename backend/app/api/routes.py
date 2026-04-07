@@ -371,10 +371,12 @@ async def get_llm_status() -> LLMConfigResponse:
 async def configure_llm(req: LLMConfigRequest) -> LLMConfigResponse:
     _call_with_supported_kwargs(
         orchestrator.deepseek_diagnoser.configure,
+        provider=req.provider,
         api_key=req.api_key,
         nvidia_api_key=req.nvidia_api_key,
         base_url=req.base_url,
         nvidia_base_url=req.nvidia_base_url,
+        provider_base_url=req.provider_base_url,
         model=req.model,
         failover_enabled=req.failover_enabled,
         model_candidates=req.model_candidates,

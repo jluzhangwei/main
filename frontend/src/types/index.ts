@@ -97,6 +97,7 @@ export type EventPayload = {
 
 export type LLMStatus = {
   enabled: boolean
+  provider?: string
   base_url: string
   nvidia_base_url?: string
   model: string
@@ -104,6 +105,7 @@ export type LLMStatus = {
   failover_enabled?: boolean
   batch_execution_enabled?: boolean
   model_candidates?: string[]
+  configured_providers?: string[]
   deepseek_enabled?: boolean
   nvidia_enabled?: boolean
   last_error?: string
@@ -114,10 +116,12 @@ export type LLMStatus = {
 
 export type LLMPromptPolicy = {
   enabled: boolean
+  provider?: string
   base_url: string
   nvidia_base_url?: string
   model: string
   batch_execution_enabled?: boolean
+  configured_providers?: string[]
   nvidia_enabled?: boolean
   prompts: Record<string, string>
 }

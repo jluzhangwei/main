@@ -1640,7 +1640,7 @@ class JobV2Orchestrator:
                             )
                         self._save_state()
             if not plan:
-                return
+                raise RuntimeError(str(plan_debug.get("error") or "llm_plan_failed"))
 
             decision = str(plan.get("decision", "")).strip().lower()
             if decision == "final":
@@ -2948,6 +2948,34 @@ class JobV2Orchestrator:
         prefer_zh = self._prefer_chinese_output(job.problem)
         focus = self._infer_problem_focus(job.problem)
         if not job.incidents:
+            failed_devices = [item for item in job.devices if item.status == "failed" or str(item.last_error or "").strip()]
+            if failed_devices:
+                failed_hosts = "、".join(item.host for item in failed_devices[:4])
+                failure_samples = "；".join(str(item.last_error or "unknown_error").strip()[:120] for item in failed_devices[:2])
+                base_root_cause = (
+                    f"设备采集未完成，无法进入根因判断。失败设备：{failed_hosts}。"
+                    if prefer_zh
+                    else f"Device collection did not complete, so RCA could not proceed. Failed devices: {failed_hosts}."
+                )
+                base_impact_scope = (
+                    f"当前涉及设备 {len(job.devices)} 台，其中 {len(failed_devices)} 台采集失败。"
+                    if prefer_zh
+                    else f"{len(job.devices)} devices in scope, with {len(failed_devices)} collection failures."
+                )
+                recommendation = (
+                    f"建议先排查模型连通性、Key/端点配置与设备权限，再重试。最近错误：{failure_samples}"
+                    if prefer_zh
+                    else f"Check model connectivity, key/endpoint configuration, and device permissions before retrying. Recent errors: {failure_samples}"
+                )
+                job.rca_result = RCAResult(
+                    job_id=job.id,
+                    root_cause=base_root_cause,
+                    impact_scope=base_impact_scope,
+                    summary=base_root_cause,
+                    recommendation=recommendation,
+                    confidence=0.0,
+                )
+                return
             base_root_cause = (
                 "未采集到可用于根因判断的异常证据。"
                 if prefer_zh

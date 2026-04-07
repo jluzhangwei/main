@@ -171,16 +171,78 @@ const MODEL_OPTIONS = [
   { value: 'gpt-5.4', label: 'GPT-5.4' },
 ]
 
-type LlmVendor = 'deepseek' | 'nvidia'
+type LlmVendor =
+  | 'deepseek'
+  | 'openai'
+  | 'anthropic'
+  | 'gemini'
+  | 'nvidia'
+  | 'qwen'
+  | 'groq'
+  | 'openrouter'
+  | 'siliconflow'
+  | 'ollama'
 
 const LLM_VENDOR_OPTIONS = [
   { value: 'deepseek', label: 'DeepSeek' },
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'anthropic', label: 'Anthropic' },
+  { value: 'gemini', label: 'Google Gemini' },
   { value: 'nvidia', label: 'NVIDIA' },
+  { value: 'qwen', label: 'Qwen / DashScope' },
+  { value: 'groq', label: 'Groq' },
+  { value: 'openrouter', label: 'OpenRouter' },
+  { value: 'siliconflow', label: 'SiliconFlow' },
+  { value: 'ollama', label: 'Ollama（本地）' },
 ] satisfies Array<{ value: LlmVendor; label: string }>
 
 const LLM_VENDOR_MODEL_OPTIONS: Record<LlmVendor, Array<{ value: string; label: string }>> = {
   deepseek: MODEL_OPTIONS.filter((option) => option.value.startsWith('deepseek-')),
-  nvidia: MODEL_OPTIONS.filter((option) => !option.value.startsWith('deepseek-')),
+  openai: [
+    { value: 'gpt-5.4', label: 'GPT-5.4' },
+    { value: 'gpt-5.3-codex', label: 'GPT-5.3-Codex' },
+    { value: 'gpt-4.1', label: 'GPT-4.1' },
+  ],
+  anthropic: [
+    { value: 'claude-3-7-sonnet-latest', label: 'Claude 3.7 Sonnet' },
+    { value: 'claude-3-5-sonnet-latest', label: 'Claude 3.5 Sonnet' },
+    { value: 'claude-3-5-haiku-latest', label: 'Claude 3.5 Haiku' },
+  ],
+  gemini: [
+    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+    { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
+  ],
+  nvidia: [
+    { value: 'meta/llama-3.1-70b-instruct', label: 'NVIDIA Llama 3.1 70B' },
+    { value: 'qwen/qwen2.5-72b-instruct', label: 'NVIDIA Qwen 2.5 72B' },
+    { value: 'mistralai/mistral-large-2-instruct', label: 'NVIDIA Mistral Large 2' },
+  ],
+  qwen: [
+    { value: 'qwen-max', label: 'Qwen Max' },
+    { value: 'qwen-plus', label: 'Qwen Plus' },
+    { value: 'qwen-turbo', label: 'Qwen Turbo' },
+  ],
+  groq: [
+    { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B Versatile' },
+    { value: 'qwen-qwq-32b', label: 'Qwen QwQ 32B' },
+    { value: 'deepseek-r1-distill-llama-70b', label: 'DeepSeek R1 Distill 70B' },
+  ],
+  openrouter: [
+    { value: 'openrouter/auto', label: 'OpenRouter Auto' },
+    { value: 'openai/gpt-5.4', label: 'OpenRouter GPT-5.4' },
+    { value: 'anthropic/claude-3.7-sonnet', label: 'OpenRouter Claude 3.7 Sonnet' },
+  ],
+  siliconflow: [
+    { value: 'deepseek-ai/DeepSeek-V3', label: 'DeepSeek V3' },
+    { value: 'Qwen/Qwen2.5-72B-Instruct', label: 'Qwen 2.5 72B Instruct' },
+    { value: 'meta-llama/Meta-Llama-3.1-70B-Instruct', label: 'Llama 3.1 70B Instruct' },
+  ],
+  ollama: [
+    { value: 'llama3.1:8b', label: 'Llama 3.1 8B' },
+    { value: 'qwen2.5:7b', label: 'Qwen 2.5 7B' },
+    { value: 'deepseek-r1:7b', label: 'DeepSeek R1 7B' },
+  ],
 }
 
 const SOP_CURRENT_LOGIC_ITEMS = [
@@ -1958,7 +2020,7 @@ function App() {
 
   async function handleSaveApiKey() {
     const apiKey = llmSettingsApiKeyInput.trim()
-    if (!apiKey) {
+    if (llmVendorInput !== 'ollama' && !apiKey) {
       antMessage.warning('请输入 API Key')
       return
     }
@@ -1967,12 +2029,13 @@ function App() {
     try {
       const nextModel = resolveVendorModel(llmVendorInput, llmSettingsModelInput)
       const status = await configureLlm({
-        apiKey: llmVendorInput === 'deepseek' ? apiKey : undefined,
+        provider: llmVendorInput,
+        apiKey: llmVendorInput === 'nvidia' ? undefined : apiKey || '',
         nvidiaApiKey: llmVendorInput === 'nvidia' ? apiKey : undefined,
         model: nextModel,
         failoverEnabled: llmFailoverEnabled,
         batchExecutionEnabled: llmBatchExecutionEnabled,
-        modelCandidates: resolveModelCandidates(nextModel, llmStatus?.model_candidates),
+        modelCandidates: LLM_VENDOR_MODEL_OPTIONS[llmVendorInput].map((option) => option.value),
       })
       setLlmStatus(status)
       const savedVendor = inferLlmVendor(status)
@@ -2007,11 +2070,16 @@ function App() {
     setLlmModelInput(nextModel)
     setLlmSaving(true)
     try {
-      const status = await configureLlm({ model: nextModel })
+      const nextVendor = inferLlmVendor({ model: nextModel, deepseek_enabled: llmStatus?.deepseek_enabled, nvidia_enabled: llmStatus?.nvidia_enabled })
+      const status = await configureLlm({
+        provider: nextVendor,
+        model: nextModel,
+        modelCandidates: LLM_VENDOR_MODEL_OPTIONS[nextVendor].map((option) => option.value),
+      })
       setLlmStatus(status)
-      const nextVendor = inferLlmVendor(status)
-      setLlmVendorInput(nextVendor)
-      setLlmSettingsModelInput(resolveVendorModel(nextVendor, status.model))
+      const savedVendor = inferLlmVendor(status)
+      setLlmVendorInput(savedVendor)
+      setLlmSettingsModelInput(resolveVendorModel(savedVendor, status.model))
       if (typeof status.failover_enabled === 'boolean') {
         setLlmFailoverEnabled(status.failover_enabled)
       }
@@ -5122,8 +5190,10 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
                 <h3>AI 设置</h3>
                 <p className="muted">模型配置统一放到此页，工作台保持诊断专注。</p>
                 <div className="kv"><span>状态</span><strong>{llmStatus?.enabled ? '已启用' : '未启用'}</strong></div>
+                <div className="kv"><span>当前厂商</span><strong>{LLM_VENDOR_OPTIONS.find((option) => option.value === llmVendorInput)?.label || llmVendorInput}</strong></div>
                 <div className="kv"><span>主模型</span><strong>{llmStatus?.model || '-'}</strong></div>
                 <div className="kv"><span>当前生效模型</span><strong>{llmStatus?.active_model || llmStatus?.model || '-'}</strong></div>
+                <div className="kv"><span>已配置厂商</span><strong>{(llmStatus?.configured_providers || []).join(' / ') || '-'}</strong></div>
                 <div className="kv"><span>DeepSeek Key</span><strong>{llmStatus?.deepseek_enabled ? '已配置' : '未配置'}</strong></div>
                 <div className="kv"><span>NVIDIA Key</span><strong>{llmStatus?.nvidia_enabled ? '已配置' : '未配置'}</strong></div>
                 <div className="kv"><span>自动切换</span><strong>{llmFailoverEnabled ? '开启' : '关闭'}</strong></div>
@@ -5175,7 +5245,11 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
                     <Input.Password
                       value={llmSettingsApiKeyInput}
                       onChange={(event) => setLlmSettingsApiKeyInput(event.target.value)}
-                      placeholder={llmVendorInput === 'deepseek' ? '输入 DeepSeek API Key (sk-...)' : '输入 NVIDIA API Key'}
+                      placeholder={
+                        llmVendorInput === 'ollama'
+                          ? '本地 Ollama 默认可留空；如网关要求鉴权可在此填写'
+                          : `输入 ${LLM_VENDOR_OPTIONS.find((option) => option.value === llmVendorInput)?.label || llmVendorInput} API Key`
+                      }
                     />
                   </div>
                 </div>
@@ -5520,8 +5594,20 @@ function formatLlmUnavailableReason(reason?: string): string {
 }
 
 function inferLlmVendor(input?: Pick<LLMStatus, 'model' | 'deepseek_enabled' | 'nvidia_enabled'> | null): LlmVendor {
+  const provider = String((input as { provider?: string } | null | undefined)?.provider || '').trim().toLowerCase()
+  if (provider && provider in LLM_VENDOR_MODEL_OPTIONS) {
+    return provider as LlmVendor
+  }
   const model = String(input?.model || '').trim().toLowerCase()
   if (model.startsWith('deepseek-')) return 'deepseek'
+  if (['gpt-', 'o1', 'o3', 'o4'].some((prefix) => model.startsWith(prefix))) return 'openai'
+  if (model.startsWith('claude')) return 'anthropic'
+  if (model.startsWith('gemini')) return 'gemini'
+  if (['qwen-', 'qwen_', 'qwen-max', 'qwen-plus', 'qwen-turbo'].some((prefix) => model.startsWith(prefix))) return 'qwen'
+  if (model.startsWith('openrouter/')) return 'openrouter'
+  if (model.startsWith('ollama/')) return 'ollama'
+  if (['meta/', 'nvidia/', 'mistralai/'].some((prefix) => model.startsWith(prefix))) return 'nvidia'
+  if (['llama3.', 'qwen2.', 'deepseek-r1:'].some((prefix) => model.startsWith(prefix))) return 'ollama'
   if (input?.nvidia_enabled && !input?.deepseek_enabled) return 'nvidia'
   return 'deepseek'
 }

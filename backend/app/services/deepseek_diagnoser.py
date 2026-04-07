@@ -233,16 +233,66 @@ SOP_EXTRACTION_SYSTEM_PROMPT = (
     "review_notes要明确指出人工审核时需要重点留意什么。"
 )
 
+SUPPORTED_LLM_PROVIDERS = (
+    "deepseek",
+    "openai",
+    "anthropic",
+    "gemini",
+    "nvidia",
+    "qwen",
+    "groq",
+    "openrouter",
+    "siliconflow",
+    "ollama",
+)
+
+OPENAI_COMPATIBLE_PROVIDERS = {
+    "deepseek",
+    "openai",
+    "nvidia",
+    "qwen",
+    "groq",
+    "openrouter",
+    "siliconflow",
+    "ollama",
+}
+
 
 class DeepSeekDiagnoser:
     def __init__(self) -> None:
         self.default_base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip().rstrip("/")
         self.default_nvidia_base_url = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1").strip().rstrip("/")
+        self.default_provider_base_urls: dict[str, str] = {
+            "deepseek": self.default_base_url,
+            "openai": os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/"),
+            "anthropic": os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1").strip().rstrip("/"),
+            "gemini": os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/"),
+            "nvidia": self.default_nvidia_base_url,
+            "qwen": os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").strip().rstrip("/"),
+            "groq": os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").strip().rstrip("/"),
+            "openrouter": os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip().rstrip("/"),
+            "siliconflow": os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1").strip().rstrip("/"),
+            "ollama": os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1").strip().rstrip("/"),
+        }
         self.default_model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip()
-        self.api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
-        self.nvidia_api_key = os.getenv("NVIDIA_API_KEY", "").strip()
-        self.base_url = self.default_base_url
-        self.nvidia_base_url = self.default_nvidia_base_url
+        self.provider = os.getenv("LLM_PROVIDER", "").strip().lower() or self._infer_provider_from_model(self.default_model)
+        self.provider_api_keys: dict[str, str] = {
+            "deepseek": os.getenv("DEEPSEEK_API_KEY", "").strip(),
+            "openai": os.getenv("OPENAI_API_KEY", "").strip(),
+            "anthropic": os.getenv("ANTHROPIC_API_KEY", "").strip(),
+            "gemini": os.getenv("GEMINI_API_KEY", "").strip(),
+            "nvidia": os.getenv("NVIDIA_API_KEY", "").strip(),
+            "qwen": os.getenv("QWEN_API_KEY", "").strip(),
+            "groq": os.getenv("GROQ_API_KEY", "").strip(),
+            "openrouter": os.getenv("OPENROUTER_API_KEY", "").strip(),
+            "siliconflow": os.getenv("SILICONFLOW_API_KEY", "").strip(),
+            "ollama": os.getenv("OLLAMA_API_KEY", "").strip(),
+        }
+        self.provider_base_urls: dict[str, str] = dict(self.default_provider_base_urls)
+        self.api_key = self.provider_api_keys.get("deepseek", "")
+        self.nvidia_api_key = self.provider_api_keys.get("nvidia", "")
+        self.base_url = self.provider_base_urls.get("deepseek", self.default_base_url)
+        self.nvidia_base_url = self.provider_base_urls.get("nvidia", self.default_nvidia_base_url)
         self.model = self.default_model
         self.failover_enabled = os.getenv("NETOPS_MODEL_FAILOVER_ENABLED", "1").strip().lower() in {"1", "true", "yes"}
         self.batch_execution_enabled = (
@@ -266,30 +316,56 @@ class DeepSeekDiagnoser:
 
     @property
     def enabled(self) -> bool:
-        return bool(self.api_key or self.nvidia_api_key)
+        if str(self.provider).strip().lower() == "ollama":
+            return True
+        return any(bool(value) for value in self.provider_api_keys.values()) or bool(self.api_key or self.nvidia_api_key)
 
     def configure(
         self,
         *,
+        provider: Optional[str] = None,
         api_key: Optional[str] = None,
         nvidia_api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         nvidia_base_url: Optional[str] = None,
+        provider_base_url: Optional[str] = None,
         model: Optional[str] = None,
         failover_enabled: Optional[bool] = None,
         model_candidates: Optional[list[str]] = None,
         batch_execution_enabled: Optional[bool] = None,
     ) -> None:
+        next_provider = str(provider or "").strip().lower()
+        explicit_provider_base_url = bool(str(provider_base_url or "").strip())
+        explicit_base_url = bool(str(base_url or "").strip())
+        if next_provider in SUPPORTED_LLM_PROVIDERS:
+            self.provider = next_provider
+            if not explicit_provider_base_url and not explicit_base_url and next_provider != "nvidia":
+                self.provider_base_urls[next_provider] = self.default_provider_base_urls.get(
+                    next_provider,
+                    self.default_base_url,
+                )
         if api_key is not None:
-            self.api_key = api_key.strip()
+            target_provider = self.provider if self.provider in SUPPORTED_LLM_PROVIDERS else "deepseek"
+            self.provider_api_keys[target_provider] = api_key.strip()
         if nvidia_api_key is not None:
-            self.nvidia_api_key = nvidia_api_key.strip()
+            self.provider_api_keys["nvidia"] = nvidia_api_key.strip()
         if base_url:
-            self.base_url = base_url.strip().rstrip("/")
+            target_provider = self.provider if self.provider in SUPPORTED_LLM_PROVIDERS else "deepseek"
+            self.provider_base_urls[target_provider] = base_url.strip().rstrip("/")
         if nvidia_base_url:
-            self.nvidia_base_url = nvidia_base_url.strip().rstrip("/")
+            self.provider_base_urls["nvidia"] = nvidia_base_url.strip().rstrip("/")
+        if provider_base_url:
+            target_provider = self.provider if self.provider in SUPPORTED_LLM_PROVIDERS else "deepseek"
+            self.provider_base_urls[target_provider] = provider_base_url.strip().rstrip("/")
         if model:
             self.model = model.strip()
+            if not next_provider:
+                self.provider = self._infer_provider_from_model(self.model, fallback=self.provider)
+            if not explicit_provider_base_url and not explicit_base_url and self.provider in SUPPORTED_LLM_PROVIDERS:
+                self.provider_base_urls[self.provider] = self.default_provider_base_urls.get(
+                    self.provider,
+                    self.default_base_url,
+                )
         if failover_enabled is not None:
             self.failover_enabled = bool(failover_enabled)
         if batch_execution_enabled is not None:
@@ -297,12 +373,16 @@ class DeepSeekDiagnoser:
         if model_candidates is not None:
             self.model_candidates = self._normalize_model_candidates(model_candidates)
         self.model_candidates = self._normalize_model_candidates([self.model, *self.model_candidates])
+        self._sync_legacy_provider_aliases()
         self.active_model = self.model
         self.last_error = None
         self.last_error_code = None
         self._save_config()
 
     def delete_saved_config(self) -> None:
+        self.provider_api_keys = {name: "" for name in SUPPORTED_LLM_PROVIDERS}
+        self.provider_base_urls = dict(self.default_provider_base_urls)
+        self.provider = self._infer_provider_from_model(self.default_model)
         self.api_key = ""
         self.nvidia_api_key = ""
         self.base_url = self.default_base_url
@@ -321,6 +401,7 @@ class DeepSeekDiagnoser:
     def status(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
+            "provider": self.provider,
             "base_url": self.base_url,
             "nvidia_base_url": self.nvidia_base_url,
             "model": self.model,
@@ -328,6 +409,7 @@ class DeepSeekDiagnoser:
             "failover_enabled": self.failover_enabled,
             "batch_execution_enabled": self.batch_execution_enabled,
             "model_candidates": list(self.model_candidates),
+            "configured_providers": [name for name in SUPPORTED_LLM_PROVIDERS if self._provider_is_configured(name)],
             "deepseek_enabled": bool(self.api_key),
             "nvidia_enabled": bool(self.nvidia_api_key),
             "last_error": self.last_error,
@@ -339,6 +421,7 @@ class DeepSeekDiagnoser:
     def prompt_strategy(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
+            "provider": self.provider,
             "base_url": self.base_url,
             "nvidia_base_url": self.nvidia_base_url,
             "model": self.model,
@@ -346,6 +429,7 @@ class DeepSeekDiagnoser:
             "failover_enabled": self.failover_enabled,
             "batch_execution_enabled": self.batch_execution_enabled,
             "model_candidates": list(self.model_candidates),
+            "configured_providers": [name for name in SUPPORTED_LLM_PROVIDERS if self._provider_is_configured(name)],
             "nvidia_enabled": bool(self.nvidia_api_key),
             "last_error": self.last_error,
             "last_error_code": self.last_error_code,
@@ -378,10 +462,13 @@ class DeepSeekDiagnoser:
 
     def _save_config(self) -> None:
         payload = {
+            "provider": self.provider,
             "api_key": self.api_key,
             "nvidia_api_key": self.nvidia_api_key,
             "base_url": self.base_url,
             "nvidia_base_url": self.nvidia_base_url,
+            "provider_api_keys": self.provider_api_keys,
+            "provider_base_urls": self.provider_base_urls,
             "model": self.model,
             "failover_enabled": self.failover_enabled,
             "batch_execution_enabled": self.batch_execution_enabled,
@@ -416,22 +503,41 @@ class DeepSeekDiagnoser:
         return None
 
     def _apply_loaded_config(self, data: dict[str, Any]) -> None:
+        provider = str(data.get("provider", "")).strip().lower()
         api_key = str(data.get("api_key", "")).strip()
         nvidia_api_key = str(data.get("nvidia_api_key", "")).strip()
         base_url = str(data.get("base_url", "")).strip().rstrip("/")
         nvidia_base_url = str(data.get("nvidia_base_url", "")).strip().rstrip("/")
+        provider_api_keys = data.get("provider_api_keys")
+        provider_base_urls = data.get("provider_base_urls")
         model = str(data.get("model", "")).strip()
         failover_enabled = data.get("failover_enabled")
         batch_execution_enabled = data.get("batch_execution_enabled")
         candidates = data.get("model_candidates")
+        if provider in SUPPORTED_LLM_PROVIDERS:
+            self.provider = provider
+        if isinstance(provider_api_keys, dict):
+            for key, value in provider_api_keys.items():
+                name = str(key).strip().lower()
+                if name not in SUPPORTED_LLM_PROVIDERS:
+                    continue
+                self.provider_api_keys[name] = str(value or "").strip()
+        if isinstance(provider_base_urls, dict):
+            for key, value in provider_base_urls.items():
+                name = str(key).strip().lower()
+                if name not in SUPPORTED_LLM_PROVIDERS:
+                    continue
+                text = str(value or "").strip().rstrip("/")
+                if text:
+                    self.provider_base_urls[name] = text
         if api_key:
-            self.api_key = api_key
+            self.provider_api_keys["deepseek"] = api_key
         if nvidia_api_key:
-            self.nvidia_api_key = nvidia_api_key
+            self.provider_api_keys["nvidia"] = nvidia_api_key
         if base_url:
-            self.base_url = base_url
+            self.provider_base_urls["deepseek"] = base_url
         if nvidia_base_url:
-            self.nvidia_base_url = nvidia_base_url
+            self.provider_base_urls["nvidia"] = nvidia_base_url
         if model:
             self.model = model
         if isinstance(failover_enabled, bool):
@@ -440,7 +546,10 @@ class DeepSeekDiagnoser:
             self.batch_execution_enabled = batch_execution_enabled
         if isinstance(candidates, list):
             self.model_candidates = self._normalize_model_candidates([str(item) for item in candidates])
+        self.provider = self._infer_provider_from_model(self.model, fallback=self.provider)
+        self._sanitize_provider_base_urls()
         self.model_candidates = self._normalize_model_candidates([self.model, *self.model_candidates])
+        self._sync_legacy_provider_aliases()
         self.active_model = self.model
 
     def _should_load_saved_config(self) -> bool:
@@ -459,6 +568,63 @@ class DeepSeekDiagnoser:
         except Exception:
             home_dir = Path.home().expanduser()
         return home_dir / ".netops-ai-v1" / "llm_config.json"
+
+    def _sync_legacy_provider_aliases(self) -> None:
+        self.api_key = self.provider_api_keys.get("deepseek", "").strip()
+        self.nvidia_api_key = self.provider_api_keys.get("nvidia", "").strip()
+        self.base_url = self.provider_base_urls.get("deepseek", self.default_base_url).strip().rstrip("/")
+        self.nvidia_base_url = self.provider_base_urls.get("nvidia", self.default_nvidia_base_url).strip().rstrip("/")
+
+    def _sanitize_provider_base_urls(self) -> None:
+        def _normalized(value: str) -> str:
+            return str(value or "").strip().rstrip("/").lower()
+
+        mismatched_defaults = {
+            "deepseek": {_normalized(self.default_nvidia_base_url)},
+            "nvidia": {_normalized(self.default_base_url)},
+        }
+        for provider_name, wrong_values in mismatched_defaults.items():
+            current = _normalized(self.provider_base_urls.get(provider_name, ""))
+            if current and current in wrong_values:
+                self.provider_base_urls[provider_name] = self.default_provider_base_urls.get(
+                    provider_name,
+                    self.default_base_url,
+                )
+
+    def _provider_is_configured(self, provider: str) -> bool:
+        name = str(provider or "").strip().lower()
+        if name == "ollama":
+            return self.provider == "ollama" or bool(self.provider_api_keys.get(name, "").strip())
+        if name == "deepseek":
+            return bool(self.provider_api_keys.get(name, "").strip() or self.api_key)
+        if name == "nvidia":
+            return bool(self.provider_api_keys.get(name, "").strip() or self.nvidia_api_key)
+        return bool(self.provider_api_keys.get(name, "").strip())
+
+    def _infer_provider_from_model(self, model: str, fallback: Optional[str] = None) -> str:
+        model_text = str(model or "").strip().lower()
+        fallback_text = str(fallback or "").strip().lower()
+        if model_text.startswith("deepseek"):
+            return "deepseek"
+        if model_text.startswith(("gpt-", "o1", "o3", "o4")):
+            return "openai"
+        if model_text.startswith("claude"):
+            return "anthropic"
+        if model_text.startswith("gemini"):
+            return "gemini"
+        if model_text.startswith("openrouter/"):
+            return "openrouter"
+        if model_text.startswith(("qwen-", "qwen_")):
+            return "qwen"
+        if model_text.startswith("ollama/"):
+            return "ollama"
+        if self._is_nvidia_model(model_text):
+            return "nvidia"
+        if fallback_text in SUPPORTED_LLM_PROVIDERS:
+            return fallback_text
+        if any(token in model_text for token in ("llama", "mistral", "gemma")) and fallback_text == "ollama":
+            return "ollama"
+        return "deepseek"
 
     async def diagnose(
         self,
@@ -1010,36 +1176,137 @@ class DeepSeekDiagnoser:
         self, request_body: dict[str, Any]
     ) -> tuple[Optional[dict[str, Any]], Optional[str], Optional[str]]:
         model = str(request_body.get("model") or "").strip()
-        request_base_url = self._resolve_request_base_url(model=model)
-        request_api_key = self._resolve_request_api_key(model=model, base_url=request_base_url)
-        if not request_api_key:
+        provider = self._infer_provider_from_model(model, fallback=self.provider)
+        request_base_url = self._resolve_request_base_url(model=model, provider=provider)
+        request_api_key = self._resolve_request_api_key(model=model, provider=provider, base_url=request_base_url)
+        if provider != "ollama" and not request_api_key:
             return None, f"[{model}] missing api key", "api_key_missing"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(
-                    f"{request_base_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {request_api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=request_body,
-                )
-                if resp.status_code >= 400:
-                    snippet = (resp.text or "").strip().replace("\n", " ")
-                    code = "provider_http_error"
-                    if resp.status_code in {401, 403}:
-                        code = "auth_error"
-                    elif resp.status_code == 429:
-                        code = "rate_limit"
-                    elif resp.status_code >= 500:
-                        code = "provider_unavailable"
-                    return None, f"[{model}] HTTP {resp.status_code}: {snippet[:220]}", code
-                data = resp.json()
-                if isinstance(data, dict):
-                    return data, None, None
-                return None, f"[{model}] invalid response payload", "invalid_payload"
+                if provider in OPENAI_COMPATIBLE_PROVIDERS:
+                    return await self._post_openai_compatible(client, provider, model, request_body, request_base_url, request_api_key)
+                if provider == "anthropic":
+                    return await self._post_anthropic(client, model, request_body, request_base_url, request_api_key)
+                if provider == "gemini":
+                    return await self._post_gemini(client, model, request_body, request_base_url, request_api_key)
+                return None, f"[{model}] unsupported provider: {provider}", "provider_http_error"
         except Exception as exc:
             return None, f"[{model}] {str(exc)[:220]}", "connectivity_error"
+
+    async def _post_openai_compatible(
+        self,
+        client: httpx.AsyncClient,
+        provider: str,
+        model: str,
+        request_body: dict[str, Any],
+        base_url: str,
+        api_key: str,
+    ) -> tuple[Optional[dict[str, Any]], Optional[str], Optional[str]]:
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        resp = await client.post(f"{base_url}/chat/completions", headers=headers, json=request_body)
+        if resp.status_code >= 400:
+            return self._http_error(model, resp)
+        data = resp.json()
+        if isinstance(data, dict):
+            return data, None, None
+        return None, f"[{model}] invalid response payload", "invalid_payload"
+
+    async def _post_anthropic(
+        self,
+        client: httpx.AsyncClient,
+        model: str,
+        request_body: dict[str, Any],
+        base_url: str,
+        api_key: str,
+    ) -> tuple[Optional[dict[str, Any]], Optional[str], Optional[str]]:
+        messages = list(request_body.get("messages") or [])
+        system_prompt = ""
+        anthropic_messages: list[dict[str, str]] = []
+        for item in messages:
+            role = str(item.get("role", "")).strip()
+            content = str(item.get("content", "")).strip()
+            if not content:
+                continue
+            if role == "system":
+                system_prompt = content
+                continue
+            if role in {"user", "assistant"}:
+                anthropic_messages.append({"role": role, "content": content})
+        payload = {
+            "model": model,
+            "temperature": request_body.get("temperature", 0),
+            "max_tokens": 2048,
+            "messages": anthropic_messages,
+        }
+        if system_prompt:
+            payload["system"] = system_prompt
+        resp = await client.post(
+            f"{base_url}/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+        if resp.status_code >= 400:
+            return self._http_error(model, resp)
+        data = resp.json()
+        if isinstance(data, dict):
+            return data, None, None
+        return None, f"[{model}] invalid response payload", "invalid_payload"
+
+    async def _post_gemini(
+        self,
+        client: httpx.AsyncClient,
+        model: str,
+        request_body: dict[str, Any],
+        base_url: str,
+        api_key: str,
+    ) -> tuple[Optional[dict[str, Any]], Optional[str], Optional[str]]:
+        messages = list(request_body.get("messages") or [])
+        system_prompt = ""
+        contents: list[dict[str, Any]] = []
+        for item in messages:
+            role = str(item.get("role", "")).strip()
+            content = str(item.get("content", "")).strip()
+            if not content:
+                continue
+            if role == "system":
+                system_prompt = content
+                continue
+            gemini_role = "model" if role == "assistant" else "user"
+            contents.append({"role": gemini_role, "parts": [{"text": content}]})
+        payload: dict[str, Any] = {
+            "contents": contents,
+            "generationConfig": {"temperature": request_body.get("temperature", 0)},
+        }
+        if system_prompt:
+            payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
+        endpoint = f"{base_url}/models/{model}:generateContent"
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["x-goog-api-key"] = api_key
+        resp = await client.post(endpoint, headers=headers, json=payload)
+        if resp.status_code >= 400:
+            return self._http_error(model, resp)
+        data = resp.json()
+        if isinstance(data, dict):
+            return data, None, None
+        return None, f"[{model}] invalid response payload", "invalid_payload"
+
+    def _http_error(self, model: str, resp: httpx.Response) -> tuple[None, str, str]:
+        snippet = (resp.text or "").strip().replace("\n", " ")
+        code = "provider_http_error"
+        if resp.status_code in {401, 403}:
+            code = "auth_error"
+        elif resp.status_code == 429:
+            code = "rate_limit"
+        elif resp.status_code >= 500:
+            code = "provider_unavailable"
+        return None, f"[{model}] HTTP {resp.status_code}: {snippet[:220]}", code
 
     def _normalize_model_candidates(self, values: list[str]) -> list[str]:
         out: list[str] = []
@@ -1056,41 +1323,41 @@ class DeepSeekDiagnoser:
         return out
 
     def _candidate_model_order(self, preferred: str) -> list[str]:
-        fallback_defaults = ["deepseek-chat", "deepseek-reasoner"]
+        provider = self._infer_provider_from_model(preferred, fallback=self.provider)
+        provider_defaults: dict[str, list[str]] = {
+            "deepseek": ["deepseek-chat", "deepseek-reasoner"],
+            "openai": ["gpt-5.4", "gpt-5.3-codex", "gpt-4.1"],
+            "anthropic": ["claude-3-7-sonnet-latest", "claude-3-5-sonnet-latest"],
+            "gemini": ["gemini-2.5-pro", "gemini-2.5-flash"],
+            "nvidia": ["meta/llama-3.1-70b-instruct", "qwen/qwen2.5-72b-instruct"],
+            "qwen": ["qwen-plus", "qwen-turbo"],
+            "groq": ["llama-3.3-70b-versatile", "qwen-qwq-32b"],
+            "openrouter": ["openrouter/auto"],
+            "siliconflow": ["deepseek-ai/DeepSeek-V3", "Qwen/Qwen2.5-72B-Instruct"],
+            "ollama": ["llama3.1:8b", "qwen2.5:7b"],
+        }
+        fallback_defaults = provider_defaults.get(provider, ["deepseek-chat"])
         return self._normalize_model_candidates([preferred, *self.model_candidates, *fallback_defaults])
 
-    def _resolve_request_base_url(self, *, model: str) -> str:
-        model_text = str(model or "").strip().lower()
-        configured = str(self.base_url or "").strip().rstrip("/")
-        configured_nvidia = str(self.nvidia_base_url or "").strip().rstrip("/")
-
-        # NVIDIA catalog models are usually provider-prefixed, e.g. deepseek-ai/deepseek-r1.
-        if self._is_nvidia_model(model_text):
-            return configured_nvidia or self.default_nvidia_base_url
-
-        # DeepSeek models should always hit DeepSeek-compatible endpoint.
-        if model_text.startswith("deepseek"):
-            if configured and "nvidia.com" not in configured.lower():
-                return configured
-            return self.default_base_url
-
-        # Keep user-configured endpoint for unknown model families.
+    def _resolve_request_base_url(self, *, model: str, provider: Optional[str] = None) -> str:
+        provider_name = self._infer_provider_from_model(model, fallback=provider or self.provider)
+        configured = str(self.provider_base_urls.get(provider_name, "") or "").strip().rstrip("/")
         if configured:
             return configured
-        return self.default_base_url
+        return self.default_provider_base_urls.get(provider_name, self.default_base_url)
 
-    def _resolve_request_api_key(self, *, model: str, base_url: str) -> str:
-        model_text = str(model or "").strip().lower()
+    def _resolve_request_api_key(self, *, model: str, provider: Optional[str] = None, base_url: str) -> str:
+        provider_name = self._infer_provider_from_model(model, fallback=provider or self.provider)
         current_base_url = str(base_url or "").strip().lower()
         if "nvidia.com" in current_base_url:
-            return self.nvidia_api_key
-        if model_text.startswith("deepseek") and self.api_key:
-            return self.api_key
-        if self.api_key:
-            return self.api_key
-        if self.nvidia_api_key:
-            return self.nvidia_api_key
-        return ""
+            return self.provider_api_keys.get("nvidia", "") or self.nvidia_api_key
+        if provider_name == "ollama":
+            return self.provider_api_keys.get("ollama", "")
+        if provider_name == "deepseek":
+            return self.provider_api_keys.get(provider_name, "") or self.api_key
+        if provider_name == "nvidia":
+            return self.provider_api_keys.get(provider_name, "") or self.nvidia_api_key
+        return self.provider_api_keys.get(provider_name, "")
 
     def _is_nvidia_model(self, model_text: str) -> bool:
         if not model_text:
@@ -1134,7 +1401,24 @@ class DeepSeekDiagnoser:
         try:
             return str(data["choices"][0]["message"]["content"])
         except Exception:
-            return ""
+            pass
+        try:
+            parts = data["content"]
+            if isinstance(parts, list):
+                text_parts = [str(item.get("text", "")).strip() for item in parts if isinstance(item, dict)]
+                return "\n".join(part for part in text_parts if part).strip()
+        except Exception:
+            pass
+        try:
+            candidates = data["candidates"]
+            if isinstance(candidates, list) and candidates:
+                parts = candidates[0]["content"]["parts"]
+                if isinstance(parts, list):
+                    text_parts = [str(item.get("text", "")).strip() for item in parts if isinstance(item, dict)]
+                    return "\n".join(part for part in text_parts if part).strip()
+        except Exception:
+            pass
+        return ""
 
     def _parse_json_object(self, text: str) -> Optional[dict[str, Any]]:
         text = text.strip()

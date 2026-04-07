@@ -200,6 +200,33 @@ def test_nvidia_base_url_prefers_nvidia_api_key(tmp_path, monkeypatch):
     assert selected == "nvapi-token"
 
 
+def test_loading_config_resets_legacy_cross_provider_base_url(tmp_path, monkeypatch):
+    config_path = tmp_path / "llm_runtime.json"
+    monkeypatch.setenv("NETOPS_LLM_CONFIG_PATH", str(config_path))
+
+    config_path.write_text(
+        json.dumps(
+            {
+                "provider": "deepseek",
+                "model": "deepseek-chat",
+                "api_key": "sk-test",
+                "nvidia_api_key": "nv-test",
+                "provider_base_urls": {
+                    "deepseek": "https://integrate.api.nvidia.com/v1",
+                    "nvidia": "https://integrate.api.nvidia.com/v1",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    diagnoser = DeepSeekDiagnoser()
+
+    assert diagnoser.provider == "deepseek"
+    assert diagnoser.base_url == "https://api.deepseek.com"
+    assert diagnoser.nvidia_base_url == "https://integrate.api.nvidia.com/v1"
+
+
 def test_next_step_payload_trims_commands_and_long_outputs():
     session, commands, evidences = _sample_session_bundle()
     for idx in range(2, 15):
