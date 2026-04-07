@@ -16,9 +16,27 @@
       --sea-gray: #e5e7eb;
     }
     body { margin: 0; font-family: "Segoe UI", -apple-system, system-ui, Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f8fafc; }
-    .wrap { display: grid; grid-template-columns: 430px 1fr; height: calc(100vh - 106px); }
-    .panel { padding: 14px; border-right: 1px solid #e5e7eb; overflow: auto; background: #ffffff; box-shadow: 4px 0 24px rgba(0,0,0,0.04); }
-    #cy { height: 100%; width: 100%; background: #ffffff; }
+    .wrap { display: flex; height: calc(100vh - 106px); position: relative; }
+    .wrap.collapsed .panel { display: none; }
+    .panel { width: 430px; flex-shrink: 0; padding: 14px; border-right: 1px solid #e5e7eb; overflow: auto; background: #ffffff; box-shadow: 4px 0 24px rgba(0,0,0,0.04); scrollbar-width: none; -ms-overflow-style: none; }
+    .panel::-webkit-scrollbar { display: none; }
+    button#togglePanel {
+      position: absolute;
+      left: 434px;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 10;
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      font-size: 16px;
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: #374151;
+    }
+    .wrap.collapsed button#togglePanel { left: 0; transform: translateY(-50%); }
+    #cy { flex: 1; height: 100%; width: 100%; background: #ffffff; }
 
     h1 { font-size: 17px; margin: 0 0 10px; letter-spacing: 0.2px; }
     h2 { font-size: 13px; margin: 14px 0 6px; color: #374151; }
@@ -330,6 +348,7 @@
   </div>
 </div>
 <div class="wrap">
+  <button id="togglePanel">《</button>
   <div class="panel">
     <div class="box">
       <div><b id="statusLabel">状态：</b><span id="status">等待导入</span></div>
@@ -495,6 +514,9 @@
         <div class="row inline">
           <button id="buildScopedTopo">重排选中设备</button>
           <button id="openPathFinder">查找路径</button>
+        </div>
+        <div class="row inline">
+          <button id="exitGroupView" disabled>返回主视图</button>
         </div>
       </div>
 
@@ -961,6 +983,11 @@
   let expandedAutoGroupKeys = new Set();
   let manualGroups = [];
   let expandedManualGroupKeys = new Set();
+  let groupViewState = {
+    active: false,
+    groupKey: '',
+    preSnapshot: null
+  };
   const NODE_BASE_SIZE = 30;
   const NODE_BASE_FONT_SIZE = 10;
   let lastZoomNodeScale = null;
@@ -992,6 +1019,15 @@
   })();
 
   const $ = (id) => document.getElementById(id);
+  (() => {
+    const wrap = document.querySelector('.wrap');
+    const btn = $('togglePanel');
+    if (!wrap || !btn) return;
+    btn.addEventListener('click', () => {
+      wrap.classList.toggle('collapsed');
+      btn.textContent = wrap.classList.contains('collapsed') ? '》' : '《';
+    });
+  })();
   const setStatus = (t) => $('status').textContent = t;
   const setOK = (t) => $('ok').textContent = t || '';
   const setErr = (t) => $('err').textContent = t || '';
@@ -1009,6 +1045,7 @@
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+
   const UI_LANG_KEY = 'lldp_ui_lang';
   const UI_TEXT = {
     zh: {
@@ -1058,6 +1095,7 @@
       btn_select_visible: '全选可见节点',
       btn_relayout_selected: '重排选中设备',
       btn_find_path: '查找路径',
+      btn_exit_group_view: '返回主视图',
       node_label_short: '缩略（推荐）',
       node_label_full: '全名（容易挤）',
       node_label_full_ip: '全名+IP',
@@ -1177,6 +1215,7 @@
       btn_select_visible: 'Select Visible Nodes',
       btn_relayout_selected: 'Relayout Selected',
       btn_find_path: 'Find Path',
+      btn_exit_group_view: 'Back to Main View',
       node_label_short: 'Short (Recommended)',
       node_label_full: 'Full (Crowded)',
       node_label_full_ip: 'Full + IP',
@@ -1398,6 +1437,7 @@
     setText('selectVisible', 'btn_select_visible');
     setText('buildScopedTopo', 'btn_relayout_selected');
     setText('openPathFinder', 'btn_find_path');
+    setText('exitGroupView', 'btn_exit_group_view');
     setText('fitSelection', 'btn_fit_selection');
     setText('isolateSelection', 'btn_isolate');
     setText('clearSelectionHide', 'btn_clear_visibility');
@@ -1911,6 +1951,63 @@
     return ipHit || id;
   }
 
+  function findExistingNodeIdByLabel(name) {
+    const target = normalizeEntityName(name).toLowerCase();
+    if (!target || !cy) return '';
+    let hit = '';
+    cy.nodes().some((n) => {
+      if (n.data('isGroup')) return false;
+      const label = normalizeEntityName(String(n.data('label') || '').trim()).toLowerCase();
+      const short = normalizeEntityName(stripAfterDot(String(n.data('label') || '').trim())).toLowerCase();
+      if (label === target || short === target) {
+        hit = n.id();
+        return true;
+      }
+      return false;
+    });
+    return hit;
+  }
+
+  function findExistingNodeIpByLabel(name) {
+    const target = normalizeEntityName(name).toLowerCase();
+    if (!target) return '';
+    const mapHit = deviceNameToIpMap.get(target)
+      || deviceNameToIpMap.get(stripAfterDot(target))
+      || nodeIpMap.get(target)
+      || nodeIpMap.get(stripAfterDot(target));
+    if (isIpv4(mapHit)) return mapHit;
+    if (!cy) return '';
+    let hit = '';
+    cy.nodes().some((n) => {
+      if (n.data('isGroup')) return false;
+      const label = normalizeEntityName(String(n.data('label') || '').trim()).toLowerCase();
+      const short = normalizeEntityName(stripAfterDot(String(n.data('label') || '').trim())).toLowerCase();
+      if (label === target || short === target) {
+        hit = primaryIpFromList(n.data('ips') || n.data('ip'));
+        return !!hit;
+      }
+      return false;
+    });
+    return isIpv4(hit) ? hit : '';
+  }
+
+  function findVisibleRepresentativeNodeId(nodeId) {
+    const id = String(nodeId || '').trim();
+    if (!id || !cy) return '';
+    const direct = cy.getElementById(id);
+    if (direct && direct.length) return id;
+    let hit = '';
+    cy.nodes().some((n) => {
+      const members = Array.isArray(n.data('groupMembers')) ? n.data('groupMembers') : [];
+      if (members.includes(id)) {
+        hit = n.id();
+        return true;
+      }
+      return false;
+    });
+    return hit;
+  }
+
   function splitUtilKey(utilKey) {
     const raw = String(utilKey || '').trim();
     if (!raw) return null;
@@ -1969,6 +2066,9 @@
       source_device: queryDevice,
       source_name: sourceName || '',
       source_interface: parsed.iface,
+      peer_device: '',
+      peer_name: '',
+      peer_interface: '',
       util_key: String(utilKey || '').trim(),
       dedupe_key: String(utilKey || '').trim().toLowerCase()
     };
@@ -1993,6 +2093,13 @@
     const leftIf = normalizeUtilInterface(leftIsA ? li : ri) || 'n/a';
     const rightIf = normalizeUtilInterface(leftIsA ? ri : li) || 'n/a';
     return leftId && rightId ? `${leftId}||${rightId}||${leftIf}||${rightIf}` : '';
+  }
+
+  function buildCanonicalNodePairKey(aId, bId) {
+    const leftId = String(aId || '');
+    const rightId = String(bId || '');
+    if (!leftId || !rightId) return '';
+    return leftId <= rightId ? `${leftId}||${rightId}` : `${rightId}||${leftId}`;
   }
 
   function resolveGraphRowContext(r, cols, strip) {
@@ -2023,8 +2130,8 @@
 
     const aEntityKey = inferEntityKey(lhRaw || lh, aIp);
     const bEntityKey = inferEntityKey(rhRaw || rh, bIp);
-    const aId = nodeIdFromEntityKey(aEntityKey);
-    const bId = nodeIdFromEntityKey(bEntityKey);
+    let aId = findExistingNodeIdByLabel(lhRaw || lh) || nodeIdFromEntityKey(aEntityKey);
+    let bId = findExistingNodeIdByLabel(rhRaw || rh) || nodeIdFromEntityKey(bEntityKey);
     if (!aId || !bId) return null;
 
     return {
@@ -2358,12 +2465,16 @@
     if (!lhRaw || !rhRaw) return '';
     const sourceIp = rowValue(row, ['源设备IP', '源设备ip', 'ipaddr', 'sourceip']);
     const remoteIp = rowValue(row, ['目的设备IP', '目的设备ip', 'remoteip']);
-    const aIp = isIpv4(sourceIp) ? sourceIp : (isIpv4(lhRaw) ? lhRaw : '');
-    const bIp = isIpv4(remoteIp) ? remoteIp : (isIpv4(rhRaw) ? rhRaw : '');
+    const aIp = (isIpv4(sourceIp) ? sourceIp : '')
+      || findExistingNodeIpByLabel(lhRaw)
+      || (isIpv4(lhRaw) ? lhRaw : '');
+    const bIp = (isIpv4(remoteIp) ? remoteIp : '')
+      || findExistingNodeIpByLabel(rhRaw)
+      || (isIpv4(rhRaw) ? rhRaw : '');
     const aKey = inferEntityKey(lhRaw, aIp);
     const bKey = inferEntityKey(rhRaw, bIp);
-    const aId = nodeIdFromEntityKey(aKey);
-    const bId = nodeIdFromEntityKey(bKey);
+    const aId = findExistingNodeIdByLabel(lhRaw) || nodeIdFromEntityKey(aKey);
+    const bId = findExistingNodeIdByLabel(rhRaw) || nodeIdFromEntityKey(bKey);
     if (aId && bId) return buildCanonicalEdgeRowKey(aId, bId, li, ri);
     const leftName = normalizeEntityName(lhRaw).toLowerCase();
     const rightName = normalizeEntityName(rhRaw).toLowerCase();
@@ -2379,14 +2490,19 @@
       setErr(`文件 ${sourceName} 没有表头，已跳过`);
       return { added: 0, replaced: 0 };
     }
+    const incomingHeaders = parsed.headers;
     if (!headers.length) {
       headers = parsed.headers;
     } else {
       const base = headers.map(h => h.toLowerCase()).join(',');
-      const incoming = parsed.headers.map(h => h.toLowerCase()).join(',');
+      const incoming = incomingHeaders.map(h => h.toLowerCase()).join(',');
       if (base !== incoming) {
-        setErr(`文件 ${sourceName} 表头不一致，已跳过`);
-        return { added: 0, replaced: 0 };
+        const mapped = alignParsedToHeaders(parsed, headers);
+        if (!mapped) {
+          setErr(`文件 ${sourceName} 表头不一致，已跳过`);
+          return { added: 0, replaced: 0 };
+        }
+        parsed = mapped;
       }
     }
     if (!rawRows.length) {
@@ -2412,6 +2528,116 @@
       added += 1;
     });
     return { added, replaced };
+  }
+
+  function alignParsedToHeaders(parsed, targetHeaders) {
+    const inHeaders = parsed.headers || [];
+    const inIndex = new Map();
+    inHeaders.forEach((h, i) => inIndex.set(String(h || '').toLowerCase(), i));
+
+    const groups = {
+      depth: ['depth','层级','递归层','层'],
+      lh: ['localhostname','local_host','src','from','源设备名称','源设备','本地设备','localdevice'],
+      li: ['localinterface','local_if','src_if','from_if','源设备端口','本地端口','localport'],
+      rh: ['remotehostname','remote_host','dst','to','目的设备名称','目的设备','邻居设备','remotedevice'],
+      ri: ['remoteinterface','remote_if','dst_if','to_if','目的设备端口','邻居端口','remoteport'],
+      sip: ['源设备ip','源设备IP','sourceip','ipaddr','ip'],
+      rip: ['目的设备ip','目的设备IP','remoteip'],
+      rvendor: ['目的设备vendor','remotevendor','vendor']
+    };
+
+    const findIndexByGroup = (groupKeys) => {
+      for (const key of groupKeys) {
+        const k = String(key).toLowerCase();
+        if (inIndex.has(k)) return inIndex.get(k);
+      }
+      return -1;
+    };
+
+    const inMap = {
+      depth: findIndexByGroup(groups.depth),
+      lh: findIndexByGroup(groups.lh),
+      li: findIndexByGroup(groups.li),
+      rh: findIndexByGroup(groups.rh),
+      ri: findIndexByGroup(groups.ri),
+      sip: findIndexByGroup(groups.sip),
+      rip: findIndexByGroup(groups.rip),
+      rvendor: findIndexByGroup(groups.rvendor)
+    };
+
+    if (inMap.lh < 0 || inMap.li < 0 || inMap.rh < 0 || inMap.ri < 0) return null;
+
+    const outIndex = {
+      depth: -1, lh: -1, li: -1, rh: -1, ri: -1, sip: -1, rip: -1, rvendor: -1
+    };
+    targetHeaders.forEach((h, idx) => {
+      const key = String(h || '').toLowerCase();
+      if (outIndex.depth < 0 && groups.depth.map(x => String(x).toLowerCase()).includes(key)) outIndex.depth = idx;
+      if (outIndex.lh < 0 && groups.lh.map(x => String(x).toLowerCase()).includes(key)) outIndex.lh = idx;
+      if (outIndex.li < 0 && groups.li.map(x => String(x).toLowerCase()).includes(key)) outIndex.li = idx;
+      if (outIndex.rh < 0 && groups.rh.map(x => String(x).toLowerCase()).includes(key)) outIndex.rh = idx;
+      if (outIndex.ri < 0 && groups.ri.map(x => String(x).toLowerCase()).includes(key)) outIndex.ri = idx;
+      if (outIndex.sip < 0 && groups.sip.map(x => String(x).toLowerCase()).includes(key)) outIndex.sip = idx;
+      if (outIndex.rip < 0 && groups.rip.map(x => String(x).toLowerCase()).includes(key)) outIndex.rip = idx;
+      if (outIndex.rvendor < 0 && groups.rvendor.map(x => String(x).toLowerCase()).includes(key)) outIndex.rvendor = idx;
+    });
+
+    const selectedLH = String($('colLocalHost')?.value || '').trim();
+    const selectedLI = String($('colLocalIf')?.value || '').trim();
+    const selectedRH = String($('colRemoteHost')?.value || '').trim();
+    const selectedRI = String($('colRemoteIf')?.value || '').trim();
+
+    const readCell = (row, idx) => {
+      if (idx < 0) return '';
+      if (Array.isArray(row)) return String(row[idx] ?? '').trim();
+      const header = inHeaders[idx];
+      return String((row && header != null) ? (row[header] ?? '') : '').trim();
+    };
+
+    const rows = (parsed.rows || []).map((row) => {
+      const out = new Array(targetHeaders.length).fill('');
+      const depthVal = readCell(row, inMap.depth) || '1';
+      const lhVal = readCell(row, inMap.lh);
+      const liVal = readCell(row, inMap.li);
+      const rhVal = readCell(row, inMap.rh);
+      const riVal = readCell(row, inMap.ri);
+      const sipVal = readCell(row, inMap.sip);
+      const ripVal = readCell(row, inMap.rip);
+      const rvendorVal = readCell(row, inMap.rvendor);
+      if (outIndex.depth >= 0) out[outIndex.depth] = depthVal;
+      if (outIndex.lh >= 0) out[outIndex.lh] = lhVal;
+      if (outIndex.li >= 0) out[outIndex.li] = liVal;
+      if (outIndex.rh >= 0) out[outIndex.rh] = rhVal;
+      if (outIndex.ri >= 0) out[outIndex.ri] = riVal;
+      if (outIndex.sip >= 0) out[outIndex.sip] = sipVal;
+      if (outIndex.rip >= 0) out[outIndex.rip] = ripVal;
+      if (outIndex.rvendor >= 0) out[outIndex.rvendor] = rvendorVal;
+
+      // Force-fill the currently selected build columns, even when the workspace headers are custom.
+      const selectedMap = new Map([
+        [selectedLH, lhVal],
+        [selectedLI, liVal],
+        [selectedRH, rhVal],
+        [selectedRI, riVal]
+      ]);
+      targetHeaders.forEach((header, idx) => {
+        const forced = selectedMap.get(String(header || '').trim());
+        if (forced) out[idx] = forced;
+      });
+
+      if (outIndex.sip >= 0 && !String(out[outIndex.sip] || '').trim()) {
+        out[outIndex.sip] = findExistingNodeIpByLabel(outIndex.lh >= 0 ? out[outIndex.lh] : '');
+      }
+      if (outIndex.rip >= 0 && !String(out[outIndex.rip] || '').trim()) {
+        out[outIndex.rip] = findExistingNodeIpByLabel(outIndex.rh >= 0 ? out[outIndex.rh] : '');
+      }
+      const obj = {};
+      targetHeaders.forEach((header, idx) => {
+        obj[header] = out[idx];
+      });
+      return obj;
+    });
+    return { headers: targetHeaders.slice(), rows };
   }
 
   async function loadFiles(files) {
@@ -2626,6 +2852,7 @@
       { selector: '.filtered', style: { 'display': 'none' } },
       { selector: '.onlyHidden', style: { 'display': 'none' } },
       { selector: '.utilHidden', style: { 'display': 'none' } },
+      { selector: '.groupViewHidden', style: { 'display': 'none' } },
       { selector: 'node:selected', style: {
         'z-index-compare': 'manual',
         'z-index': 999
@@ -4143,6 +4370,191 @@
   function updateCounts() {
     $('nNodes').textContent = cy ? cy.nodes().length : '-';
     $('nEdges').textContent = cy ? cy.edges().length : '-';
+  }
+
+  function updateGroupViewButtonState() {
+    const btn = $('exitGroupView');
+    if (!btn) return;
+    btn.disabled = !groupViewState.active;
+    btn.textContent = tr('btn_exit_group_view');
+  }
+
+  function captureGroupViewBaseSnapshot() {
+    return {
+      headers: headers.slice(),
+      sourceRows: cloneRows(sourceRows),
+      rawRows: cloneRows(rawRows),
+      positions: capturePositions(),
+      deletedStack: deletedStack.map((x) => (Array.isArray(x) ? x.slice() : [])),
+      viewState: {
+        filterTerms: cloneMatchExpression(viewState.filterTerms),
+        onlyMode: viewState.onlyMode || 'none',
+        onlyTerms: cloneMatchExpression(viewState.onlyTerms),
+      },
+      ui: {
+        filter: $('filter')?.value || '',
+        showOnly: $('showOnly')?.value || '',
+        layerTerms: $('layerTerms')?.value || '',
+        bizIsolationTerms: $('bizIsolationTerms')?.value || '',
+        layoutMode: $('layoutMode')?.value || 'layer',
+        nodeLabelMode: $('nodeLabelMode')?.value || 'full',
+        edgeLabelMode: $('edgeLabelMode')?.value || 'none',
+        spacing: $('spacing')?.value || '0.5',
+        stripDomain: $('stripDomain')?.value || 'yes',
+        nameClusterMode: $('nameClusterMode')?.value || 'on',
+        autoGroupMode: $('autoGroupMode')?.value || 'off',
+        nameClusterStrength: $('nameClusterStrength')?.value || '0.6',
+        colLocalHost: $('colLocalHost')?.value || '',
+        colRemoteHost: $('colRemoteHost')?.value || '',
+        colLocalIf: $('colLocalIf')?.value || '',
+        colRemoteIf: $('colRemoteIf')?.value || '',
+      },
+      expandedAutoGroupKeys: Array.from(expandedAutoGroupKeys),
+      manualGroups: cloneManualGroups(manualGroups),
+      expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
+      mergedMode: !!mergedMode,
+      selectedNodeIds: cy ? cy.nodes(':selected').map((n) => n.id()) : [],
+      pan: cy ? { ...cy.pan() } : null,
+      zoom: cy ? cy.zoom() : null
+    };
+  }
+
+  function restoreGroupViewBaseSnapshot(snapshot) {
+    if (!snapshot || !Array.isArray(snapshot.headers)) return false;
+    headers = snapshot.headers.slice();
+    sourceRows = cloneRows(snapshot.sourceRows || []);
+    rawRows = cloneRows(snapshot.rawRows || []);
+    deletedStack = (snapshot.deletedStack || []).map((x) => (Array.isArray(x) ? x.slice() : []));
+    rebuildDeletedNodeIdsFromStack();
+    viewState.filterTerms = cloneMatchExpression(snapshot.viewState?.filterTerms || []);
+    viewState.onlyMode = snapshot.viewState?.onlyMode || 'none';
+    viewState.onlyTerms = cloneMatchExpression(snapshot.viewState?.onlyTerms || []);
+    mergedMode = !!snapshot.mergedMode;
+    setMergeButtonText();
+    if ($('filter')) $('filter').value = snapshot.ui?.filter || '';
+    if ($('showOnly')) $('showOnly').value = snapshot.ui?.showOnly || '';
+    if ($('layerTerms')) $('layerTerms').value = snapshot.ui?.layerTerms || '';
+    if ($('bizIsolationTerms')) $('bizIsolationTerms').value = snapshot.ui?.bizIsolationTerms || '';
+    if ($('layoutMode')) $('layoutMode').value = snapshot.ui?.layoutMode || 'layer';
+    if ($('nodeLabelMode')) $('nodeLabelMode').value = snapshot.ui?.nodeLabelMode || 'full';
+    if ($('edgeLabelMode')) $('edgeLabelMode').value = snapshot.ui?.edgeLabelMode || 'none';
+    if ($('spacing')) $('spacing').value = snapshot.ui?.spacing || '0.5';
+    if ($('stripDomain')) $('stripDomain').value = snapshot.ui?.stripDomain || 'yes';
+    if ($('nameClusterMode')) $('nameClusterMode').value = snapshot.ui?.nameClusterMode || 'on';
+    if ($('autoGroupMode')) $('autoGroupMode').value = snapshot.ui?.autoGroupMode || 'off';
+    if ($('nameClusterStrength')) $('nameClusterStrength').value = snapshot.ui?.nameClusterStrength || '0.6';
+    expandedAutoGroupKeys = new Set((snapshot.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
+    manualGroups = cloneManualGroups(snapshot.manualGroups || []);
+    expandedManualGroupKeys = new Set((snapshot.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
+    $('nRows').textContent = rawRows.length;
+    $('nCols').textContent = headers.length;
+    if (headers.length) {
+      fillSelect('colLocalHost', autoPickColumn(['localhostname','local_host','src','from']));
+      fillSelect('colRemoteHost', autoPickColumn(['remotehostname','remote_host','dst','to']));
+      fillSelect('colLocalIf', autoPickColumn(['localinterface','local_if','src_if','from_if']));
+      fillSelect('colRemoteIf', autoPickColumn(['remoteinterface','remote_if','dst_if','to_if']));
+      if (snapshot.ui?.colLocalHost && headers.includes(snapshot.ui.colLocalHost)) $('colLocalHost').value = snapshot.ui.colLocalHost;
+      if (snapshot.ui?.colRemoteHost && headers.includes(snapshot.ui.colRemoteHost)) $('colRemoteHost').value = snapshot.ui.colRemoteHost;
+      if (snapshot.ui?.colLocalIf && headers.includes(snapshot.ui.colLocalIf)) $('colLocalIf').value = snapshot.ui.colLocalIf;
+      if (snapshot.ui?.colRemoteIf && headers.includes(snapshot.ui.colRemoteIf)) $('colRemoteIf').value = snapshot.ui.colRemoteIf;
+    }
+    const pos = snapshot.positions || {};
+    buildGraph(pos);
+    applyPositions(pos);
+    if (cy && snapshot.pan && Number.isFinite(snapshot.zoom)) {
+      cy.zoom(Number(snapshot.zoom));
+      cy.pan(snapshot.pan);
+    }
+    if (Array.isArray(snapshot.selectedNodeIds) && cy) {
+      cy.elements(':selected').unselect();
+      snapshot.selectedNodeIds.forEach((id) => {
+        const n = cy.getElementById(String(id || ''));
+        if (n && n.length) n.select();
+      });
+    }
+    return true;
+  }
+
+  function computeManualGroupViewScope(groupKey) {
+    if (!cy) return null;
+    const key = String(groupKey || '').trim();
+    if (!key) return null;
+    const group = cloneManualGroups(manualGroups).find((g) => String(g.key || '').trim() === key);
+    if (!group) return null;
+    const memberIds = Array.from(new Set((group.members || []).map((id) => String(id || '').trim()).filter(Boolean)));
+    const memberNodes = memberIds.map((id) => cy.getElementById(id)).filter((n) => n && n.length && !n.data('isGroup') && n.visible());
+    if (!memberNodes.length) return null;
+    const memberSet = new Set(memberNodes.map((n) => n.id()));
+    const scopeNodeIds = new Set(memberSet);
+    memberNodes.forEach((node) => {
+      node.connectedEdges(':visible').forEach((edge) => {
+        const src = edge.source();
+        const tgt = edge.target();
+        if (src && src.length && src.visible()) scopeNodeIds.add(src.id());
+        if (tgt && tgt.length && tgt.visible()) scopeNodeIds.add(tgt.id());
+      });
+    });
+    return {
+      groupKey: key,
+      memberNodeIds: Array.from(memberSet),
+      scopeNodeIds: Array.from(scopeNodeIds)
+    };
+  }
+
+  function applyGroupViewFilter(scope, preserveViewport = false) {
+    if (!cy || !scope) return false;
+    const memberSet = new Set((scope.memberNodeIds || []).map((id) => String(id || '').trim()).filter(Boolean));
+    const scopeSet = new Set((scope.scopeNodeIds || []).map((id) => String(id || '').trim()).filter(Boolean));
+    cy.elements().removeClass('groupViewHidden');
+    cy.nodes().forEach((node) => {
+      if (!scopeSet.has(node.id())) node.addClass('groupViewHidden');
+    });
+    cy.edges().forEach((edge) => {
+      const s = edge.source().id();
+      const t = edge.target().id();
+      const inScope = scopeSet.has(s) && scopeSet.has(t);
+      const touchesMember = memberSet.has(s) || memberSet.has(t);
+      if (!inScope || !touchesMember) edge.addClass('groupViewHidden');
+    });
+    groupViewState.active = true;
+    groupViewState.groupKey = String(scope.groupKey || '').trim();
+    updateGroupViewButtonState();
+    if (!preserveViewport) {
+      const focus = cy.collection(Array.from(scopeSet).map((id) => cy.getElementById(id)).filter((n) => n && n.length));
+      if (focus.length) cy.animate({ fit: { eles: focus, padding: 120 }, duration: 280 });
+    }
+    return true;
+  }
+
+  function enterManualGroupView(groupKey) {
+    if (!cy) return;
+    const key = String(groupKey || '').trim();
+    if (!key) return;
+    if (!groupViewState.active) {
+      groupViewState.preSnapshot = captureGroupViewBaseSnapshot();
+    }
+    const pos = capturePositions();
+    expandedManualGroupKeys.add(key);
+    buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
+    const scope = computeManualGroupViewScope(key);
+    if (!scope) {
+      setErr('进入组视图失败：未找到组成员或一跳邻接。');
+      return;
+    }
+    applyGroupViewFilter(scope);
+    setStatus(`已进入组视图：${scope.memberNodeIds.length} 台组内设备，${Math.max(0, scope.scopeNodeIds.length - scope.memberNodeIds.length)} 台邻接设备`);
+    setOK('组视图已启用。当前工具继续作用于组内设备和其一跳邻接设备。');
+  }
+
+  function exitGroupView() {
+    if (!groupViewState.active) return;
+    const snap = groupViewState.preSnapshot;
+    groupViewState = { active: false, groupKey: '', preSnapshot: null };
+    if (snap) restoreGroupViewBaseSnapshot(snap);
+    if (cy) cy.elements().removeClass('groupViewHidden');
+    updateGroupViewButtonState();
+    setStatus('已返回主视图');
+    setOK('已退出组视图。');
   }
 
   function applyDeletedMaskAfterBuild() {
@@ -6179,6 +6591,28 @@
     const pos = capturePositions();
     const before = rawRows.length;
     const parsed = parseCSV(csvText);
+    const revealManualGroupKeys = new Set();
+    if (opts.revealPastedRows) {
+      const strip = $('stripDomain')?.value === 'yes';
+      const revealCols = {
+        colLH: $('colLocalHost')?.value || autoPickColumn(['localhostname','local_host','src','from']),
+        colRH: $('colRemoteHost')?.value || autoPickColumn(['remotehostname','remote_host','dst','to']),
+        colLI: $('colLocalIf')?.value || autoPickColumn(['localinterface','local_if','src_if','from_if']),
+        colRI: $('colRemoteIf')?.value || autoPickColumn(['remoteinterface','remote_if','dst_if','to_if'])
+      };
+      const memberToManualGroup = new Map();
+      cloneManualGroups(manualGroups).forEach((group) => {
+        (group.members || []).forEach((id) => memberToManualGroup.set(String(id || '').trim(), String(group.key || '').trim()));
+      });
+      (parsed.rows || []).forEach((row) => {
+        const rowCtx = resolveGraphRowContext(row, revealCols, strip);
+        if (!rowCtx) return;
+        [rowCtx.aId, rowCtx.bId].forEach((id) => {
+          const key = memberToManualGroup.get(String(id || '').trim());
+          if (key) revealManualGroupKeys.add(key);
+        });
+      });
+    }
     if (opts.restoreDeletedFromQuery) {
       const strip = $('stripDomain')?.value === 'yes';
       const cols = {
@@ -6213,6 +6647,12 @@
     fillSelect('colLocalIf', autoPickColumn(['localinterface','local_if','src_if','from_if']));
     fillSelect('colRemoteIf', autoPickColumn(['remoteinterface','remote_if','dst_if','to_if']));
 
+    if (opts.revealPastedRows && revealManualGroupKeys.size) {
+      expandedManualGroupKeys = new Set([
+        ...Array.from(expandedManualGroupKeys),
+        ...Array.from(revealManualGroupKeys)
+      ]);
+    }
     if (rawRows.length) buildGraph(pos);
     return {
       mergedRows: rawRows.length,
@@ -6772,6 +7212,9 @@
       const srcIf = String(r[colLI] || '').trim();
       if (!srcRaw || !srcIf) continue;
       const sourceIpHint = rowValue(r, ['源设备IP', '源设备ip', 'ipaddr', 'sourceip']);
+      const peerIpHint = rowValue(r, ['目的设备IP', '目的设备ip', 'remoteip']);
+      const peerRaw = String(r[$('colRemoteHost')?.value || ''] || rowValue(r, ['remotehostname', 'remote_host', 'to', '目的设备名称']) || '').trim();
+      const peerIf = String(r[$('colRemoteIf')?.value || ''] || rowValue(r, ['remoteinterface', 'remote_if', 'to_if', '目的设备端口']) || '').trim();
       if (matchSource && !matchSource({ row: r, srcRaw, srcIf, sourceIpHint })) continue;
       const utilKey = buildUtilKey(srcRaw, srcIf, sourceIpHint);
       if (!utilKey) continue;
@@ -6789,6 +7232,9 @@
           source_device: queryDevice,
           source_name: srcRaw,
           source_interface: srcIf,
+          peer_device: isIpv4(peerIpHint) ? peerIpHint : '',
+          peer_name: peerRaw,
+          peer_interface: peerIf,
           util_key: utilKey,
           dedupe_key: dedupeKey
         });
@@ -7647,10 +8093,134 @@
   $('utilFilterModal').addEventListener('click', (e) => {
     if (e.target && e.target.id === 'utilFilterModal') closeUtilFilterModal();
   });
+  function normalizePastedCsv(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return '';
+    const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (!lines.length) return '';
+    if (lines.length === 1 && !/[,\t]/.test(lines[0])) {
+      const parts = lines[0].split(/\s+/).filter(Boolean);
+      if (parts.length === 4) {
+        return [
+          'depth,localhostname,localinterface,remotehostname,remoteinterface',
+          `1,${parts[0]},${parts[1]},${parts[2]},${parts[3]}`
+        ].join('\n');
+      }
+      if (parts.length === 5 && /^\d+$/.test(parts[0])) {
+        return [
+          'depth,localhostname,localinterface,remotehostname,remoteinterface',
+          `${parts[0]},${parts[1]},${parts[2]},${parts[3]},${parts[4]}`
+        ].join('\n');
+      }
+    }
+    return raw;
+  }
+
+  function collectNodeIdsFromCsvText(csvText) {
+    const parsed = parseCSV(csvText);
+    if (!parsed.headers.length) return [];
+    const strip = $('stripDomain')?.value === 'yes';
+    const cols = {
+      colLH: $('colLocalHost')?.value || autoPickColumn(['localhostname','local_host','src','from']),
+      colRH: $('colRemoteHost')?.value || autoPickColumn(['remotehostname','remote_host','dst','to']),
+      colLI: $('colLocalIf')?.value || autoPickColumn(['localinterface','local_if','src_if','from_if']),
+      colRI: $('colRemoteIf')?.value || autoPickColumn(['remoteinterface','remote_if','dst_if','to_if'])
+    };
+    const ids = new Set();
+    (parsed.rows || []).forEach((row) => {
+      const rowCtx = resolveGraphRowContext(row, cols, strip);
+      if (!rowCtx) return;
+      if (rowCtx.aId) ids.add(String(rowCtx.aId));
+      if (rowCtx.bId) ids.add(String(rowCtx.bId));
+    });
+    return Array.from(ids);
+  }
+
+  function focusAppendedCsvText(csvText) {
+    if (!cy) return;
+    const parsed = parseCSV(csvText);
+    if (!parsed.headers.length) return;
+    const strip = $('stripDomain')?.value === 'yes';
+    const cols = {
+      colLH: $('colLocalHost')?.value || autoPickColumn(['localhostname','local_host','src','from']),
+      colRH: $('colRemoteHost')?.value || autoPickColumn(['remotehostname','remote_host','dst','to']),
+      colLI: $('colLocalIf')?.value || autoPickColumn(['localinterface','local_if','src_if','from_if']),
+      colRI: $('colRemoteIf')?.value || autoPickColumn(['remoteinterface','remote_if','dst_if','to_if'])
+    };
+    const nodeIds = new Set();
+    const edgeIds = new Set();
+    const mergedEdgeIds = new Set();
+    let mergedHitCount = 0;
+    let collapsedInsideSameGroup = false;
+    (parsed.rows || []).forEach((row) => {
+      const rowCtx = resolveGraphRowContext(row, cols, strip);
+      if (!rowCtx) return;
+      const aVisibleId = findVisibleRepresentativeNodeId(rowCtx.aId) || rowCtx.aId;
+      const bVisibleId = findVisibleRepresentativeNodeId(rowCtx.bId) || rowCtx.bId;
+      if (aVisibleId) nodeIds.add(String(aVisibleId));
+      if (bVisibleId) nodeIds.add(String(bVisibleId));
+      if (aVisibleId && bVisibleId && aVisibleId === bVisibleId) {
+        collapsedInsideSameGroup = true;
+        return;
+      }
+      if (aVisibleId && bVisibleId) {
+        const rowKey = buildCanonicalEdgeRowKey(aVisibleId, bVisibleId, rowCtx.li, rowCtx.ri);
+        if (rowKey) {
+          edgeIds.add(`e_${fnv1a(rowKey)}`);
+        }
+        const pairKey = buildCanonicalNodePairKey(aVisibleId, bVisibleId);
+        if (pairKey) {
+          mergedEdgeIds.add(`m_${fnv1a(pairKey)}`);
+        }
+      }
+    });
+    const nodes = cy.collection(Array.from(nodeIds).map((id) => cy.getElementById(id)).filter((n) => n && n.length));
+    const exactEdges = cy.collection(Array.from(edgeIds).map((id) => cy.getElementById(id)).filter((e) => e && e.length));
+    const aggregatedEdges = cy.collection(Array.from(mergedEdgeIds).map((id) => cy.getElementById(id)).filter((e) => e && e.length));
+    mergedHitCount = aggregatedEdges.length;
+    const edges = exactEdges.union(aggregatedEdges);
+    if (nodes.length || edges.length) {
+      // Ensure newly appended nodes/edges are visible even under current filters.
+      nodes.removeClass('filtered onlyHidden utilHidden groupViewHidden');
+      edges.removeClass('filtered onlyHidden utilHidden groupViewHidden');
+      cy.elements(':selected').unselect();
+      nodes.select();
+      edges.select();
+      cy.animate({ fit: { eles: nodes.union(edges), padding: 120 }, duration: 300 });
+    }
+    const hidden = nodes.filter((n) => !n.visible());
+    if (hidden.length) {
+      setErr('已追加，但节点被隐藏/过滤或在组视图中。请检查“只显示/不显示/过滤/组视图”。');
+    } else if (collapsedInsideSameGroup) {
+      setErr('已追加，但链路两端当前被折叠进同一个组节点，图上不会单独显示该链路。请先展开相关组节点再查看。');
+    } else if (!nodes.length && !edges.length) {
+      setErr('已追加，但未能在当前画布定位新增链路。请检查节点过滤、组折叠或多链路合并状态。');
+    } else if (mergedMode && !exactEdges.length && mergedHitCount) {
+      setOK(`已追加，但当前开启了“合并多链路”，新链路已并入现有聚合边（命中 ${mergedHitCount} 条聚合边）。可先关闭“合并多链路”再查看物理链路。`);
+    }
+    if (groupViewState?.active) {
+      setErr('已追加，但当前处于组视图，新增节点可能被隐藏。建议返回主视图再查看。');
+    }
+  }
+
   $('loadPasteModal').addEventListener('click', () => {
-    const t = ($('pasteModal').value || '').trim();
+    const raw = ($('pasteModal').value || '').trim();
+    if (!raw) { setErr('粘贴内容为空'); return; }
+    const t = normalizePastedCsv(raw);
     if (!t) { setErr('粘贴内容为空'); return; }
-    loadDataFromText(t);
+    if (importInputAction === 'append') {
+      const merged = applyQueryCsvText(t, { append: true, sourceName: 'paste', restoreDeletedFromQuery: true, revealPastedRows: true });
+      if (!merged || !merged.mergedRows) {
+        setStatus('追加失败');
+        setErr('未检测到有效表头，无法追加。');
+        return;
+      }
+      setStatus('粘贴追加完成');
+      setOK(`已追加粘贴内容：新增 ${merged.addedRows} 行，覆盖 ${merged.replacedRows || 0} 行，当前总计 ${merged.mergedRows} 行。`);
+      focusAppendedCsvText(t);
+    } else {
+      loadDataFromText(t);
+    }
     closeImportModal();
   });
   $('importModal').addEventListener('click', (e) => {
