@@ -2671,6 +2671,14 @@
     });
     cy.on('tap', () => hideCtx());
     cy.on('pan', () => hideCtx());
+    cy.on('dbltap', 'node', (evt) => {
+      const node = evt.target;
+      if (!node || !node.length) return;
+      if (!node.data('isGroup') || !node.data('isManualGroup')) return;
+      const groupKey = String(node.data('groupKey') || node.data('manualGroupKey') || '').trim();
+      if (!groupKey) return;
+      enterManualGroupView(groupKey);
+    });
     cy.on('zoom', () => {
       hideCtx();
       scheduleZoomAwareNodeSizing();
@@ -6825,6 +6833,9 @@
         source_device: item.source_device,
         source_name: item.source_name || '',
         source_interface: item.source_interface,
+        peer_device: item.peer_device || '',
+        peer_name: item.peer_name || '',
+        peer_interface: item.peer_interface || '',
         util_key: item.util_key
       });
     });
@@ -6849,6 +6860,9 @@
           source_device: item.source_device,
           source_name: item.source_name || '',
           source_interface: item.source_interface,
+          peer_device: item.peer_device || '',
+          peer_name: item.peer_name || '',
+          peer_interface: item.peer_interface || '',
           util_key: item.util_key
         });
       });
@@ -8511,6 +8525,9 @@
     runWithRollback(() => buildScopedTopologyFromVisible(), { delayMs: 1300 });
   });
   $('openPathFinder').addEventListener('click', openPathModal);
+  $('exitGroupView').addEventListener('click', () => {
+    exitGroupView();
+  });
   $('keepAdjacentOnly').addEventListener('click', () => {
     runWithRollback(() => keepAdjacentOnly(), { delayMs: 0 });
   });

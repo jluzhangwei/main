@@ -1827,6 +1827,9 @@ class LinkUtilTarget(BaseModel):
     source_interface: str
     util_key: str | None = None
     source_name: str | None = None
+    peer_device: str | None = None
+    peer_interface: str | None = None
+    peer_name: str | None = None
 
 
 class LinkUtilRequest(BaseModel):
@@ -2854,8 +2857,24 @@ def collect_zabbix_link_utilization(
         t for t in (targets or [])
         if _looks_like_ip(str(t.source_device or "").strip()) and str(t.source_interface or "").strip()
     ]
-    device_ips = sorted({str(t.source_device).strip() for t in cleaned_targets})
-    source_names = sorted({str(t.source_name or "").strip() for t in cleaned_targets if str(t.source_name or "").strip()})
+    device_ips = sorted({
+        ip for ip in (
+            str(t.source_device or "").strip() for t in cleaned_targets
+        ) if ip
+    } | {
+        ip for ip in (
+            str(t.peer_device or "").strip() for t in cleaned_targets
+        ) if _looks_like_ip(ip)
+    })
+    source_names = sorted({
+        name for name in (
+            str(t.source_name or "").strip() for t in cleaned_targets
+        ) if name
+    } | {
+        name for name in (
+            str(t.peer_name or "").strip() for t in cleaned_targets
+        ) if name
+    })
     host_map = _zabbix_get_host_map_by_ip(
         device_ips,
         url_override=zabbix_url,
@@ -2879,6 +2898,9 @@ def collect_zabbix_link_utilization(
         iface = str(target.source_interface or "").strip()
         util_key = str(target.util_key or "").strip()
         source_name = str(target.source_name or "").strip()
+        peer_ip = str(target.peer_device or "").strip()
+        peer_iface = str(target.peer_interface or "").strip()
+        peer_name = str(target.peer_name or "").strip()
         host, items, tx_item, rx_item, speed_item = _pick_best_zabbix_host_for_target(
             src_ip,
             source_name,
@@ -2971,6 +2993,34 @@ def collect_zabbix_link_utilization(
             )
             if isinstance(bw_bps, (int, float)) and bw_bps > 0:
                 bandwidth_cache[(src_ip, iface)] = float(bw_bps)
+        if not (isinstance(bw_bps, (int, float)) and bw_bps > 0) and _looks_like_ip(peer_ip) and peer_iface:
+            bw_bps = bandwidth_cache.get((peer_ip, peer_iface))
+            if not (isinstance(bw_bps, (int, float)) and bw_bps > 0):
+                peer_host, peer_items, _peer_tx_item, _peer_rx_item, peer_speed_item = _pick_best_zabbix_host_for_target(
+                    peer_ip,
+                    peer_name,
+                    peer_iface,
+                    host_map_by_ip=host_map,
+                    host_map_by_name=host_map_by_name,
+                    item_cache=item_cache,
+                    url_override=zabbix_url,
+                    token_override=zabbix_api_token,
+                    verify_ssl_override=zabbix_verify_ssl,
+                )
+                if peer_host:
+                    bw_bps = _zabbix_speed_bps_with_fallback(
+                        peer_speed_item,
+                        time_mode=mode,
+                        time_from=int(time_from) if mode in {"range_max", "range_min"} and time_from is not None else None,
+                        time_till=int(time_till) if mode in {"range_max", "range_min"} and time_till is not None else None,
+                        cache=speed_cache,
+                        url_override=zabbix_url,
+                        token_override=zabbix_api_token,
+                        verify_ssl_override=zabbix_verify_ssl,
+                    )
+                    if isinstance(bw_bps, (int, float)) and bw_bps > 0:
+                        bandwidth_cache[(peer_ip, peer_iface)] = float(bw_bps)
+                        bandwidth_cache[(src_ip, iface)] = float(bw_bps)
         tx_pct = (tx_bps / bw_bps * 100.0) if (tx_bps is not None and bw_bps and bw_bps > 0) else None
         rx_pct = (rx_bps / bw_bps * 100.0) if (rx_bps is not None and bw_bps and bw_bps > 0) else None
         if metric_l == "tx":
@@ -2990,6 +3040,8 @@ def collect_zabbix_link_utilization(
             err_parts.append("rx item not found")
         if not speed_item:
             err_parts.append("speed item not found")
+        if (not speed_item) and isinstance(bw_bps, (int, float)) and bw_bps > 0 and _looks_like_ip(peer_ip) and peer_iface:
+            err_parts.append("peer speed fallback")
         if mode in {"range_max", "range_min"}:
             if tx_item and tx_bps is None:
                 err_parts.append("tx history not found in selected time window")
