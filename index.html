@@ -638,6 +638,7 @@
   <button id="ctxDeleteLink">删除链路</button>
   <div id="ctxSepEdit" class="ctx-sep"></div>
   <button id="ctxPathVia">设为必经点</button>
+  <button id="ctxAddLink">增加链路</button>
   <button id="ctxCreateGroup">设备合组</button>
   <button id="ctxToggleGroup">合组展开</button>
   <button id="ctxRenameGroup">修改组名</button>
@@ -807,6 +808,34 @@
       <button id="clearPathHighlightBtn">清除路径高亮</button>
       <button id="keepPathNodesBtn">只保留路径节点</button>
       <button id="closePathModal">关闭</button>
+    </div>
+  </div>
+</div>
+<div id="addLinkModal" class="modal-backdrop">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="addLinkModalTitle">
+    <div class="modal-title" id="addLinkModalTitle">增加链路</div>
+    <div class="modal-form-grid">
+      <div class="field span-2">
+        <label>设备 A</label>
+        <input id="addLinkNodeA" type="text" readonly />
+      </div>
+      <div class="field span-2">
+        <label>设备 A 接口</label>
+        <input id="addLinkIfA" type="text" placeholder="例如：Te0/0/0/8" />
+      </div>
+      <div class="field span-2">
+        <label>设备 B</label>
+        <input id="addLinkNodeB" type="text" readonly />
+      </div>
+      <div class="field span-2">
+        <label>设备 B 接口</label>
+        <input id="addLinkIfB" type="text" placeholder="例如：TenGigE0/0/0/12" />
+      </div>
+    </div>
+    <div class="hint" id="addLinkHint">仅支持当前选中 2 台设备时新增链路；保存后会直接追加到当前拓扑工作集。</div>
+    <div class="modal-actions">
+      <button id="saveAddLink" class="primary">保存链路</button>
+      <button id="closeAddLinkModal">关闭</button>
     </div>
   </div>
 </div>
@@ -1086,6 +1115,14 @@
       btn_relayout_selected: '重排选中设备',
       btn_find_path: '查找路径',
       btn_exit_group_view: '返回主视图',
+      ctx_add_link: '增加链路',
+      add_link_modal_title: '增加链路',
+      add_link_node_a: '设备 A',
+      add_link_if_a: '设备 A 接口',
+      add_link_node_b: '设备 B',
+      add_link_if_b: '设备 B 接口',
+      add_link_hint: '仅支持当前选中 2 台设备时新增链路；保存后会直接追加到当前拓扑工作集。',
+      btn_save_add_link: '保存链路',
       node_label_short: '缩略（推荐）',
       node_label_full: '全名（容易挤）',
       node_label_full_ip: '全名+IP',
@@ -1206,6 +1243,14 @@
       btn_relayout_selected: 'Relayout Selected',
       btn_find_path: 'Find Path',
       btn_exit_group_view: 'Back to Main View',
+      ctx_add_link: 'Add Link',
+      add_link_modal_title: 'Add Link',
+      add_link_node_a: 'Device A',
+      add_link_if_a: 'Device A Interface',
+      add_link_node_b: 'Device B',
+      add_link_if_b: 'Device B Interface',
+      add_link_hint: 'Only works when exactly 2 devices are selected. Saving appends the link directly into the current topology workspace.',
+      btn_save_add_link: 'Save Link',
       node_label_short: 'Short (Recommended)',
       node_label_full: 'Full (Crowded)',
       node_label_full_ip: 'Full + IP',
@@ -1428,6 +1473,7 @@
     setText('buildScopedTopo', 'btn_relayout_selected');
     setText('openPathFinder', 'btn_find_path');
     setText('exitGroupView', 'btn_exit_group_view');
+    setText('ctxAddLink', 'ctx_add_link');
     setText('fitSelection', 'btn_fit_selection');
     setText('isolateSelection', 'btn_isolate');
     setText('clearSelectionHide', 'btn_clear_visibility');
@@ -1466,6 +1512,13 @@
     setText('pickCsvModal', 'btn_pick_csv');
     setText('appendCsvModal', 'btn_append_csv');
     setText('loadPasteModal', 'btn_load_paste');
+    setText('addLinkModalTitle', 'add_link_modal_title');
+    setParentLabel('addLinkNodeA', 'add_link_node_a');
+    setParentLabel('addLinkIfA', 'add_link_if_a');
+    setParentLabel('addLinkNodeB', 'add_link_node_b');
+    setParentLabel('addLinkIfB', 'add_link_if_b');
+    setText('addLinkHint', 'add_link_hint');
+    setText('saveAddLink', 'btn_save_add_link');
     setText('ctxUtil', 'ctx_util');
     setText('ctxUtilRange', 'ctx_util_range');
     setText('ctxPathVia', 'ctx_path_via');
@@ -1907,6 +1960,46 @@
       if (isIpv4(ip) && !out.includes(ip)) out.push(ip);
     });
     return out;
+  }
+
+  function findExistingNodeIdByLabel(name) {
+    const target = normalizeEntityName(name).toLowerCase();
+    if (!target || !cy) return '';
+    let hit = '';
+    cy.nodes().some((n) => {
+      if (n.data('isGroup')) return false;
+      const label = normalizeEntityName(String(n.data('label') || '').trim()).toLowerCase();
+      const short = normalizeEntityName(stripAfterDot(String(n.data('label') || '').trim())).toLowerCase();
+      if (label === target || short === target) {
+        hit = n.id();
+        return true;
+      }
+      return false;
+    });
+    return hit;
+  }
+
+  function findExistingNodeIpByLabel(name) {
+    const target = normalizeEntityName(name).toLowerCase();
+    if (!target) return '';
+    const mapHit = deviceNameToIpMap.get(target)
+      || deviceNameToIpMap.get(stripAfterDot(target))
+      || nodeIpMap.get(target)
+      || nodeIpMap.get(stripAfterDot(target));
+    if (isIpv4(mapHit)) return mapHit;
+    if (!cy) return '';
+    let hit = '';
+    cy.nodes().some((n) => {
+      if (n.data('isGroup')) return false;
+      const label = normalizeEntityName(String(n.data('label') || '').trim()).toLowerCase();
+      const short = normalizeEntityName(stripAfterDot(String(n.data('label') || '').trim())).toLowerCase();
+      if (label === target || short === target) {
+        hit = primaryIpFromList(n.data('ips') || n.data('ip'));
+        return !!hit;
+      }
+      return false;
+    });
+    return hit;
   }
 
   function mergeIpLists(...groups) {
@@ -2391,12 +2484,16 @@
     if (!lhRaw || !rhRaw) return '';
     const sourceIp = rowValue(row, ['源设备IP', '源设备ip', 'ipaddr', 'sourceip']);
     const remoteIp = rowValue(row, ['目的设备IP', '目的设备ip', 'remoteip']);
-    const aIp = isIpv4(sourceIp) ? sourceIp : (isIpv4(lhRaw) ? lhRaw : '');
-    const bIp = isIpv4(remoteIp) ? remoteIp : (isIpv4(rhRaw) ? rhRaw : '');
+    const aIp = (isIpv4(sourceIp) ? sourceIp : '')
+      || findExistingNodeIpByLabel(lhRaw)
+      || (isIpv4(lhRaw) ? lhRaw : '');
+    const bIp = (isIpv4(remoteIp) ? remoteIp : '')
+      || findExistingNodeIpByLabel(rhRaw)
+      || (isIpv4(rhRaw) ? rhRaw : '');
     const aKey = inferEntityKey(lhRaw, aIp);
     const bKey = inferEntityKey(rhRaw, bIp);
-    const aId = nodeIdFromEntityKey(aKey);
-    const bId = nodeIdFromEntityKey(bKey);
+    const aId = findExistingNodeIdByLabel(lhRaw) || nodeIdFromEntityKey(aKey);
+    const bId = findExistingNodeIdByLabel(rhRaw) || nodeIdFromEntityKey(bKey);
     if (aId && bId) return buildCanonicalEdgeRowKey(aId, bId, li, ri);
     const leftName = normalizeEntityName(lhRaw).toLowerCase();
     const rightName = normalizeEntityName(rhRaw).toLowerCase();
@@ -2407,6 +2504,115 @@
     return a <= b ? `${a}<<<${b}` : `${b}<<<${a}`;
   }
 
+  function alignParsedToHeaders(parsed, targetHeaders) {
+    const inHeaders = parsed.headers || [];
+    const inIndex = new Map();
+    inHeaders.forEach((h, i) => inIndex.set(String(h || '').toLowerCase(), i));
+
+    const groups = {
+      depth: ['depth','层级','递归层','层'],
+      lh: ['localhostname','local_host','src','from','源设备名称','源设备','本地设备','localdevice'],
+      li: ['localinterface','local_if','src_if','from_if','源设备端口','本地端口','localport'],
+      rh: ['remotehostname','remote_host','dst','to','目的设备名称','目的设备','邻居设备','remotedevice'],
+      ri: ['remoteinterface','remote_if','dst_if','to_if','目的设备端口','邻居端口','remoteport'],
+      sip: ['源设备ip','源设备IP','sourceip','ipaddr','ip'],
+      rip: ['目的设备ip','目的设备IP','remoteip'],
+      rvendor: ['目的设备vendor','remotevendor','vendor']
+    };
+
+    const findIndexByGroup = (groupKeys) => {
+      for (const key of groupKeys) {
+        const k = String(key).toLowerCase();
+        if (inIndex.has(k)) return inIndex.get(k);
+      }
+      return -1;
+    };
+
+    const inMap = {
+      depth: findIndexByGroup(groups.depth),
+      lh: findIndexByGroup(groups.lh),
+      li: findIndexByGroup(groups.li),
+      rh: findIndexByGroup(groups.rh),
+      ri: findIndexByGroup(groups.ri),
+      sip: findIndexByGroup(groups.sip),
+      rip: findIndexByGroup(groups.rip),
+      rvendor: findIndexByGroup(groups.rvendor)
+    };
+
+    if (inMap.lh < 0 || inMap.li < 0 || inMap.rh < 0 || inMap.ri < 0) return null;
+
+    const outIndex = {
+      depth: -1, lh: -1, li: -1, rh: -1, ri: -1, sip: -1, rip: -1, rvendor: -1
+    };
+    targetHeaders.forEach((h, idx) => {
+      const key = String(h || '').toLowerCase();
+      if (outIndex.depth < 0 && groups.depth.map(x => String(x).toLowerCase()).includes(key)) outIndex.depth = idx;
+      if (outIndex.lh < 0 && groups.lh.map(x => String(x).toLowerCase()).includes(key)) outIndex.lh = idx;
+      if (outIndex.li < 0 && groups.li.map(x => String(x).toLowerCase()).includes(key)) outIndex.li = idx;
+      if (outIndex.rh < 0 && groups.rh.map(x => String(x).toLowerCase()).includes(key)) outIndex.rh = idx;
+      if (outIndex.ri < 0 && groups.ri.map(x => String(x).toLowerCase()).includes(key)) outIndex.ri = idx;
+      if (outIndex.sip < 0 && groups.sip.map(x => String(x).toLowerCase()).includes(key)) outIndex.sip = idx;
+      if (outIndex.rip < 0 && groups.rip.map(x => String(x).toLowerCase()).includes(key)) outIndex.rip = idx;
+      if (outIndex.rvendor < 0 && groups.rvendor.map(x => String(x).toLowerCase()).includes(key)) outIndex.rvendor = idx;
+    });
+
+    const selectedLH = String($('colLocalHost')?.value || '').trim();
+    const selectedLI = String($('colLocalIf')?.value || '').trim();
+    const selectedRH = String($('colRemoteHost')?.value || '').trim();
+    const selectedRI = String($('colRemoteIf')?.value || '').trim();
+
+    const readCell = (row, idx) => {
+      if (idx < 0) return '';
+      if (Array.isArray(row)) return String(row[idx] ?? '').trim();
+      const header = inHeaders[idx];
+      return String((row && header != null) ? (row[header] ?? '') : '').trim();
+    };
+
+    const rows = (parsed.rows || []).map((row) => {
+      const out = new Array(targetHeaders.length).fill('');
+      const depthVal = readCell(row, inMap.depth) || '1';
+      const lhVal = readCell(row, inMap.lh);
+      const liVal = readCell(row, inMap.li);
+      const rhVal = readCell(row, inMap.rh);
+      const riVal = readCell(row, inMap.ri);
+      const sipVal = readCell(row, inMap.sip);
+      const ripVal = readCell(row, inMap.rip);
+      const rvendorVal = readCell(row, inMap.rvendor);
+      if (outIndex.depth >= 0) out[outIndex.depth] = depthVal;
+      if (outIndex.lh >= 0) out[outIndex.lh] = lhVal;
+      if (outIndex.li >= 0) out[outIndex.li] = liVal;
+      if (outIndex.rh >= 0) out[outIndex.rh] = rhVal;
+      if (outIndex.ri >= 0) out[outIndex.ri] = riVal;
+      if (outIndex.sip >= 0) out[outIndex.sip] = sipVal;
+      if (outIndex.rip >= 0) out[outIndex.rip] = ripVal;
+      if (outIndex.rvendor >= 0) out[outIndex.rvendor] = rvendorVal;
+
+      const selectedMap = new Map([
+        [selectedLH, lhVal],
+        [selectedLI, liVal],
+        [selectedRH, rhVal],
+        [selectedRI, riVal]
+      ]);
+      targetHeaders.forEach((header, idx) => {
+        const forced = selectedMap.get(String(header || '').trim());
+        if (forced) out[idx] = forced;
+      });
+
+      if (outIndex.sip >= 0 && !String(out[outIndex.sip] || '').trim()) {
+        out[outIndex.sip] = findExistingNodeIpByLabel(outIndex.lh >= 0 ? out[outIndex.lh] : '');
+      }
+      if (outIndex.rip >= 0 && !String(out[outIndex.rip] || '').trim()) {
+        out[outIndex.rip] = findExistingNodeIpByLabel(outIndex.rh >= 0 ? out[outIndex.rh] : '');
+      }
+      const obj = {};
+      targetHeaders.forEach((header, idx) => {
+        obj[header] = out[idx];
+      });
+      return obj;
+    });
+    return { headers: targetHeaders.slice(), rows };
+  }
+
   function mergeParsed(parsed, sourceName) {
     if (!parsed.headers.length) {
       setErr(`文件 ${sourceName} 没有表头，已跳过`);
@@ -2415,11 +2621,16 @@
     if (!headers.length) {
       headers = parsed.headers;
     } else {
+      const incomingHeaders = parsed.headers;
       const base = headers.map(h => h.toLowerCase()).join(',');
-      const incoming = parsed.headers.map(h => h.toLowerCase()).join(',');
+      const incoming = incomingHeaders.map(h => h.toLowerCase()).join(',');
       if (base !== incoming) {
-        setErr(`文件 ${sourceName} 表头不一致，已跳过`);
-        return { added: 0, replaced: 0 };
+        const mapped = alignParsedToHeaders(parsed, headers);
+        if (!mapped) {
+          setErr(`文件 ${sourceName} 表头不一致，已跳过`);
+          return { added: 0, replaced: 0 };
+        }
+        parsed = mapped;
       }
     }
     if (!rawRows.length) {
@@ -4791,6 +5002,7 @@
 
   // 右键菜单
   let ctxTarget = null;
+  let pendingAddLinkNodes = [];
   function hideCtx() {
     const menu = $('ctxMenu');
     menu.style.display = 'none';
@@ -4810,6 +5022,65 @@
     if (sel.length) return sel;
     if (ctxTarget && typeof ctxTarget.isEdge === 'function' && ctxTarget.isEdge()) return ctxTarget.collection();
     return cy.collection();
+  }
+
+  function ctxDeviceNodes() {
+    return ctxNodes().filter((n) => !n.data('isGroup'));
+  }
+
+  function selectedNodesForManualLink() {
+    if (!cy) return [];
+    const selected = ctxDeviceNodes().toArray();
+    const uniq = [];
+    const seen = new Set();
+    selected.forEach((node) => {
+      const id = String(node?.id?.() || node?.id || '');
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      uniq.push(node);
+    });
+    return uniq;
+  }
+
+  function openAddLinkModal(nodes) {
+    const pair = Array.isArray(nodes) ? nodes.slice(0, 2) : [];
+    if (pair.length !== 2) {
+      setErr('请先恰好选中 2 台设备，再执行增加链路。');
+      return;
+    }
+    pendingAddLinkNodes = pair;
+    $('addLinkNodeA').value = String(pair[0].data('label') || pair[0].id()).trim();
+    $('addLinkNodeB').value = String(pair[1].data('label') || pair[1].id()).trim();
+    $('addLinkIfA').value = '';
+    $('addLinkIfB').value = '';
+    $('addLinkModal').style.display = 'flex';
+    setErr('');
+    setOK('');
+    setTimeout(() => $('addLinkIfA')?.focus(), 0);
+  }
+
+  function closeAddLinkModal() {
+    pendingAddLinkNodes = [];
+    $('addLinkModal').style.display = 'none';
+  }
+
+  function buildManualLinkCsv(nodeA, ifA, nodeB, ifB) {
+    const labelA = String((nodeA && typeof nodeA.data === 'function' ? nodeA.data('label') : '') || (nodeA && typeof nodeA.id === 'function' ? nodeA.id() : '') || '').trim();
+    const labelB = String((nodeB && typeof nodeB.data === 'function' ? nodeB.data('label') : '') || (nodeB && typeof nodeB.id === 'function' ? nodeB.id() : '') || '').trim();
+    const ipA = primaryIpFromList(nodeA && typeof nodeA.data === 'function' ? (nodeA.data('ips') || nodeA.data('ip')) : '');
+    const ipB = primaryIpFromList(nodeB && typeof nodeB.data === 'function' ? (nodeB.data('ips') || nodeB.data('ip')) : '');
+    return [
+      'depth,localhostname,localinterface,remotehostname,remoteinterface,sourceip,remoteip',
+      [
+        '1',
+        labelA,
+        ifA,
+        labelB,
+        ifB,
+        ipA || '',
+        ipB || ''
+      ].map((v) => `"${String(v || '').replace(/"/g, '""')}"`).join(',')
+    ].join('\n');
   }
 
   function ctxGroupKey() {
@@ -5710,7 +5981,7 @@
     const isManualGroup = ctxGroupKind() === 'manual';
     const groupKey = ctxGroupKey();
     const canToggleGroup = !!groupKey;
-    const nodeBtnIds = ['ctxLock', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia'];
+    const nodeBtnIds = ['ctxLock', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink'];
     nodeBtnIds.forEach((id) => {
       const el = $(id);
       if (!el) return;
@@ -5718,7 +5989,7 @@
         el.style.display = (id === 'ctxUtil' || id === 'ctxUtilRange') ? '' : 'none';
         return;
       }
-      if (isGroupNode && ['ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia'].includes(id)) {
+      if (isGroupNode && ['ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink'].includes(id)) {
         el.style.display = 'none';
         return;
       }
@@ -5727,6 +5998,10 @@
     if ($('ctxCreateGroup')) {
       const groupableNodes = ctxNodes().filter((n) => !n.data('isGroup'));
       $('ctxCreateGroup').style.display = (!isEdgeTarget && groupableNodes.length >= 2) ? '' : 'none';
+    }
+    if ($('ctxAddLink')) {
+      const linkableNodes = ctxNodes().filter((n) => !n.data('isGroup'));
+      $('ctxAddLink').style.display = (!isEdgeTarget && !isGroupNode && linkableNodes.length === 2) ? '' : 'none';
     }
     if ($('ctxDeleteLink')) $('ctxDeleteLink').style.display = isEdgeTarget ? '' : 'none';
     if ($('ctxCopyLink')) $('ctxCopyLink').style.display = isEdgeTarget ? '' : 'none';
@@ -5745,7 +6020,7 @@
     }
     const groups = [
       { sep: 'ctxSepEdit', ids: ['ctxLock', 'ctxDelete', 'ctxDeleteLink'] },
-      { sep: 'ctxSepCopy', ids: ['ctxPathVia', 'ctxCreateGroup', 'ctxToggleGroup', 'ctxRenameGroup'] },
+      { sep: 'ctxSepCopy', ids: ['ctxPathVia', 'ctxAddLink', 'ctxCreateGroup', 'ctxToggleGroup', 'ctxRenameGroup'] },
       { sep: 'ctxSepQuery', ids: ['ctxCopy', 'ctxCopyIp', 'ctxCopyLink'] },
       { sep: '', ids: ['ctxUtil', 'ctxUtilRange', 'ctxAppendQuery'] }
     ];
@@ -6398,6 +6673,28 @@
     const pos = capturePositions();
     const before = rawRows.length;
     const parsed = parseCSV(csvText);
+    const revealManualGroupKeys = new Set();
+    if (opts.revealPastedRows) {
+      const strip = $('stripDomain')?.value === 'yes';
+      const revealCols = {
+        colLH: $('colLocalHost')?.value || autoPickColumn(['localhostname','local_host','src','from']),
+        colRH: $('colRemoteHost')?.value || autoPickColumn(['remotehostname','remote_host','dst','to']),
+        colLI: $('colLocalIf')?.value || autoPickColumn(['localinterface','local_if','src_if','from_if']),
+        colRI: $('colRemoteIf')?.value || autoPickColumn(['remoteinterface','remote_if','dst_if','to_if'])
+      };
+      const memberToManualGroup = new Map();
+      cloneManualGroups(manualGroups).forEach((group) => {
+        (group.members || []).forEach((id) => memberToManualGroup.set(String(id || '').trim(), String(group.key || '').trim()));
+      });
+      (parsed.rows || []).forEach((row) => {
+        const rowCtx = resolveGraphRowContext(row, revealCols, strip);
+        if (!rowCtx) return;
+        [rowCtx.aId, rowCtx.bId].forEach((id) => {
+          const key = memberToManualGroup.get(String(id || '').trim());
+          if (key) revealManualGroupKeys.add(key);
+        });
+      });
+    }
     if (opts.restoreDeletedFromQuery) {
       const strip = $('stripDomain')?.value === 'yes';
       const cols = {
@@ -6432,6 +6729,12 @@
     fillSelect('colLocalIf', autoPickColumn(['localinterface','local_if','src_if','from_if']));
     fillSelect('colRemoteIf', autoPickColumn(['remoteinterface','remote_if','dst_if','to_if']));
 
+    if (opts.revealPastedRows && revealManualGroupKeys.size) {
+      expandedManualGroupKeys = new Set([
+        ...Array.from(expandedManualGroupKeys),
+        ...Array.from(revealManualGroupKeys)
+      ]);
+    }
     if (rawRows.length) buildGraph(pos);
     return {
       mergedRows: rawRows.length,
@@ -8511,6 +8814,12 @@
     hideCtx();
   });
 
+  $('ctxAddLink').addEventListener('click', () => {
+    const nodes = selectedNodesForManualLink();
+    hideCtx();
+    openAddLinkModal(nodes);
+  });
+
   function buildSelectionScopeLabel(nodes, edges) {
     const names = (nodes || []).map((n) => String(n.data('label') || n.id())).filter(Boolean);
     const edgeCount = edges?.length || 0;
@@ -8750,6 +9059,37 @@
     runWithRollback(() => buildScopedTopologyFromVisible(), { delayMs: 1300 });
   });
   $('openPathFinder').addEventListener('click', openPathModal);
+  $('saveAddLink').addEventListener('click', () => {
+    const nodes = pendingAddLinkNodes.slice(0, 2);
+    if (nodes.length !== 2) {
+      setErr('增加链路失败：请先重新选择 2 台设备。');
+      closeAddLinkModal();
+      return;
+    }
+    const ifA = String($('addLinkIfA')?.value || '').trim();
+    const ifB = String($('addLinkIfB')?.value || '').trim();
+    if (!ifA || !ifB) {
+      setErr('请先填写两端接口。');
+      return;
+    }
+    const csvText = buildManualLinkCsv(nodes[0], ifA, nodes[1], ifB);
+    runWithRollback(() => {
+      const merged = applyQueryCsvText(csvText, {
+        append: true,
+        sourceName: 'manual-link',
+        restoreDeletedFromQuery: true,
+        revealPastedRows: true
+      });
+      if (!merged || !merged.mergedRows) {
+        setErr('增加链路失败：未能写入当前拓扑。');
+        return;
+      }
+      setStatus('手工链路已追加');
+      setOK(`已增加链路：${String(nodes[0].data('label') || nodes[0].id())} ${ifA} -> ${String(nodes[1].data('label') || nodes[1].id())} ${ifB}`);
+      closeAddLinkModal();
+    }, { delayMs: 1300 });
+  });
+  $('closeAddLinkModal').addEventListener('click', closeAddLinkModal);
   $('exitGroupView').addEventListener('click', () => {
     exitGroupView();
   });
@@ -8771,6 +9111,9 @@
     runWithRollback(() => keepOnlyPathNodes(), { delayMs: 0 });
   });
   $('closePathModal').addEventListener('click', closePathModal);
+  $('addLinkModal').addEventListener('click', (e) => {
+    if (e.target && e.target.id === 'addLinkModal') closeAddLinkModal();
+  });
   $('pathModal').addEventListener('click', (e) => {
     if (e.target && e.target.id === 'pathModal') closePathModal();
   });
