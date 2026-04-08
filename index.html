@@ -16,27 +16,84 @@
       --sea-gray: #e5e7eb;
     }
     body { margin: 0; font-family: "Segoe UI", -apple-system, system-ui, Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f8fafc; }
-    .wrap { display: flex; height: calc(100vh - 106px); }
+    .wrap { display: flex; height: calc(100vh - 106px); position: relative; }
     .wrap.collapsed .panel { display: none; }
     .panel { width: 430px; flex-shrink: 0; padding: 14px; border-right: 1px solid #e5e7eb; overflow: auto; background: #ffffff; box-shadow: 4px 0 24px rgba(0,0,0,0.04); scrollbar-width: none; -ms-overflow-style: none; }
     .panel::-webkit-scrollbar { display: none; }
-    button#togglePanel { 
-      position: absolute; 
-      left: 434px; 
-      top: 50%; 
-      transform: translateY(-50%); 
-      z-index: 10; 
-      width: 30px; 
-      height: 30px; 
-      padding: 0; 
-      font-size: 16px; 
-      background: none; 
-      border: none; 
-      cursor: pointer; 
-      color: #374151; 
+    button#togglePanel {
+      position: absolute;
+      left: 434px;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 10;
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      font-size: 16px;
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: #374151;
     }
     .wrap.collapsed button#togglePanel { left: 0; transform: translateY(-50%); }
-    #cy { flex: 1; height: 100%; width: 100%; background: #ffffff; }
+    #cyWrap { flex: 1; height: 100%; position: relative; background: #ffffff; }
+    #cy { height: 100%; width: 100%; background: #ffffff; }
+    #cloudOverlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      overflow: hidden;
+      z-index: 5;
+    }
+    #edgeNoteOverlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      overflow: hidden;
+      z-index: 6;
+    }
+    .cloud-overlay-item {
+      position: absolute;
+      transform: translate(-50%, -50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      color: #0f172a;
+      font-weight: 700;
+      text-align: center;
+      white-space: nowrap;
+    }
+    .cloud-overlay-label {
+      font-size: 12px;
+      line-height: 1;
+      text-shadow: 0 0 4px #fff, 0 0 8px #fff;
+    }
+    .cloud-overlay-icon {
+      font-size: 57px;
+      line-height: 1;
+      filter: drop-shadow(0 0 2px rgba(255,255,255,0.95));
+    }
+    .cloud-overlay-item.selected .cloud-overlay-icon,
+    .cloud-overlay-item.selected .cloud-overlay-label {
+      color: #2563eb;
+    }
+    .edge-note-overlay-item {
+      position: absolute;
+      transform: translate(-50%, -50%);
+      max-width: 180px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.96);
+      border: 1px solid #dbeafe;
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+      color: #0f172a;
+      font-size: 12px;
+      line-height: 1.2;
+      font-weight: 600;
+      text-align: center;
+      white-space: nowrap;
+    }
 
     h1 { font-size: 17px; margin: 0 0 10px; letter-spacing: 0.2px; }
     h2 { font-size: 13px; margin: 14px 0 6px; color: #374151; }
@@ -77,7 +134,6 @@
     }
     .section-box.collapsed .section-body { display: none; }
     .section-box.collapsed .section-toggle { margin-bottom: 0; padding-bottom: 0; }
-    #saveServerState, #importServerState { display: none; }
     .util-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .util-grid .span-2 { grid-column: 1 / -1; }
     .util-grid .check-row { display:flex; align-items:center; gap:8px; font-size:12px; color:#111827; font-weight:600; }
@@ -192,6 +248,15 @@
       margin: 4px 0;
       background: #e5e7eb;
       display: none;
+    }
+    #ctxMenu .ctx-submenu {
+      display: none;
+      margin: 4px 0 6px 10px;
+      padding-left: 8px;
+      border-left: 1px solid #e5e7eb;
+    }
+    #ctxMenu .ctx-submenu button {
+      margin-top: 4px;
     }
     .modal-backdrop {
       position: fixed;
@@ -337,11 +402,15 @@
 <div class="top-hero">
   <div class="app-topbar">
     <div class="app-brand">
+      <img class="infra-logo" src="/shared/header/infra-logo.png" alt="infra logo" />
     </div>
     <div class="app-top-links">
+      <a id="manualLink" class="app-circle-btn" href="lldp-manual.html" target="_blank" title="查看使用手册">?</a>
+      <button id="lang_toggle_btn" class="app-circle-btn" type="button" title="切换语言">EN</button>
     </div>
   </div>
   <div class="app-mainnav">
+    <div id="appTitle" class="app-title">AIOps - LLDP Topology Runner</div>
   </div>
 </div>
 <div class="wrap">
@@ -370,8 +439,10 @@
         <div>
           <label id="lblImportMode">导入方式</label>
           <select id="importMode">
-            <option value="json">Json 导入</option>
+            <option value="cli">CLI 导入</option>
             <option value="csv">CSV 导入</option>
+            <option value="sql">SQL 导入</option>
+            <option value="json">Json 导入</option>
           </select>
         </div>
         <div>
@@ -511,6 +582,22 @@
           <button id="openPathFinder">查找路径</button>
         </div>
         <div class="row inline">
+          <button id="alignHorizontal">水平对齐</button>
+          <button id="alignVertical">垂直对齐</button>
+        </div>
+        <div class="row inline">
+          <button id="alignLeft">左对齐</button>
+          <button id="alignRight">右对齐</button>
+        </div>
+        <div class="row inline">
+          <button id="alignTop">上对齐</button>
+          <button id="alignBottom">下对齐</button>
+        </div>
+        <div class="row inline">
+          <button id="distributeHorizontal">水平等间距</button>
+          <button id="distributeVertical">垂直等间距</button>
+        </div>
+        <div class="row inline">
           <button id="exitGroupView" disabled>返回主视图</button>
         </div>
       </div>
@@ -630,15 +717,26 @@
     </div>
   </div>
 
-  <div id="cy"></div>
+  <div id="cyWrap">
+    <div id="cy"></div>
+    <div id="cloudOverlay"></div>
+    <div id="edgeNoteOverlay"></div>
+  </div>
 </div>
 <div id="ctxMenu">
+  <button id="ctxAddNode">添加节点 ▸</button>
+  <div id="ctxAddNodeSubmenu" class="ctx-submenu">
+    <button id="ctxAddNodeRegular">节点</button>
+    <button id="ctxAddNodeCloud">Cloud</button>
+  </div>
+  <div id="ctxSepAdd" class="ctx-sep"></div>
   <button id="ctxLock">固定位置</button>
   <button id="ctxDelete">删除设备</button>
   <button id="ctxDeleteLink">删除链路</button>
   <div id="ctxSepEdit" class="ctx-sep"></div>
   <button id="ctxPathVia">设为必经点</button>
   <button id="ctxAddLink">增加链路</button>
+  <button id="ctxRenameManualNode">修改名称</button>
   <button id="ctxCreateGroup">设备合组</button>
   <button id="ctxToggleGroup">合组展开</button>
   <button id="ctxRenameGroup">修改组名</button>
@@ -646,6 +744,7 @@
   <button id="ctxCopy">复制名称</button>
   <button id="ctxCopyIp">复制地址</button>
   <button id="ctxCopyLink">复制链路</button>
+  <button id="ctxEdgeNote">添加描述</button>
   <div id="ctxSepQuery" class="ctx-sep"></div>
   <button id="ctxUtil">当前利用率</button>
   <button id="ctxUtilRange">区间利用率</button>
@@ -970,11 +1069,6 @@
 </div>
 
 <script>
-  document.getElementById('togglePanel').addEventListener('click', function() {
-    const wrap = document.querySelector('.wrap');
-    wrap.classList.toggle('collapsed');
-    this.textContent = wrap.classList.contains('collapsed') ? '》' : '《';
-  });
   let sourceRows = [];
   let rawRows = [];
   let workspaceMeta = {
@@ -1007,10 +1101,12 @@
   let cliLldpTaskCancelling = false;
   let ctxAppendSingleHop = false;
   let utilByKey = new Map();
+  let edgeNotes = new Map();
   let primaryCliSource = '';
   let dragPerfMode = false;
   let expandedAutoGroupKeys = new Set();
   let manualGroups = [];
+  let manualCanvasNodes = [];
   let expandedManualGroupKeys = new Set();
   let groupViewState = {
     active: false,
@@ -1019,8 +1115,11 @@
   };
   const NODE_BASE_SIZE = 30;
   const NODE_BASE_FONT_SIZE = 10;
+  const CLOUD_NODE_SVG = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA5NiA2NCI+PHBhdGggZD0iTTI5IDUwaDM3YzExIDAgMjAtOCAyMC0xOHMtOC0xOC0xOS0xOGMtMy05LTExLTE0LTIxLTE0LTEyIDAtMjIgOC0yNSAxOUMxMiAyMSA2IDI4IDYgMzdjMCA3IDQgMTMgMTAgMTYgNCAyIDggMyAxMyAzeiIgZmlsbD0iI2ZmZmZmZiIgc3Ryb2tlPSIjMGVhNWU5IiBzdHJva2Utd2lkdGg9IjUiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48L3N2Zz4=';
   let lastZoomNodeScale = null;
   let zoomNodeRaf = 0;
+  let cloudOverlayRaf = 0;
+  let edgeNoteOverlayRaf = 0;
   const KEYWORD_HISTORY_MAX = 10;
   const LAYER_HISTORY_KEY = 'lldp_layer_terms_history';
   const PARTITION_HISTORY_KEY = 'lldp_partition_terms_history';
@@ -1048,6 +1147,15 @@
   })();
 
   const $ = (id) => document.getElementById(id);
+  (() => {
+    const wrap = document.querySelector('.wrap');
+    const btn = $('togglePanel');
+    if (!wrap || !btn) return;
+    btn.addEventListener('click', () => {
+      wrap.classList.toggle('collapsed');
+      btn.textContent = wrap.classList.contains('collapsed') ? '》' : '《';
+    });
+  })();
   const setStatus = (t) => $('status').textContent = t;
   const setOK = (t) => $('ok').textContent = t || '';
   const setErr = (t) => $('err').textContent = t || '';
@@ -1065,6 +1173,7 @@
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+
   const UI_LANG_KEY = 'lldp_ui_lang';
   const UI_TEXT = {
     zh: {
@@ -1095,6 +1204,12 @@
       recursive_only_172_label: '只递归查询 172.* 网段（跳过 10.* / 143.* 等）',
       auto_group_label: '自动合组',
       ctx_create_group: '设备合组',
+      ctx_add_node: '添加节点 ▸',
+      ctx_add_node_regular: '节点',
+      ctx_add_node_cloud: 'Cloud',
+      ctx_add_link: '增加链路',
+      ctx_rename_manual_node: '修改名称',
+      ctx_edge_note: '添加描述',
       ctx_delete_link: '删除链路',
       ctx_copy_link: '复制链路',
       ctx_group_expand: '合组展开',
@@ -1114,8 +1229,9 @@
       btn_select_visible: '全选可见节点',
       btn_relayout_selected: '重排选中设备',
       btn_find_path: '查找路径',
+      btn_align_horizontal: '水平对齐',
+      btn_align_vertical: '垂直对齐',
       btn_exit_group_view: '返回主视图',
-      ctx_add_link: '增加链路',
       add_link_modal_title: '增加链路',
       add_link_node_a: '设备 A',
       add_link_if_a: '设备 A 接口',
@@ -1223,6 +1339,12 @@
       recursive_only_172_label: 'Recurse only into 172.* networks (skip 10.* / 143.* etc.)',
       auto_group_label: 'Auto Grouping',
       ctx_create_group: 'Create Group',
+      ctx_add_node: 'Add Node ▸',
+      ctx_add_node_regular: 'Node',
+      ctx_add_node_cloud: 'Cloud',
+      ctx_add_link: 'Add Link',
+      ctx_rename_manual_node: 'Rename Node',
+      ctx_edge_note: 'Add Note',
       ctx_delete_link: 'Delete Link',
       ctx_copy_link: 'Copy Link',
       ctx_group_expand: 'Expand Group',
@@ -1242,8 +1364,9 @@
       btn_select_visible: 'Select Visible Nodes',
       btn_relayout_selected: 'Relayout Selected',
       btn_find_path: 'Find Path',
+      btn_align_horizontal: 'Align Horizontal',
+      btn_align_vertical: 'Align Vertical',
       btn_exit_group_view: 'Back to Main View',
-      ctx_add_link: 'Add Link',
       add_link_modal_title: 'Add Link',
       add_link_node_a: 'Device A',
       add_link_if_a: 'Device A Interface',
@@ -1472,8 +1595,15 @@
     setText('selectVisible', 'btn_select_visible');
     setText('buildScopedTopo', 'btn_relayout_selected');
     setText('openPathFinder', 'btn_find_path');
+    setText('alignHorizontal', 'btn_align_horizontal');
+    setText('alignVertical', 'btn_align_vertical');
     setText('exitGroupView', 'btn_exit_group_view');
+    setText('ctxAddNode', 'ctx_add_node');
+    setText('ctxAddNodeRegular', 'ctx_add_node_regular');
+    setText('ctxAddNodeCloud', 'ctx_add_node_cloud');
     setText('ctxAddLink', 'ctx_add_link');
+    setText('ctxRenameManualNode', 'ctx_rename_manual_node');
+    setText('ctxEdgeNote', 'ctx_edge_note');
     setText('fitSelection', 'btn_fit_selection');
     setText('isolateSelection', 'btn_isolate');
     setText('clearSelectionHide', 'btn_clear_visibility');
@@ -1607,6 +1737,10 @@
     expandedAutoGroupKeys = new Set();
   }
 
+  function clearManualCanvasState() {
+    manualCanvasNodes = [];
+  }
+
   function rebuildDeletedNodeIdsFromStack() {
     const ids = new Set();
     for (const item of deletedStack) {
@@ -1647,6 +1781,24 @@
               )
             : {}
         })).filter((g) => g.key && g.members.length)
+      : [];
+  }
+
+  function cloneManualCanvasNodes(nodes) {
+    return Array.isArray(nodes)
+      ? nodes.map((n) => ({
+          id: String(n?.id || '').trim(),
+          label: String(n?.label || '').trim(),
+          short: String(n?.short || '').trim(),
+          ip: String(n?.ip || '').trim(),
+          ips: mergeIpLists(n?.ips, n?.ip),
+          entityKey: String(n?.entityKey || '').trim(),
+          manualNodeType: String(n?.manualNodeType || 'node').trim().toLowerCase() || 'node',
+          role: String(n?.role || 'OTHER').trim().toUpperCase() || 'OTHER',
+          position: (n?.position && Number.isFinite(n.position.x) && Number.isFinite(n.position.y))
+            ? { x: Number(n.position.x), y: Number(n.position.y) }
+            : null
+        })).filter((n) => n.id && n.label)
       : [];
   }
 
@@ -1696,6 +1848,8 @@
       },
       expandedAutoGroupKeys: Array.from(expandedAutoGroupKeys),
       manualGroups: cloneManualGroups(manualGroups),
+      manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes),
+      edgeNotes: exportEdgeNotesObject(),
       expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
       mergedMode: !!mergedMode,
       selectedNodeIds: cy ? cy.nodes(':selected').map((n) => n.id()) : [],
@@ -1734,6 +1888,8 @@
       if ($('nameClusterStrength')) $('nameClusterStrength').value = snapshot.ui?.nameClusterStrength || '0.6';
       expandedAutoGroupKeys = new Set((snapshot.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
       manualGroups = cloneManualGroups(snapshot.manualGroups || []);
+      manualCanvasNodes = cloneManualCanvasNodes(snapshot.manualCanvasNodes || []);
+      edgeNotes = normalizeEdgeNotesMap(snapshot.edgeNotes || {});
       expandedManualGroupKeys = new Set((snapshot.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
 
       $('nRows').textContent = rawRows.length;
@@ -1962,6 +2118,38 @@
     return out;
   }
 
+  function mergeIpLists(...groups) {
+    const out = [];
+    groups.forEach((group) => {
+      normalizeIpList(group).forEach((ip) => {
+        if (!out.includes(ip)) out.push(ip);
+      });
+    });
+    return out;
+  }
+
+  function primaryIpFromList(values) {
+    const ips = normalizeIpList(values);
+    return ips[0] || '';
+  }
+
+  function findExistingNodeIdByIp(nodesMap, ip) {
+    const target = String(ip || '').trim();
+    if (!target || !(nodesMap instanceof Map) || !nodesMap.size) return '';
+    for (const [id, node] of nodesMap.entries()) {
+      const ips = mergeIpLists(node?.ips, node?.ip);
+      if (ips.includes(target)) return id;
+    }
+    return '';
+  }
+
+  function resolveNodeIdWithIpFallback(nodesMap, candidateId, ip) {
+    const id = String(candidateId || '').trim();
+    if (id && nodesMap instanceof Map && nodesMap.has(id)) return id;
+    const ipHit = findExistingNodeIdByIp(nodesMap, ip);
+    return ipHit || id;
+  }
+
   function findExistingNodeIdByLabel(name) {
     const target = normalizeEntityName(name).toLowerCase();
     if (!target || !cy) return '';
@@ -1999,39 +2187,24 @@
       }
       return false;
     });
-    return hit;
+    return isIpv4(hit) ? hit : '';
   }
 
-  function mergeIpLists(...groups) {
-    const out = [];
-    groups.forEach((group) => {
-      normalizeIpList(group).forEach((ip) => {
-        if (!out.includes(ip)) out.push(ip);
-      });
+  function findVisibleRepresentativeNodeId(nodeId) {
+    const id = String(nodeId || '').trim();
+    if (!id || !cy) return '';
+    const direct = cy.getElementById(id);
+    if (direct && direct.length) return id;
+    let hit = '';
+    cy.nodes().some((n) => {
+      const members = Array.isArray(n.data('groupMembers')) ? n.data('groupMembers') : [];
+      if (members.includes(id)) {
+        hit = n.id();
+        return true;
+      }
+      return false;
     });
-    return out;
-  }
-
-  function primaryIpFromList(values) {
-    const ips = normalizeIpList(values);
-    return ips[0] || '';
-  }
-
-  function findExistingNodeIdByIp(nodesMap, ip) {
-    const target = String(ip || '').trim();
-    if (!target || !(nodesMap instanceof Map) || !nodesMap.size) return '';
-    for (const [id, node] of nodesMap.entries()) {
-      const ips = mergeIpLists(node?.ips, node?.ip);
-      if (ips.includes(target)) return id;
-    }
-    return '';
-  }
-
-  function resolveNodeIdWithIpFallback(nodesMap, candidateId, ip) {
-    const id = String(candidateId || '').trim();
-    if (id && nodesMap instanceof Map && nodesMap.has(id)) return id;
-    const ipHit = findExistingNodeIdByIp(nodesMap, ip);
-    return ipHit || id;
+    return hit;
   }
 
   function splitUtilKey(utilKey) {
@@ -2121,6 +2294,13 @@
     return leftId && rightId ? `${leftId}||${rightId}||${leftIf}||${rightIf}` : '';
   }
 
+  function buildCanonicalNodePairKey(aId, bId) {
+    const leftId = String(aId || '');
+    const rightId = String(bId || '');
+    if (!leftId || !rightId) return '';
+    return leftId <= rightId ? `${leftId}||${rightId}` : `${rightId}||${leftId}`;
+  }
+
   function resolveGraphRowContext(r, cols, strip) {
     const lhRaw = String(r[cols.colLH] || '').trim();
     const rhRaw = String(r[cols.colRH] || '').trim();
@@ -2149,8 +2329,8 @@
 
     const aEntityKey = inferEntityKey(lhRaw || lh, aIp);
     const bEntityKey = inferEntityKey(rhRaw || rh, bIp);
-    const aId = nodeIdFromEntityKey(aEntityKey);
-    const bId = nodeIdFromEntityKey(bEntityKey);
+    let aId = findExistingNodeIdByLabel(lhRaw || lh) || nodeIdFromEntityKey(aEntityKey);
+    let bId = findExistingNodeIdByLabel(rhRaw || rh) || nodeIdFromEntityKey(bEntityKey);
     if (!aId || !bId) return null;
 
     return {
@@ -2431,13 +2611,17 @@
       rows: visibleRows.slice(),
       positions: visiblePositions,
       nodes: visibleNodeMeta,
+      manual_canvas_nodes: cloneManualCanvasNodes(manualCanvasNodes).filter((node) => visibleNodeIds.has(node.id)),
+      edge_notes: exportEdgeNotesObject(visibleEdges.map((e) => e.id())),
       ui: {
         stripDomain: $('stripDomain')?.value || 'yes',
         colLocalHost: $('colLocalHost')?.value || '',
         colRemoteHost: $('colRemoteHost')?.value || '',
         colLocalIf: $('colLocalIf')?.value || '',
         colRemoteIf: $('colRemoteIf')?.value || '',
+        edgeNotes: exportEdgeNotesObject(visibleEdges.map((e) => e.id())),
         manualGroups: visibleManualGroups,
+        manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes).filter((node) => visibleNodeIds.has(node.id)),
         expandedManualGroupKeys: visibleExpandedManualGroupKeys
       }
     };
@@ -2449,6 +2633,7 @@
     setStatus('解析中...');
     clearDeleteState();
     clearGroupState();
+    clearManualCanvasState();
     resetViewState();
     const parsed = parseCSV(text);
     headers = parsed.headers;
@@ -2502,6 +2687,51 @@
     const a = `${leftName || String(lhRaw).trim().toLowerCase()}||${leftIf}`;
     const b = `${rightName || String(rhRaw).trim().toLowerCase()}||${rightIf}`;
     return a <= b ? `${a}<<<${b}` : `${b}<<<${a}`;
+  }
+
+  function mergeParsed(parsed, sourceName) {
+    if (!parsed.headers.length) {
+      setErr(`文件 ${sourceName} 没有表头，已跳过`);
+      return { added: 0, replaced: 0 };
+    }
+    const incomingHeaders = parsed.headers;
+    if (!headers.length) {
+      headers = parsed.headers;
+    } else {
+      const base = headers.map(h => h.toLowerCase()).join(',');
+      const incoming = incomingHeaders.map(h => h.toLowerCase()).join(',');
+      if (base !== incoming) {
+        const mapped = alignParsedToHeaders(parsed, headers);
+        if (!mapped) {
+          setErr(`文件 ${sourceName} 表头不一致，已跳过`);
+          return { added: 0, replaced: 0 };
+        }
+        parsed = mapped;
+      }
+    }
+    if (!rawRows.length) {
+      rawRows.push(...parsed.rows);
+      return { added: parsed.rows.length, replaced: 0 };
+    }
+    const index = new Map();
+    rawRows.forEach((row, idx) => {
+      const key = buildAppendRowMergeKey(row);
+      if (key) index.set(key, idx);
+    });
+    let added = 0;
+    let replaced = 0;
+    parsed.rows.forEach((row) => {
+      const key = buildAppendRowMergeKey(row);
+      if (key && index.has(key)) {
+        rawRows[index.get(key)] = row;
+        replaced += 1;
+        return;
+      }
+      rawRows.push(row);
+      if (key) index.set(key, rawRows.length - 1);
+      added += 1;
+    });
+    return { added, replaced };
   }
 
   function alignParsedToHeaders(parsed, targetHeaders) {
@@ -2587,6 +2817,7 @@
       if (outIndex.rip >= 0) out[outIndex.rip] = ripVal;
       if (outIndex.rvendor >= 0) out[outIndex.rvendor] = rvendorVal;
 
+      // Force-fill the currently selected build columns, even when the workspace headers are custom.
       const selectedMap = new Map([
         [selectedLH, lhVal],
         [selectedLI, liVal],
@@ -2613,57 +2844,13 @@
     return { headers: targetHeaders.slice(), rows };
   }
 
-  function mergeParsed(parsed, sourceName) {
-    if (!parsed.headers.length) {
-      setErr(`文件 ${sourceName} 没有表头，已跳过`);
-      return { added: 0, replaced: 0 };
-    }
-    if (!headers.length) {
-      headers = parsed.headers;
-    } else {
-      const incomingHeaders = parsed.headers;
-      const base = headers.map(h => h.toLowerCase()).join(',');
-      const incoming = incomingHeaders.map(h => h.toLowerCase()).join(',');
-      if (base !== incoming) {
-        const mapped = alignParsedToHeaders(parsed, headers);
-        if (!mapped) {
-          setErr(`文件 ${sourceName} 表头不一致，已跳过`);
-          return { added: 0, replaced: 0 };
-        }
-        parsed = mapped;
-      }
-    }
-    if (!rawRows.length) {
-      rawRows.push(...parsed.rows);
-      return { added: parsed.rows.length, replaced: 0 };
-    }
-    const index = new Map();
-    rawRows.forEach((row, idx) => {
-      const key = buildAppendRowMergeKey(row);
-      if (key) index.set(key, idx);
-    });
-    let added = 0;
-    let replaced = 0;
-    parsed.rows.forEach((row) => {
-      const key = buildAppendRowMergeKey(row);
-      if (key && index.has(key)) {
-        rawRows[index.get(key)] = row;
-        replaced += 1;
-        return;
-      }
-      rawRows.push(row);
-      if (key) index.set(key, rawRows.length - 1);
-      added += 1;
-    });
-    return { added, replaced };
-  }
-
   async function loadFiles(files) {
     try {
       setErr(''); setOK('');
       setStatus('读取/解析中...');
       clearDeleteState();
       clearGroupState();
+      clearManualCanvasState();
       resetViewState();
       headers = [];
       sourceRows = [];
@@ -2786,13 +2973,15 @@
         }
       },
       {
-        selector: 'node.single-link-hit',
+        selector: 'node.manual-cloud-node',
         style: {
-          'background-color': '#ef4444',
-          'border-width': 3,
-          'border-color': '#991b1b',
-          'z-index-compare': 'manual',
-          'z-index': 1100
+          'shape': 'rectangle',
+          'label': '',
+          'background-color': '#ffffff',
+          'background-opacity': 0,
+          'border-width': 0,
+          'width': 6,
+          'height': 6
         }
       },
 
@@ -2883,6 +3072,20 @@
         'shadow-opacity': 0.6,
         'shadow-offset-x': 0,
         'shadow-offset-y': 0
+      } },
+      { selector: 'node.manual-cloud-node:selected', style: {
+        'border-width': 0,
+        'shadow-blur': 0,
+        'shadow-opacity': 0
+      } },
+      {
+        selector: 'node.single-link-hit',
+        style: {
+          'background-color': '#ef4444',
+          'border-width': 3,
+          'border-color': '#991b1b',
+          'z-index-compare': 'manual',
+          'z-index': 1100
       } }
     ];
   }
@@ -2914,8 +3117,17 @@
       evt.originalEvent.preventDefault();
       showCtx(evt);
     });
+    cy.on('cxttap', (evt) => {
+      if (evt.target !== cy) return;
+      evt.originalEvent.preventDefault();
+      showCtx(evt);
+    });
     cy.on('tap', () => hideCtx());
     cy.on('pan', () => hideCtx());
+    cy.on('render add remove position data select unselect', () => {
+      scheduleCloudOverlaySync();
+      scheduleEdgeNoteOverlaySync();
+    });
     cy.on('dbltap', 'node', (evt) => {
       const node = evt.target;
       if (!node || !node.length) return;
@@ -2998,7 +3210,16 @@
 
   function buildGraph(keepPositions = null, opts = {}) {
     const forceNodesInput = Array.isArray(opts.forceNodes) ? opts.forceNodes : [];
-    if (!rawRows.length && !forceNodesInput.length) { setErr('请先导入 CSV'); return; }
+    const manualForceNodes = cloneManualCanvasNodes(manualCanvasNodes);
+    const forceNodesAll = [];
+    const forceSeen = new Set();
+    [...manualForceNodes, ...forceNodesInput].forEach((node) => {
+      const id = String(node?.id || '').trim();
+      if (!id || forceSeen.has(id)) return;
+      forceSeen.add(id);
+      forceNodesAll.push(node);
+    });
+    if (!rawRows.length && !forceNodesAll.length) { setErr('请先导入 CSV'); return; }
 
     const colLH = $('colLocalHost').value;
     const colRH = $('colRemoteHost').value;
@@ -3021,7 +3242,7 @@
     const rows = dedupeRows(rawRows, { colLH, colLI, colRH, colRI });
 
     // Preserve explicitly scoped nodes (even when no internal edges are found).
-    for (const fn of forceNodesInput) {
+    for (const fn of forceNodesAll) {
       const id = String(fn?.id || '').trim();
       if (!id) continue;
       const label = String(fn?.label || fn?.short || id).trim() || id;
@@ -3040,7 +3261,8 @@
         rank,
         ip,
         ips,
-        entityKey
+        entityKey,
+        manualNodeType: String(fn?.manualNodeType || 'node').trim().toLowerCase() || 'node'
       });
       if (ip) {
         nodeIpMap.set(label, ip);
@@ -3082,8 +3304,8 @@
       const bLabel = choosePreferredLabel(bExisting?.label, rh, bIp);
       const aIps = mergeIpLists(aExisting?.ips, aExisting?.ip, aIp);
       const bIps = mergeIpLists(bExisting?.ips, bExisting?.ip, bIp);
-      nodes.set(aResolvedId, { id: aResolvedId, label: aLabel, short: shortLabel(aLabel), role: aRole, rank: roleRank(aRole), ip: primaryIpFromList(aIps), ips: aIps, entityKey: aExisting?.entityKey || aEntityKey });
-      nodes.set(bResolvedId, { id: bResolvedId, label: bLabel, short: shortLabel(bLabel), role: bRole, rank: roleRank(bRole), ip: primaryIpFromList(bIps), ips: bIps, entityKey: bExisting?.entityKey || bEntityKey });
+      nodes.set(aResolvedId, { id: aResolvedId, label: aLabel, short: shortLabel(aLabel), role: aRole, rank: roleRank(aRole), ip: primaryIpFromList(aIps), ips: aIps, entityKey: aExisting?.entityKey || aEntityKey, manualNodeType: aExisting?.manualNodeType || 'node' });
+      nodes.set(bResolvedId, { id: bResolvedId, label: bLabel, short: shortLabel(bLabel), role: bRole, rank: roleRank(bRole), ip: primaryIpFromList(bIps), ips: bIps, entityKey: bExisting?.entityKey || bEntityKey, manualNodeType: bExisting?.manualNodeType || 'node' });
 
       const edgeLabel = `${li} ↔ ${ri}`.trim();
       const liNorm = String(li || '').trim().toLowerCase();
@@ -3122,6 +3344,7 @@
       n.labelIp = n.ips.length ? `${n.label}\n${n.ips.join('\n')}` : n.label;
       n.labelWithCount = n.label;
       n.shortWithCount = n.short;
+      n.manualNodeType = String(n.manualNodeType || 'node').trim().toLowerCase() || 'node';
       n.groupKey = '';
       n.groupKind = '';
       n.manualGroupKey = '';
@@ -3190,7 +3413,10 @@
     const elements = [
       ...Array.from(nodes.values()).map((n) => ({
         data: n,
-        classes: (n.isGroup && n.isManualGroup) ? 'manual-group-node' : ''
+        classes: [
+          (n.isGroup && n.isManualGroup) ? 'manual-group-node' : '',
+          (!n.isGroup && n.manualNodeType === 'cloud') ? 'manual-cloud-node' : ''
+        ].filter(Boolean).join(' ')
       })),
       ...edgesForCy
     ];
@@ -3240,6 +3466,8 @@
     // 使边标签模式与当前选择同步
     updateEdgeLabels(edgeMode);
     applyUtilizationToEdges();
+    scheduleCloudOverlaySync();
+    scheduleEdgeNoteOverlaySync();
     applyAdaptiveRenderMode();
     applyZoomAwareNodeSizing(true);
 
@@ -3278,6 +3506,34 @@
     const w = Math.max(280, (Number.isFinite(bb.w) ? bb.w : 0) + pad * 2);
     const h = Math.max(220, (Number.isFinite(bb.h) ? bb.h : 0) + pad * 2);
     return { x1, y1, w, h };
+  }
+
+  function alignSelectedNodes(axis = 'horizontal') {
+    if (!cy) return false;
+    const selected = cy.nodes(':selected');
+    if (!selected.length || selected.length < 2) {
+      setErr('请先至少选中 2 个节点，再执行对齐。');
+      return false;
+    }
+    const coordKey = axis === 'vertical' ? 'x' : 'y';
+    const values = selected.map((node) => Number(node.position(coordKey)) || 0);
+    if (!values.length) return false;
+    const alignedValue = values.reduce((sum, value) => sum + value, 0) / values.length;
+    cy.batch(() => {
+      selected.forEach((node) => {
+        const pos = node.position();
+        if (axis === 'vertical') node.position({ x: alignedValue, y: pos.y });
+        else node.position({ x: pos.x, y: alignedValue });
+      });
+    });
+    if (typeof refreshEdgeLabelDisplay === 'function') refreshEdgeLabelDisplay();
+    if (typeof scheduleCloudOverlaySync === 'function') scheduleCloudOverlaySync();
+    if (typeof scheduleEdgeNoteOverlaySync === 'function') scheduleEdgeNoteOverlaySync();
+    schedulePersistCurrentPageSession(80);
+    setOK(axis === 'vertical'
+      ? `已对齐 ${selected.length} 个节点：垂直对齐`
+      : `已对齐 ${selected.length} 个节点：水平对齐`);
+    return true;
   }
 
   function runLayout(targetNodes = null, opts = {}) {
@@ -4429,6 +4685,8 @@
       },
       expandedAutoGroupKeys: Array.from(expandedAutoGroupKeys),
       manualGroups: cloneManualGroups(manualGroups),
+      manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes),
+      edgeNotes: exportEdgeNotesObject(),
       expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
       mergedMode: !!mergedMode,
       selectedNodeIds: cy ? cy.nodes(':selected').map((n) => n.id()) : [],
@@ -4463,6 +4721,8 @@
     if ($('nameClusterStrength')) $('nameClusterStrength').value = snapshot.ui?.nameClusterStrength || '0.6';
     expandedAutoGroupKeys = new Set((snapshot.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     manualGroups = cloneManualGroups(snapshot.manualGroups || []);
+    manualCanvasNodes = cloneManualCanvasNodes(snapshot.manualCanvasNodes || []);
+    edgeNotes = normalizeEdgeNotesMap(snapshot.edgeNotes || {});
     expandedManualGroupKeys = new Set((snapshot.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     $('nRows').textContent = rawRows.length;
     $('nCols').textContent = headers.length;
@@ -5002,11 +5262,16 @@
 
   // 右键菜单
   let ctxTarget = null;
+  let ctxCanvasPos = null;
   let pendingAddLinkNodes = [];
+  let addNodeSubmenuOpen = false;
   function hideCtx() {
     const menu = $('ctxMenu');
     menu.style.display = 'none';
     ctxTarget = null;
+    ctxCanvasPos = null;
+    addNodeSubmenuOpen = false;
+    if ($('ctxAddNodeSubmenu')) $('ctxAddNodeSubmenu').style.display = 'none';
   }
 
   function ctxNodes() {
@@ -5022,6 +5287,74 @@
     if (sel.length) return sel;
     if (ctxTarget && typeof ctxTarget.isEdge === 'function' && ctxTarget.isEdge()) return ctxTarget.collection();
     return cy.collection();
+  }
+
+  function nextManualCanvasLabel(kind = 'node') {
+    const prefix = kind === 'cloud' ? 'Cloud' : 'Node';
+    const existing = new Set();
+    if (cy) {
+      cy.nodes().forEach((n) => {
+        if (n.data('isGroup')) return;
+        existing.add(String(n.data('label') || '').trim().toLowerCase());
+      });
+    }
+    manualCanvasNodes.forEach((n) => existing.add(String(n.label || '').trim().toLowerCase()));
+    let idx = 1;
+    while (existing.has(`${prefix} ${idx}`.toLowerCase())) idx += 1;
+    return `${prefix} ${idx}`;
+  }
+
+  function createManualCanvasNode(kind = 'node') {
+    if (!cy) {
+      setErr('请先生成拓扑，再添加节点。');
+      return;
+    }
+    const nodeKind = kind === 'cloud' ? 'cloud' : 'node';
+    const promptText = nodeKind === 'cloud' ? '请输入 Cloud 名称' : '请输入节点名称';
+    const nextLabel = window.prompt(promptText, nextManualCanvasLabel(nodeKind));
+    if (nextLabel == null) return;
+    const label = String(nextLabel || '').trim();
+    if (!label) {
+      setErr('节点名称不能为空。');
+      return;
+    }
+    if (findExistingNodeIdByLabel(label)) {
+      setErr(`节点已存在：${label}`);
+      return;
+    }
+    const entityKey = inferEntityKey(label, '');
+    const id = nodeIdFromEntityKey(entityKey);
+    if (!id) {
+      setErr('增加节点失败：无法生成节点标识。');
+      return;
+    }
+    const fallbackPos = cy ? cy.extent() : { x1: -120, x2: 120, y1: -120, y2: 120 };
+    const finalPos = (ctxCanvasPos && Number.isFinite(ctxCanvasPos.x) && Number.isFinite(ctxCanvasPos.y))
+      ? { x: Number(ctxCanvasPos.x), y: Number(ctxCanvasPos.y) }
+      : { x: (Number(fallbackPos.x1) + Number(fallbackPos.x2)) / 2, y: (Number(fallbackPos.y1) + Number(fallbackPos.y2)) / 2 };
+    runWithRollback(() => {
+      manualCanvasNodes.push({
+        id,
+        label,
+        short: shortLabel(label),
+        ip: '',
+        ips: [],
+        entityKey,
+        manualNodeType: nodeKind,
+        role: 'OTHER',
+        position: { x: finalPos.x, y: finalPos.y }
+      });
+      const keep = capturePositions();
+      keep[id] = { x: finalPos.x, y: finalPos.y };
+      buildGraph(keep, { keepExactPositions: true, adjustViewport: false });
+      const node = cy ? cy.getElementById(id) : null;
+      if (node && node.length) {
+        cy.elements(':selected').unselect();
+        node.select().addClass('hit');
+      }
+      schedulePersistCurrentPageSession(80);
+      setOK(nodeKind === 'cloud' ? `已添加 Cloud 节点：${label}` : `已添加节点：${label}`);
+    }, { delayMs: 1300 });
   }
 
   function ctxDeviceNodes() {
@@ -5040,6 +5373,52 @@
       uniq.push(node);
     });
     return uniq;
+  }
+
+  function isManualCanvasNode(node) {
+    if (!node || typeof node.id !== 'function') return false;
+    const id = String(node.id() || '').trim();
+    return manualCanvasNodes.some((item) => String(item?.id || '').trim() === id);
+  }
+
+  function renameManualCanvasNode(node) {
+    if (!node || !isManualCanvasNode(node)) {
+      setErr('当前节点不支持修改名称。');
+      return;
+    }
+    const id = String(node.id() || '').trim();
+    const currentLabel = String(node.data('label') || '').trim();
+    const nextLabel = window.prompt('请输入新的节点名称', currentLabel);
+    if (nextLabel == null) return;
+    const label = String(nextLabel || '').trim();
+    if (!label) {
+      setErr('节点名称不能为空。');
+      return;
+    }
+    const duplicateId = findExistingNodeIdByLabel(label);
+    if (duplicateId && duplicateId !== id) {
+      setErr(`节点已存在：${label}`);
+      return;
+    }
+    runWithRollback(() => {
+      manualCanvasNodes = manualCanvasNodes.map((item) => {
+        if (String(item?.id || '').trim() !== id) return item;
+        return {
+          ...item,
+          label,
+          short: shortLabel(label)
+        };
+      });
+      const pos = capturePositions();
+      buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
+      const renamed = cy ? cy.getElementById(id) : null;
+      if (renamed && renamed.length) {
+        cy.elements(':selected').unselect();
+        renamed.select().addClass('hit');
+      }
+      schedulePersistCurrentPageSession(80);
+      setOK(`已修改节点名称：${label}`);
+    }, { delayMs: 1300 });
   }
 
   function openAddLinkModal(nodes) {
@@ -5165,6 +5544,45 @@
     return `${leftPort || 'N/A'} ↔ ${rightPort || 'N/A'}`.trim();
   }
 
+  function normalizeEdgeNotesMap(value) {
+    const map = new Map();
+    if (!value) return map;
+    if (value instanceof Map) {
+      value.forEach((note, key) => {
+        const cleanKey = String(key || '').trim();
+        const cleanNote = String(note || '').trim();
+        if (cleanKey && cleanNote) map.set(cleanKey, cleanNote);
+      });
+      return map;
+    }
+    if (typeof value === 'object') {
+      Object.entries(value).forEach(([key, note]) => {
+        const cleanKey = String(key || '').trim();
+        const cleanNote = String(note || '').trim();
+        if (cleanKey && cleanNote) map.set(cleanKey, cleanNote);
+      });
+    }
+    return map;
+  }
+
+  function exportEdgeNotesObject(filterIds = null) {
+    const out = {};
+    const allow = filterIds ? new Set((filterIds || []).map((x) => String(x || '').trim()).filter(Boolean)) : null;
+    edgeNotes.forEach((note, key) => {
+      const cleanKey = String(key || '').trim();
+      const cleanNote = String(note || '').trim();
+      if (!cleanKey || !cleanNote) return;
+      if (allow && !allow.has(cleanKey)) return;
+      out[cleanKey] = cleanNote;
+    });
+    return out;
+  }
+
+  function edgeNoteText(edge) {
+    if (!edge || typeof edge.id !== 'function') return '';
+    return String(edgeNotes.get(String(edge.id() || '').trim()) || '').trim();
+  }
+
   function refreshEdgeLabelDisplay() {
     if (!cy) return;
     const edgeMode = $('edgeLabelMode')?.value || 'none';
@@ -5180,6 +5598,7 @@
       else if (showExtra) shown = util;
       e.data('labelShown', shown);
     });
+    scheduleEdgeNoteOverlaySync();
   }
 
   function shouldUseHeavyEdgeMode() {
@@ -5212,7 +5631,74 @@
         'height': nodeSize,
         'font-size': fontSize
       });
+      cy.nodes('.manual-cloud-node').style({
+        'width': 6,
+        'height': 6,
+        'shadow-blur': 0,
+        'shadow-opacity': 0
+      });
     });
+    scheduleCloudOverlaySync();
+  }
+
+  function syncCloudOverlay() {
+    cloudOverlayRaf = 0;
+    const root = $('cloudOverlay');
+    if (!root || !cy) return;
+    const mode = String(($('nodeLabelMode')?.value || 'full')).trim().toLowerCase();
+    const html = [];
+    cy.nodes('.manual-cloud-node:visible').forEach((node) => {
+      const pos = node.renderedPosition();
+      if (!Number.isFinite(pos.x) || !Number.isFinite(pos.y)) return;
+      const data = node.data();
+      const label = mode === 'short'
+        ? String(data.short || data.label || node.id()).trim()
+        : String(data.label || node.id()).trim();
+      html.push(
+        `<div class="cloud-overlay-item${node.selected() ? ' selected' : ''}" style="left:${pos.x}px;top:${pos.y}px">` +
+        `<div class="cloud-overlay-label">${escapeHtml(label)}</div>` +
+        `<div class="cloud-overlay-icon">☁️</div>` +
+        `</div>`
+      );
+    });
+    root.innerHTML = html.join('');
+  }
+
+  function scheduleCloudOverlaySync() {
+    if (cloudOverlayRaf) return;
+    cloudOverlayRaf = requestAnimationFrame(syncCloudOverlay);
+  }
+
+  function syncEdgeNoteOverlay() {
+    edgeNoteOverlayRaf = 0;
+    const root = $('edgeNoteOverlay');
+    if (!root || !cy) return;
+    const html = [];
+    cy.edges(':visible').forEach((edge) => {
+      const note = edgeNoteText(edge);
+      if (!note) return;
+      const src = edge.source();
+      const tgt = edge.target();
+      if (!src || !tgt || !src.length || !tgt.length) return;
+      const srcPos = src.renderedPosition();
+      const tgtPos = tgt.renderedPosition();
+      const mx = (Number(srcPos.x) + Number(tgtPos.x)) / 2;
+      const my = (Number(srcPos.y) + Number(tgtPos.y)) / 2;
+      const dx = Number(tgtPos.x) - Number(srcPos.x);
+      const dy = Number(tgtPos.y) - Number(srcPos.y);
+      const len = Math.hypot(dx, dy) || 1;
+      const ox = (-dy / len) * 20;
+      const oy = (dx / len) * 20;
+      html.push(
+        `<div class="edge-note-overlay-item" style="left:${mx + ox}px;top:${my + oy}px">${escapeHtml(note)}</div>`
+      );
+    });
+    root.innerHTML = html.join('');
+  }
+
+  function scheduleEdgeNoteOverlaySync() {
+    if (edgeNoteOverlayRaf) return;
+    edgeNoteOverlayRaf = requestAnimationFrame(syncEdgeNoteOverlay);
   }
 
   function scheduleZoomAwareNodeSizing(force = false) {
@@ -5676,6 +6162,11 @@
         ? String(nodeData.labelWithCount || nodeData.label || '')
         : String(nodeData.shortWithCount || nodeData.short || nodeData.label || '');
     }
+    if (nodeData.manualNodeType === 'cloud') {
+      return normalized === 'short'
+        ? String(nodeData.short || nodeData.label || '')
+        : String(nodeData.label || '');
+    }
     if (normalized === 'full_ip') return String(nodeData.labelIp || nodeData.label || '');
     if (normalized === 'full') return String(nodeData.label || '');
     return String(nodeData.short || nodeData.label || '');
@@ -5975,16 +6466,25 @@
 
   function showCtx(evt) {
     ctxTarget = evt.target;
+    ctxCanvasPos = evt.position && Number.isFinite(evt.position.x) && Number.isFinite(evt.position.y)
+      ? { x: Number(evt.position.x), y: Number(evt.position.y) }
+      : null;
     const menu = $('ctxMenu');
+    const isCanvasTarget = ctxTarget === cy;
     const isEdgeTarget = !!(ctxTarget && typeof ctxTarget.isEdge === 'function' && ctxTarget.isEdge());
     const isGroupNode = !!(ctxTarget && typeof ctxTarget.data === 'function' && ctxTarget.data('isGroup'));
+    const isManualCanvasTarget = !!(ctxTarget && typeof ctxTarget.isNode === 'function' && ctxTarget.isNode() && isManualCanvasNode(ctxTarget));
     const isManualGroup = ctxGroupKind() === 'manual';
     const groupKey = ctxGroupKey();
     const canToggleGroup = !!groupKey;
-    const nodeBtnIds = ['ctxLock', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink'];
+    const nodeBtnIds = ['ctxLock', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxRenameManualNode'];
     nodeBtnIds.forEach((id) => {
       const el = $(id);
       if (!el) return;
+      if (isCanvasTarget) {
+        el.style.display = 'none';
+        return;
+      }
       if (isEdgeTarget) {
         el.style.display = (id === 'ctxUtil' || id === 'ctxUtilRange') ? '' : 'none';
         return;
@@ -5993,8 +6493,14 @@
         el.style.display = 'none';
         return;
       }
+      if (id === 'ctxRenameManualNode') {
+        el.style.display = isManualCanvasTarget ? '' : 'none';
+        return;
+      }
       el.style.display = '';
     });
+    if ($('ctxAddNode')) $('ctxAddNode').style.display = isCanvasTarget ? '' : 'none';
+    if ($('ctxAddNodeSubmenu')) $('ctxAddNodeSubmenu').style.display = (isCanvasTarget && addNodeSubmenuOpen) ? 'block' : 'none';
     if ($('ctxCreateGroup')) {
       const groupableNodes = ctxNodes().filter((n) => !n.data('isGroup'));
       $('ctxCreateGroup').style.display = (!isEdgeTarget && groupableNodes.length >= 2) ? '' : 'none';
@@ -6005,6 +6511,7 @@
     }
     if ($('ctxDeleteLink')) $('ctxDeleteLink').style.display = isEdgeTarget ? '' : 'none';
     if ($('ctxCopyLink')) $('ctxCopyLink').style.display = isEdgeTarget ? '' : 'none';
+    if ($('ctxEdgeNote')) $('ctxEdgeNote').style.display = isEdgeTarget ? '' : 'none';
     if ($('ctxToggleGroup')) {
       $('ctxToggleGroup').style.display = (!isEdgeTarget && canToggleGroup) ? '' : 'none';
       $('ctxToggleGroup').textContent = isGroupNode ? tr('ctx_group_expand') : tr('ctx_group_collapse');
@@ -6019,9 +6526,10 @@
       $('ctxLock').textContent = locked ? '取消固定' : '固定位置';
     }
     const groups = [
+      { sep: 'ctxSepAdd', ids: ['ctxAddNode', 'ctxAddNodeSubmenu'] },
       { sep: 'ctxSepEdit', ids: ['ctxLock', 'ctxDelete', 'ctxDeleteLink'] },
-      { sep: 'ctxSepCopy', ids: ['ctxPathVia', 'ctxAddLink', 'ctxCreateGroup', 'ctxToggleGroup', 'ctxRenameGroup'] },
-      { sep: 'ctxSepQuery', ids: ['ctxCopy', 'ctxCopyIp', 'ctxCopyLink'] },
+      { sep: 'ctxSepCopy', ids: ['ctxPathVia', 'ctxAddLink', 'ctxRenameManualNode', 'ctxCreateGroup', 'ctxToggleGroup', 'ctxRenameGroup'] },
+      { sep: 'ctxSepQuery', ids: ['ctxCopy', 'ctxCopyIp', 'ctxCopyLink', 'ctxEdgeNote'] },
       { sep: '', ids: ['ctxUtil', 'ctxUtilRange', 'ctxAppendQuery'] }
     ];
     groups.forEach((group, idx) => {
@@ -6052,7 +6560,11 @@
     cy.nodes().forEach((node) => {
       node.data('displayLabel', nodeDisplayLabelData(node.data(), normalized));
     });
-    cy.style().selector('node').style('label', 'data(displayLabel)').update();
+    cy.style()
+      .selector('node').style('label', 'data(displayLabel)')
+      .selector('node.manual-cloud-node').style('label', '')
+      .update();
+    scheduleCloudOverlaySync();
     if (normalized === 'none') setOK('节点标签：隐藏');
     else if (normalized === 'full_ip') setOK('节点标签：全名+IP');
     else setOK(normalized === 'full' ? '节点标签：全名' : '节点标签：缩略');
@@ -6118,6 +6630,7 @@
         filter_active: !!utilFilterState.active,
         filter_threshold: Number.isFinite(utilFilterState.threshold) ? Number(utilFilterState.threshold) : null
       },
+      edge_notes: exportEdgeNotesObject(),
       ui: {
         filter: $('filter')?.value || '',
         showOnly: $('showOnly')?.value || '',
@@ -6133,6 +6646,8 @@
         nameClusterStrength: $('nameClusterStrength')?.value || '0.6',
         expandedAutoGroupKeys: Array.from(expandedAutoGroupKeys),
         manualGroups: cloneManualGroups(manualGroups),
+        manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes),
+        edgeNotes: exportEdgeNotesObject(),
         expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
         mergeMode: !!mergedMode,
         colLocalHost: $('colLocalHost')?.value || '',
@@ -6302,6 +6817,8 @@
     if ($('nameClusterStrength') && ui.nameClusterStrength != null) $('nameClusterStrength').value = String(ui.nameClusterStrength);
     expandedAutoGroupKeys = new Set((ui.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     manualGroups = cloneManualGroups(ui.manualGroups || []);
+    manualCanvasNodes = cloneManualCanvasNodes(ui.manualCanvasNodes || snapshot?.manual_canvas_nodes || []);
+    edgeNotes = normalizeEdgeNotesMap(ui.edgeNotes || snapshot?.edge_notes || {});
     expandedManualGroupKeys = new Set((ui.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     if (typeof ui.mergeMode === 'boolean') mergedMode = ui.mergeMode;
     setMergeButtonText();
@@ -6358,6 +6875,18 @@
         }).filter(Boolean)
       : [];
     const importedUi = (appendPayload?.ui && typeof appendPayload.ui === 'object') ? appendPayload.ui : {};
+    const importedManualCanvasNodes = cloneManualCanvasNodes(importedUi.manualCanvasNodes || appendPayload?.manual_canvas_nodes || []);
+    if (importedManualCanvasNodes.length) {
+      const existingManualNodes = new Map(manualCanvasNodes.map((node) => [String(node.id || '').trim(), node]));
+      importedManualCanvasNodes.forEach((node) => {
+        if (!existingManualNodes.has(node.id)) existingManualNodes.set(node.id, node);
+      });
+      manualCanvasNodes = Array.from(existingManualNodes.values());
+    }
+    const importedEdgeNotes = normalizeEdgeNotesMap(importedUi.edgeNotes || appendPayload?.edge_notes || {});
+    if (importedEdgeNotes.size) {
+      importedEdgeNotes.forEach((note, key) => edgeNotes.set(String(key || '').trim(), String(note || '').trim()));
+    }
     if (Array.isArray(importedUi.manualGroups) && importedUi.manualGroups.length) {
       const currentGroups = cloneManualGroups(manualGroups);
       const importedGroups = cloneManualGroups(importedUi.manualGroups);
@@ -8175,10 +8704,134 @@
   $('utilFilterModal').addEventListener('click', (e) => {
     if (e.target && e.target.id === 'utilFilterModal') closeUtilFilterModal();
   });
+  function normalizePastedCsv(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return '';
+    const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (!lines.length) return '';
+    if (lines.length === 1 && !/[,\t]/.test(lines[0])) {
+      const parts = lines[0].split(/\s+/).filter(Boolean);
+      if (parts.length === 4) {
+        return [
+          'depth,localhostname,localinterface,remotehostname,remoteinterface',
+          `1,${parts[0]},${parts[1]},${parts[2]},${parts[3]}`
+        ].join('\n');
+      }
+      if (parts.length === 5 && /^\d+$/.test(parts[0])) {
+        return [
+          'depth,localhostname,localinterface,remotehostname,remoteinterface',
+          `${parts[0]},${parts[1]},${parts[2]},${parts[3]},${parts[4]}`
+        ].join('\n');
+      }
+    }
+    return raw;
+  }
+
+  function collectNodeIdsFromCsvText(csvText) {
+    const parsed = parseCSV(csvText);
+    if (!parsed.headers.length) return [];
+    const strip = $('stripDomain')?.value === 'yes';
+    const cols = {
+      colLH: $('colLocalHost')?.value || autoPickColumn(['localhostname','local_host','src','from']),
+      colRH: $('colRemoteHost')?.value || autoPickColumn(['remotehostname','remote_host','dst','to']),
+      colLI: $('colLocalIf')?.value || autoPickColumn(['localinterface','local_if','src_if','from_if']),
+      colRI: $('colRemoteIf')?.value || autoPickColumn(['remoteinterface','remote_if','dst_if','to_if'])
+    };
+    const ids = new Set();
+    (parsed.rows || []).forEach((row) => {
+      const rowCtx = resolveGraphRowContext(row, cols, strip);
+      if (!rowCtx) return;
+      if (rowCtx.aId) ids.add(String(rowCtx.aId));
+      if (rowCtx.bId) ids.add(String(rowCtx.bId));
+    });
+    return Array.from(ids);
+  }
+
+  function focusAppendedCsvText(csvText) {
+    if (!cy) return;
+    const parsed = parseCSV(csvText);
+    if (!parsed.headers.length) return;
+    const strip = $('stripDomain')?.value === 'yes';
+    const cols = {
+      colLH: $('colLocalHost')?.value || autoPickColumn(['localhostname','local_host','src','from']),
+      colRH: $('colRemoteHost')?.value || autoPickColumn(['remotehostname','remote_host','dst','to']),
+      colLI: $('colLocalIf')?.value || autoPickColumn(['localinterface','local_if','src_if','from_if']),
+      colRI: $('colRemoteIf')?.value || autoPickColumn(['remoteinterface','remote_if','dst_if','to_if'])
+    };
+    const nodeIds = new Set();
+    const edgeIds = new Set();
+    const mergedEdgeIds = new Set();
+    let mergedHitCount = 0;
+    let collapsedInsideSameGroup = false;
+    (parsed.rows || []).forEach((row) => {
+      const rowCtx = resolveGraphRowContext(row, cols, strip);
+      if (!rowCtx) return;
+      const aVisibleId = findVisibleRepresentativeNodeId(rowCtx.aId) || rowCtx.aId;
+      const bVisibleId = findVisibleRepresentativeNodeId(rowCtx.bId) || rowCtx.bId;
+      if (aVisibleId) nodeIds.add(String(aVisibleId));
+      if (bVisibleId) nodeIds.add(String(bVisibleId));
+      if (aVisibleId && bVisibleId && aVisibleId === bVisibleId) {
+        collapsedInsideSameGroup = true;
+        return;
+      }
+      if (aVisibleId && bVisibleId) {
+        const rowKey = buildCanonicalEdgeRowKey(aVisibleId, bVisibleId, rowCtx.li, rowCtx.ri);
+        if (rowKey) {
+          edgeIds.add(`e_${fnv1a(rowKey)}`);
+        }
+        const pairKey = buildCanonicalNodePairKey(aVisibleId, bVisibleId);
+        if (pairKey) {
+          mergedEdgeIds.add(`m_${fnv1a(pairKey)}`);
+        }
+      }
+    });
+    const nodes = cy.collection(Array.from(nodeIds).map((id) => cy.getElementById(id)).filter((n) => n && n.length));
+    const exactEdges = cy.collection(Array.from(edgeIds).map((id) => cy.getElementById(id)).filter((e) => e && e.length));
+    const aggregatedEdges = cy.collection(Array.from(mergedEdgeIds).map((id) => cy.getElementById(id)).filter((e) => e && e.length));
+    mergedHitCount = aggregatedEdges.length;
+    const edges = exactEdges.union(aggregatedEdges);
+    if (nodes.length || edges.length) {
+      // Ensure newly appended nodes/edges are visible even under current filters.
+      nodes.removeClass('filtered onlyHidden utilHidden groupViewHidden');
+      edges.removeClass('filtered onlyHidden utilHidden groupViewHidden');
+      cy.elements(':selected').unselect();
+      nodes.select();
+      edges.select();
+      cy.animate({ fit: { eles: nodes.union(edges), padding: 120 }, duration: 300 });
+    }
+    const hidden = nodes.filter((n) => !n.visible());
+    if (hidden.length) {
+      setErr('已追加，但节点被隐藏/过滤或在组视图中。请检查“只显示/不显示/过滤/组视图”。');
+    } else if (collapsedInsideSameGroup) {
+      setErr('已追加，但链路两端当前被折叠进同一个组节点，图上不会单独显示该链路。请先展开相关组节点再查看。');
+    } else if (!nodes.length && !edges.length) {
+      setErr('已追加，但未能在当前画布定位新增链路。请检查节点过滤、组折叠或多链路合并状态。');
+    } else if (mergedMode && !exactEdges.length && mergedHitCount) {
+      setOK(`已追加，但当前开启了“合并多链路”，新链路已并入现有聚合边（命中 ${mergedHitCount} 条聚合边）。可先关闭“合并多链路”再查看物理链路。`);
+    }
+    if (groupViewState?.active) {
+      setErr('已追加，但当前处于组视图，新增节点可能被隐藏。建议返回主视图再查看。');
+    }
+  }
+
   $('loadPasteModal').addEventListener('click', () => {
-    const t = ($('pasteModal').value || '').trim();
+    const raw = ($('pasteModal').value || '').trim();
+    if (!raw) { setErr('粘贴内容为空'); return; }
+    const t = normalizePastedCsv(raw);
     if (!t) { setErr('粘贴内容为空'); return; }
-    loadDataFromText(t);
+    if (importInputAction === 'append') {
+      const merged = applyQueryCsvText(t, { append: true, sourceName: 'paste', restoreDeletedFromQuery: true, revealPastedRows: true });
+      if (!merged || !merged.mergedRows) {
+        setStatus('追加失败');
+        setErr('未检测到有效表头，无法追加。');
+        return;
+      }
+      setStatus('粘贴追加完成');
+      setOK(`已追加粘贴内容：新增 ${merged.addedRows} 行，覆盖 ${merged.replacedRows || 0} 行，当前总计 ${merged.mergedRows} 行。`);
+      focusAppendedCsvText(t);
+    } else {
+      loadDataFromText(t);
+    }
     closeImportModal();
   });
   $('importModal').addEventListener('click', (e) => {
@@ -8795,6 +9448,27 @@
     hideCtx();
   });
 
+  $('ctxEdgeNote').addEventListener('click', () => {
+    const edges = ctxEdges();
+    hideCtx();
+    if (!edges.length) return;
+    const currentNote = edgeNoteText(edges[0]);
+    const next = window.prompt('请输入链路描述。留空并确认可清除描述。', currentNote);
+    if (next == null) return;
+    const clean = String(next || '').trim();
+    runWithRollback(() => {
+      edges.forEach((edge) => {
+        const key = String(edge.id() || '').trim();
+        if (!key) return;
+        if (clean) edgeNotes.set(key, clean);
+        else edgeNotes.delete(key);
+      });
+      refreshEdgeLabelDisplay();
+      schedulePersistCurrentPageSession(80);
+      setOK(clean ? `已更新 ${edges.length} 条链路描述。` : `已清除 ${edges.length} 条链路描述。`);
+    }, { delayMs: 1300 });
+  });
+
   $('ctxPathVia').addEventListener('click', () => {
     const node = ctxTarget && typeof ctxTarget.isNode === 'function' && ctxTarget.isNode() ? ctxTarget : null;
     if (!node || !node.length) return hideCtx();
@@ -8814,10 +9488,31 @@
     hideCtx();
   });
 
+  $('ctxAddNode').addEventListener('click', () => {
+    addNodeSubmenuOpen = !addNodeSubmenuOpen;
+    if ($('ctxAddNodeSubmenu')) $('ctxAddNodeSubmenu').style.display = addNodeSubmenuOpen ? 'block' : 'none';
+  });
+
+  $('ctxAddNodeRegular').addEventListener('click', () => {
+    hideCtx();
+    createManualCanvasNode('node');
+  });
+
+  $('ctxAddNodeCloud').addEventListener('click', () => {
+    hideCtx();
+    createManualCanvasNode('cloud');
+  });
+
   $('ctxAddLink').addEventListener('click', () => {
     const nodes = selectedNodesForManualLink();
     hideCtx();
     openAddLinkModal(nodes);
+  });
+
+  $('ctxRenameManualNode').addEventListener('click', () => {
+    const node = ctxTarget && typeof ctxTarget.isNode === 'function' && ctxTarget.isNode() ? ctxTarget : null;
+    hideCtx();
+    renameManualCanvasNode(node);
   });
 
   function buildSelectionScopeLabel(nodes, edges) {
@@ -9040,6 +9735,12 @@
     cy.animate({ fit: { eles: sel, padding: 120 }, duration: 400 });
     setOK(`已定位选中元素：${sel.length} 个。`);
   });
+  $('alignHorizontal').addEventListener('click', () => {
+    runWithRollback(() => alignSelectedNodes('horizontal'), { delayMs: 0 });
+  });
+  $('alignVertical').addEventListener('click', () => {
+    runWithRollback(() => alignSelectedNodes('vertical'), { delayMs: 0 });
+  });
   $('selectVisible').addEventListener('click', () => {
     if (!cy) return;
     const visibleNodes = cy.nodes(':visible').not('.dim');
@@ -9084,6 +9785,7 @@
         setErr('增加链路失败：未能写入当前拓扑。');
         return;
       }
+      focusAppendedCsvText(csvText);
       setStatus('手工链路已追加');
       setOK(`已增加链路：${String(nodes[0].data('label') || nodes[0].id())} ${ifA} -> ${String(nodes[1].data('label') || nodes[1].id())} ${ifB}`);
       closeAddLinkModal();
