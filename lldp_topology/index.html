@@ -137,7 +137,6 @@
     .top-hero { width: 100%; }
     body.index-lite .top-hero { display: none; }
     body.index-lite .wrap { height: 100vh; }
-    body.index-lite .section-box[data-section-key="util"] { display: none; }
     body.index-lite #ctxUtil,
     body.index-lite #ctxUtilRange,
     body.index-lite #ctxAppendQuery { display: none !important; }
@@ -510,6 +509,22 @@
         <div class="row inline">
           <button id="buildScopedTopo">重排选中设备</button>
           <button id="openPathFinder">查找路径</button>
+        </div>
+        <div class="row inline">
+          <button id="alignHorizontal">水平对齐</button>
+          <button id="alignVertical">垂直对齐</button>
+        </div>
+        <div class="row inline">
+          <button id="alignLeft">左对齐</button>
+          <button id="alignRight">右对齐</button>
+        </div>
+        <div class="row inline">
+          <button id="alignTop">上对齐</button>
+          <button id="alignBottom">下对齐</button>
+        </div>
+        <div class="row inline">
+          <button id="distributeHorizontal">水平等间距</button>
+          <button id="distributeVertical">垂直等间距</button>
         </div>
       </div>
 
@@ -1059,6 +1074,8 @@
   };
   let rollbackApplyInProgress = false;
   let rollbackArmSeq = 0;
+  let dragRollbackBeforeSnapshot = null;
+  let dragRollbackStartPos = null;
   let currentPathState = null;
   let pendingViaNodeName = '';
   let ctxCanvasPos = null;
@@ -1096,6 +1113,23 @@
     el.style.display = 'none';
   }
 
+  function hideUtilControlById(id) {
+    const el = $(id);
+    if (!el) return;
+    let target = el;
+    if (el.tagName === 'INPUT' && ['checkbox', 'radio'].includes(String(el.type || '').toLowerCase())) {
+      const label = el.closest('label');
+      if (label) target = label;
+    } else if (el.tagName === 'BUTTON') {
+      const wrap = el.parentElement;
+      if (wrap && wrap.tagName === 'DIV') target = wrap;
+    } else if (el.tagName === 'SELECT') {
+      const wrap = el.parentElement;
+      if (wrap && wrap.tagName === 'DIV') target = wrap;
+    }
+    target.style.display = 'none';
+  }
+
   function applyIndexLiteMode() {
     if (!INDEX_LITE_MODE) return;
     document.body.classList.add('index-lite');
@@ -1110,7 +1144,33 @@
     hideElementById('ctxUtilRange');
     hideElementById('ctxAppendQuery');
     const utilSection = document.querySelector('.section-box[data-section-key="util"]');
-    if (utilSection) utilSection.style.display = 'none';
+    if (utilSection) utilSection.style.display = '';
+    const keepVisibleIds = new Set([
+      'utilColorEnabled',
+      'utilLabelEnabled',
+      'utilShowTxRx',
+      'utilShowBandwidth',
+      'utilShowEdgeDesc',
+      'utilShowEdgeDescLabel'
+    ]);
+    const hideUtilIds = [
+      'utilFilterActiveBar',
+      'refreshUtilization',
+      'refreshUtilizationZbx',
+      'openZbxConfig',
+      'downloadUtilCache',
+      'downloadUtilDebug',
+      'openUtilFilterModal',
+      'utilDebugEnabled',
+      'utilMetric',
+      'utilResultHint',
+      'utilLegendHint',
+      'clearUtilFilterOnly'
+    ];
+    hideUtilIds.forEach((id) => {
+      if (keepVisibleIds.has(id)) return;
+      hideUtilControlById(id);
+    });
     const importHint = $('importHint');
     if (importHint) {
       importHint.textContent = '仅支持 CSV / Json 导入；导入会覆盖当前结果，追加会把新内容合并到当前图中。';
@@ -1180,6 +1240,14 @@
       btn_select_visible: '全选可见节点',
       btn_relayout_selected: '重排选中设备',
       btn_find_path: '查找路径',
+      btn_align_horizontal: '水平对齐',
+      btn_align_vertical: '垂直对齐',
+      btn_align_left: '左对齐',
+      btn_align_right: '右对齐',
+      btn_align_top: '上对齐',
+      btn_align_bottom: '下对齐',
+      btn_distribute_horizontal: '水平等间距',
+      btn_distribute_vertical: '垂直等间距',
       node_label_short: '缩略（推荐）',
       node_label_full: '全名（容易挤）',
       node_label_full_ip: '全名+IP',
@@ -1313,6 +1381,14 @@
       btn_select_visible: 'Select Visible Nodes',
       btn_relayout_selected: 'Relayout Selected',
       btn_find_path: 'Find Path',
+      btn_align_horizontal: 'Align Horizontally',
+      btn_align_vertical: 'Align Vertically',
+      btn_align_left: 'Align Left',
+      btn_align_right: 'Align Right',
+      btn_align_top: 'Align Top',
+      btn_align_bottom: 'Align Bottom',
+      btn_distribute_horizontal: 'Distribute Horizontally',
+      btn_distribute_vertical: 'Distribute Vertically',
       node_label_short: 'Short (Recommended)',
       node_label_full: 'Full (Crowded)',
       node_label_full_ip: 'Full + IP',
@@ -1548,6 +1624,14 @@
     setText('selectVisible', 'btn_select_visible');
     setText('buildScopedTopo', 'btn_relayout_selected');
     setText('openPathFinder', 'btn_find_path');
+    setText('alignHorizontal', 'btn_align_horizontal');
+    setText('alignVertical', 'btn_align_vertical');
+    setText('alignLeft', 'btn_align_left');
+    setText('alignRight', 'btn_align_right');
+    setText('alignTop', 'btn_align_top');
+    setText('alignBottom', 'btn_align_bottom');
+    setText('distributeHorizontal', 'btn_distribute_horizontal');
+    setText('distributeVertical', 'btn_distribute_vertical');
     setText('fitSelection', 'btn_fit_selection');
     setText('isolateSelection', 'btn_isolate');
     setText('clearSelectionHide', 'btn_clear_visibility');
@@ -1762,14 +1846,26 @@
   function updateRollbackButtonState() {
     const undoBtn = $('rollbackUndo');
     const redoBtn = $('rollbackRedo');
+    const undoCount = rollbackState.undoStack.length;
+    const redoCount = rollbackState.redoStack.length;
     if (undoBtn) {
-      undoBtn.disabled = rollbackState.undoStack.length === 0;
-      undoBtn.textContent = tr('rollback_prev');
+      undoBtn.disabled = undoCount === 0;
+      undoBtn.textContent = `${tr('rollback_prev')}(${undoCount})`;
     }
     if (redoBtn) {
-      redoBtn.disabled = rollbackState.redoStack.length === 0;
-      redoBtn.textContent = tr('rollback_next');
+      redoBtn.disabled = redoCount === 0;
+      redoBtn.textContent = `${tr('rollback_next')}(${redoCount})`;
     }
+  }
+
+  function pushRollbackEntry(beforeSnapshot, afterSnapshot) {
+    if (!beforeSnapshot || !afterSnapshot) return;
+    rollbackState.undoStack.push({ before: beforeSnapshot, after: afterSnapshot });
+    if (rollbackState.undoStack.length > MAX_ROLLBACK_STEPS) {
+      rollbackState.undoStack = rollbackState.undoStack.slice(-MAX_ROLLBACK_STEPS);
+    }
+    rollbackState.redoStack = [];
+    updateRollbackButtonState();
   }
 
   function captureRollbackSnapshot() {
@@ -1886,25 +1982,37 @@
     if (!beforeSnapshot || rollbackApplyInProgress) return;
     const delay = Math.max(0, Number(delayMs) || 0);
     const seq = ++rollbackArmSeq;
+    if (delay <= 0) {
+      if (rollbackApplyInProgress) return;
+      pushRollbackEntry(beforeSnapshot, captureRollbackSnapshot());
+      return;
+    }
     setTimeout(() => {
       if (seq !== rollbackArmSeq) return;
       if (rollbackApplyInProgress) return;
-      const afterSnapshot = captureRollbackSnapshot();
-      if (!afterSnapshot) return;
-      rollbackState.undoStack.push({ before: beforeSnapshot, after: afterSnapshot });
-      if (rollbackState.undoStack.length > MAX_ROLLBACK_STEPS) {
-        rollbackState.undoStack = rollbackState.undoStack.slice(-MAX_ROLLBACK_STEPS);
-      }
-      rollbackState.redoStack = [];
-      updateRollbackButtonState();
+      pushRollbackEntry(beforeSnapshot, captureRollbackSnapshot());
     }, delay);
   }
 
   function runWithRollback(work, opts = {}) {
     const beforeSnapshot = captureRollbackSnapshot();
-    const result = work();
-    armRollbackState(beforeSnapshot, opts.delayMs || 0);
-    return result;
+    const delayMs = Math.max(0, Number(opts.delayMs) || 0);
+    try {
+      const result = work();
+      if (result && typeof result.then === 'function') {
+        return result.then((val) => {
+          if (delayMs > 0) armRollbackState(beforeSnapshot, delayMs);
+          else pushRollbackEntry(beforeSnapshot, captureRollbackSnapshot());
+          return val;
+        });
+      }
+      if (delayMs > 0) armRollbackState(beforeSnapshot, delayMs);
+      else pushRollbackEntry(beforeSnapshot, captureRollbackSnapshot());
+      return result;
+    } catch (e) {
+      setErr(`操作失败：${String(e && e.message ? e.message : e)}`);
+      return null;
+    }
   }
 
   function stopCliTimer() {
@@ -2905,11 +3013,44 @@
       cy.elements().removeClass('hit dim');
       cy.nodes(':selected').addClass('hit');
     });
-    cy.on('grab', 'node', () => {
+    cy.on('grab', 'node', (evt) => {
       if (shouldUseDragLiteMode()) setDragPerfMode(true);
+      if (rollbackApplyInProgress) {
+        dragRollbackBeforeSnapshot = null;
+        dragRollbackStartPos = null;
+        return;
+      }
+      dragRollbackBeforeSnapshot = captureRollbackSnapshot();
+      const selected = cy.nodes(':selected');
+      const moving = (selected && selected.length)
+        ? selected
+        : (evt && evt.target ? evt.target.collection() : cy.collection());
+      const startPos = new Map();
+      moving.forEach((node) => {
+        if (!node || !node.length || !node.visible() || node.locked()) return;
+        startPos.set(node.id(), {
+          x: Number(node.position('x')) || 0,
+          y: Number(node.position('y')) || 0
+        });
+      });
+      dragRollbackStartPos = startPos.size ? startPos : null;
     });
     cy.on('free', 'node', () => {
       if (dragPerfMode) setDragPerfMode(false);
+      if (dragRollbackBeforeSnapshot && dragRollbackStartPos && dragRollbackStartPos.size) {
+        let moved = false;
+        dragRollbackStartPos.forEach((p, id) => {
+          if (moved) return;
+          const node = cy.getElementById(id);
+          if (!node || !node.length) return;
+          const nx = Number(node.position('x')) || 0;
+          const ny = Number(node.position('y')) || 0;
+          if (Math.abs(nx - p.x) > 0.5 || Math.abs(ny - p.y) > 0.5) moved = true;
+        });
+        if (moved) pushRollbackEntry(dragRollbackBeforeSnapshot, captureRollbackSnapshot());
+      }
+      dragRollbackBeforeSnapshot = null;
+      dragRollbackStartPos = null;
       refreshEdgeLabelDisplay();
       schedulePersistCurrentPageSession(120);
     });
@@ -4956,6 +5097,101 @@
       uniq.push(node);
     });
     return uniq;
+  }
+
+  function selectedNodesForAlign() {
+    if (!cy) return [];
+    return cy.nodes(':selected').filter((n) => n && typeof n.isNode === 'function' && n.isNode() && n.visible()).toArray();
+  }
+
+  function applyNodePositions(nodes, resolveNextPos) {
+    if (!cy || !Array.isArray(nodes) || !nodes.length || typeof resolveNextPos !== 'function') return 0;
+    let changed = 0;
+    cy.startBatch();
+    nodes.forEach((node, index) => {
+      const current = { x: Number(node.position('x')) || 0, y: Number(node.position('y')) || 0 };
+      const next = resolveNextPos(node, index, current) || current;
+      const nx = Number(next.x);
+      const ny = Number(next.y);
+      if (!Number.isFinite(nx) || !Number.isFinite(ny)) return;
+      if (Math.abs(nx - current.x) < 0.01 && Math.abs(ny - current.y) < 0.01) return;
+      node.position({ x: nx, y: ny });
+      changed += 1;
+    });
+    cy.endBatch();
+    if (changed > 0) schedulePersistCurrentPageSession(80);
+    return changed;
+  }
+
+  function alignSelectedNodes(mode) {
+    if (!cy) return;
+    const selected = selectedNodesForAlign();
+    if (selected.length < 2) {
+      setErr('请先选中至少 2 个节点。');
+      return;
+    }
+    const movable = selected.filter((node) => !node.locked());
+    if (movable.length < 2) {
+      setErr('可移动节点不足 2 个（节点可能已固定）。');
+      return;
+    }
+    const xs = movable.map((node) => Number(node.position('x')) || 0);
+    const ys = movable.map((node) => Number(node.position('y')) || 0);
+    const avgX = xs.reduce((sum, x) => sum + x, 0) / xs.length;
+    const avgY = ys.reduce((sum, y) => sum + y, 0) / ys.length;
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const modeMap = {
+      horizontal: { label: '水平对齐', resolver: (_node, _idx, cur) => ({ x: cur.x, y: avgY }) },
+      vertical: { label: '垂直对齐', resolver: (_node, _idx, cur) => ({ x: avgX, y: cur.y }) },
+      left: { label: '左对齐', resolver: (_node, _idx, cur) => ({ x: minX, y: cur.y }) },
+      right: { label: '右对齐', resolver: (_node, _idx, cur) => ({ x: maxX, y: cur.y }) },
+      top: { label: '上对齐', resolver: (_node, _idx, cur) => ({ x: cur.x, y: minY }) },
+      bottom: { label: '下对齐', resolver: (_node, _idx, cur) => ({ x: cur.x, y: maxY }) }
+    };
+    const spec = modeMap[String(mode || '')];
+    if (!spec) return;
+    const changed = applyNodePositions(movable, spec.resolver);
+    setErr('');
+    setOK(changed > 0 ? `${spec.label}完成：移动 ${changed} 个节点。` : `${spec.label}完成：位置无需调整。`);
+  }
+
+  function distributeSelectedNodes(axis) {
+    if (!cy) return;
+    const selected = selectedNodesForAlign();
+    if (selected.length < 3) {
+      setErr('请先选中至少 3 个节点再做等间距分布。');
+      return;
+    }
+    const movable = selected.filter((node) => !node.locked());
+    if (movable.length < 3) {
+      setErr('可移动节点不足 3 个（节点可能已固定）。');
+      return;
+    }
+    const useX = String(axis || '').toLowerCase() === 'x';
+    const sorted = movable
+      .slice()
+      .sort((a, b) => (Number(a.position(useX ? 'x' : 'y')) || 0) - (Number(b.position(useX ? 'x' : 'y')) || 0));
+    const first = Number(sorted[0].position(useX ? 'x' : 'y')) || 0;
+    const last = Number(sorted[sorted.length - 1].position(useX ? 'x' : 'y')) || 0;
+    if (Math.abs(last - first) < 0.01) {
+      setErr('');
+      setOK(`已是${useX ? '水平' : '垂直'}同一坐标，无需分布。`);
+      return;
+    }
+    const step = (last - first) / (sorted.length - 1);
+    const indexById = new Map(sorted.map((node, idx) => [node.id(), idx]));
+    const changed = applyNodePositions(sorted, (node, _idx, cur) => {
+      const order = indexById.get(node.id()) || 0;
+      const nextVal = first + step * order;
+      return useX ? { x: nextVal, y: cur.y } : { x: cur.x, y: nextVal };
+    });
+    setErr('');
+    setOK(changed > 0
+      ? `${useX ? '水平' : '垂直'}等间距完成：移动 ${changed} 个节点。`
+      : `${useX ? '水平' : '垂直'}等间距完成：位置无需调整。`);
   }
 
   function openAddLinkModal(nodes) {
@@ -9276,6 +9512,30 @@
     runWithRollback(() => buildScopedTopologyFromVisible(), { delayMs: 1300 });
   });
   $('openPathFinder').addEventListener('click', openPathModal);
+  $('alignHorizontal').addEventListener('click', () => {
+    runWithRollback(() => alignSelectedNodes('horizontal'), { delayMs: 0 });
+  });
+  $('alignVertical').addEventListener('click', () => {
+    runWithRollback(() => alignSelectedNodes('vertical'), { delayMs: 0 });
+  });
+  $('alignLeft').addEventListener('click', () => {
+    runWithRollback(() => alignSelectedNodes('left'), { delayMs: 0 });
+  });
+  $('alignRight').addEventListener('click', () => {
+    runWithRollback(() => alignSelectedNodes('right'), { delayMs: 0 });
+  });
+  $('alignTop').addEventListener('click', () => {
+    runWithRollback(() => alignSelectedNodes('top'), { delayMs: 0 });
+  });
+  $('alignBottom').addEventListener('click', () => {
+    runWithRollback(() => alignSelectedNodes('bottom'), { delayMs: 0 });
+  });
+  $('distributeHorizontal').addEventListener('click', () => {
+    runWithRollback(() => distributeSelectedNodes('x'), { delayMs: 0 });
+  });
+  $('distributeVertical').addEventListener('click', () => {
+    runWithRollback(() => distributeSelectedNodes('y'), { delayMs: 0 });
+  });
   $('saveAddLink').addEventListener('click', () => {
     const nodes = pendingAddLinkNodes.slice(0, 2);
     if (nodes.length !== 2) {
@@ -9323,9 +9583,12 @@
     if ($('edgeDescInput')) $('edgeDescInput').value = '';
   });
   $('closeEdgeDescModal').addEventListener('click', closeEdgeDescModal);
-  $('exitGroupView').addEventListener('click', () => {
-    exitGroupView();
-  });
+  const exitGroupViewBtn = $('exitGroupView');
+  if (exitGroupViewBtn) {
+    exitGroupViewBtn.addEventListener('click', () => {
+      exitGroupView();
+    });
+  }
   $('keepAdjacentOnly').addEventListener('click', () => {
     runWithRollback(() => keepAdjacentOnly(), { delayMs: 0 });
   });
@@ -9444,12 +9707,20 @@ $('filter').addEventListener('keydown', (e) => {
   $('rollbackUndo').addEventListener('click', () => {
     const entry = rollbackState.undoStack.pop();
     if (!entry) {
-      setOK('暂无可撤销操作。');
+      setOK(`暂无可撤销操作。undo=${rollbackState.undoStack.length} redo=${rollbackState.redoStack.length}`);
       updateRollbackButtonState();
       return;
     }
     rollbackArmSeq += 1;
-    const ok = applyRollbackSnapshot(entry.before);
+    let ok = false;
+    try {
+      ok = applyRollbackSnapshot(entry.before);
+    } catch (e) {
+      setErr(`撤销失败：${String(e && e.message ? e.message : e)}`);
+      rollbackState.undoStack.push(entry);
+      updateRollbackButtonState();
+      return;
+    }
     if (!ok) {
       setErr('撤销失败：快照不可用。');
       rollbackState.undoStack.push(entry);
@@ -9461,19 +9732,27 @@ $('filter').addEventListener('keydown', (e) => {
       rollbackState.redoStack = rollbackState.redoStack.slice(-MAX_ROLLBACK_STEPS);
     }
     updateRollbackButtonState();
-    setOK('已撤销上一步变更。');
+    setOK(`已撤销上一步变更。undo=${rollbackState.undoStack.length} redo=${rollbackState.redoStack.length}`);
     schedulePersistCurrentPageSession(80);
   });
 
   $('rollbackRedo').addEventListener('click', () => {
     const entry = rollbackState.redoStack.pop();
     if (!entry) {
-      setOK('暂无可恢复操作。');
+      setOK(`暂无可恢复操作。undo=${rollbackState.undoStack.length} redo=${rollbackState.redoStack.length}`);
       updateRollbackButtonState();
       return;
     }
     rollbackArmSeq += 1;
-    const ok = applyRollbackSnapshot(entry.after);
+    let ok = false;
+    try {
+      ok = applyRollbackSnapshot(entry.after);
+    } catch (e) {
+      setErr(`恢复失败：${String(e && e.message ? e.message : e)}`);
+      rollbackState.redoStack.push(entry);
+      updateRollbackButtonState();
+      return;
+    }
     if (!ok) {
       setErr('恢复失败：快照不可用。');
       rollbackState.redoStack.push(entry);
@@ -9485,7 +9764,7 @@ $('filter').addEventListener('keydown', (e) => {
       rollbackState.undoStack = rollbackState.undoStack.slice(-MAX_ROLLBACK_STEPS);
     }
     updateRollbackButtonState();
-    setOK('已恢复到撤销前状态。');
+    setOK(`已恢复到撤销前状态。undo=${rollbackState.undoStack.length} redo=${rollbackState.redoStack.length}`);
     schedulePersistCurrentPageSession(80);
   });
   window.addEventListener('pagehide', () => { persistCurrentPageSession(true); });
