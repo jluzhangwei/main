@@ -20,20 +20,20 @@
     .wrap.collapsed .panel { display: none; }
     .panel { width: 430px; flex-shrink: 0; padding: 14px; border-right: 1px solid #e5e7eb; overflow: auto; background: #ffffff; box-shadow: 4px 0 24px rgba(0,0,0,0.04); scrollbar-width: none; -ms-overflow-style: none; }
     .panel::-webkit-scrollbar { display: none; }
-    button#togglePanel {
-      position: absolute;
-      left: 434px;
-      top: 50%;
-      transform: translateY(-50%);
-      z-index: 10;
-      width: 30px;
-      height: 30px;
-      padding: 0;
-      font-size: 16px;
-      background: none;
-      border: none;
-      cursor: pointer;
-      color: #374151;
+    button#togglePanel { 
+      position: absolute; 
+      left: 434px; 
+      top: 50%; 
+      transform: translateY(-50%); 
+      z-index: 10; 
+      width: 30px; 
+      height: 30px; 
+      padding: 0; 
+      font-size: 16px; 
+      background: none; 
+      border: none; 
+      cursor: pointer; 
+      color: #374151; 
     }
     .wrap.collapsed button#togglePanel { left: 0; transform: translateY(-50%); }
     #cyWrap { flex: 1; height: 100%; position: relative; background: #ffffff; }
@@ -134,6 +134,7 @@
     }
     .section-box.collapsed .section-body { display: none; }
     .section-box.collapsed .section-toggle { margin-bottom: 0; padding-bottom: 0; }
+    #saveServerState, #importServerState { display: none; }
     .util-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .util-grid .span-2 { grid-column: 1 / -1; }
     .util-grid .check-row { display:flex; align-items:center; gap:8px; font-size:12px; color:#111827; font-weight:600; }
@@ -248,15 +249,6 @@
       margin: 4px 0;
       background: #e5e7eb;
       display: none;
-    }
-    #ctxMenu .ctx-submenu {
-      display: none;
-      margin: 4px 0 6px 10px;
-      padding-left: 8px;
-      border-left: 1px solid #e5e7eb;
-    }
-    #ctxMenu .ctx-submenu button {
-      margin-top: 4px;
     }
     .modal-backdrop {
       position: fixed;
@@ -402,15 +394,11 @@
 <div class="top-hero">
   <div class="app-topbar">
     <div class="app-brand">
-      <img class="infra-logo" src="/shared/header/infra-logo.png" alt="infra logo" />
     </div>
     <div class="app-top-links">
-      <a id="manualLink" class="app-circle-btn" href="lldp-manual.html" target="_blank" title="查看使用手册">?</a>
-      <button id="lang_toggle_btn" class="app-circle-btn" type="button" title="切换语言">EN</button>
     </div>
   </div>
   <div class="app-mainnav">
-    <div id="appTitle" class="app-title">AIOps - LLDP Topology Runner</div>
   </div>
 </div>
 <div class="wrap">
@@ -439,10 +427,8 @@
         <div>
           <label id="lblImportMode">导入方式</label>
           <select id="importMode">
-            <option value="cli">CLI 导入</option>
-            <option value="csv">CSV 导入</option>
-            <option value="sql">SQL 导入</option>
             <option value="json">Json 导入</option>
+            <option value="csv">CSV 导入</option>
           </select>
         </div>
         <div>
@@ -1069,6 +1055,11 @@
 </div>
 
 <script>
+  document.getElementById('togglePanel').addEventListener('click', function() {
+    const wrap = document.querySelector('.wrap');
+    wrap.classList.toggle('collapsed');
+    this.textContent = wrap.classList.contains('collapsed') ? '》' : '《';
+  });
   let sourceRows = [];
   let rawRows = [];
   let workspaceMeta = {
@@ -1100,6 +1091,7 @@
   let currentCliLldpTaskId = '';
   let cliLldpTaskCancelling = false;
   let ctxAppendSingleHop = false;
+  let ctxCanvasPos = null;
   let utilByKey = new Map();
   let edgeNotes = new Map();
   let primaryCliSource = '';
@@ -1120,6 +1112,7 @@
   let zoomNodeRaf = 0;
   let cloudOverlayRaf = 0;
   let edgeNoteOverlayRaf = 0;
+  let addNodeSubmenuOpen = false;
   const KEYWORD_HISTORY_MAX = 10;
   const LAYER_HISTORY_KEY = 'lldp_layer_terms_history';
   const PARTITION_HISTORY_KEY = 'lldp_partition_terms_history';
@@ -1147,15 +1140,6 @@
   })();
 
   const $ = (id) => document.getElementById(id);
-  (() => {
-    const wrap = document.querySelector('.wrap');
-    const btn = $('togglePanel');
-    if (!wrap || !btn) return;
-    btn.addEventListener('click', () => {
-      wrap.classList.toggle('collapsed');
-      btn.textContent = wrap.classList.contains('collapsed') ? '》' : '《';
-    });
-  })();
   const setStatus = (t) => $('status').textContent = t;
   const setOK = (t) => $('ok').textContent = t || '';
   const setErr = (t) => $('err').textContent = t || '';
@@ -1173,7 +1157,6 @@
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
-
   const UI_LANG_KEY = 'lldp_ui_lang';
   const UI_TEXT = {
     zh: {
@@ -1204,12 +1187,6 @@
       recursive_only_172_label: '只递归查询 172.* 网段（跳过 10.* / 143.* 等）',
       auto_group_label: '自动合组',
       ctx_create_group: '设备合组',
-      ctx_add_node: '添加节点 ▸',
-      ctx_add_node_regular: '节点',
-      ctx_add_node_cloud: 'Cloud',
-      ctx_add_link: '增加链路',
-      ctx_rename_manual_node: '修改名称',
-      ctx_edge_note: '添加描述',
       ctx_delete_link: '删除链路',
       ctx_copy_link: '复制链路',
       ctx_group_expand: '合组展开',
@@ -1238,6 +1215,12 @@
       btn_distribute_horizontal: '水平等间距',
       btn_distribute_vertical: '垂直等间距',
       btn_exit_group_view: '返回主视图',
+      ctx_add_node: '添加节点 ▸',
+      ctx_add_node_regular: '节点',
+      ctx_add_node_cloud: 'Cloud',
+      ctx_add_link: '增加链路',
+      ctx_rename_manual_node: '修改名称',
+      ctx_edge_note: '添加描述',
       add_link_modal_title: '增加链路',
       add_link_node_a: '设备 A',
       add_link_if_a: '设备 A 接口',
@@ -1345,12 +1328,6 @@
       recursive_only_172_label: 'Recurse only into 172.* networks (skip 10.* / 143.* etc.)',
       auto_group_label: 'Auto Grouping',
       ctx_create_group: 'Create Group',
-      ctx_add_node: 'Add Node ▸',
-      ctx_add_node_regular: 'Node',
-      ctx_add_node_cloud: 'Cloud',
-      ctx_add_link: 'Add Link',
-      ctx_rename_manual_node: 'Rename Node',
-      ctx_edge_note: 'Add Note',
       ctx_delete_link: 'Delete Link',
       ctx_copy_link: 'Copy Link',
       ctx_group_expand: 'Expand Group',
@@ -1379,6 +1356,12 @@
       btn_distribute_horizontal: 'Distribute Horizontally',
       btn_distribute_vertical: 'Distribute Vertically',
       btn_exit_group_view: 'Back to Main View',
+      ctx_add_node: 'Add Node ▸',
+      ctx_add_node_regular: 'Node',
+      ctx_add_node_cloud: 'Cloud',
+      ctx_add_link: 'Add Link',
+      ctx_rename_manual_node: 'Rename',
+      ctx_edge_note: 'Add Note',
       add_link_modal_title: 'Add Link',
       add_link_node_a: 'Device A',
       add_link_if_a: 'Device A Interface',
@@ -1757,6 +1740,7 @@
 
   function clearManualCanvasState() {
     manualCanvasNodes = [];
+    edgeNotes = new Map();
   }
 
   function rebuildDeletedNodeIdsFromStack() {
@@ -2136,38 +2120,6 @@
     return out;
   }
 
-  function mergeIpLists(...groups) {
-    const out = [];
-    groups.forEach((group) => {
-      normalizeIpList(group).forEach((ip) => {
-        if (!out.includes(ip)) out.push(ip);
-      });
-    });
-    return out;
-  }
-
-  function primaryIpFromList(values) {
-    const ips = normalizeIpList(values);
-    return ips[0] || '';
-  }
-
-  function findExistingNodeIdByIp(nodesMap, ip) {
-    const target = String(ip || '').trim();
-    if (!target || !(nodesMap instanceof Map) || !nodesMap.size) return '';
-    for (const [id, node] of nodesMap.entries()) {
-      const ips = mergeIpLists(node?.ips, node?.ip);
-      if (ips.includes(target)) return id;
-    }
-    return '';
-  }
-
-  function resolveNodeIdWithIpFallback(nodesMap, candidateId, ip) {
-    const id = String(candidateId || '').trim();
-    if (id && nodesMap instanceof Map && nodesMap.has(id)) return id;
-    const ipHit = findExistingNodeIdByIp(nodesMap, ip);
-    return ipHit || id;
-  }
-
   function findExistingNodeIdByLabel(name) {
     const target = normalizeEntityName(name).toLowerCase();
     if (!target || !cy) return '';
@@ -2205,24 +2157,39 @@
       }
       return false;
     });
-    return isIpv4(hit) ? hit : '';
+    return hit;
   }
 
-  function findVisibleRepresentativeNodeId(nodeId) {
-    const id = String(nodeId || '').trim();
-    if (!id || !cy) return '';
-    const direct = cy.getElementById(id);
-    if (direct && direct.length) return id;
-    let hit = '';
-    cy.nodes().some((n) => {
-      const members = Array.isArray(n.data('groupMembers')) ? n.data('groupMembers') : [];
-      if (members.includes(id)) {
-        hit = n.id();
-        return true;
-      }
-      return false;
+  function mergeIpLists(...groups) {
+    const out = [];
+    groups.forEach((group) => {
+      normalizeIpList(group).forEach((ip) => {
+        if (!out.includes(ip)) out.push(ip);
+      });
     });
-    return hit;
+    return out;
+  }
+
+  function primaryIpFromList(values) {
+    const ips = normalizeIpList(values);
+    return ips[0] || '';
+  }
+
+  function findExistingNodeIdByIp(nodesMap, ip) {
+    const target = String(ip || '').trim();
+    if (!target || !(nodesMap instanceof Map) || !nodesMap.size) return '';
+    for (const [id, node] of nodesMap.entries()) {
+      const ips = mergeIpLists(node?.ips, node?.ip);
+      if (ips.includes(target)) return id;
+    }
+    return '';
+  }
+
+  function resolveNodeIdWithIpFallback(nodesMap, candidateId, ip) {
+    const id = String(candidateId || '').trim();
+    if (id && nodesMap instanceof Map && nodesMap.has(id)) return id;
+    const ipHit = findExistingNodeIdByIp(nodesMap, ip);
+    return ipHit || id;
   }
 
   function splitUtilKey(utilKey) {
@@ -2312,13 +2279,6 @@
     return leftId && rightId ? `${leftId}||${rightId}||${leftIf}||${rightIf}` : '';
   }
 
-  function buildCanonicalNodePairKey(aId, bId) {
-    const leftId = String(aId || '');
-    const rightId = String(bId || '');
-    if (!leftId || !rightId) return '';
-    return leftId <= rightId ? `${leftId}||${rightId}` : `${rightId}||${leftId}`;
-  }
-
   function resolveGraphRowContext(r, cols, strip) {
     const lhRaw = String(r[cols.colLH] || '').trim();
     const rhRaw = String(r[cols.colRH] || '').trim();
@@ -2347,8 +2307,8 @@
 
     const aEntityKey = inferEntityKey(lhRaw || lh, aIp);
     const bEntityKey = inferEntityKey(rhRaw || rh, bIp);
-    let aId = findExistingNodeIdByLabel(lhRaw || lh) || nodeIdFromEntityKey(aEntityKey);
-    let bId = findExistingNodeIdByLabel(rhRaw || rh) || nodeIdFromEntityKey(bEntityKey);
+    const aId = nodeIdFromEntityKey(aEntityKey);
+    const bId = nodeIdFromEntityKey(bEntityKey);
     if (!aId || !bId) return null;
 
     return {
@@ -2707,51 +2667,6 @@
     return a <= b ? `${a}<<<${b}` : `${b}<<<${a}`;
   }
 
-  function mergeParsed(parsed, sourceName) {
-    if (!parsed.headers.length) {
-      setErr(`文件 ${sourceName} 没有表头，已跳过`);
-      return { added: 0, replaced: 0 };
-    }
-    const incomingHeaders = parsed.headers;
-    if (!headers.length) {
-      headers = parsed.headers;
-    } else {
-      const base = headers.map(h => h.toLowerCase()).join(',');
-      const incoming = incomingHeaders.map(h => h.toLowerCase()).join(',');
-      if (base !== incoming) {
-        const mapped = alignParsedToHeaders(parsed, headers);
-        if (!mapped) {
-          setErr(`文件 ${sourceName} 表头不一致，已跳过`);
-          return { added: 0, replaced: 0 };
-        }
-        parsed = mapped;
-      }
-    }
-    if (!rawRows.length) {
-      rawRows.push(...parsed.rows);
-      return { added: parsed.rows.length, replaced: 0 };
-    }
-    const index = new Map();
-    rawRows.forEach((row, idx) => {
-      const key = buildAppendRowMergeKey(row);
-      if (key) index.set(key, idx);
-    });
-    let added = 0;
-    let replaced = 0;
-    parsed.rows.forEach((row) => {
-      const key = buildAppendRowMergeKey(row);
-      if (key && index.has(key)) {
-        rawRows[index.get(key)] = row;
-        replaced += 1;
-        return;
-      }
-      rawRows.push(row);
-      if (key) index.set(key, rawRows.length - 1);
-      added += 1;
-    });
-    return { added, replaced };
-  }
-
   function alignParsedToHeaders(parsed, targetHeaders) {
     const inHeaders = parsed.headers || [];
     const inIndex = new Map();
@@ -2835,7 +2750,6 @@
       if (outIndex.rip >= 0) out[outIndex.rip] = ripVal;
       if (outIndex.rvendor >= 0) out[outIndex.rvendor] = rvendorVal;
 
-      // Force-fill the currently selected build columns, even when the workspace headers are custom.
       const selectedMap = new Map([
         [selectedLH, lhVal],
         [selectedLI, liVal],
@@ -2862,13 +2776,57 @@
     return { headers: targetHeaders.slice(), rows };
   }
 
+  function mergeParsed(parsed, sourceName) {
+    if (!parsed.headers.length) {
+      setErr(`文件 ${sourceName} 没有表头，已跳过`);
+      return { added: 0, replaced: 0 };
+    }
+    if (!headers.length) {
+      headers = parsed.headers;
+    } else {
+      const incomingHeaders = parsed.headers;
+      const base = headers.map(h => h.toLowerCase()).join(',');
+      const incoming = incomingHeaders.map(h => h.toLowerCase()).join(',');
+      if (base !== incoming) {
+        const mapped = alignParsedToHeaders(parsed, headers);
+        if (!mapped) {
+          setErr(`文件 ${sourceName} 表头不一致，已跳过`);
+          return { added: 0, replaced: 0 };
+        }
+        parsed = mapped;
+      }
+    }
+    if (!rawRows.length) {
+      rawRows.push(...parsed.rows);
+      return { added: parsed.rows.length, replaced: 0 };
+    }
+    const index = new Map();
+    rawRows.forEach((row, idx) => {
+      const key = buildAppendRowMergeKey(row);
+      if (key) index.set(key, idx);
+    });
+    let added = 0;
+    let replaced = 0;
+    parsed.rows.forEach((row) => {
+      const key = buildAppendRowMergeKey(row);
+      if (key && index.has(key)) {
+        rawRows[index.get(key)] = row;
+        replaced += 1;
+        return;
+      }
+      rawRows.push(row);
+      if (key) index.set(key, rawRows.length - 1);
+      added += 1;
+    });
+    return { added, replaced };
+  }
+
   async function loadFiles(files) {
     try {
       setErr(''); setOK('');
       setStatus('读取/解析中...');
       clearDeleteState();
       clearGroupState();
-      clearManualCanvasState();
       resetViewState();
       headers = [];
       sourceRows = [];
@@ -2991,15 +2949,13 @@
         }
       },
       {
-        selector: 'node.manual-cloud-node',
+        selector: 'node.single-link-hit',
         style: {
-          'shape': 'rectangle',
-          'label': '',
-          'background-color': '#ffffff',
-          'background-opacity': 0,
-          'border-width': 0,
-          'width': 6,
-          'height': 6
+          'background-color': '#ef4444',
+          'border-width': 3,
+          'border-color': '#991b1b',
+          'z-index-compare': 'manual',
+          'z-index': 1100
         }
       },
 
@@ -3095,15 +3051,6 @@
         'border-width': 0,
         'shadow-blur': 0,
         'shadow-opacity': 0
-      } },
-      {
-        selector: 'node.single-link-hit',
-        style: {
-          'background-color': '#ef4444',
-          'border-width': 3,
-          'border-color': '#991b1b',
-          'z-index-compare': 'manual',
-          'z-index': 1100
       } }
     ];
   }
@@ -3229,14 +3176,7 @@
   function buildGraph(keepPositions = null, opts = {}) {
     const forceNodesInput = Array.isArray(opts.forceNodes) ? opts.forceNodes : [];
     const manualForceNodes = cloneManualCanvasNodes(manualCanvasNodes);
-    const forceNodesAll = [];
-    const forceSeen = new Set();
-    [...manualForceNodes, ...forceNodesInput].forEach((node) => {
-      const id = String(node?.id || '').trim();
-      if (!id || forceSeen.has(id)) return;
-      forceSeen.add(id);
-      forceNodesAll.push(node);
-    });
+    const forceNodesAll = [...forceNodesInput, ...manualForceNodes];
     if (!rawRows.length && !forceNodesAll.length) { setErr('请先导入 CSV'); return; }
 
     const colLH = $('colLocalHost').value;
@@ -3322,8 +3262,8 @@
       const bLabel = choosePreferredLabel(bExisting?.label, rh, bIp);
       const aIps = mergeIpLists(aExisting?.ips, aExisting?.ip, aIp);
       const bIps = mergeIpLists(bExisting?.ips, bExisting?.ip, bIp);
-      nodes.set(aResolvedId, { id: aResolvedId, label: aLabel, short: shortLabel(aLabel), role: aRole, rank: roleRank(aRole), ip: primaryIpFromList(aIps), ips: aIps, entityKey: aExisting?.entityKey || aEntityKey, manualNodeType: aExisting?.manualNodeType || 'node' });
-      nodes.set(bResolvedId, { id: bResolvedId, label: bLabel, short: shortLabel(bLabel), role: bRole, rank: roleRank(bRole), ip: primaryIpFromList(bIps), ips: bIps, entityKey: bExisting?.entityKey || bEntityKey, manualNodeType: bExisting?.manualNodeType || 'node' });
+      nodes.set(aResolvedId, { id: aResolvedId, label: aLabel, short: shortLabel(aLabel), role: aRole, rank: roleRank(aRole), ip: primaryIpFromList(aIps), ips: aIps, entityKey: aExisting?.entityKey || aEntityKey });
+      nodes.set(bResolvedId, { id: bResolvedId, label: bLabel, short: shortLabel(bLabel), role: bRole, rank: roleRank(bRole), ip: primaryIpFromList(bIps), ips: bIps, entityKey: bExisting?.entityKey || bEntityKey });
 
       const edgeLabel = `${li} ↔ ${ri}`.trim();
       const liNorm = String(li || '').trim().toLowerCase();
@@ -3484,10 +3424,10 @@
     // 使边标签模式与当前选择同步
     updateEdgeLabels(edgeMode);
     applyUtilizationToEdges();
-    scheduleCloudOverlaySync();
-    scheduleEdgeNoteOverlaySync();
     applyAdaptiveRenderMode();
     applyZoomAwareNodeSizing(true);
+    scheduleCloudOverlaySync();
+    scheduleEdgeNoteOverlaySync();
 
     reapplyViewStateAfterBuild();
     applyDeletedMaskAfterBuild();
@@ -4769,8 +4709,6 @@
       },
       expandedAutoGroupKeys: Array.from(expandedAutoGroupKeys),
       manualGroups: cloneManualGroups(manualGroups),
-      manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes),
-      edgeNotes: exportEdgeNotesObject(),
       expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
       mergedMode: !!mergedMode,
       selectedNodeIds: cy ? cy.nodes(':selected').map((n) => n.id()) : [],
@@ -4805,8 +4743,6 @@
     if ($('nameClusterStrength')) $('nameClusterStrength').value = snapshot.ui?.nameClusterStrength || '0.6';
     expandedAutoGroupKeys = new Set((snapshot.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     manualGroups = cloneManualGroups(snapshot.manualGroups || []);
-    manualCanvasNodes = cloneManualCanvasNodes(snapshot.manualCanvasNodes || []);
-    edgeNotes = normalizeEdgeNotesMap(snapshot.edgeNotes || {});
     expandedManualGroupKeys = new Set((snapshot.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     $('nRows').textContent = rawRows.length;
     $('nCols').textContent = headers.length;
@@ -5346,9 +5282,7 @@
 
   // 右键菜单
   let ctxTarget = null;
-  let ctxCanvasPos = null;
   let pendingAddLinkNodes = [];
-  let addNodeSubmenuOpen = false;
   function hideCtx() {
     const menu = $('ctxMenu');
     menu.style.display = 'none';
@@ -5487,11 +5421,7 @@
     runWithRollback(() => {
       manualCanvasNodes = manualCanvasNodes.map((item) => {
         if (String(item?.id || '').trim() !== id) return item;
-        return {
-          ...item,
-          label,
-          short: shortLabel(label)
-        };
+        return { ...item, label, short: shortLabel(label) };
       });
       const pos = capturePositions();
       buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
@@ -5544,6 +5474,45 @@
         ipB || ''
       ].map((v) => `"${String(v || '').replace(/"/g, '""')}"`).join(',')
     ].join('\n');
+  }
+
+  function normalizeEdgeNotesMap(value) {
+    const map = new Map();
+    if (!value) return map;
+    if (value instanceof Map) {
+      value.forEach((note, key) => {
+        const cleanKey = String(key || '').trim();
+        const cleanNote = String(note || '').trim();
+        if (cleanKey && cleanNote) map.set(cleanKey, cleanNote);
+      });
+      return map;
+    }
+    if (typeof value === 'object') {
+      Object.entries(value).forEach(([key, note]) => {
+        const cleanKey = String(key || '').trim();
+        const cleanNote = String(note || '').trim();
+        if (cleanKey && cleanNote) map.set(cleanKey, cleanNote);
+      });
+    }
+    return map;
+  }
+
+  function exportEdgeNotesObject(filterIds = null) {
+    const out = {};
+    const allow = filterIds ? new Set((filterIds || []).map((x) => String(x || '').trim()).filter(Boolean)) : null;
+    edgeNotes.forEach((note, key) => {
+      const cleanKey = String(key || '').trim();
+      const cleanNote = String(note || '').trim();
+      if (!cleanKey || !cleanNote) return;
+      if (allow && !allow.has(cleanKey)) return;
+      out[cleanKey] = cleanNote;
+    });
+    return out;
+  }
+
+  function edgeNoteText(edge) {
+    if (!edge || typeof edge.id !== 'function') return '';
+    return String(edgeNotes.get(String(edge.id() || '').trim()) || '').trim();
   }
 
   function ctxGroupKey() {
@@ -5626,45 +5595,6 @@
     const leftPort = sourceIsLeft ? sourcePort : targetPort;
     const rightPort = sourceIsLeft ? targetPort : sourcePort;
     return `${leftPort || 'N/A'} ↔ ${rightPort || 'N/A'}`.trim();
-  }
-
-  function normalizeEdgeNotesMap(value) {
-    const map = new Map();
-    if (!value) return map;
-    if (value instanceof Map) {
-      value.forEach((note, key) => {
-        const cleanKey = String(key || '').trim();
-        const cleanNote = String(note || '').trim();
-        if (cleanKey && cleanNote) map.set(cleanKey, cleanNote);
-      });
-      return map;
-    }
-    if (typeof value === 'object') {
-      Object.entries(value).forEach(([key, note]) => {
-        const cleanKey = String(key || '').trim();
-        const cleanNote = String(note || '').trim();
-        if (cleanKey && cleanNote) map.set(cleanKey, cleanNote);
-      });
-    }
-    return map;
-  }
-
-  function exportEdgeNotesObject(filterIds = null) {
-    const out = {};
-    const allow = filterIds ? new Set((filterIds || []).map((x) => String(x || '').trim()).filter(Boolean)) : null;
-    edgeNotes.forEach((note, key) => {
-      const cleanKey = String(key || '').trim();
-      const cleanNote = String(note || '').trim();
-      if (!cleanKey || !cleanNote) return;
-      if (allow && !allow.has(cleanKey)) return;
-      out[cleanKey] = cleanNote;
-    });
-    return out;
-  }
-
-  function edgeNoteText(edge) {
-    if (!edge || typeof edge.id !== 'function') return '';
-    return String(edgeNotes.get(String(edge.id() || '').trim()) || '').trim();
   }
 
   function refreshEdgeLabelDisplay() {
@@ -6246,11 +6176,6 @@
         ? String(nodeData.labelWithCount || nodeData.label || '')
         : String(nodeData.shortWithCount || nodeData.short || nodeData.label || '');
     }
-    if (nodeData.manualNodeType === 'cloud') {
-      return normalized === 'short'
-        ? String(nodeData.short || nodeData.label || '')
-        : String(nodeData.label || '');
-    }
     if (normalized === 'full_ip') return String(nodeData.labelIp || nodeData.label || '');
     if (normalized === 'full') return String(nodeData.label || '');
     return String(nodeData.short || nodeData.label || '');
@@ -6648,7 +6573,6 @@
       .selector('node').style('label', 'data(displayLabel)')
       .selector('node.manual-cloud-node').style('label', '')
       .update();
-    scheduleCloudOverlaySync();
     if (normalized === 'none') setOK('节点标签：隐藏');
     else if (normalized === 'full_ip') setOK('节点标签：全名+IP');
     else setOK(normalized === 'full' ? '节点标签：全名' : '节点标签：缩略');
@@ -6697,6 +6621,7 @@
       nodes: snapshotNodes,
       positions: capturePositions(),
       visible_subgraph: buildVisibleSubgraphSnapshot(),
+      edge_notes: exportEdgeNotesObject(),
       deleted_stack: deletedStack.map((x) => (Array.isArray(x) ? x.slice() : [])),
       view_state: {
         filterTerms: cloneMatchExpression(viewState.filterTerms),
@@ -6714,7 +6639,6 @@
         filter_active: !!utilFilterState.active,
         filter_threshold: Number.isFinite(utilFilterState.threshold) ? Number(utilFilterState.threshold) : null
       },
-      edge_notes: exportEdgeNotesObject(),
       ui: {
         filter: $('filter')?.value || '',
         showOnly: $('showOnly')?.value || '',
@@ -6959,18 +6883,6 @@
         }).filter(Boolean)
       : [];
     const importedUi = (appendPayload?.ui && typeof appendPayload.ui === 'object') ? appendPayload.ui : {};
-    const importedManualCanvasNodes = cloneManualCanvasNodes(importedUi.manualCanvasNodes || appendPayload?.manual_canvas_nodes || []);
-    if (importedManualCanvasNodes.length) {
-      const existingManualNodes = new Map(manualCanvasNodes.map((node) => [String(node.id || '').trim(), node]));
-      importedManualCanvasNodes.forEach((node) => {
-        if (!existingManualNodes.has(node.id)) existingManualNodes.set(node.id, node);
-      });
-      manualCanvasNodes = Array.from(existingManualNodes.values());
-    }
-    const importedEdgeNotes = normalizeEdgeNotesMap(importedUi.edgeNotes || appendPayload?.edge_notes || {});
-    if (importedEdgeNotes.size) {
-      importedEdgeNotes.forEach((note, key) => edgeNotes.set(String(key || '').trim(), String(note || '').trim()));
-    }
     if (Array.isArray(importedUi.manualGroups) && importedUi.manualGroups.length) {
       const currentGroups = cloneManualGroups(manualGroups);
       const importedGroups = cloneManualGroups(importedUi.manualGroups);
@@ -6990,6 +6902,20 @@
         ...Array.from(expandedManualGroupKeys),
         ...((importedUi.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean))
       ]);
+    }
+    const importedManualCanvasNodes = cloneManualCanvasNodes(importedUi.manualCanvasNodes || appendPayload?.manual_canvas_nodes || []);
+    if (importedManualCanvasNodes.length) {
+      const existingManualNodes = new Map(manualCanvasNodes.map((node) => [String(node.id || '').trim(), node]));
+      importedManualCanvasNodes.forEach((node) => {
+        const id = String(node.id || '').trim();
+        if (!id) return;
+        existingManualNodes.set(id, node);
+      });
+      manualCanvasNodes = Array.from(existingManualNodes.values());
+    }
+    const importedEdgeNotes = normalizeEdgeNotesMap(importedUi.edgeNotes || appendPayload?.edge_notes || {});
+    if (importedEdgeNotes.size) {
+      importedEdgeNotes.forEach((note, key) => edgeNotes.set(String(key || '').trim(), String(note || '').trim()));
     }
     const parsed = {
       headers: hs.slice(),
@@ -8788,134 +8714,10 @@
   $('utilFilterModal').addEventListener('click', (e) => {
     if (e.target && e.target.id === 'utilFilterModal') closeUtilFilterModal();
   });
-  function normalizePastedCsv(text) {
-    const raw = String(text || '').trim();
-    if (!raw) return '';
-    const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    if (!lines.length) return '';
-    if (lines.length === 1 && !/[,\t]/.test(lines[0])) {
-      const parts = lines[0].split(/\s+/).filter(Boolean);
-      if (parts.length === 4) {
-        return [
-          'depth,localhostname,localinterface,remotehostname,remoteinterface',
-          `1,${parts[0]},${parts[1]},${parts[2]},${parts[3]}`
-        ].join('\n');
-      }
-      if (parts.length === 5 && /^\d+$/.test(parts[0])) {
-        return [
-          'depth,localhostname,localinterface,remotehostname,remoteinterface',
-          `${parts[0]},${parts[1]},${parts[2]},${parts[3]},${parts[4]}`
-        ].join('\n');
-      }
-    }
-    return raw;
-  }
-
-  function collectNodeIdsFromCsvText(csvText) {
-    const parsed = parseCSV(csvText);
-    if (!parsed.headers.length) return [];
-    const strip = $('stripDomain')?.value === 'yes';
-    const cols = {
-      colLH: $('colLocalHost')?.value || autoPickColumn(['localhostname','local_host','src','from']),
-      colRH: $('colRemoteHost')?.value || autoPickColumn(['remotehostname','remote_host','dst','to']),
-      colLI: $('colLocalIf')?.value || autoPickColumn(['localinterface','local_if','src_if','from_if']),
-      colRI: $('colRemoteIf')?.value || autoPickColumn(['remoteinterface','remote_if','dst_if','to_if'])
-    };
-    const ids = new Set();
-    (parsed.rows || []).forEach((row) => {
-      const rowCtx = resolveGraphRowContext(row, cols, strip);
-      if (!rowCtx) return;
-      if (rowCtx.aId) ids.add(String(rowCtx.aId));
-      if (rowCtx.bId) ids.add(String(rowCtx.bId));
-    });
-    return Array.from(ids);
-  }
-
-  function focusAppendedCsvText(csvText) {
-    if (!cy) return;
-    const parsed = parseCSV(csvText);
-    if (!parsed.headers.length) return;
-    const strip = $('stripDomain')?.value === 'yes';
-    const cols = {
-      colLH: $('colLocalHost')?.value || autoPickColumn(['localhostname','local_host','src','from']),
-      colRH: $('colRemoteHost')?.value || autoPickColumn(['remotehostname','remote_host','dst','to']),
-      colLI: $('colLocalIf')?.value || autoPickColumn(['localinterface','local_if','src_if','from_if']),
-      colRI: $('colRemoteIf')?.value || autoPickColumn(['remoteinterface','remote_if','dst_if','to_if'])
-    };
-    const nodeIds = new Set();
-    const edgeIds = new Set();
-    const mergedEdgeIds = new Set();
-    let mergedHitCount = 0;
-    let collapsedInsideSameGroup = false;
-    (parsed.rows || []).forEach((row) => {
-      const rowCtx = resolveGraphRowContext(row, cols, strip);
-      if (!rowCtx) return;
-      const aVisibleId = findVisibleRepresentativeNodeId(rowCtx.aId) || rowCtx.aId;
-      const bVisibleId = findVisibleRepresentativeNodeId(rowCtx.bId) || rowCtx.bId;
-      if (aVisibleId) nodeIds.add(String(aVisibleId));
-      if (bVisibleId) nodeIds.add(String(bVisibleId));
-      if (aVisibleId && bVisibleId && aVisibleId === bVisibleId) {
-        collapsedInsideSameGroup = true;
-        return;
-      }
-      if (aVisibleId && bVisibleId) {
-        const rowKey = buildCanonicalEdgeRowKey(aVisibleId, bVisibleId, rowCtx.li, rowCtx.ri);
-        if (rowKey) {
-          edgeIds.add(`e_${fnv1a(rowKey)}`);
-        }
-        const pairKey = buildCanonicalNodePairKey(aVisibleId, bVisibleId);
-        if (pairKey) {
-          mergedEdgeIds.add(`m_${fnv1a(pairKey)}`);
-        }
-      }
-    });
-    const nodes = cy.collection(Array.from(nodeIds).map((id) => cy.getElementById(id)).filter((n) => n && n.length));
-    const exactEdges = cy.collection(Array.from(edgeIds).map((id) => cy.getElementById(id)).filter((e) => e && e.length));
-    const aggregatedEdges = cy.collection(Array.from(mergedEdgeIds).map((id) => cy.getElementById(id)).filter((e) => e && e.length));
-    mergedHitCount = aggregatedEdges.length;
-    const edges = exactEdges.union(aggregatedEdges);
-    if (nodes.length || edges.length) {
-      // Ensure newly appended nodes/edges are visible even under current filters.
-      nodes.removeClass('filtered onlyHidden utilHidden groupViewHidden');
-      edges.removeClass('filtered onlyHidden utilHidden groupViewHidden');
-      cy.elements(':selected').unselect();
-      nodes.select();
-      edges.select();
-      cy.animate({ fit: { eles: nodes.union(edges), padding: 120 }, duration: 300 });
-    }
-    const hidden = nodes.filter((n) => !n.visible());
-    if (hidden.length) {
-      setErr('已追加，但节点被隐藏/过滤或在组视图中。请检查“只显示/不显示/过滤/组视图”。');
-    } else if (collapsedInsideSameGroup) {
-      setErr('已追加，但链路两端当前被折叠进同一个组节点，图上不会单独显示该链路。请先展开相关组节点再查看。');
-    } else if (!nodes.length && !edges.length) {
-      setErr('已追加，但未能在当前画布定位新增链路。请检查节点过滤、组折叠或多链路合并状态。');
-    } else if (mergedMode && !exactEdges.length && mergedHitCount) {
-      setOK(`已追加，但当前开启了“合并多链路”，新链路已并入现有聚合边（命中 ${mergedHitCount} 条聚合边）。可先关闭“合并多链路”再查看物理链路。`);
-    }
-    if (groupViewState?.active) {
-      setErr('已追加，但当前处于组视图，新增节点可能被隐藏。建议返回主视图再查看。');
-    }
-  }
-
   $('loadPasteModal').addEventListener('click', () => {
-    const raw = ($('pasteModal').value || '').trim();
-    if (!raw) { setErr('粘贴内容为空'); return; }
-    const t = normalizePastedCsv(raw);
+    const t = ($('pasteModal').value || '').trim();
     if (!t) { setErr('粘贴内容为空'); return; }
-    if (importInputAction === 'append') {
-      const merged = applyQueryCsvText(t, { append: true, sourceName: 'paste', restoreDeletedFromQuery: true, revealPastedRows: true });
-      if (!merged || !merged.mergedRows) {
-        setStatus('追加失败');
-        setErr('未检测到有效表头，无法追加。');
-        return;
-      }
-      setStatus('粘贴追加完成');
-      setOK(`已追加粘贴内容：新增 ${merged.addedRows} 行，覆盖 ${merged.replacedRows || 0} 行，当前总计 ${merged.mergedRows} 行。`);
-      focusAppendedCsvText(t);
-    } else {
-      loadDataFromText(t);
-    }
+    loadDataFromText(t);
     closeImportModal();
   });
   $('importModal').addEventListener('click', (e) => {
@@ -9887,7 +9689,6 @@
         setErr('增加链路失败：未能写入当前拓扑。');
         return;
       }
-      focusAppendedCsvText(csvText);
       setStatus('手工链路已追加');
       setOK(`已增加链路：${String(nodes[0].data('label') || nodes[0].id())} ${ifA} -> ${String(nodes[1].data('label') || nodes[1].id())} ${ifB}`);
       closeAddLinkModal();
