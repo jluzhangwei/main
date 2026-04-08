@@ -1231,6 +1231,12 @@
       btn_find_path: '查找路径',
       btn_align_horizontal: '水平对齐',
       btn_align_vertical: '垂直对齐',
+      btn_align_left: '左对齐',
+      btn_align_right: '右对齐',
+      btn_align_top: '上对齐',
+      btn_align_bottom: '下对齐',
+      btn_distribute_horizontal: '水平等间距',
+      btn_distribute_vertical: '垂直等间距',
       btn_exit_group_view: '返回主视图',
       add_link_modal_title: '增加链路',
       add_link_node_a: '设备 A',
@@ -1366,6 +1372,12 @@
       btn_find_path: 'Find Path',
       btn_align_horizontal: 'Align Horizontal',
       btn_align_vertical: 'Align Vertical',
+      btn_align_left: 'Align Left',
+      btn_align_right: 'Align Right',
+      btn_align_top: 'Align Top',
+      btn_align_bottom: 'Align Bottom',
+      btn_distribute_horizontal: 'Distribute Horizontally',
+      btn_distribute_vertical: 'Distribute Vertically',
       btn_exit_group_view: 'Back to Main View',
       add_link_modal_title: 'Add Link',
       add_link_node_a: 'Device A',
@@ -1597,6 +1609,12 @@
     setText('openPathFinder', 'btn_find_path');
     setText('alignHorizontal', 'btn_align_horizontal');
     setText('alignVertical', 'btn_align_vertical');
+    setText('alignLeft', 'btn_align_left');
+    setText('alignRight', 'btn_align_right');
+    setText('alignTop', 'btn_align_top');
+    setText('alignBottom', 'btn_align_bottom');
+    setText('distributeHorizontal', 'btn_distribute_horizontal');
+    setText('distributeVertical', 'btn_distribute_vertical');
     setText('exitGroupView', 'btn_exit_group_view');
     setText('ctxAddNode', 'ctx_add_node');
     setText('ctxAddNodeRegular', 'ctx_add_node_regular');
@@ -3533,6 +3551,72 @@
     setOK(axis === 'vertical'
       ? `已对齐 ${selected.length} 个节点：垂直对齐`
       : `已对齐 ${selected.length} 个节点：水平对齐`);
+    return true;
+  }
+
+  function alignSelectedNodesEdge(mode = 'left') {
+    if (!cy) return false;
+    const selected = cy.nodes(':selected');
+    if (!selected.length || selected.length < 2) {
+      setErr('请先至少选中 2 个节点，再执行对齐。');
+      return false;
+    }
+    const boxes = selected.map((node) => ({
+      node,
+      bb: node.boundingBox({ includeLabels: false, includeOverlays: false })
+    }));
+    let target = 0;
+    if (mode === 'left') target = Math.min(...boxes.map((item) => item.bb.x1));
+    else if (mode === 'right') target = Math.max(...boxes.map((item) => item.bb.x2));
+    else if (mode === 'top') target = Math.min(...boxes.map((item) => item.bb.y1));
+    else target = Math.max(...boxes.map((item) => item.bb.y2));
+    cy.batch(() => {
+      boxes.forEach(({ node, bb }) => {
+        const pos = node.position();
+        if (mode === 'left') node.position({ x: pos.x + (target - bb.x1), y: pos.y });
+        else if (mode === 'right') node.position({ x: pos.x + (target - bb.x2), y: pos.y });
+        else if (mode === 'top') node.position({ x: pos.x, y: pos.y + (target - bb.y1) });
+        else node.position({ x: pos.x, y: pos.y + (target - bb.y2) });
+      });
+    });
+    if (typeof refreshEdgeLabelDisplay === 'function') refreshEdgeLabelDisplay();
+    if (typeof scheduleCloudOverlaySync === 'function') scheduleCloudOverlaySync();
+    if (typeof scheduleEdgeNoteOverlaySync === 'function') scheduleEdgeNoteOverlaySync();
+    schedulePersistCurrentPageSession(80);
+    const textMap = { left: '左对齐', right: '右对齐', top: '上对齐', bottom: '下对齐' };
+    setOK(`已对齐 ${selected.length} 个节点：${textMap[mode] || mode}`);
+    return true;
+  }
+
+  function distributeSelectedNodes(axis = 'horizontal') {
+    if (!cy) return false;
+    const selected = cy.nodes(':selected');
+    if (!selected.length || selected.length < 3) {
+      setErr('请先至少选中 3 个节点，再执行等间距。');
+      return false;
+    }
+    const isVertical = axis === 'vertical';
+    const sorted = selected.toArray().sort((a, b) => {
+      const av = Number(a.position(isVertical ? 'y' : 'x')) || 0;
+      const bv = Number(b.position(isVertical ? 'y' : 'x')) || 0;
+      return av - bv;
+    });
+    const first = Number(sorted[0].position(isVertical ? 'y' : 'x')) || 0;
+    const last = Number(sorted[sorted.length - 1].position(isVertical ? 'y' : 'x')) || 0;
+    const step = (last - first) / (sorted.length - 1);
+    cy.batch(() => {
+      sorted.forEach((node, idx) => {
+        const pos = node.position();
+        const value = first + step * idx;
+        if (isVertical) node.position({ x: pos.x, y: value });
+        else node.position({ x: value, y: pos.y });
+      });
+    });
+    if (typeof refreshEdgeLabelDisplay === 'function') refreshEdgeLabelDisplay();
+    if (typeof scheduleCloudOverlaySync === 'function') scheduleCloudOverlaySync();
+    if (typeof scheduleEdgeNoteOverlaySync === 'function') scheduleEdgeNoteOverlaySync();
+    schedulePersistCurrentPageSession(80);
+    setOK(`已对 ${selected.length} 个节点执行${isVertical ? '垂直' : '水平'}等间距。`);
     return true;
   }
 
@@ -9740,6 +9824,24 @@
   });
   $('alignVertical').addEventListener('click', () => {
     runWithRollback(() => alignSelectedNodes('vertical'), { delayMs: 0 });
+  });
+  $('alignLeft').addEventListener('click', () => {
+    runWithRollback(() => alignSelectedNodesEdge('left'), { delayMs: 0 });
+  });
+  $('alignRight').addEventListener('click', () => {
+    runWithRollback(() => alignSelectedNodesEdge('right'), { delayMs: 0 });
+  });
+  $('alignTop').addEventListener('click', () => {
+    runWithRollback(() => alignSelectedNodesEdge('top'), { delayMs: 0 });
+  });
+  $('alignBottom').addEventListener('click', () => {
+    runWithRollback(() => alignSelectedNodesEdge('bottom'), { delayMs: 0 });
+  });
+  $('distributeHorizontal').addEventListener('click', () => {
+    runWithRollback(() => distributeSelectedNodes('horizontal'), { delayMs: 0 });
+  });
+  $('distributeVertical').addEventListener('click', () => {
+    runWithRollback(() => distributeSelectedNodes('vertical'), { delayMs: 0 });
   });
   $('selectVisible').addEventListener('click', () => {
     if (!cy) return;
