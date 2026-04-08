@@ -61,8 +61,8 @@
     .section-box.collapsed .section-toggle { margin-bottom: 0; padding-bottom: 0; }
     .util-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .util-grid .span-2 { grid-column: 1 / -1; }
-    .util-grid .check-row { display:flex; align-items:center; gap:8px; font-size:12px; color:#111827; font-weight:600; }
-    .util-grid .check-row input[type="checkbox"] { width:auto; margin:0; }
+    .check-row { display:flex; align-items:center; gap:8px; font-size:12px; color:#111827; font-weight:600; }
+    .check-row input[type="checkbox"] { width:auto; margin:0; }
     .util-filter-bar {
       display: flex;
       align-items: center;
@@ -621,6 +621,7 @@
         <label class="check-row"><input id="utilLabelEnabled" type="checkbox" checked />显示利用率标签</label>
         <label class="check-row"><input id="utilShowTxRx" type="checkbox" />显示TX/RX（TX按箭头方向）</label>
         <label class="check-row"><input id="utilShowBandwidth" type="checkbox" />显示总带宽</label>
+        <label class="check-row"><input id="utilShowEdgeDesc" type="checkbox" checked /><span id="utilShowEdgeDescLabel">显示链路描述</span></label>
         <div class="hint span-2" id="utilResultHint">阈值：绿色 &lt; 40%，黄色 40-70%，红色 ≥ 70%。</div>
         <div class="hint span-2" id="utilLegendHint">颜色图例：按当前 MAX 口径，绿色 &lt; 40%，黄色 40-70%，红色 ≥ 70%，灰色表示无数据。</div>
       </div>
@@ -640,6 +641,7 @@
   <button id="ctxLock">固定位置</button>
   <button id="ctxDelete">删除设备</button>
   <button id="ctxDeleteLink">删除链路</button>
+  <button id="ctxEdgeDesc">添加描述</button>
   <div id="ctxSepEdit" class="ctx-sep"></div>
   <button id="ctxPathVia">设为必经点</button>
   <button id="ctxAddLink">增加链路</button>
@@ -843,6 +845,24 @@
     </div>
   </div>
 </div>
+<div id="edgeDescModal" class="modal-backdrop">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="edgeDescModalTitle">
+    <div class="modal-title" id="edgeDescModalTitle">链路描述</div>
+    <div class="row">
+      <label id="edgeDescTargetLabel">目标链路</label>
+      <div id="edgeDescTarget" class="hint mono"></div>
+    </div>
+    <div class="row">
+      <label id="edgeDescInputLabel">描述内容</label>
+      <textarea id="edgeDescInput" class="mono" placeholder="输入链路描述"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button id="saveEdgeDesc" class="primary">保存描述</button>
+      <button id="clearEdgeDesc">清空描述</button>
+      <button id="closeEdgeDescModal">关闭</button>
+    </div>
+  </div>
+</div>
 <div id="saveStateModal" class="modal-backdrop">
   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="saveStateModalTitle">
     <div class="modal-title" id="saveStateModalTitle">保存状态</div>
@@ -1006,6 +1026,7 @@
   let cliLldpTaskCancelling = false;
   let ctxAppendSingleHop = false;
   let utilByKey = new Map();
+  let edgeDescByKey = new Map();
   let primaryCliSource = '';
   let dragPerfMode = false;
   let expandedAutoGroupKeys = new Set();
@@ -1042,6 +1063,7 @@
   let pendingViaNodeName = '';
   let ctxCanvasPos = null;
   let pendingAddLinkNodes = [];
+  let pendingEdgeDescEdgeIds = [];
   let addNodeSubmenuOpen = false;
   // 注册 fCoSE 扩展（兼容不同全局名），避免引用未定义导致脚本中断
 (() => {
@@ -1191,6 +1213,7 @@
       btn_dl_util_debug: '下载利用率调试日志',
       btn_util_filter: '利用率过滤',
       btn_clear_util_filter: '清除过滤',
+      util_show_edge_desc: '显示链路描述',
       btn_run_sql: '执行 SQL 查询',
       btn_sql_config: 'SQL配置',
       btn_dl_sql_tmp: '下载临时 CSV',
@@ -1207,6 +1230,12 @@
       ctx_add_link: '增加链路',
       ctx_util: '当前利用率',
       ctx_util_range: '区间利用率',
+      ctx_edge_desc: '添加描述',
+      edge_desc_modal_title: '链路描述',
+      edge_desc_target_label: '目标链路',
+      edge_desc_input_label: '描述内容',
+      edge_desc_save: '保存描述',
+      edge_desc_clear: '清空描述',
       add_link_modal_title: '增加链路',
       add_link_save: '保存链路',
       add_link_hint: '仅支持当前选中 2 台设备时新增链路；保存后会直接追加到当前拓扑工作集。',
@@ -1316,6 +1345,7 @@
       btn_dl_util_debug: 'Download Util Debug Log',
       btn_util_filter: 'Util Filter',
       btn_clear_util_filter: 'Clear Filter',
+      util_show_edge_desc: 'Show Link Description',
       btn_run_sql: 'Run SQL Query',
       btn_sql_config: 'SQL Config',
       btn_dl_sql_tmp: 'Download Temp CSV',
@@ -1332,6 +1362,12 @@
       ctx_add_link: 'Add Link',
       ctx_util: 'Current Utilization',
       ctx_util_range: 'Range Utilization',
+      ctx_edge_desc: 'Add Description',
+      edge_desc_modal_title: 'Link Description',
+      edge_desc_target_label: 'Target Link',
+      edge_desc_input_label: 'Description',
+      edge_desc_save: 'Save Description',
+      edge_desc_clear: 'Clear Description',
       add_link_modal_title: 'Add Link',
       add_link_save: 'Save Link',
       add_link_hint: 'Only works when exactly two devices are selected. The new link will be appended to current workspace.',
@@ -1540,6 +1576,7 @@
     setText('downloadUtilDebug', 'btn_dl_util_debug');
     setText('openUtilFilterModal', 'btn_util_filter');
     setText('clearUtilFilterOnly', 'btn_clear_util_filter');
+    setText('utilShowEdgeDescLabel', 'util_show_edge_desc');
     setText('runSqlGenerateModal', 'btn_run_sql');
     setText('cancelSqlGenerateModal', 'btn_cancel_query');
     setText('openSqlConfigModal', 'btn_sql_config');
@@ -1552,6 +1589,7 @@
     setText('loadPasteModal', 'btn_load_paste');
     setText('ctxUtil', 'ctx_util');
     setText('ctxUtilRange', 'ctx_util_range');
+    setText('ctxEdgeDesc', 'ctx_edge_desc');
     setText('ctxPathVia', 'ctx_path_via');
     setText('ctxAddNode', 'ctx_add_node');
     setText('ctxAddNodeRegular', 'ctx_add_node_regular');
@@ -1566,6 +1604,12 @@
     setText('saveAddLink', 'add_link_save');
     setText('addLinkHint', 'add_link_hint');
     setText('closeAddLinkModal', 'state_close');
+    setText('edgeDescModalTitle', 'edge_desc_modal_title');
+    setText('edgeDescTargetLabel', 'edge_desc_target_label');
+    setText('edgeDescInputLabel', 'edge_desc_input_label');
+    setText('saveEdgeDesc', 'edge_desc_save');
+    setText('clearEdgeDesc', 'edge_desc_clear');
+    setText('closeEdgeDescModal', 'state_close');
     setText('stateModalTitle', 'state_modal_title');
     setText('stateModalHint', 'state_modal_hint');
     setText('saveStateModalTitle', 'save_state_modal_title');
@@ -1648,6 +1692,10 @@
 
   function clearManualCanvasState() {
     manualCanvasNodes = [];
+  }
+
+  function clearEdgeDescState() {
+    edgeDescByKey = new Map();
   }
 
   function rebuildDeletedNodeIdsFromStack() {
@@ -1747,6 +1795,7 @@
         edgeLabelMode: $('edgeLabelMode')?.value || 'none',
         spacing: $('spacing')?.value || '0.5',
         stripDomain: $('stripDomain')?.value || 'yes',
+        utilShowEdgeDesc: !!$('utilShowEdgeDesc')?.checked,
         nameClusterMode: $('nameClusterMode')?.value || 'on',
         autoGroupMode: $('autoGroupMode')?.value || 'off',
         nameClusterStrength: $('nameClusterStrength')?.value || '0.6',
@@ -1758,6 +1807,7 @@
       expandedAutoGroupKeys: Array.from(expandedAutoGroupKeys),
       manualGroups: cloneManualGroups(manualGroups),
       manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes),
+      edgeDescEntries: exportEdgeDescEntries(),
       expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
       mergedMode: !!mergedMode,
       selectedNodeIds: cy ? cy.nodes(':selected').map((n) => n.id()) : [],
@@ -1791,12 +1841,14 @@
       if ($('edgeLabelMode')) $('edgeLabelMode').value = snapshot.ui?.edgeLabelMode || 'none';
       if ($('spacing')) $('spacing').value = snapshot.ui?.spacing || '0.5';
       if ($('stripDomain')) $('stripDomain').value = snapshot.ui?.stripDomain || 'yes';
+      if ($('utilShowEdgeDesc')) $('utilShowEdgeDesc').checked = snapshot.ui?.utilShowEdgeDesc !== false;
       if ($('nameClusterMode')) $('nameClusterMode').value = snapshot.ui?.nameClusterMode || 'on';
       if ($('autoGroupMode')) $('autoGroupMode').value = snapshot.ui?.autoGroupMode || 'off';
       if ($('nameClusterStrength')) $('nameClusterStrength').value = snapshot.ui?.nameClusterStrength || '0.6';
       expandedAutoGroupKeys = new Set((snapshot.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
       manualGroups = cloneManualGroups(snapshot.manualGroups || []);
       manualCanvasNodes = cloneManualCanvasNodes(snapshot.manualCanvasNodes || []);
+      importEdgeDescEntries(snapshot.edgeDescEntries || [], false);
       expandedManualGroupKeys = new Set((snapshot.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
 
       $('nRows').textContent = rawRows.length;
@@ -2470,12 +2522,14 @@
       positions: visiblePositions,
       nodes: visibleNodeMeta,
       manual_canvas_nodes: cloneManualCanvasNodes(manualCanvasNodes).filter((node) => visibleNodeIds.has(node.id)),
+      edge_descriptions: visibleEdgeDescEntries(visibleEdges),
       ui: {
         stripDomain: $('stripDomain')?.value || 'yes',
         colLocalHost: $('colLocalHost')?.value || '',
         colRemoteHost: $('colRemoteHost')?.value || '',
         colLocalIf: $('colLocalIf')?.value || '',
         colRemoteIf: $('colRemoteIf')?.value || '',
+        edgeDescriptions: visibleEdgeDescEntries(visibleEdges),
         manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes).filter((node) => visibleNodeIds.has(node.id)),
         manualGroups: visibleManualGroups,
         expandedManualGroupKeys: visibleExpandedManualGroupKeys
@@ -2490,6 +2544,7 @@
     clearDeleteState();
     clearGroupState();
     clearManualCanvasState();
+    clearEdgeDescState();
     resetViewState();
     const parsed = parseCSV(text);
     headers = parsed.headers;
@@ -2587,6 +2642,7 @@
       setStatus('读取/解析中...');
       clearDeleteState();
       clearGroupState();
+      clearEdgeDescState();
       resetViewState();
       headers = [];
       sourceRows = [];
@@ -4924,6 +4980,69 @@
     $('addLinkModal').style.display = 'none';
   }
 
+  function edgeDescLine(edge) {
+    if (!edge || typeof edge.data !== 'function') return '';
+    const sourceNode = edge.source();
+    const targetNode = edge.target();
+    const sourceName = String(sourceNode?.data('label') || sourceNode?.id?.() || edge.data('source') || '').trim();
+    const targetName = String(targetNode?.data('label') || targetNode?.id?.() || edge.data('target') || '').trim();
+    const sourcePort = String(edge.data('sourcePort') || '').trim();
+    const targetPort = String(edge.data('targetPort') || '').trim();
+    if (sourcePort || targetPort) {
+      const { sourceIsLeft } = edgeViewportOrder(edge);
+      const leftName = sourceIsLeft ? sourceName : targetName;
+      const rightName = sourceIsLeft ? targetName : sourceName;
+      const leftPort = sourceIsLeft ? sourcePort : targetPort;
+      const rightPort = sourceIsLeft ? targetPort : sourcePort;
+      return `${leftName} ${leftPort || 'N/A'} -> ${rightName} ${rightPort || 'N/A'}`.trim();
+    }
+    return `${sourceName} -> ${targetName}`.trim();
+  }
+
+  function pendingEdgeDescEdges() {
+    if (!cy || !Array.isArray(pendingEdgeDescEdgeIds) || !pendingEdgeDescEdgeIds.length) return [];
+    return pendingEdgeDescEdgeIds
+      .map((id) => cy.getElementById(String(id || '').trim()))
+      .filter((edge) => edge && edge.length && edge.isEdge && edge.isEdge());
+  }
+
+  function openEdgeDescModal(edges) {
+    const targetEdges = (Array.isArray(edges) ? edges : [])
+      .filter((edge) => edge && edge.length && edge.isEdge && edge.isEdge());
+    if (!targetEdges.length) {
+      setErr('请先选中链路，再添加描述。');
+      return;
+    }
+    pendingEdgeDescEdgeIds = targetEdges.map((edge) => edge.id());
+    const preview = targetEdges.slice(0, 4).map((edge) => edgeDescLine(edge)).filter(Boolean);
+    const extra = targetEdges.length > 4 ? `\n... 其余 ${targetEdges.length - 4} 条` : '';
+    $('edgeDescTarget').textContent = `${preview.join('\n')}${extra}`;
+    const exists = Array.from(new Set(targetEdges.map((edge) => edgeDescText(edge)).filter(Boolean)));
+    $('edgeDescInput').value = exists.length === 1 ? exists[0] : '';
+    $('edgeDescModal').style.display = 'flex';
+    setTimeout(() => $('edgeDescInput')?.focus(), 0);
+  }
+
+  function closeEdgeDescModal() {
+    pendingEdgeDescEdgeIds = [];
+    if ($('edgeDescModal')) $('edgeDescModal').style.display = 'none';
+  }
+
+  function applyEdgeDescForEdge(edge, text) {
+    const clean = normalizeEdgeDescText(text);
+    const applyKeys = edgeDescApplyKeys(edge);
+    if (!applyKeys.length) return;
+    if (clean) {
+      applyKeys.forEach((key) => edgeDescByKey.set(String(key || '').trim(), clean));
+      return;
+    }
+    applyKeys.forEach((key) => edgeDescByKey.delete(String(key || '').trim()));
+    const rowKeys = edgeDescRowKeys(edge);
+    if (rowKeys.length > 1) {
+      rowKeys.forEach((rowKey) => edgeDescByKey.delete(`row:${rowKey}`));
+    }
+  }
+
   function buildManualLinkCsv(nodeA, ifA, nodeB, ifB) {
     const labelA = String((nodeA && typeof nodeA.data === 'function' ? nodeA.data('label') : '') || (nodeA && typeof nodeA.id === 'function' ? nodeA.id() : '') || '').trim();
     const labelB = String((nodeB && typeof nodeB.data === 'function' ? nodeB.data('label') : '') || (nodeB && typeof nodeB.id === 'function' ? nodeB.id() : '') || '').trim();
@@ -5100,19 +5219,119 @@
     return `${leftPort || 'N/A'} ↔ ${rightPort || 'N/A'}`.trim();
   }
 
+  function normalizeEdgeDescText(value) {
+    return String(value == null ? '' : value).trim();
+  }
+
+  function edgeDescPairKeyFromIds(aId, bId) {
+    const a = String(aId || '').trim();
+    const b = String(bId || '').trim();
+    if (!a || !b) return '';
+    return a <= b ? `pair:${a}||${b}` : `pair:${b}||${a}`;
+  }
+
+  function edgeDescRowKeys(edge) {
+    if (!edge || typeof edge.data !== 'function') return [];
+    return (Array.isArray(edge.data('rowKeys')) ? edge.data('rowKeys') : [])
+      .map((x) => String(x || '').trim())
+      .filter(Boolean);
+  }
+
+  function edgeDescLookupKeys(edge) {
+    if (!edge || typeof edge.id !== 'function') return [];
+    const rowKeys = edgeDescRowKeys(edge);
+    const pairKey = edgeDescPairKeyFromIds(edge.data('source'), edge.data('target'));
+    if (rowKeys.length > 1) {
+      return [pairKey, ...rowKeys.map((k) => `row:${k}`)].filter(Boolean);
+    }
+    if (rowKeys.length === 1) {
+      return [`row:${rowKeys[0]}`, pairKey].filter(Boolean);
+    }
+    return [pairKey].filter(Boolean);
+  }
+
+  function edgeDescApplyKeys(edge) {
+    if (!edge || typeof edge.id !== 'function') return [];
+    const rowKeys = edgeDescRowKeys(edge);
+    const pairKey = edgeDescPairKeyFromIds(edge.data('source'), edge.data('target'));
+    if (rowKeys.length > 1) return [pairKey].filter(Boolean);
+    if (rowKeys.length === 1) return [`row:${rowKeys[0]}`];
+    return [pairKey].filter(Boolean);
+  }
+
+  function edgeDescText(edge) {
+    if (!edge || typeof edge.id !== 'function') return '';
+    const rowKeys = edgeDescRowKeys(edge);
+    const lookupKeys = edgeDescLookupKeys(edge);
+    for (const key of lookupKeys) {
+      const hit = normalizeEdgeDescText(edgeDescByKey.get(String(key || '').trim()));
+      if (hit) return hit;
+    }
+    if (rowKeys.length > 1) {
+      const notes = Array.from(new Set(
+        rowKeys
+          .map((rk) => normalizeEdgeDescText(edgeDescByKey.get(`row:${rk}`)))
+          .filter(Boolean)
+      ));
+      if (notes.length === 1) return notes[0];
+      if (notes.length > 1) return `${notes.slice(0, 2).join(' / ')}${notes.length > 2 ? ` (+${notes.length - 2})` : ''}`;
+    }
+    return '';
+  }
+
+  function formatEdgeDescText(edge) {
+    const desc = edgeDescText(edge);
+    if (!desc) return '';
+    return `描述:${desc}`;
+  }
+
+  function exportEdgeDescEntries() {
+    return Array.from(edgeDescByKey.entries())
+      .map(([key, value]) => ({ key: String(key || '').trim(), value: normalizeEdgeDescText(value) }))
+      .filter((item) => item.key && item.value);
+  }
+
+  function importEdgeDescEntries(entries, merge = false) {
+    const next = merge ? new Map(edgeDescByKey) : new Map();
+    const rows = Array.isArray(entries)
+      ? entries
+      : (entries && typeof entries === 'object'
+        ? Object.entries(entries).map(([key, value]) => ({ key, value }))
+        : []);
+    rows.forEach((item) => {
+      const key = String(item?.key || '').trim();
+      if (!key) return;
+      const value = normalizeEdgeDescText(item?.value);
+      if (value) next.set(key, value);
+      else next.delete(key);
+    });
+    edgeDescByKey = next;
+  }
+
+  function visibleEdgeDescEntries(edges) {
+    const keys = new Set();
+    (edges || []).forEach((edge) => {
+      edgeDescLookupKeys(edge).forEach((k) => keys.add(k));
+    });
+    return Array.from(keys)
+      .map((k) => ({ key: k, value: normalizeEdgeDescText(edgeDescByKey.get(k)) }))
+      .filter((item) => item.key && item.value);
+  }
+
   function refreshEdgeLabelDisplay() {
     if (!cy) return;
     const edgeMode = $('edgeLabelMode')?.value || 'none';
     const showUtilLabel = !!$('utilLabelEnabled')?.checked;
     const showBandwidth = !!$('utilShowBandwidth')?.checked;
+    const showEdgeDesc = !!$('utilShowEdgeDesc')?.checked;
     const showExtra = showUtilLabel || showBandwidth;
     cy.edges().forEach((e) => {
       const base = formatEdgePortLabel(e);
       const util = formatEdgeUtilText(e);
+      const desc = formatEdgeDescText(e);
       let shown = '';
-      if (edgeMode === 'both' && showExtra) shown = [base, util].filter(Boolean).join(' | ');
-      else if (edgeMode === 'both') shown = base;
-      else if (showExtra) shown = util;
+      if (edgeMode === 'both') shown = [base, showExtra ? util : '', showEdgeDesc ? desc : ''].filter(Boolean).join(' | ');
+      else shown = [showExtra ? util : '', showEdgeDesc ? desc : ''].filter(Boolean).join(' | ');
       e.data('labelShown', shown);
     });
   }
@@ -5593,9 +5812,12 @@
     const parts = [];
     const portText = formatEdgePortLabel(edge);
     const utilText = formatEdgeUtilText(edge);
+    const descText = formatEdgeDescText(edge);
     const showExtra = !!$('utilLabelEnabled')?.checked || !!$('utilShowBandwidth')?.checked;
+    const showDesc = !!$('utilShowEdgeDesc')?.checked;
     if (portText) parts.push(portText);
     if (showExtra && utilText) parts.push(utilText);
+    if (showDesc && descText) parts.push(descText);
     return parts.join('<br/>');
   }
 
@@ -5929,7 +6151,7 @@
     const isManualGroup = ctxGroupKind() === 'manual';
     const groupKey = ctxGroupKey();
     const canToggleGroup = !!groupKey;
-    const nodeBtnIds = ['ctxLock', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink'];
+    const nodeBtnIds = ['ctxLock', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxEdgeDesc'];
     nodeBtnIds.forEach((id) => {
       const el = $(id);
       if (!el) return;
@@ -5938,10 +6160,10 @@
         return;
       }
       if (isEdgeTarget) {
-        el.style.display = (id === 'ctxUtil' || id === 'ctxUtilRange') ? '' : 'none';
+        el.style.display = (id === 'ctxUtil' || id === 'ctxUtilRange' || id === 'ctxEdgeDesc') ? '' : 'none';
         return;
       }
-      if (isGroupNode && ['ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink'].includes(id)) {
+      if (isGroupNode && ['ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxEdgeDesc'].includes(id)) {
         el.style.display = 'none';
         return;
       }
@@ -5974,7 +6196,7 @@
     }
     const groups = [
       { sep: 'ctxSepAdd', ids: ['ctxAddNode', 'ctxAddNodeSubmenu'] },
-      { sep: 'ctxSepEdit', ids: ['ctxLock', 'ctxDelete', 'ctxDeleteLink'] },
+      { sep: 'ctxSepEdit', ids: ['ctxLock', 'ctxDelete', 'ctxDeleteLink', 'ctxEdgeDesc'] },
       { sep: 'ctxSepCopy', ids: ['ctxPathVia', 'ctxAddLink', 'ctxCreateGroup', 'ctxToggleGroup', 'ctxRenameGroup'] },
       { sep: 'ctxSepQuery', ids: ['ctxCopy', 'ctxCopyIp', 'ctxCopyLink'] },
       { sep: '', ids: ['ctxUtil', 'ctxUtilRange', 'ctxAppendQuery'] }
@@ -6071,9 +6293,11 @@
         label_enabled: !!$('utilLabelEnabled')?.checked,
         show_tx_rx: !!$('utilShowTxRx')?.checked,
         show_bandwidth: !!$('utilShowBandwidth')?.checked,
+        show_edge_desc: !!$('utilShowEdgeDesc')?.checked,
         filter_active: !!utilFilterState.active,
         filter_threshold: Number.isFinite(utilFilterState.threshold) ? Number(utilFilterState.threshold) : null
       },
+      edge_descriptions: exportEdgeDescEntries(),
       ui: {
         filter: $('filter')?.value || '',
         showOnly: $('showOnly')?.value || '',
@@ -6096,6 +6320,7 @@
         colRemoteHost: $('colRemoteHost')?.value || '',
         colLocalIf: $('colLocalIf')?.value || '',
         colRemoteIf: $('colRemoteIf')?.value || '',
+        edgeDescriptions: exportEdgeDescEntries(),
       }
     };
   }
@@ -6250,6 +6475,7 @@
     if ($('utilLabelEnabled')) $('utilLabelEnabled').checked = (utilState.label_enabled !== false);
     if ($('utilShowTxRx')) $('utilShowTxRx').checked = !!utilState.show_tx_rx;
     if ($('utilShowBandwidth')) $('utilShowBandwidth').checked = !!utilState.show_bandwidth;
+    if ($('utilShowEdgeDesc')) $('utilShowEdgeDesc').checked = (utilState.show_edge_desc !== false);
     utilFilterState.active = !!utilState.filter_active;
     utilFilterState.threshold = Number.isFinite(Number(utilState.filter_threshold)) ? Number(utilState.filter_threshold) : null;
     updateUtilFilterUi();
@@ -6260,6 +6486,7 @@
     expandedAutoGroupKeys = new Set((ui.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     manualGroups = cloneManualGroups(ui.manualGroups || []);
     manualCanvasNodes = cloneManualCanvasNodes(ui.manualCanvasNodes || snapshot?.manual_canvas_nodes || []);
+    importEdgeDescEntries(ui.edgeDescriptions || snapshot?.edge_descriptions || snapshot?.edge_notes || [], false);
     expandedManualGroupKeys = new Set((ui.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     if (typeof ui.mergeMode === 'boolean') mergedMode = ui.mergeMode;
     setMergeButtonText();
@@ -6317,6 +6544,15 @@
         }).filter(Boolean)
       : [];
     const importedUi = (appendPayload?.ui && typeof appendPayload.ui === 'object') ? appendPayload.ui : {};
+    importEdgeDescEntries(
+      importedUi.edgeDescriptions
+      || appendPayload?.edge_descriptions
+      || appendPayload?.edge_notes
+      || snapshot?.edge_descriptions
+      || snapshot?.edge_notes
+      || [],
+      true
+    );
     const importedManualCanvasNodes = cloneManualCanvasNodes(importedUi.manualCanvasNodes || appendPayload?.manual_canvas_nodes || []);
     if (importedManualCanvasNodes.length) {
       const existingManualNodes = new Map(manualCanvasNodes.map((node) => [String(node.id || '').trim(), node]));
@@ -7114,6 +7350,9 @@
         const v = Number(p.name_cluster_strength);
         if (Number.isFinite(v)) $('nameClusterStrength').value = String(Math.max(0, Math.min(1, v)));
       }
+      if ($('utilShowEdgeDesc') && typeof p.show_edge_desc === 'boolean') {
+        $('utilShowEdgeDesc').checked = p.show_edge_desc;
+      }
       if (typeof p.only_mode === 'string' && ['none', 'showOnly', 'show172'].includes(p.only_mode)) {
         viewState.onlyMode = p.only_mode;
       }
@@ -7135,6 +7374,7 @@
         node_label_mode: ($('nodeLabelMode')?.value || 'full'),
         auto_group_mode: ($('autoGroupMode')?.value || 'off'),
         name_cluster_strength: ($('nameClusterStrength')?.value || '0.6'),
+        show_edge_desc: !!$('utilShowEdgeDesc')?.checked,
         only_mode: viewState.onlyMode || 'none'
       };
       localStorage.setItem(TOPOLOGY_UI_PREF_KEY, JSON.stringify(safe));
@@ -8491,6 +8731,12 @@
     refreshEdgeLabelDisplay();
     applyAdaptiveRenderMode();
   });
+  $('utilShowEdgeDesc').addEventListener('change', () => {
+    refreshEdgeLabelDisplay();
+    applyAdaptiveRenderMode();
+    saveTopologyUiPrefs();
+    schedulePersistCurrentPageSession(80);
+  });
   $('utilMetric').addEventListener('change', () => {
     if (utilByKey.size) {
       applyUtilizationToEdges();
@@ -8601,6 +8847,7 @@
         return;
       }
       const removedRows = removeLinkRowsByEdgeKeys(rowKeys);
+      rowKeys.forEach((rowKey) => edgeDescByKey.delete(`row:${rowKey}`));
       const pos = capturePositions();
       buildGraph(pos);
       applyPositions(pos);
@@ -8782,6 +9029,12 @@
     const nodes = selectedNodesForManualLink();
     hideCtx();
     openAddLinkModal(nodes);
+  });
+
+  $('ctxEdgeDesc').addEventListener('click', () => {
+    const edges = ctxEdges().toArray();
+    hideCtx();
+    openEdgeDescModal(edges);
   });
 
   function buildSelectionScopeLabel(nodes, edges) {
@@ -9050,6 +9303,26 @@
     }, { delayMs: 1300 });
   });
   $('closeAddLinkModal').addEventListener('click', closeAddLinkModal);
+  $('saveEdgeDesc').addEventListener('click', () => {
+    const edges = pendingEdgeDescEdges();
+    if (!edges.length) {
+      closeEdgeDescModal();
+      setErr('未找到可保存描述的链路。');
+      return;
+    }
+    const desc = normalizeEdgeDescText($('edgeDescInput')?.value || '');
+    runWithRollback(() => {
+      edges.forEach((edge) => applyEdgeDescForEdge(edge, desc));
+      refreshEdgeLabelDisplay();
+      schedulePersistCurrentPageSession(80);
+      setOK(desc ? `已保存 ${edges.length} 条链路描述。` : `已清空 ${edges.length} 条链路描述。`);
+      closeEdgeDescModal();
+    }, { delayMs: 0 });
+  });
+  $('clearEdgeDesc').addEventListener('click', () => {
+    if ($('edgeDescInput')) $('edgeDescInput').value = '';
+  });
+  $('closeEdgeDescModal').addEventListener('click', closeEdgeDescModal);
   $('exitGroupView').addEventListener('click', () => {
     exitGroupView();
   });
@@ -9073,6 +9346,9 @@
   $('closePathModal').addEventListener('click', closePathModal);
   $('addLinkModal').addEventListener('click', (e) => {
     if (e.target && e.target.id === 'addLinkModal') closeAddLinkModal();
+  });
+  $('edgeDescModal').addEventListener('click', (e) => {
+    if (e.target && e.target.id === 'edgeDescModal') closeEdgeDescModal();
   });
   $('pathModal').addEventListener('click', (e) => {
     if (e.target && e.target.id === 'pathModal') closePathModal();
@@ -9216,6 +9492,7 @@ $('filter').addEventListener('keydown', (e) => {
   window.addEventListener('beforeunload', () => { persistCurrentPageSession(true); });
   initLangToggle();
   applyStaticI18n();
+  applyIndexLiteMode();
   updateRollbackButtonState();
 </script>
 </body>
