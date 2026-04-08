@@ -2873,8 +2873,7 @@
           'curve-style': 'haystack',
           'target-arrow-shape': 'none',
           'label': '',
-          'text-background-opacity': 0,
-          'arrow-scale': 0
+          'text-background-opacity': 0
         }
       },
       {
@@ -2892,16 +2891,9 @@
       { selector: '.utilHidden', style: { 'display': 'none' } },
       { selector: 'node:selected', style: {
         'z-index-compare': 'manual',
-        'z-index': 999
-      } },
-      { selector: ':selected', style: {
+        'z-index': 999,
         'border-width': 3,
-        'border-color': '#2563eb',
-        'shadow-blur': 14,
-        'shadow-color': '#2563eb',
-        'shadow-opacity': 0.6,
-        'shadow-offset-x': 0,
-        'shadow-offset-y': 0
+        'border-color': '#2563eb'
       } },
       { selector: 'node.manual-cloud-node:selected', style: {
         'border-width': 2,
@@ -3009,7 +3001,6 @@
         elements,
         style: cytoscapeStyleConfig(nodeLabelMode),
         layout: { name: 'preset' },
-        wheelSensitivity: 0.22,
         pixelRatio: 1,
         hideEdgesOnViewport: true,
         textureOnViewport: true
