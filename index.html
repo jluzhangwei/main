@@ -16,84 +16,9 @@
       --sea-gray: #e5e7eb;
     }
     body { margin: 0; font-family: "Segoe UI", -apple-system, system-ui, Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f8fafc; }
-    .wrap { display: flex; height: calc(100vh - 106px); position: relative; }
-    .wrap.collapsed .panel { display: none; }
-    .panel { width: 430px; flex-shrink: 0; padding: 14px; border-right: 1px solid #e5e7eb; overflow: auto; background: #ffffff; box-shadow: 4px 0 24px rgba(0,0,0,0.04); scrollbar-width: none; -ms-overflow-style: none; }
-    .panel::-webkit-scrollbar { display: none; }
-    button#togglePanel { 
-      position: absolute; 
-      left: 434px; 
-      top: 50%; 
-      transform: translateY(-50%); 
-      z-index: 10; 
-      width: 30px; 
-      height: 30px; 
-      padding: 0; 
-      font-size: 16px; 
-      background: none; 
-      border: none; 
-      cursor: pointer; 
-      color: #374151; 
-    }
-    .wrap.collapsed button#togglePanel { left: 0; transform: translateY(-50%); }
-    #cyWrap { flex: 1; height: 100%; position: relative; background: #ffffff; }
+    .wrap { display: grid; grid-template-columns: 430px 1fr; height: calc(100vh - 106px); }
+    .panel { padding: 14px; border-right: 1px solid #e5e7eb; overflow: auto; background: #ffffff; box-shadow: 4px 0 24px rgba(0,0,0,0.04); }
     #cy { height: 100%; width: 100%; background: #ffffff; }
-    #cloudOverlay {
-      position: absolute;
-      inset: 0;
-      pointer-events: none;
-      overflow: hidden;
-      z-index: 5;
-    }
-    #edgeNoteOverlay {
-      position: absolute;
-      inset: 0;
-      pointer-events: none;
-      overflow: hidden;
-      z-index: 6;
-    }
-    .cloud-overlay-item {
-      position: absolute;
-      transform: translate(-50%, -50%);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 2px;
-      color: #0f172a;
-      font-weight: 700;
-      text-align: center;
-      white-space: nowrap;
-    }
-    .cloud-overlay-label {
-      font-size: 12px;
-      line-height: 1;
-      text-shadow: 0 0 4px #fff, 0 0 8px #fff;
-    }
-    .cloud-overlay-icon {
-      font-size: 57px;
-      line-height: 1;
-      filter: drop-shadow(0 0 2px rgba(255,255,255,0.95));
-    }
-    .cloud-overlay-item.selected .cloud-overlay-icon,
-    .cloud-overlay-item.selected .cloud-overlay-label {
-      color: #2563eb;
-    }
-    .edge-note-overlay-item {
-      position: absolute;
-      transform: translate(-50%, -50%);
-      max-width: 180px;
-      padding: 3px 8px;
-      border-radius: 999px;
-      background: rgba(255,255,255,0.96);
-      border: 1px solid #dbeafe;
-      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
-      color: #0f172a;
-      font-size: 12px;
-      line-height: 1.2;
-      font-weight: 600;
-      text-align: center;
-      white-space: nowrap;
-    }
 
     h1 { font-size: 17px; margin: 0 0 10px; letter-spacing: 0.2px; }
     h2 { font-size: 13px; margin: 14px 0 6px; color: #374151; }
@@ -134,7 +59,6 @@
     }
     .section-box.collapsed .section-body { display: none; }
     .section-box.collapsed .section-toggle { margin-bottom: 0; padding-bottom: 0; }
-    #saveServerState, #importServerState { display: none; }
     .util-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .util-grid .span-2 { grid-column: 1 / -1; }
     .util-grid .check-row { display:flex; align-items:center; gap:8px; font-size:12px; color:#111827; font-weight:600; }
@@ -211,6 +135,12 @@
       border-color: var(--sea-blue) !important;
     }
     .top-hero { width: 100%; }
+    body.index-lite .top-hero { display: none; }
+    body.index-lite .wrap { height: 100vh; }
+    body.index-lite .section-box[data-section-key="util"] { display: none; }
+    body.index-lite #ctxUtil,
+    body.index-lite #ctxUtilRange,
+    body.index-lite #ctxAppendQuery { display: none !important; }
     @media (max-width: 740px) {
       .util-grid { grid-template-columns: 1fr; }
       .util-grid .span-2 { grid-column: auto; }
@@ -249,6 +179,15 @@
       margin: 4px 0;
       background: #e5e7eb;
       display: none;
+    }
+    #ctxMenu .ctx-submenu {
+      display: none;
+      margin: 4px 0 6px 10px;
+      padding-left: 8px;
+      border-left: 1px solid #e5e7eb;
+    }
+    #ctxMenu .ctx-submenu button {
+      margin-top: 4px;
     }
     .modal-backdrop {
       position: fixed;
@@ -390,19 +329,22 @@
     }
   </style>
 </head>
-<body>
+<body class="index-lite">
 <div class="top-hero">
   <div class="app-topbar">
     <div class="app-brand">
+      <img class="infra-logo" src="/shared/header/infra-logo.png" alt="infra logo" />
     </div>
     <div class="app-top-links">
+      <a id="manualLink" class="app-circle-btn" href="lldp-manual.html" target="_blank" title="查看使用手册">?</a>
+      <button id="lang_toggle_btn" class="app-circle-btn" type="button" title="切换语言">EN</button>
     </div>
   </div>
   <div class="app-mainnav">
+    <div id="appTitle" class="app-title">AIOps - LLDP Topology Runner</div>
   </div>
 </div>
 <div class="wrap">
-  <button id="togglePanel">《</button>
   <div class="panel">
     <div class="box">
       <div><b id="statusLabel">状态：</b><span id="status">等待导入</span></div>
@@ -427,8 +369,10 @@
         <div>
           <label id="lblImportMode">导入方式</label>
           <select id="importMode">
-            <option value="json">Json 导入</option>
+            <option value="cli">CLI 导入</option>
             <option value="csv">CSV 导入</option>
+            <option value="sql">SQL 导入</option>
+            <option value="json">Json 导入</option>
           </select>
         </div>
         <div>
@@ -567,25 +511,6 @@
           <button id="buildScopedTopo">重排选中设备</button>
           <button id="openPathFinder">查找路径</button>
         </div>
-        <div class="row inline">
-          <button id="alignHorizontal">水平对齐</button>
-          <button id="alignVertical">垂直对齐</button>
-        </div>
-        <div class="row inline">
-          <button id="alignLeft">左对齐</button>
-          <button id="alignRight">右对齐</button>
-        </div>
-        <div class="row inline">
-          <button id="alignTop">上对齐</button>
-          <button id="alignBottom">下对齐</button>
-        </div>
-        <div class="row inline">
-          <button id="distributeHorizontal">水平等间距</button>
-          <button id="distributeVertical">垂直等间距</button>
-        </div>
-        <div class="row inline">
-          <button id="exitGroupView" disabled>返回主视图</button>
-        </div>
       </div>
 
       <div class="action-group">
@@ -703,11 +628,7 @@
     </div>
   </div>
 
-  <div id="cyWrap">
-    <div id="cy"></div>
-    <div id="cloudOverlay"></div>
-    <div id="edgeNoteOverlay"></div>
-  </div>
+  <div id="cy"></div>
 </div>
 <div id="ctxMenu">
   <button id="ctxAddNode">添加节点 ▸</button>
@@ -722,7 +643,6 @@
   <div id="ctxSepEdit" class="ctx-sep"></div>
   <button id="ctxPathVia">设为必经点</button>
   <button id="ctxAddLink">增加链路</button>
-  <button id="ctxRenameManualNode">修改名称</button>
   <button id="ctxCreateGroup">设备合组</button>
   <button id="ctxToggleGroup">合组展开</button>
   <button id="ctxRenameGroup">修改组名</button>
@@ -730,7 +650,6 @@
   <button id="ctxCopy">复制名称</button>
   <button id="ctxCopyIp">复制地址</button>
   <button id="ctxCopyLink">复制链路</button>
-  <button id="ctxEdgeNote">添加描述</button>
   <div id="ctxSepQuery" class="ctx-sep"></div>
   <button id="ctxUtil">当前利用率</button>
   <button id="ctxUtilRange">区间利用率</button>
@@ -1055,11 +974,6 @@
 </div>
 
 <script>
-  document.getElementById('togglePanel').addEventListener('click', function() {
-    const wrap = document.querySelector('.wrap');
-    wrap.classList.toggle('collapsed');
-    this.textContent = wrap.classList.contains('collapsed') ? '》' : '《';
-  });
   let sourceRows = [];
   let rawRows = [];
   let workspaceMeta = {
@@ -1091,28 +1005,23 @@
   let currentCliLldpTaskId = '';
   let cliLldpTaskCancelling = false;
   let ctxAppendSingleHop = false;
-  let ctxCanvasPos = null;
   let utilByKey = new Map();
-  let edgeNotes = new Map();
   let primaryCliSource = '';
   let dragPerfMode = false;
   let expandedAutoGroupKeys = new Set();
   let manualGroups = [];
-  let manualCanvasNodes = [];
   let expandedManualGroupKeys = new Set();
-  let groupViewState = {
-    active: false,
-    groupKey: '',
-    preSnapshot: null
-  };
+  let manualCanvasNodes = [];
+  const CLOUD_ICON_SVG_URI = 'https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/icons/cloud.svg';
+  const INDEX_LITE_MODE = true;
+  const INDEX_ALLOWED_IMPORT_MODES = new Set(['csv', 'json']);
   const NODE_BASE_SIZE = 30;
   const NODE_BASE_FONT_SIZE = 10;
-  const CLOUD_NODE_SVG = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA5NiA2NCI+PHBhdGggZD0iTTI5IDUwaDM3YzExIDAgMjAtOCAyMC0xOHMtOC0xOC0xOS0xOGMtMy05LTExLTE0LTIxLTE0LTEyIDAtMjIgOC0yNSAxOUMxMiAyMSA2IDI4IDYgMzdjMCA3IDQgMTMgMTAgMTYgNCAyIDggMyAxMyAzeiIgZmlsbD0iI2ZmZmZmZiIgc3Ryb2tlPSIjMGVhNWU5IiBzdHJva2Utd2lkdGg9IjUiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48L3N2Zz4=';
+  const CLOUD_NODE_FIXED_WIDTH = 48;
+  const CLOUD_NODE_FIXED_HEIGHT = 30;
+  const CLOUD_NODE_FIXED_FONT_SIZE = 10;
   let lastZoomNodeScale = null;
   let zoomNodeRaf = 0;
-  let cloudOverlayRaf = 0;
-  let edgeNoteOverlayRaf = 0;
-  let addNodeSubmenuOpen = false;
   const KEYWORD_HISTORY_MAX = 10;
   const LAYER_HISTORY_KEY = 'lldp_layer_terms_history';
   const PARTITION_HISTORY_KEY = 'lldp_partition_terms_history';
@@ -1131,6 +1040,9 @@
   let rollbackArmSeq = 0;
   let currentPathState = null;
   let pendingViaNodeName = '';
+  let ctxCanvasPos = null;
+  let pendingAddLinkNodes = [];
+  let addNodeSubmenuOpen = false;
   // 注册 fCoSE 扩展（兼容不同全局名），避免引用未定义导致脚本中断
 (() => {
     const extFcose = window.cytoscapeFcose || window.cytoFcose || window.fcose || window.fCoSE;
@@ -1143,6 +1055,46 @@
   const setStatus = (t) => $('status').textContent = t;
   const setOK = (t) => $('ok').textContent = t || '';
   const setErr = (t) => $('err').textContent = t || '';
+  function normalizeImportModeForIndex(mode) {
+    const raw = String(mode || '').trim().toLowerCase();
+    if (!INDEX_LITE_MODE) return raw || 'cli';
+    return INDEX_ALLOWED_IMPORT_MODES.has(raw) ? raw : 'csv';
+  }
+
+  function removeSelectOption(selectId, value) {
+    const sel = $(selectId);
+    if (!sel) return;
+    const target = Array.from(sel.options || []).find((opt) => String(opt.value || '') === String(value));
+    if (target) target.remove();
+  }
+
+  function hideElementById(id) {
+    const el = $(id);
+    if (!el) return;
+    el.style.display = 'none';
+  }
+
+  function applyIndexLiteMode() {
+    if (!INDEX_LITE_MODE) return;
+    document.body.classList.add('index-lite');
+    removeSelectOption('importMode', 'sql');
+    removeSelectOption('importMode', 'cli');
+    const importModeSel = $('importMode');
+    if (importModeSel) {
+      const normalized = normalizeImportModeForIndex(importModeSel.value || 'csv');
+      importModeSel.value = normalized;
+    }
+    hideElementById('ctxUtil');
+    hideElementById('ctxUtilRange');
+    hideElementById('ctxAppendQuery');
+    const utilSection = document.querySelector('.section-box[data-section-key="util"]');
+    if (utilSection) utilSection.style.display = 'none';
+    const importHint = $('importHint');
+    if (importHint) {
+      importHint.textContent = '仅支持 CSV / Json 导入；导入会覆盖当前结果，追加会把新内容合并到当前图中。';
+    }
+  }
+
   function humanizeCliError(msg) {
     const s = String(msg || '');
     if (!s) return '';
@@ -1206,28 +1158,6 @@
       btn_select_visible: '全选可见节点',
       btn_relayout_selected: '重排选中设备',
       btn_find_path: '查找路径',
-      btn_align_horizontal: '水平对齐',
-      btn_align_vertical: '垂直对齐',
-      btn_align_left: '左对齐',
-      btn_align_right: '右对齐',
-      btn_align_top: '上对齐',
-      btn_align_bottom: '下对齐',
-      btn_distribute_horizontal: '水平等间距',
-      btn_distribute_vertical: '垂直等间距',
-      btn_exit_group_view: '返回主视图',
-      ctx_add_node: '添加节点 ▸',
-      ctx_add_node_regular: '节点',
-      ctx_add_node_cloud: 'Cloud',
-      ctx_add_link: '增加链路',
-      ctx_rename_manual_node: '修改名称',
-      ctx_edge_note: '添加描述',
-      add_link_modal_title: '增加链路',
-      add_link_node_a: '设备 A',
-      add_link_if_a: '设备 A 接口',
-      add_link_node_b: '设备 B',
-      add_link_if_b: '设备 B 接口',
-      add_link_hint: '仅支持当前选中 2 台设备时新增链路；保存后会直接追加到当前拓扑工作集。',
-      btn_save_add_link: '保存链路',
       node_label_short: '缩略（推荐）',
       node_label_full: '全名（容易挤）',
       node_label_full_ip: '全名+IP',
@@ -1271,8 +1201,15 @@
       btn_append_csv: '追加 CSV',
       btn_load_paste: '从粘贴内容载入',
       ctx_path_via: '设为必经点',
+      ctx_add_node: '添加节点 ▸',
+      ctx_add_node_regular: '节点',
+      ctx_add_node_cloud: 'Cloud',
+      ctx_add_link: '增加链路',
       ctx_util: '当前利用率',
       ctx_util_range: '区间利用率',
+      add_link_modal_title: '增加链路',
+      add_link_save: '保存链路',
+      add_link_hint: '仅支持当前选中 2 台设备时新增链路；保存后会直接追加到当前拓扑工作集。',
       state_modal_title: '导入状态',
       state_modal_hint: '服务器会保留最近 15 个状态。',
       save_state_modal_title: '保存状态',
@@ -1347,28 +1284,6 @@
       btn_select_visible: 'Select Visible Nodes',
       btn_relayout_selected: 'Relayout Selected',
       btn_find_path: 'Find Path',
-      btn_align_horizontal: 'Align Horizontal',
-      btn_align_vertical: 'Align Vertical',
-      btn_align_left: 'Align Left',
-      btn_align_right: 'Align Right',
-      btn_align_top: 'Align Top',
-      btn_align_bottom: 'Align Bottom',
-      btn_distribute_horizontal: 'Distribute Horizontally',
-      btn_distribute_vertical: 'Distribute Vertically',
-      btn_exit_group_view: 'Back to Main View',
-      ctx_add_node: 'Add Node ▸',
-      ctx_add_node_regular: 'Node',
-      ctx_add_node_cloud: 'Cloud',
-      ctx_add_link: 'Add Link',
-      ctx_rename_manual_node: 'Rename',
-      ctx_edge_note: 'Add Note',
-      add_link_modal_title: 'Add Link',
-      add_link_node_a: 'Device A',
-      add_link_if_a: 'Device A Interface',
-      add_link_node_b: 'Device B',
-      add_link_if_b: 'Device B Interface',
-      add_link_hint: 'Only works when exactly 2 devices are selected. Saving appends the link directly into the current topology workspace.',
-      btn_save_add_link: 'Save Link',
       node_label_short: 'Short (Recommended)',
       node_label_full: 'Full (Crowded)',
       node_label_full_ip: 'Full + IP',
@@ -1411,8 +1326,15 @@
       btn_append_csv: 'Append CSV',
       btn_load_paste: 'Load Pasted CSV',
       ctx_path_via: 'Set Via Point',
+      ctx_add_node: 'Add Node ▸',
+      ctx_add_node_regular: 'Node',
+      ctx_add_node_cloud: 'Cloud',
+      ctx_add_link: 'Add Link',
       ctx_util: 'Current Utilization',
       ctx_util_range: 'Range Utilization',
+      add_link_modal_title: 'Add Link',
+      add_link_save: 'Save Link',
+      add_link_hint: 'Only works when exactly two devices are selected. The new link will be appended to current workspace.',
       state_modal_title: 'Load State',
       state_modal_hint: 'The server keeps the latest 15 saved states.',
       save_state_modal_title: 'Save State',
@@ -1590,21 +1512,6 @@
     setText('selectVisible', 'btn_select_visible');
     setText('buildScopedTopo', 'btn_relayout_selected');
     setText('openPathFinder', 'btn_find_path');
-    setText('alignHorizontal', 'btn_align_horizontal');
-    setText('alignVertical', 'btn_align_vertical');
-    setText('alignLeft', 'btn_align_left');
-    setText('alignRight', 'btn_align_right');
-    setText('alignTop', 'btn_align_top');
-    setText('alignBottom', 'btn_align_bottom');
-    setText('distributeHorizontal', 'btn_distribute_horizontal');
-    setText('distributeVertical', 'btn_distribute_vertical');
-    setText('exitGroupView', 'btn_exit_group_view');
-    setText('ctxAddNode', 'ctx_add_node');
-    setText('ctxAddNodeRegular', 'ctx_add_node_regular');
-    setText('ctxAddNodeCloud', 'ctx_add_node_cloud');
-    setText('ctxAddLink', 'ctx_add_link');
-    setText('ctxRenameManualNode', 'ctx_rename_manual_node');
-    setText('ctxEdgeNote', 'ctx_edge_note');
     setText('fitSelection', 'btn_fit_selection');
     setText('isolateSelection', 'btn_isolate');
     setText('clearSelectionHide', 'btn_clear_visibility');
@@ -1643,21 +1550,22 @@
     setText('pickCsvModal', 'btn_pick_csv');
     setText('appendCsvModal', 'btn_append_csv');
     setText('loadPasteModal', 'btn_load_paste');
-    setText('addLinkModalTitle', 'add_link_modal_title');
-    setParentLabel('addLinkNodeA', 'add_link_node_a');
-    setParentLabel('addLinkIfA', 'add_link_if_a');
-    setParentLabel('addLinkNodeB', 'add_link_node_b');
-    setParentLabel('addLinkIfB', 'add_link_if_b');
-    setText('addLinkHint', 'add_link_hint');
-    setText('saveAddLink', 'btn_save_add_link');
     setText('ctxUtil', 'ctx_util');
     setText('ctxUtilRange', 'ctx_util_range');
     setText('ctxPathVia', 'ctx_path_via');
+    setText('ctxAddNode', 'ctx_add_node');
+    setText('ctxAddNodeRegular', 'ctx_add_node_regular');
+    setText('ctxAddNodeCloud', 'ctx_add_node_cloud');
+    setText('ctxAddLink', 'ctx_add_link');
     setText('ctxCreateGroup', 'ctx_create_group');
     setText('ctxDeleteLink', 'ctx_delete_link');
     setText('ctxCopyLink', 'ctx_copy_link');
     setText('ctxToggleGroup', 'ctx_group_expand');
     setText('ctxRenameGroup', 'ctx_rename_group');
+    setText('addLinkModalTitle', 'add_link_modal_title');
+    setText('saveAddLink', 'add_link_save');
+    setText('addLinkHint', 'add_link_hint');
+    setText('closeAddLinkModal', 'state_close');
     setText('stateModalTitle', 'state_modal_title');
     setText('stateModalHint', 'state_modal_hint');
     setText('saveStateModalTitle', 'save_state_modal_title');
@@ -1740,7 +1648,6 @@
 
   function clearManualCanvasState() {
     manualCanvasNodes = [];
-    edgeNotes = new Map();
   }
 
   function rebuildDeletedNodeIdsFromStack() {
@@ -1851,7 +1758,6 @@
       expandedAutoGroupKeys: Array.from(expandedAutoGroupKeys),
       manualGroups: cloneManualGroups(manualGroups),
       manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes),
-      edgeNotes: exportEdgeNotesObject(),
       expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
       mergedMode: !!mergedMode,
       selectedNodeIds: cy ? cy.nodes(':selected').map((n) => n.id()) : [],
@@ -1891,7 +1797,6 @@
       expandedAutoGroupKeys = new Set((snapshot.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
       manualGroups = cloneManualGroups(snapshot.manualGroups || []);
       manualCanvasNodes = cloneManualCanvasNodes(snapshot.manualCanvasNodes || []);
-      edgeNotes = normalizeEdgeNotesMap(snapshot.edgeNotes || {});
       expandedManualGroupKeys = new Set((snapshot.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
 
       $('nRows').textContent = rawRows.length;
@@ -2120,46 +2025,6 @@
     return out;
   }
 
-  function findExistingNodeIdByLabel(name) {
-    const target = normalizeEntityName(name).toLowerCase();
-    if (!target || !cy) return '';
-    let hit = '';
-    cy.nodes().some((n) => {
-      if (n.data('isGroup')) return false;
-      const label = normalizeEntityName(String(n.data('label') || '').trim()).toLowerCase();
-      const short = normalizeEntityName(stripAfterDot(String(n.data('label') || '').trim())).toLowerCase();
-      if (label === target || short === target) {
-        hit = n.id();
-        return true;
-      }
-      return false;
-    });
-    return hit;
-  }
-
-  function findExistingNodeIpByLabel(name) {
-    const target = normalizeEntityName(name).toLowerCase();
-    if (!target) return '';
-    const mapHit = deviceNameToIpMap.get(target)
-      || deviceNameToIpMap.get(stripAfterDot(target))
-      || nodeIpMap.get(target)
-      || nodeIpMap.get(stripAfterDot(target));
-    if (isIpv4(mapHit)) return mapHit;
-    if (!cy) return '';
-    let hit = '';
-    cy.nodes().some((n) => {
-      if (n.data('isGroup')) return false;
-      const label = normalizeEntityName(String(n.data('label') || '').trim()).toLowerCase();
-      const short = normalizeEntityName(stripAfterDot(String(n.data('label') || '').trim())).toLowerCase();
-      if (label === target || short === target) {
-        hit = primaryIpFromList(n.data('ips') || n.data('ip'));
-        return !!hit;
-      }
-      return false;
-    });
-    return hit;
-  }
-
   function mergeIpLists(...groups) {
     const out = [];
     groups.forEach((group) => {
@@ -2190,6 +2055,23 @@
     if (id && nodesMap instanceof Map && nodesMap.has(id)) return id;
     const ipHit = findExistingNodeIdByIp(nodesMap, ip);
     return ipHit || id;
+  }
+
+  function findExistingNodeIdByLabel(name) {
+    const target = normalizeEntityName(name).toLowerCase();
+    if (!target || !cy) return '';
+    let hit = '';
+    cy.nodes().some((n) => {
+      if (n.data('isGroup')) return false;
+      const label = normalizeEntityName(String(n.data('label') || '').trim()).toLowerCase();
+      const short = normalizeEntityName(stripAfterDot(String(n.data('label') || '').trim())).toLowerCase();
+      if (label === target || short === target) {
+        hit = n.id();
+        return true;
+      }
+      return false;
+    });
+    return hit;
   }
 
   function splitUtilKey(utilKey) {
@@ -2250,9 +2132,6 @@
       source_device: queryDevice,
       source_name: sourceName || '',
       source_interface: parsed.iface,
-      peer_device: '',
-      peer_name: '',
-      peer_interface: '',
       util_key: String(utilKey || '').trim(),
       dedupe_key: String(utilKey || '').trim().toLowerCase()
     };
@@ -2567,6 +2446,7 @@
       ip: String(n.data('ip') || '').trim(),
       ips: mergeIpLists(n.data('ips'), n.data('ip')),
       entityKey: String(n.data('entityKey') || '').trim(),
+      manualNodeType: String(n.data('manualNodeType') || 'node').trim().toLowerCase() || 'node',
       position: { x: Number(n.position('x')), y: Number(n.position('y')) }
     }));
     const visibleCollapsedManualGroupKeys = new Set(
@@ -2590,16 +2470,14 @@
       positions: visiblePositions,
       nodes: visibleNodeMeta,
       manual_canvas_nodes: cloneManualCanvasNodes(manualCanvasNodes).filter((node) => visibleNodeIds.has(node.id)),
-      edge_notes: exportEdgeNotesObject(visibleEdges.map((e) => e.id())),
       ui: {
         stripDomain: $('stripDomain')?.value || 'yes',
         colLocalHost: $('colLocalHost')?.value || '',
         colRemoteHost: $('colRemoteHost')?.value || '',
         colLocalIf: $('colLocalIf')?.value || '',
         colRemoteIf: $('colRemoteIf')?.value || '',
-        edgeNotes: exportEdgeNotesObject(visibleEdges.map((e) => e.id())),
-        manualGroups: visibleManualGroups,
         manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes).filter((node) => visibleNodeIds.has(node.id)),
+        manualGroups: visibleManualGroups,
         expandedManualGroupKeys: visibleExpandedManualGroupKeys
       }
     };
@@ -2647,16 +2525,12 @@
     if (!lhRaw || !rhRaw) return '';
     const sourceIp = rowValue(row, ['源设备IP', '源设备ip', 'ipaddr', 'sourceip']);
     const remoteIp = rowValue(row, ['目的设备IP', '目的设备ip', 'remoteip']);
-    const aIp = (isIpv4(sourceIp) ? sourceIp : '')
-      || findExistingNodeIpByLabel(lhRaw)
-      || (isIpv4(lhRaw) ? lhRaw : '');
-    const bIp = (isIpv4(remoteIp) ? remoteIp : '')
-      || findExistingNodeIpByLabel(rhRaw)
-      || (isIpv4(rhRaw) ? rhRaw : '');
+    const aIp = isIpv4(sourceIp) ? sourceIp : (isIpv4(lhRaw) ? lhRaw : '');
+    const bIp = isIpv4(remoteIp) ? remoteIp : (isIpv4(rhRaw) ? rhRaw : '');
     const aKey = inferEntityKey(lhRaw, aIp);
     const bKey = inferEntityKey(rhRaw, bIp);
-    const aId = findExistingNodeIdByLabel(lhRaw) || nodeIdFromEntityKey(aKey);
-    const bId = findExistingNodeIdByLabel(rhRaw) || nodeIdFromEntityKey(bKey);
+    const aId = nodeIdFromEntityKey(aKey);
+    const bId = nodeIdFromEntityKey(bKey);
     if (aId && bId) return buildCanonicalEdgeRowKey(aId, bId, li, ri);
     const leftName = normalizeEntityName(lhRaw).toLowerCase();
     const rightName = normalizeEntityName(rhRaw).toLowerCase();
@@ -2667,115 +2541,6 @@
     return a <= b ? `${a}<<<${b}` : `${b}<<<${a}`;
   }
 
-  function alignParsedToHeaders(parsed, targetHeaders) {
-    const inHeaders = parsed.headers || [];
-    const inIndex = new Map();
-    inHeaders.forEach((h, i) => inIndex.set(String(h || '').toLowerCase(), i));
-
-    const groups = {
-      depth: ['depth','层级','递归层','层'],
-      lh: ['localhostname','local_host','src','from','源设备名称','源设备','本地设备','localdevice'],
-      li: ['localinterface','local_if','src_if','from_if','源设备端口','本地端口','localport'],
-      rh: ['remotehostname','remote_host','dst','to','目的设备名称','目的设备','邻居设备','remotedevice'],
-      ri: ['remoteinterface','remote_if','dst_if','to_if','目的设备端口','邻居端口','remoteport'],
-      sip: ['源设备ip','源设备IP','sourceip','ipaddr','ip'],
-      rip: ['目的设备ip','目的设备IP','remoteip'],
-      rvendor: ['目的设备vendor','remotevendor','vendor']
-    };
-
-    const findIndexByGroup = (groupKeys) => {
-      for (const key of groupKeys) {
-        const k = String(key).toLowerCase();
-        if (inIndex.has(k)) return inIndex.get(k);
-      }
-      return -1;
-    };
-
-    const inMap = {
-      depth: findIndexByGroup(groups.depth),
-      lh: findIndexByGroup(groups.lh),
-      li: findIndexByGroup(groups.li),
-      rh: findIndexByGroup(groups.rh),
-      ri: findIndexByGroup(groups.ri),
-      sip: findIndexByGroup(groups.sip),
-      rip: findIndexByGroup(groups.rip),
-      rvendor: findIndexByGroup(groups.rvendor)
-    };
-
-    if (inMap.lh < 0 || inMap.li < 0 || inMap.rh < 0 || inMap.ri < 0) return null;
-
-    const outIndex = {
-      depth: -1, lh: -1, li: -1, rh: -1, ri: -1, sip: -1, rip: -1, rvendor: -1
-    };
-    targetHeaders.forEach((h, idx) => {
-      const key = String(h || '').toLowerCase();
-      if (outIndex.depth < 0 && groups.depth.map(x => String(x).toLowerCase()).includes(key)) outIndex.depth = idx;
-      if (outIndex.lh < 0 && groups.lh.map(x => String(x).toLowerCase()).includes(key)) outIndex.lh = idx;
-      if (outIndex.li < 0 && groups.li.map(x => String(x).toLowerCase()).includes(key)) outIndex.li = idx;
-      if (outIndex.rh < 0 && groups.rh.map(x => String(x).toLowerCase()).includes(key)) outIndex.rh = idx;
-      if (outIndex.ri < 0 && groups.ri.map(x => String(x).toLowerCase()).includes(key)) outIndex.ri = idx;
-      if (outIndex.sip < 0 && groups.sip.map(x => String(x).toLowerCase()).includes(key)) outIndex.sip = idx;
-      if (outIndex.rip < 0 && groups.rip.map(x => String(x).toLowerCase()).includes(key)) outIndex.rip = idx;
-      if (outIndex.rvendor < 0 && groups.rvendor.map(x => String(x).toLowerCase()).includes(key)) outIndex.rvendor = idx;
-    });
-
-    const selectedLH = String($('colLocalHost')?.value || '').trim();
-    const selectedLI = String($('colLocalIf')?.value || '').trim();
-    const selectedRH = String($('colRemoteHost')?.value || '').trim();
-    const selectedRI = String($('colRemoteIf')?.value || '').trim();
-
-    const readCell = (row, idx) => {
-      if (idx < 0) return '';
-      if (Array.isArray(row)) return String(row[idx] ?? '').trim();
-      const header = inHeaders[idx];
-      return String((row && header != null) ? (row[header] ?? '') : '').trim();
-    };
-
-    const rows = (parsed.rows || []).map((row) => {
-      const out = new Array(targetHeaders.length).fill('');
-      const depthVal = readCell(row, inMap.depth) || '1';
-      const lhVal = readCell(row, inMap.lh);
-      const liVal = readCell(row, inMap.li);
-      const rhVal = readCell(row, inMap.rh);
-      const riVal = readCell(row, inMap.ri);
-      const sipVal = readCell(row, inMap.sip);
-      const ripVal = readCell(row, inMap.rip);
-      const rvendorVal = readCell(row, inMap.rvendor);
-      if (outIndex.depth >= 0) out[outIndex.depth] = depthVal;
-      if (outIndex.lh >= 0) out[outIndex.lh] = lhVal;
-      if (outIndex.li >= 0) out[outIndex.li] = liVal;
-      if (outIndex.rh >= 0) out[outIndex.rh] = rhVal;
-      if (outIndex.ri >= 0) out[outIndex.ri] = riVal;
-      if (outIndex.sip >= 0) out[outIndex.sip] = sipVal;
-      if (outIndex.rip >= 0) out[outIndex.rip] = ripVal;
-      if (outIndex.rvendor >= 0) out[outIndex.rvendor] = rvendorVal;
-
-      const selectedMap = new Map([
-        [selectedLH, lhVal],
-        [selectedLI, liVal],
-        [selectedRH, rhVal],
-        [selectedRI, riVal]
-      ]);
-      targetHeaders.forEach((header, idx) => {
-        const forced = selectedMap.get(String(header || '').trim());
-        if (forced) out[idx] = forced;
-      });
-
-      if (outIndex.sip >= 0 && !String(out[outIndex.sip] || '').trim()) {
-        out[outIndex.sip] = findExistingNodeIpByLabel(outIndex.lh >= 0 ? out[outIndex.lh] : '');
-      }
-      if (outIndex.rip >= 0 && !String(out[outIndex.rip] || '').trim()) {
-        out[outIndex.rip] = findExistingNodeIpByLabel(outIndex.rh >= 0 ? out[outIndex.rh] : '');
-      }
-      const obj = {};
-      targetHeaders.forEach((header, idx) => {
-        obj[header] = out[idx];
-      });
-      return obj;
-    });
-    return { headers: targetHeaders.slice(), rows };
-  }
-
   function mergeParsed(parsed, sourceName) {
     if (!parsed.headers.length) {
       setErr(`文件 ${sourceName} 没有表头，已跳过`);
@@ -2784,16 +2549,11 @@
     if (!headers.length) {
       headers = parsed.headers;
     } else {
-      const incomingHeaders = parsed.headers;
       const base = headers.map(h => h.toLowerCase()).join(',');
-      const incoming = incomingHeaders.map(h => h.toLowerCase()).join(',');
+      const incoming = parsed.headers.map(h => h.toLowerCase()).join(',');
       if (base !== incoming) {
-        const mapped = alignParsedToHeaders(parsed, headers);
-        if (!mapped) {
-          setErr(`文件 ${sourceName} 表头不一致，已跳过`);
-          return { added: 0, replaced: 0 };
-        }
-        parsed = mapped;
+        setErr(`文件 ${sourceName} 表头不一致，已跳过`);
+        return { added: 0, replaced: 0 };
       }
     }
     if (!rawRows.length) {
@@ -2949,6 +2709,29 @@
         }
       },
       {
+        selector: 'node.manual-cloud-node',
+        style: {
+          'shape': 'rectangle',
+          'background-color': '#ffffff',
+          'background-opacity': 0,
+          'border-width': 0,
+          'background-image': CLOUD_ICON_SVG_URI,
+          'background-fit': 'contain',
+          'background-repeat': 'no-repeat',
+          'background-clip': 'none',
+          'background-image-containment': 'over',
+          'width': CLOUD_NODE_FIXED_WIDTH,
+          'height': CLOUD_NODE_FIXED_HEIGHT,
+          'font-size': CLOUD_NODE_FIXED_FONT_SIZE,
+          'font-family': 'Segoe UI Emoji, Apple Color Emoji, Noto Color Emoji, sans-serif',
+          'color': '#111827',
+          'text-outline-width': 0,
+          'text-valign': 'top',
+          'text-halign': 'center',
+          'text-margin-y': -8
+        }
+      },
+      {
         selector: 'node.single-link-hit',
         style: {
           'background-color': '#ef4444',
@@ -3033,7 +2816,6 @@
       { selector: '.filtered', style: { 'display': 'none' } },
       { selector: '.onlyHidden', style: { 'display': 'none' } },
       { selector: '.utilHidden', style: { 'display': 'none' } },
-      { selector: '.groupViewHidden', style: { 'display': 'none' } },
       { selector: 'node:selected', style: {
         'z-index-compare': 'manual',
         'z-index': 999
@@ -3048,9 +2830,15 @@
         'shadow-offset-y': 0
       } },
       { selector: 'node.manual-cloud-node:selected', style: {
-        'border-width': 0,
-        'shadow-blur': 0,
-        'shadow-opacity': 0
+        'border-width': 2,
+        'border-color': '#2563eb',
+        'background-color': '#dbeafe',
+        'background-opacity': 0.42,
+        'color': '#1d4ed8',
+        'text-outline-width': 2,
+        'text-outline-color': '#dbeafe',
+        'z-index-compare': 'manual',
+        'z-index': 1200
       } }
     ];
   }
@@ -3089,10 +2877,6 @@
     });
     cy.on('tap', () => hideCtx());
     cy.on('pan', () => hideCtx());
-    cy.on('render add remove position data select unselect', () => {
-      scheduleCloudOverlaySync();
-      scheduleEdgeNoteOverlaySync();
-    });
     cy.on('dbltap', 'node', (evt) => {
       const node = evt.target;
       if (!node || !node.length) return;
@@ -3176,7 +2960,14 @@
   function buildGraph(keepPositions = null, opts = {}) {
     const forceNodesInput = Array.isArray(opts.forceNodes) ? opts.forceNodes : [];
     const manualForceNodes = cloneManualCanvasNodes(manualCanvasNodes);
-    const forceNodesAll = [...forceNodesInput, ...manualForceNodes];
+    const forceNodesAll = [];
+    const forceSeen = new Set();
+    [...manualForceNodes, ...forceNodesInput].forEach((node) => {
+      const id = String(node?.id || '').trim();
+      if (!id || forceSeen.has(id)) return;
+      forceSeen.add(id);
+      forceNodesAll.push(node);
+    });
     if (!rawRows.length && !forceNodesAll.length) { setErr('请先导入 CSV'); return; }
 
     const colLH = $('colLocalHost').value;
@@ -3262,8 +3053,8 @@
       const bLabel = choosePreferredLabel(bExisting?.label, rh, bIp);
       const aIps = mergeIpLists(aExisting?.ips, aExisting?.ip, aIp);
       const bIps = mergeIpLists(bExisting?.ips, bExisting?.ip, bIp);
-      nodes.set(aResolvedId, { id: aResolvedId, label: aLabel, short: shortLabel(aLabel), role: aRole, rank: roleRank(aRole), ip: primaryIpFromList(aIps), ips: aIps, entityKey: aExisting?.entityKey || aEntityKey });
-      nodes.set(bResolvedId, { id: bResolvedId, label: bLabel, short: shortLabel(bLabel), role: bRole, rank: roleRank(bRole), ip: primaryIpFromList(bIps), ips: bIps, entityKey: bExisting?.entityKey || bEntityKey });
+      nodes.set(aResolvedId, { id: aResolvedId, label: aLabel, short: shortLabel(aLabel), role: aRole, rank: roleRank(aRole), ip: primaryIpFromList(aIps), ips: aIps, entityKey: aExisting?.entityKey || aEntityKey, manualNodeType: aExisting?.manualNodeType || 'node' });
+      nodes.set(bResolvedId, { id: bResolvedId, label: bLabel, short: shortLabel(bLabel), role: bRole, rank: roleRank(bRole), ip: primaryIpFromList(bIps), ips: bIps, entityKey: bExisting?.entityKey || bEntityKey, manualNodeType: bExisting?.manualNodeType || 'node' });
 
       const edgeLabel = `${li} ↔ ${ri}`.trim();
       const liNorm = String(li || '').trim().toLowerCase();
@@ -3426,8 +3217,6 @@
     applyUtilizationToEdges();
     applyAdaptiveRenderMode();
     applyZoomAwareNodeSizing(true);
-    scheduleCloudOverlaySync();
-    scheduleEdgeNoteOverlaySync();
 
     reapplyViewStateAfterBuild();
     applyDeletedMaskAfterBuild();
@@ -3464,100 +3253,6 @@
     const w = Math.max(280, (Number.isFinite(bb.w) ? bb.w : 0) + pad * 2);
     const h = Math.max(220, (Number.isFinite(bb.h) ? bb.h : 0) + pad * 2);
     return { x1, y1, w, h };
-  }
-
-  function alignSelectedNodes(axis = 'horizontal') {
-    if (!cy) return false;
-    const selected = cy.nodes(':selected');
-    if (!selected.length || selected.length < 2) {
-      setErr('请先至少选中 2 个节点，再执行对齐。');
-      return false;
-    }
-    const coordKey = axis === 'vertical' ? 'x' : 'y';
-    const values = selected.map((node) => Number(node.position(coordKey)) || 0);
-    if (!values.length) return false;
-    const alignedValue = values.reduce((sum, value) => sum + value, 0) / values.length;
-    cy.batch(() => {
-      selected.forEach((node) => {
-        const pos = node.position();
-        if (axis === 'vertical') node.position({ x: alignedValue, y: pos.y });
-        else node.position({ x: pos.x, y: alignedValue });
-      });
-    });
-    if (typeof refreshEdgeLabelDisplay === 'function') refreshEdgeLabelDisplay();
-    if (typeof scheduleCloudOverlaySync === 'function') scheduleCloudOverlaySync();
-    if (typeof scheduleEdgeNoteOverlaySync === 'function') scheduleEdgeNoteOverlaySync();
-    schedulePersistCurrentPageSession(80);
-    setOK(axis === 'vertical'
-      ? `已对齐 ${selected.length} 个节点：垂直对齐`
-      : `已对齐 ${selected.length} 个节点：水平对齐`);
-    return true;
-  }
-
-  function alignSelectedNodesEdge(mode = 'left') {
-    if (!cy) return false;
-    const selected = cy.nodes(':selected');
-    if (!selected.length || selected.length < 2) {
-      setErr('请先至少选中 2 个节点，再执行对齐。');
-      return false;
-    }
-    const boxes = selected.map((node) => ({
-      node,
-      bb: node.boundingBox({ includeLabels: false, includeOverlays: false })
-    }));
-    let target = 0;
-    if (mode === 'left') target = Math.min(...boxes.map((item) => item.bb.x1));
-    else if (mode === 'right') target = Math.max(...boxes.map((item) => item.bb.x2));
-    else if (mode === 'top') target = Math.min(...boxes.map((item) => item.bb.y1));
-    else target = Math.max(...boxes.map((item) => item.bb.y2));
-    cy.batch(() => {
-      boxes.forEach(({ node, bb }) => {
-        const pos = node.position();
-        if (mode === 'left') node.position({ x: pos.x + (target - bb.x1), y: pos.y });
-        else if (mode === 'right') node.position({ x: pos.x + (target - bb.x2), y: pos.y });
-        else if (mode === 'top') node.position({ x: pos.x, y: pos.y + (target - bb.y1) });
-        else node.position({ x: pos.x, y: pos.y + (target - bb.y2) });
-      });
-    });
-    if (typeof refreshEdgeLabelDisplay === 'function') refreshEdgeLabelDisplay();
-    if (typeof scheduleCloudOverlaySync === 'function') scheduleCloudOverlaySync();
-    if (typeof scheduleEdgeNoteOverlaySync === 'function') scheduleEdgeNoteOverlaySync();
-    schedulePersistCurrentPageSession(80);
-    const textMap = { left: '左对齐', right: '右对齐', top: '上对齐', bottom: '下对齐' };
-    setOK(`已对齐 ${selected.length} 个节点：${textMap[mode] || mode}`);
-    return true;
-  }
-
-  function distributeSelectedNodes(axis = 'horizontal') {
-    if (!cy) return false;
-    const selected = cy.nodes(':selected');
-    if (!selected.length || selected.length < 3) {
-      setErr('请先至少选中 3 个节点，再执行等间距。');
-      return false;
-    }
-    const isVertical = axis === 'vertical';
-    const sorted = selected.toArray().sort((a, b) => {
-      const av = Number(a.position(isVertical ? 'y' : 'x')) || 0;
-      const bv = Number(b.position(isVertical ? 'y' : 'x')) || 0;
-      return av - bv;
-    });
-    const first = Number(sorted[0].position(isVertical ? 'y' : 'x')) || 0;
-    const last = Number(sorted[sorted.length - 1].position(isVertical ? 'y' : 'x')) || 0;
-    const step = (last - first) / (sorted.length - 1);
-    cy.batch(() => {
-      sorted.forEach((node, idx) => {
-        const pos = node.position();
-        const value = first + step * idx;
-        if (isVertical) node.position({ x: pos.x, y: value });
-        else node.position({ x: value, y: pos.y });
-      });
-    });
-    if (typeof refreshEdgeLabelDisplay === 'function') refreshEdgeLabelDisplay();
-    if (typeof scheduleCloudOverlaySync === 'function') scheduleCloudOverlaySync();
-    if (typeof scheduleEdgeNoteOverlaySync === 'function') scheduleEdgeNoteOverlaySync();
-    schedulePersistCurrentPageSession(80);
-    setOK(`已对 ${selected.length} 个节点执行${isVertical ? '垂直' : '水平'}等间距。`);
-    return true;
   }
 
   function runLayout(targetNodes = null, opts = {}) {
@@ -4670,191 +4365,6 @@
     $('nEdges').textContent = cy ? cy.edges().length : '-';
   }
 
-  function updateGroupViewButtonState() {
-    const btn = $('exitGroupView');
-    if (!btn) return;
-    btn.disabled = !groupViewState.active;
-    btn.textContent = tr('btn_exit_group_view');
-  }
-
-  function captureGroupViewBaseSnapshot() {
-    return {
-      headers: headers.slice(),
-      sourceRows: cloneRows(sourceRows),
-      rawRows: cloneRows(rawRows),
-      positions: capturePositions(),
-      deletedStack: deletedStack.map((x) => (Array.isArray(x) ? x.slice() : [])),
-      viewState: {
-        filterTerms: cloneMatchExpression(viewState.filterTerms),
-        onlyMode: viewState.onlyMode || 'none',
-        onlyTerms: cloneMatchExpression(viewState.onlyTerms),
-      },
-      ui: {
-        filter: $('filter')?.value || '',
-        showOnly: $('showOnly')?.value || '',
-        layerTerms: $('layerTerms')?.value || '',
-        bizIsolationTerms: $('bizIsolationTerms')?.value || '',
-        layoutMode: $('layoutMode')?.value || 'layer',
-        nodeLabelMode: $('nodeLabelMode')?.value || 'full',
-        edgeLabelMode: $('edgeLabelMode')?.value || 'none',
-        spacing: $('spacing')?.value || '0.5',
-        stripDomain: $('stripDomain')?.value || 'yes',
-        nameClusterMode: $('nameClusterMode')?.value || 'on',
-        autoGroupMode: $('autoGroupMode')?.value || 'off',
-        nameClusterStrength: $('nameClusterStrength')?.value || '0.6',
-        colLocalHost: $('colLocalHost')?.value || '',
-        colRemoteHost: $('colRemoteHost')?.value || '',
-        colLocalIf: $('colLocalIf')?.value || '',
-        colRemoteIf: $('colRemoteIf')?.value || '',
-      },
-      expandedAutoGroupKeys: Array.from(expandedAutoGroupKeys),
-      manualGroups: cloneManualGroups(manualGroups),
-      expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
-      mergedMode: !!mergedMode,
-      selectedNodeIds: cy ? cy.nodes(':selected').map((n) => n.id()) : [],
-      pan: cy ? { ...cy.pan() } : null,
-      zoom: cy ? cy.zoom() : null
-    };
-  }
-
-  function restoreGroupViewBaseSnapshot(snapshot) {
-    if (!snapshot || !Array.isArray(snapshot.headers)) return false;
-    headers = snapshot.headers.slice();
-    sourceRows = cloneRows(snapshot.sourceRows || []);
-    rawRows = cloneRows(snapshot.rawRows || []);
-    deletedStack = (snapshot.deletedStack || []).map((x) => (Array.isArray(x) ? x.slice() : []));
-    rebuildDeletedNodeIdsFromStack();
-    viewState.filterTerms = cloneMatchExpression(snapshot.viewState?.filterTerms || []);
-    viewState.onlyMode = snapshot.viewState?.onlyMode || 'none';
-    viewState.onlyTerms = cloneMatchExpression(snapshot.viewState?.onlyTerms || []);
-    mergedMode = !!snapshot.mergedMode;
-    setMergeButtonText();
-    if ($('filter')) $('filter').value = snapshot.ui?.filter || '';
-    if ($('showOnly')) $('showOnly').value = snapshot.ui?.showOnly || '';
-    if ($('layerTerms')) $('layerTerms').value = snapshot.ui?.layerTerms || '';
-    if ($('bizIsolationTerms')) $('bizIsolationTerms').value = snapshot.ui?.bizIsolationTerms || '';
-    if ($('layoutMode')) $('layoutMode').value = snapshot.ui?.layoutMode || 'layer';
-    if ($('nodeLabelMode')) $('nodeLabelMode').value = snapshot.ui?.nodeLabelMode || 'full';
-    if ($('edgeLabelMode')) $('edgeLabelMode').value = snapshot.ui?.edgeLabelMode || 'none';
-    if ($('spacing')) $('spacing').value = snapshot.ui?.spacing || '0.5';
-    if ($('stripDomain')) $('stripDomain').value = snapshot.ui?.stripDomain || 'yes';
-    if ($('nameClusterMode')) $('nameClusterMode').value = snapshot.ui?.nameClusterMode || 'on';
-    if ($('autoGroupMode')) $('autoGroupMode').value = snapshot.ui?.autoGroupMode || 'off';
-    if ($('nameClusterStrength')) $('nameClusterStrength').value = snapshot.ui?.nameClusterStrength || '0.6';
-    expandedAutoGroupKeys = new Set((snapshot.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
-    manualGroups = cloneManualGroups(snapshot.manualGroups || []);
-    expandedManualGroupKeys = new Set((snapshot.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
-    $('nRows').textContent = rawRows.length;
-    $('nCols').textContent = headers.length;
-    if (headers.length) {
-      fillSelect('colLocalHost', autoPickColumn(['localhostname','local_host','src','from']));
-      fillSelect('colRemoteHost', autoPickColumn(['remotehostname','remote_host','dst','to']));
-      fillSelect('colLocalIf', autoPickColumn(['localinterface','local_if','src_if','from_if']));
-      fillSelect('colRemoteIf', autoPickColumn(['remoteinterface','remote_if','dst_if','to_if']));
-      if (snapshot.ui?.colLocalHost && headers.includes(snapshot.ui.colLocalHost)) $('colLocalHost').value = snapshot.ui.colLocalHost;
-      if (snapshot.ui?.colRemoteHost && headers.includes(snapshot.ui.colRemoteHost)) $('colRemoteHost').value = snapshot.ui.colRemoteHost;
-      if (snapshot.ui?.colLocalIf && headers.includes(snapshot.ui.colLocalIf)) $('colLocalIf').value = snapshot.ui.colLocalIf;
-      if (snapshot.ui?.colRemoteIf && headers.includes(snapshot.ui.colRemoteIf)) $('colRemoteIf').value = snapshot.ui.colRemoteIf;
-    }
-    const pos = snapshot.positions || {};
-    buildGraph(pos);
-    applyPositions(pos);
-    if (cy && snapshot.pan && Number.isFinite(snapshot.zoom)) {
-      cy.zoom(Number(snapshot.zoom));
-      cy.pan(snapshot.pan);
-    }
-    if (Array.isArray(snapshot.selectedNodeIds) && cy) {
-      cy.elements(':selected').unselect();
-      snapshot.selectedNodeIds.forEach((id) => {
-        const n = cy.getElementById(String(id || ''));
-        if (n && n.length) n.select();
-      });
-    }
-    return true;
-  }
-
-  function computeManualGroupViewScope(groupKey) {
-    if (!cy) return null;
-    const key = String(groupKey || '').trim();
-    if (!key) return null;
-    const group = cloneManualGroups(manualGroups).find((g) => String(g.key || '').trim() === key);
-    if (!group) return null;
-    const memberIds = Array.from(new Set((group.members || []).map((id) => String(id || '').trim()).filter(Boolean)));
-    const memberNodes = memberIds.map((id) => cy.getElementById(id)).filter((n) => n && n.length && !n.data('isGroup') && n.visible());
-    if (!memberNodes.length) return null;
-    const memberSet = new Set(memberNodes.map((n) => n.id()));
-    const scopeNodeIds = new Set(memberSet);
-    memberNodes.forEach((node) => {
-      node.connectedEdges(':visible').forEach((edge) => {
-        const src = edge.source();
-        const tgt = edge.target();
-        if (src && src.length && src.visible()) scopeNodeIds.add(src.id());
-        if (tgt && tgt.length && tgt.visible()) scopeNodeIds.add(tgt.id());
-      });
-    });
-    return {
-      groupKey: key,
-      memberNodeIds: Array.from(memberSet),
-      scopeNodeIds: Array.from(scopeNodeIds)
-    };
-  }
-
-  function applyGroupViewFilter(scope, preserveViewport = false) {
-    if (!cy || !scope) return false;
-    const memberSet = new Set((scope.memberNodeIds || []).map((id) => String(id || '').trim()).filter(Boolean));
-    const scopeSet = new Set((scope.scopeNodeIds || []).map((id) => String(id || '').trim()).filter(Boolean));
-    cy.elements().removeClass('groupViewHidden');
-    cy.nodes().forEach((node) => {
-      if (!scopeSet.has(node.id())) node.addClass('groupViewHidden');
-    });
-    cy.edges().forEach((edge) => {
-      const s = edge.source().id();
-      const t = edge.target().id();
-      const inScope = scopeSet.has(s) && scopeSet.has(t);
-      const touchesMember = memberSet.has(s) || memberSet.has(t);
-      if (!inScope || !touchesMember) edge.addClass('groupViewHidden');
-    });
-    groupViewState.active = true;
-    groupViewState.groupKey = String(scope.groupKey || '').trim();
-    updateGroupViewButtonState();
-    if (!preserveViewport) {
-      const focus = cy.collection(Array.from(scopeSet).map((id) => cy.getElementById(id)).filter((n) => n && n.length));
-      if (focus.length) cy.animate({ fit: { eles: focus, padding: 120 }, duration: 280 });
-    }
-    return true;
-  }
-
-  function enterManualGroupView(groupKey) {
-    if (!cy) return;
-    const key = String(groupKey || '').trim();
-    if (!key) return;
-    if (!groupViewState.active) {
-      groupViewState.preSnapshot = captureGroupViewBaseSnapshot();
-    }
-    const pos = capturePositions();
-    expandedManualGroupKeys.add(key);
-    buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
-    const scope = computeManualGroupViewScope(key);
-    if (!scope) {
-      setErr('进入组视图失败：未找到组成员或一跳邻接。');
-      return;
-    }
-    applyGroupViewFilter(scope);
-    setStatus(`已进入组视图：${scope.memberNodeIds.length} 台组内设备，${Math.max(0, scope.scopeNodeIds.length - scope.memberNodeIds.length)} 台邻接设备`);
-    setOK('组视图已启用。当前工具继续作用于组内设备和其一跳邻接设备。');
-  }
-
-  function exitGroupView() {
-    if (!groupViewState.active) return;
-    const snap = groupViewState.preSnapshot;
-    groupViewState = { active: false, groupKey: '', preSnapshot: null };
-    if (snap) restoreGroupViewBaseSnapshot(snap);
-    if (cy) cy.elements().removeClass('groupViewHidden');
-    updateGroupViewButtonState();
-    setStatus('已返回主视图');
-    setOK('已退出组视图。');
-  }
-
   function applyDeletedMaskAfterBuild() {
     if (!cy || !deletedNodeIds.size) return;
     const toRemove = cy.nodes().filter((n) => deletedNodeIds.has(n.id()));
@@ -5282,7 +4792,6 @@
 
   // 右键菜单
   let ctxTarget = null;
-  let pendingAddLinkNodes = [];
   function hideCtx() {
     const menu = $('ctxMenu');
     menu.style.display = 'none';
@@ -5393,48 +4902,6 @@
     return uniq;
   }
 
-  function isManualCanvasNode(node) {
-    if (!node || typeof node.id !== 'function') return false;
-    const id = String(node.id() || '').trim();
-    return manualCanvasNodes.some((item) => String(item?.id || '').trim() === id);
-  }
-
-  function renameManualCanvasNode(node) {
-    if (!node || !isManualCanvasNode(node)) {
-      setErr('当前节点不支持修改名称。');
-      return;
-    }
-    const id = String(node.id() || '').trim();
-    const currentLabel = String(node.data('label') || '').trim();
-    const nextLabel = window.prompt('请输入新的节点名称', currentLabel);
-    if (nextLabel == null) return;
-    const label = String(nextLabel || '').trim();
-    if (!label) {
-      setErr('节点名称不能为空。');
-      return;
-    }
-    const duplicateId = findExistingNodeIdByLabel(label);
-    if (duplicateId && duplicateId !== id) {
-      setErr(`节点已存在：${label}`);
-      return;
-    }
-    runWithRollback(() => {
-      manualCanvasNodes = manualCanvasNodes.map((item) => {
-        if (String(item?.id || '').trim() !== id) return item;
-        return { ...item, label, short: shortLabel(label) };
-      });
-      const pos = capturePositions();
-      buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
-      const renamed = cy ? cy.getElementById(id) : null;
-      if (renamed && renamed.length) {
-        cy.elements(':selected').unselect();
-        renamed.select().addClass('hit');
-      }
-      schedulePersistCurrentPageSession(80);
-      setOK(`已修改节点名称：${label}`);
-    }, { delayMs: 1300 });
-  }
-
   function openAddLinkModal(nodes) {
     const pair = Array.isArray(nodes) ? nodes.slice(0, 2) : [];
     if (pair.length !== 2) {
@@ -5476,43 +4943,79 @@
     ].join('\n');
   }
 
-  function normalizeEdgeNotesMap(value) {
-    const map = new Map();
-    if (!value) return map;
-    if (value instanceof Map) {
-      value.forEach((note, key) => {
-        const cleanKey = String(key || '').trim();
-        const cleanNote = String(note || '').trim();
-        if (cleanKey && cleanNote) map.set(cleanKey, cleanNote);
-      });
-      return map;
+  function findHeaderByCandidates(candidates = []) {
+    if (!Array.isArray(headers) || !headers.length) return '';
+    const lowerMap = new Map(headers.map((h) => [String(h || '').trim().toLowerCase(), String(h || '').trim()]));
+    for (const cand of candidates) {
+      const key = String(cand || '').trim().toLowerCase();
+      if (!key) continue;
+      if (lowerMap.has(key)) return lowerMap.get(key);
     }
-    if (typeof value === 'object') {
-      Object.entries(value).forEach(([key, note]) => {
-        const cleanKey = String(key || '').trim();
-        const cleanNote = String(note || '').trim();
-        if (cleanKey && cleanNote) map.set(cleanKey, cleanNote);
-      });
+    for (const cand of candidates) {
+      const key = String(cand || '').trim().toLowerCase();
+      if (!key) continue;
+      const hit = headers.find((h) => String(h || '').trim().toLowerCase().includes(key));
+      if (hit) return String(hit || '').trim();
     }
-    return map;
+    return '';
   }
 
-  function exportEdgeNotesObject(filterIds = null) {
-    const out = {};
-    const allow = filterIds ? new Set((filterIds || []).map((x) => String(x || '').trim()).filter(Boolean)) : null;
-    edgeNotes.forEach((note, key) => {
-      const cleanKey = String(key || '').trim();
-      const cleanNote = String(note || '').trim();
-      if (!cleanKey || !cleanNote) return;
-      if (allow && !allow.has(cleanKey)) return;
-      out[cleanKey] = cleanNote;
-    });
-    return out;
+  function ensureHeaderByCandidates(candidates = [], fallback = '') {
+    const found = findHeaderByCandidates(candidates);
+    if (found) return found;
+    const name = String(fallback || '').trim();
+    if (!name) return '';
+    if (!headers.includes(name)) {
+      headers.push(name);
+      rawRows.forEach((row) => {
+        if (row && !(name in row)) row[name] = '';
+      });
+      sourceRows.forEach((row) => {
+        if (row && !(name in row)) row[name] = '';
+      });
+    }
+    return name;
   }
 
-  function edgeNoteText(edge) {
-    if (!edge || typeof edge.id !== 'function') return '';
-    return String(edgeNotes.get(String(edge.id() || '').trim()) || '').trim();
+  function buildManualLinkRow(nodeA, ifA, nodeB, ifB) {
+    const labelA = String((nodeA && typeof nodeA.data === 'function' ? nodeA.data('label') : '') || (nodeA && typeof nodeA.id === 'function' ? nodeA.id() : '') || '').trim();
+    const labelB = String((nodeB && typeof nodeB.data === 'function' ? nodeB.data('label') : '') || (nodeB && typeof nodeB.id === 'function' ? nodeB.id() : '') || '').trim();
+    const ipA = primaryIpFromList(nodeA && typeof nodeA.data === 'function' ? (nodeA.data('ips') || nodeA.data('ip')) : '');
+    const ipB = primaryIpFromList(nodeB && typeof nodeB.data === 'function' ? (nodeB.data('ips') || nodeB.data('ip')) : '');
+    const depthCol = ensureHeaderByCandidates(['depth', '层级'], 'depth');
+    const lhCol = ensureHeaderByCandidates(['localhostname', 'local_host', 'src', 'from', '源设备名称'], 'localhostname');
+    const rhCol = ensureHeaderByCandidates(['remotehostname', 'remote_host', 'dst', 'to', '目的设备名称'], 'remotehostname');
+    const liCol = ensureHeaderByCandidates(['localinterface', 'local_if', 'src_if', 'from_if', '源设备端口'], 'localinterface');
+    const riCol = ensureHeaderByCandidates(['remoteinterface', 'remote_if', 'dst_if', 'to_if', '目的设备端口'], 'remoteinterface');
+    const sipCol = ensureHeaderByCandidates(['源设备IP', '源设备ip', 'sourceip', 'ipaddr'], 'sourceip');
+    const ripCol = ensureHeaderByCandidates(['目的设备IP', '目的设备ip', 'remoteip'], 'remoteip');
+    const row = {};
+    headers.forEach((h) => { row[h] = ''; });
+    if (depthCol) row[depthCol] = '1';
+    if (lhCol) row[lhCol] = labelA;
+    if (rhCol) row[rhCol] = labelB;
+    if (liCol) row[liCol] = String(ifA || '').trim();
+    if (riCol) row[riCol] = String(ifB || '').trim();
+    if (sipCol) row[sipCol] = ipA || '';
+    if (ripCol) row[ripCol] = ipB || '';
+    return row;
+  }
+
+  function appendManualLinkRow(nodeA, ifA, nodeB, ifB) {
+    if (!headers.length) headers = ['depth', 'localhostname', 'localinterface', 'remotehostname', 'remoteinterface', 'sourceip', 'remoteip'];
+    const row = buildManualLinkRow(nodeA, ifA, nodeB, ifB);
+    const pos = capturePositions();
+    const merged = mergeParsed({ headers: headers.slice(), rows: [row] }, 'manual-link');
+    if ((merged.added + merged.replaced) > 0) sourceRows = rawRows.slice();
+    markWorkspaceMetaAppend('manual-link', merged.added, merged.replaced, rawRows.length);
+    $('nRows').textContent = rawRows.length;
+    $('nCols').textContent = headers.length;
+    fillSelect('colLocalHost', autoPickColumn(['localhostname','local_host','src','from']));
+    fillSelect('colRemoteHost', autoPickColumn(['remotehostname','remote_host','dst','to']));
+    fillSelect('colLocalIf', autoPickColumn(['localinterface','local_if','src_if','from_if']));
+    fillSelect('colRemoteIf', autoPickColumn(['remoteinterface','remote_if','dst_if','to_if']));
+    if (rawRows.length) buildGraph(pos);
+    return merged;
   }
 
   function ctxGroupKey() {
@@ -5612,7 +5115,6 @@
       else if (showExtra) shown = util;
       e.data('labelShown', shown);
     });
-    scheduleEdgeNoteOverlaySync();
   }
 
   function shouldUseHeavyEdgeMode() {
@@ -5640,79 +5142,17 @@
     const nodeSize = Math.max(6, NODE_BASE_SIZE * scale);
     const fontSize = Math.max(6, NODE_BASE_FONT_SIZE * scale);
     cy.batch(() => {
-      cy.nodes().style({
+      cy.nodes().not('.manual-cloud-node').style({
         'width': nodeSize,
         'height': nodeSize,
         'font-size': fontSize
       });
       cy.nodes('.manual-cloud-node').style({
-        'width': 6,
-        'height': 6,
-        'shadow-blur': 0,
-        'shadow-opacity': 0
+        'width': CLOUD_NODE_FIXED_WIDTH,
+        'height': CLOUD_NODE_FIXED_HEIGHT,
+        'font-size': CLOUD_NODE_FIXED_FONT_SIZE
       });
     });
-    scheduleCloudOverlaySync();
-  }
-
-  function syncCloudOverlay() {
-    cloudOverlayRaf = 0;
-    const root = $('cloudOverlay');
-    if (!root || !cy) return;
-    const mode = String(($('nodeLabelMode')?.value || 'full')).trim().toLowerCase();
-    const html = [];
-    cy.nodes('.manual-cloud-node:visible').forEach((node) => {
-      const pos = node.renderedPosition();
-      if (!Number.isFinite(pos.x) || !Number.isFinite(pos.y)) return;
-      const data = node.data();
-      const label = mode === 'short'
-        ? String(data.short || data.label || node.id()).trim()
-        : String(data.label || node.id()).trim();
-      html.push(
-        `<div class="cloud-overlay-item${node.selected() ? ' selected' : ''}" style="left:${pos.x}px;top:${pos.y}px">` +
-        `<div class="cloud-overlay-label">${escapeHtml(label)}</div>` +
-        `<div class="cloud-overlay-icon">☁️</div>` +
-        `</div>`
-      );
-    });
-    root.innerHTML = html.join('');
-  }
-
-  function scheduleCloudOverlaySync() {
-    if (cloudOverlayRaf) return;
-    cloudOverlayRaf = requestAnimationFrame(syncCloudOverlay);
-  }
-
-  function syncEdgeNoteOverlay() {
-    edgeNoteOverlayRaf = 0;
-    const root = $('edgeNoteOverlay');
-    if (!root || !cy) return;
-    const html = [];
-    cy.edges(':visible').forEach((edge) => {
-      const note = edgeNoteText(edge);
-      if (!note) return;
-      const src = edge.source();
-      const tgt = edge.target();
-      if (!src || !tgt || !src.length || !tgt.length) return;
-      const srcPos = src.renderedPosition();
-      const tgtPos = tgt.renderedPosition();
-      const mx = (Number(srcPos.x) + Number(tgtPos.x)) / 2;
-      const my = (Number(srcPos.y) + Number(tgtPos.y)) / 2;
-      const dx = Number(tgtPos.x) - Number(srcPos.x);
-      const dy = Number(tgtPos.y) - Number(srcPos.y);
-      const len = Math.hypot(dx, dy) || 1;
-      const ox = (-dy / len) * 20;
-      const oy = (dx / len) * 20;
-      html.push(
-        `<div class="edge-note-overlay-item" style="left:${mx + ox}px;top:${my + oy}px">${escapeHtml(note)}</div>`
-      );
-    });
-    root.innerHTML = html.join('');
-  }
-
-  function scheduleEdgeNoteOverlaySync() {
-    if (edgeNoteOverlayRaf) return;
-    edgeNoteOverlayRaf = requestAnimationFrame(syncEdgeNoteOverlay);
   }
 
   function scheduleZoomAwareNodeSizing(force = false) {
@@ -6170,15 +5610,19 @@
   function nodeDisplayLabelData(nodeData, mode) {
     if (!nodeData) return '';
     const normalized = ['short', 'full', 'full_ip', 'none'].includes(String(mode || '')) ? String(mode) : 'full';
+    const isCloudNode = !nodeData.isGroup && String(nodeData.manualNodeType || '').trim().toLowerCase() === 'cloud';
     if (normalized === 'none') return '';
     if (nodeData.isGroup) {
       return (normalized === 'full' || normalized === 'full_ip')
         ? String(nodeData.labelWithCount || nodeData.label || '')
         : String(nodeData.shortWithCount || nodeData.short || nodeData.label || '');
     }
-    if (normalized === 'full_ip') return String(nodeData.labelIp || nodeData.label || '');
-    if (normalized === 'full') return String(nodeData.label || '');
-    return String(nodeData.short || nodeData.label || '');
+    let base = '';
+    if (normalized === 'full_ip') base = String(nodeData.labelIp || nodeData.label || '');
+    else if (normalized === 'full') base = String(nodeData.label || '');
+    else base = String(nodeData.short || nodeData.label || '');
+    if (!isCloudNode) return base;
+    return base;
   }
 
   function escapeXmlText(value) {
@@ -6482,11 +5926,10 @@
     const isCanvasTarget = ctxTarget === cy;
     const isEdgeTarget = !!(ctxTarget && typeof ctxTarget.isEdge === 'function' && ctxTarget.isEdge());
     const isGroupNode = !!(ctxTarget && typeof ctxTarget.data === 'function' && ctxTarget.data('isGroup'));
-    const isManualCanvasTarget = !!(ctxTarget && typeof ctxTarget.isNode === 'function' && ctxTarget.isNode() && isManualCanvasNode(ctxTarget));
     const isManualGroup = ctxGroupKind() === 'manual';
     const groupKey = ctxGroupKey();
     const canToggleGroup = !!groupKey;
-    const nodeBtnIds = ['ctxLock', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxRenameManualNode'];
+    const nodeBtnIds = ['ctxLock', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink'];
     nodeBtnIds.forEach((id) => {
       const el = $(id);
       if (!el) return;
@@ -6502,25 +5945,20 @@
         el.style.display = 'none';
         return;
       }
-      if (id === 'ctxRenameManualNode') {
-        el.style.display = isManualCanvasTarget ? '' : 'none';
-        return;
-      }
       el.style.display = '';
     });
     if ($('ctxAddNode')) $('ctxAddNode').style.display = isCanvasTarget ? '' : 'none';
     if ($('ctxAddNodeSubmenu')) $('ctxAddNodeSubmenu').style.display = (isCanvasTarget && addNodeSubmenuOpen) ? 'block' : 'none';
     if ($('ctxCreateGroup')) {
       const groupableNodes = ctxNodes().filter((n) => !n.data('isGroup'));
-      $('ctxCreateGroup').style.display = (!isEdgeTarget && groupableNodes.length >= 2) ? '' : 'none';
+      $('ctxCreateGroup').style.display = (!isCanvasTarget && !isEdgeTarget && groupableNodes.length >= 2) ? '' : 'none';
     }
     if ($('ctxAddLink')) {
       const linkableNodes = ctxNodes().filter((n) => !n.data('isGroup'));
-      $('ctxAddLink').style.display = (!isEdgeTarget && !isGroupNode && linkableNodes.length === 2) ? '' : 'none';
+      $('ctxAddLink').style.display = (!isCanvasTarget && !isEdgeTarget && !isGroupNode && linkableNodes.length === 2) ? '' : 'none';
     }
     if ($('ctxDeleteLink')) $('ctxDeleteLink').style.display = isEdgeTarget ? '' : 'none';
     if ($('ctxCopyLink')) $('ctxCopyLink').style.display = isEdgeTarget ? '' : 'none';
-    if ($('ctxEdgeNote')) $('ctxEdgeNote').style.display = isEdgeTarget ? '' : 'none';
     if ($('ctxToggleGroup')) {
       $('ctxToggleGroup').style.display = (!isEdgeTarget && canToggleGroup) ? '' : 'none';
       $('ctxToggleGroup').textContent = isGroupNode ? tr('ctx_group_expand') : tr('ctx_group_collapse');
@@ -6537,8 +5975,8 @@
     const groups = [
       { sep: 'ctxSepAdd', ids: ['ctxAddNode', 'ctxAddNodeSubmenu'] },
       { sep: 'ctxSepEdit', ids: ['ctxLock', 'ctxDelete', 'ctxDeleteLink'] },
-      { sep: 'ctxSepCopy', ids: ['ctxPathVia', 'ctxAddLink', 'ctxRenameManualNode', 'ctxCreateGroup', 'ctxToggleGroup', 'ctxRenameGroup'] },
-      { sep: 'ctxSepQuery', ids: ['ctxCopy', 'ctxCopyIp', 'ctxCopyLink', 'ctxEdgeNote'] },
+      { sep: 'ctxSepCopy', ids: ['ctxPathVia', 'ctxAddLink', 'ctxCreateGroup', 'ctxToggleGroup', 'ctxRenameGroup'] },
+      { sep: 'ctxSepQuery', ids: ['ctxCopy', 'ctxCopyIp', 'ctxCopyLink'] },
       { sep: '', ids: ['ctxUtil', 'ctxUtilRange', 'ctxAppendQuery'] }
     ];
     groups.forEach((group, idx) => {
@@ -6569,10 +6007,7 @@
     cy.nodes().forEach((node) => {
       node.data('displayLabel', nodeDisplayLabelData(node.data(), normalized));
     });
-    cy.style()
-      .selector('node').style('label', 'data(displayLabel)')
-      .selector('node.manual-cloud-node').style('label', '')
-      .update();
+    cy.style().selector('node').style('label', 'data(displayLabel)').update();
     if (normalized === 'none') setOK('节点标签：隐藏');
     else if (normalized === 'full_ip') setOK('节点标签：全名+IP');
     else setOK(normalized === 'full' ? '节点标签：全名' : '节点标签：缩略');
@@ -6603,6 +6038,7 @@
       ip: String(n.data('ip') || '').trim(),
       ips: mergeIpLists(n.data('ips'), n.data('ip')),
       entityKey: String(n.data('entityKey') || '').trim(),
+      manualNodeType: String(n.data('manualNodeType') || 'node').trim().toLowerCase() || 'node',
       position: { x: Number(n.position('x')), y: Number(n.position('y')) }
     })) : [];
     return {
@@ -6621,7 +6057,6 @@
       nodes: snapshotNodes,
       positions: capturePositions(),
       visible_subgraph: buildVisibleSubgraphSnapshot(),
-      edge_notes: exportEdgeNotesObject(),
       deleted_stack: deletedStack.map((x) => (Array.isArray(x) ? x.slice() : [])),
       view_state: {
         filterTerms: cloneMatchExpression(viewState.filterTerms),
@@ -6655,7 +6090,6 @@
         expandedAutoGroupKeys: Array.from(expandedAutoGroupKeys),
         manualGroups: cloneManualGroups(manualGroups),
         manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes),
-        edgeNotes: exportEdgeNotesObject(),
         expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
         mergeMode: !!mergedMode,
         colLocalHost: $('colLocalHost')?.value || '',
@@ -6826,7 +6260,6 @@
     expandedAutoGroupKeys = new Set((ui.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     manualGroups = cloneManualGroups(ui.manualGroups || []);
     manualCanvasNodes = cloneManualCanvasNodes(ui.manualCanvasNodes || snapshot?.manual_canvas_nodes || []);
-    edgeNotes = normalizeEdgeNotesMap(ui.edgeNotes || snapshot?.edge_notes || {});
     expandedManualGroupKeys = new Set((ui.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     if (typeof ui.mergeMode === 'boolean') mergedMode = ui.mergeMode;
     setMergeButtonText();
@@ -6879,10 +6312,19 @@
           const ips = mergeIpLists(node?.ips, node?.ip);
           const ip = primaryIpFromList(ips);
           const entityKey = String(node?.entityKey || inferEntityKey(label, ip)).trim();
-          return { id, label, short, ip, ips, entityKey };
+          const manualNodeType = String(node?.manualNodeType || 'node').trim().toLowerCase() || 'node';
+          return { id, label, short, ip, ips, entityKey, manualNodeType };
         }).filter(Boolean)
       : [];
     const importedUi = (appendPayload?.ui && typeof appendPayload.ui === 'object') ? appendPayload.ui : {};
+    const importedManualCanvasNodes = cloneManualCanvasNodes(importedUi.manualCanvasNodes || appendPayload?.manual_canvas_nodes || []);
+    if (importedManualCanvasNodes.length) {
+      const existingManualNodes = new Map(manualCanvasNodes.map((node) => [String(node.id || '').trim(), node]));
+      importedManualCanvasNodes.forEach((node) => {
+        if (!existingManualNodes.has(node.id)) existingManualNodes.set(node.id, node);
+      });
+      manualCanvasNodes = Array.from(existingManualNodes.values());
+    }
     if (Array.isArray(importedUi.manualGroups) && importedUi.manualGroups.length) {
       const currentGroups = cloneManualGroups(manualGroups);
       const importedGroups = cloneManualGroups(importedUi.manualGroups);
@@ -6903,20 +6345,6 @@
         ...((importedUi.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean))
       ]);
     }
-    const importedManualCanvasNodes = cloneManualCanvasNodes(importedUi.manualCanvasNodes || appendPayload?.manual_canvas_nodes || []);
-    if (importedManualCanvasNodes.length) {
-      const existingManualNodes = new Map(manualCanvasNodes.map((node) => [String(node.id || '').trim(), node]));
-      importedManualCanvasNodes.forEach((node) => {
-        const id = String(node.id || '').trim();
-        if (!id) return;
-        existingManualNodes.set(id, node);
-      });
-      manualCanvasNodes = Array.from(existingManualNodes.values());
-    }
-    const importedEdgeNotes = normalizeEdgeNotesMap(importedUi.edgeNotes || appendPayload?.edge_notes || {});
-    if (importedEdgeNotes.size) {
-      importedEdgeNotes.forEach((note, key) => edgeNotes.set(String(key || '').trim(), String(note || '').trim()));
-    }
     const parsed = {
       headers: hs.slice(),
       rows: (srcRows.length ? srcRows : rs).slice()
@@ -6925,7 +6353,10 @@
     if ((merged.added + merged.replaced) > 0) {
       sourceRows = rawRows.slice();
     }
-    const importedNodeIds = new Set(forceNodes.map((node) => node.id));
+    const importedNodeIds = new Set([
+      ...forceNodes.map((node) => node.id),
+      ...importedManualCanvasNodes.map((node) => node.id)
+    ]);
     if (importedNodeIds.size) {
       releaseNodesFromDeletedStack(importedNodeIds);
     }
@@ -7212,28 +6643,6 @@
     const pos = capturePositions();
     const before = rawRows.length;
     const parsed = parseCSV(csvText);
-    const revealManualGroupKeys = new Set();
-    if (opts.revealPastedRows) {
-      const strip = $('stripDomain')?.value === 'yes';
-      const revealCols = {
-        colLH: $('colLocalHost')?.value || autoPickColumn(['localhostname','local_host','src','from']),
-        colRH: $('colRemoteHost')?.value || autoPickColumn(['remotehostname','remote_host','dst','to']),
-        colLI: $('colLocalIf')?.value || autoPickColumn(['localinterface','local_if','src_if','from_if']),
-        colRI: $('colRemoteIf')?.value || autoPickColumn(['remoteinterface','remote_if','dst_if','to_if'])
-      };
-      const memberToManualGroup = new Map();
-      cloneManualGroups(manualGroups).forEach((group) => {
-        (group.members || []).forEach((id) => memberToManualGroup.set(String(id || '').trim(), String(group.key || '').trim()));
-      });
-      (parsed.rows || []).forEach((row) => {
-        const rowCtx = resolveGraphRowContext(row, revealCols, strip);
-        if (!rowCtx) return;
-        [rowCtx.aId, rowCtx.bId].forEach((id) => {
-          const key = memberToManualGroup.get(String(id || '').trim());
-          if (key) revealManualGroupKeys.add(key);
-        });
-      });
-    }
     if (opts.restoreDeletedFromQuery) {
       const strip = $('stripDomain')?.value === 'yes';
       const cols = {
@@ -7268,12 +6677,6 @@
     fillSelect('colLocalIf', autoPickColumn(['localinterface','local_if','src_if','from_if']));
     fillSelect('colRemoteIf', autoPickColumn(['remoteinterface','remote_if','dst_if','to_if']));
 
-    if (opts.revealPastedRows && revealManualGroupKeys.size) {
-      expandedManualGroupKeys = new Set([
-        ...Array.from(expandedManualGroupKeys),
-        ...Array.from(revealManualGroupKeys)
-      ]);
-    }
     if (rawRows.length) buildGraph(pos);
     return {
       mergedRows: rawRows.length,
@@ -7833,9 +7236,6 @@
       const srcIf = String(r[colLI] || '').trim();
       if (!srcRaw || !srcIf) continue;
       const sourceIpHint = rowValue(r, ['源设备IP', '源设备ip', 'ipaddr', 'sourceip']);
-      const peerIpHint = rowValue(r, ['目的设备IP', '目的设备ip', 'remoteip']);
-      const peerRaw = String(r[$('colRemoteHost')?.value || ''] || rowValue(r, ['remotehostname', 'remote_host', 'to', '目的设备名称']) || '').trim();
-      const peerIf = String(r[$('colRemoteIf')?.value || ''] || rowValue(r, ['remoteinterface', 'remote_if', 'to_if', '目的设备端口']) || '').trim();
       if (matchSource && !matchSource({ row: r, srcRaw, srcIf, sourceIpHint })) continue;
       const utilKey = buildUtilKey(srcRaw, srcIf, sourceIpHint);
       if (!utilKey) continue;
@@ -7853,9 +7253,6 @@
           source_device: queryDevice,
           source_name: srcRaw,
           source_interface: srcIf,
-          peer_device: isIpv4(peerIpHint) ? peerIpHint : '',
-          peer_name: peerRaw,
-          peer_interface: peerIf,
           util_key: utilKey,
           dedupe_key: dedupeKey
         });
@@ -8349,6 +7746,9 @@
   }
 
   function showImportPanel(mode) {
+    const normalizedMode = normalizeImportModeForIndex(mode);
+    const modeSel = $('importMode');
+    if (modeSel && modeSel.value !== normalizedMode) modeSel.value = normalizedMode;
     const sql = $('importSqlPanel');
     const cli = $('importCliPanel');
     const csv = $('importCsvPanel');
@@ -8356,12 +7756,15 @@
     sql.classList.add('hidden');
     cli.classList.add('hidden');
     csv.classList.add('hidden');
-    if (mode === 'sql') sql.classList.remove('hidden');
-    else if (mode === 'cli') cli.classList.remove('hidden');
-    else if (mode === 'csv') csv.classList.remove('hidden');
+    if (normalizedMode === 'sql') sql.classList.remove('hidden');
+    else if (normalizedMode === 'cli') cli.classList.remove('hidden');
+    else if (normalizedMode === 'csv') csv.classList.remove('hidden');
   }
 
   function refreshImportActionButtons(mode = $('importMode')?.value || 'cli') {
+    const normalizedMode = normalizeImportModeForIndex(mode);
+    const modeSel = $('importMode');
+    if (modeSel && modeSel.value !== normalizedMode) modeSel.value = normalizedMode;
     const importBtn = $('openImportModalImport');
     const appendBtn = $('openImportModalAppend');
     if (!importBtn || !appendBtn) return;
@@ -8370,7 +7773,8 @@
 
   function openImportModal(action = 'import') {
     importInputAction = action === 'append' ? 'append' : 'import';
-    const mode = $('importMode')?.value || 'sql';
+    const mode = normalizeImportModeForIndex($('importMode')?.value || 'sql');
+    if ($('importMode') && $('importMode').value !== mode) $('importMode').value = mode;
     if (mode === 'json') {
       $('importSessionFile').value = '';
       $('importSessionFile').click();
@@ -8484,8 +7888,10 @@
     if (e.target && e.target.id === 'cliCredModal') closeCliCredModal(null);
   });
   $('importMode').addEventListener('change', (e) => {
-    showImportPanel(e.target.value);
-    refreshImportActionButtons(e.target.value);
+    const normalized = normalizeImportModeForIndex(e.target.value);
+    if (e.target.value !== normalized) e.target.value = normalized;
+    showImportPanel(normalized);
+    refreshImportActionButtons(normalized);
   });
   $('runSqlGenerateModal').addEventListener('click', async () => {
     try {
@@ -8727,9 +8133,13 @@
   loadSqlPrefs();
   loadZbxPrefs();
   loadTopologyUiPrefs();
-  showImportPanel($('importMode')?.value || 'cli');
-  refreshImportActionButtons($('importMode')?.value || 'cli');
+  applyIndexLiteMode();
+  showImportPanel(normalizeImportModeForIndex($('importMode')?.value || 'cli'));
+  refreshImportActionButtons(normalizeImportModeForIndex($('importMode')?.value || 'cli'));
   const restoredPageSession = restoreCurrentPageSession();
+  applyIndexLiteMode();
+  showImportPanel(normalizeImportModeForIndex($('importMode')?.value || 'cli'));
+  refreshImportActionButtons(normalizeImportModeForIndex($('importMode')?.value || 'cli'));
   if (!restoredPageSession) resetWorkspaceMeta();
   refreshKeywordHistories();
   if (!restoredPageSession) loadUtilCacheFromServer();
@@ -9334,27 +8744,6 @@
     hideCtx();
   });
 
-  $('ctxEdgeNote').addEventListener('click', () => {
-    const edges = ctxEdges();
-    hideCtx();
-    if (!edges.length) return;
-    const currentNote = edgeNoteText(edges[0]);
-    const next = window.prompt('请输入链路描述。留空并确认可清除描述。', currentNote);
-    if (next == null) return;
-    const clean = String(next || '').trim();
-    runWithRollback(() => {
-      edges.forEach((edge) => {
-        const key = String(edge.id() || '').trim();
-        if (!key) return;
-        if (clean) edgeNotes.set(key, clean);
-        else edgeNotes.delete(key);
-      });
-      refreshEdgeLabelDisplay();
-      schedulePersistCurrentPageSession(80);
-      setOK(clean ? `已更新 ${edges.length} 条链路描述。` : `已清除 ${edges.length} 条链路描述。`);
-    }, { delayMs: 1300 });
-  });
-
   $('ctxPathVia').addEventListener('click', () => {
     const node = ctxTarget && typeof ctxTarget.isNode === 'function' && ctxTarget.isNode() ? ctxTarget : null;
     if (!node || !node.length) return hideCtx();
@@ -9393,12 +8782,6 @@
     const nodes = selectedNodesForManualLink();
     hideCtx();
     openAddLinkModal(nodes);
-  });
-
-  $('ctxRenameManualNode').addEventListener('click', () => {
-    const node = ctxTarget && typeof ctxTarget.isNode === 'function' && ctxTarget.isNode() ? ctxTarget : null;
-    hideCtx();
-    renameManualCanvasNode(node);
   });
 
   function buildSelectionScopeLabel(nodes, edges) {
@@ -9525,7 +8908,7 @@
   $('ctxAppendQuery').addEventListener('click', async () => {
     const nodes = ctxNodes().filter((n) => !n.data('isGroup'));
     if (!nodes.length) return hideCtx();
-    const mode = ($('importMode')?.value || 'sql').toLowerCase();
+    const mode = normalizeImportModeForIndex(($('importMode')?.value || 'sql').toLowerCase());
 
     if (mode === 'csv') {
       setErr('CSV 模式不支持右键追加查询，请切换为 SQL 或 CLI。');
@@ -9621,30 +9004,6 @@
     cy.animate({ fit: { eles: sel, padding: 120 }, duration: 400 });
     setOK(`已定位选中元素：${sel.length} 个。`);
   });
-  $('alignHorizontal').addEventListener('click', () => {
-    runWithRollback(() => alignSelectedNodes('horizontal'), { delayMs: 0 });
-  });
-  $('alignVertical').addEventListener('click', () => {
-    runWithRollback(() => alignSelectedNodes('vertical'), { delayMs: 0 });
-  });
-  $('alignLeft').addEventListener('click', () => {
-    runWithRollback(() => alignSelectedNodesEdge('left'), { delayMs: 0 });
-  });
-  $('alignRight').addEventListener('click', () => {
-    runWithRollback(() => alignSelectedNodesEdge('right'), { delayMs: 0 });
-  });
-  $('alignTop').addEventListener('click', () => {
-    runWithRollback(() => alignSelectedNodesEdge('top'), { delayMs: 0 });
-  });
-  $('alignBottom').addEventListener('click', () => {
-    runWithRollback(() => alignSelectedNodesEdge('bottom'), { delayMs: 0 });
-  });
-  $('distributeHorizontal').addEventListener('click', () => {
-    runWithRollback(() => distributeSelectedNodes('horizontal'), { delayMs: 0 });
-  });
-  $('distributeVertical').addEventListener('click', () => {
-    runWithRollback(() => distributeSelectedNodes('vertical'), { delayMs: 0 });
-  });
   $('selectVisible').addEventListener('click', () => {
     if (!cy) return;
     const visibleNodes = cy.nodes(':visible').not('.dim');
@@ -9677,20 +9036,16 @@
       setErr('请先填写两端接口。');
       return;
     }
-    const csvText = buildManualLinkCsv(nodes[0], ifA, nodes[1], ifB);
     runWithRollback(() => {
-      const merged = applyQueryCsvText(csvText, {
-        append: true,
-        sourceName: 'manual-link',
-        restoreDeletedFromQuery: true,
-        revealPastedRows: true
-      });
-      if (!merged || !merged.mergedRows) {
+      const merged = appendManualLinkRow(nodes[0], ifA, nodes[1], ifB);
+      if (!merged || (Number(merged.added || 0) + Number(merged.replaced || 0) <= 0)) {
         setErr('增加链路失败：未能写入当前拓扑。');
         return;
       }
+      const added = Number(merged.added || 0);
+      const replaced = Number(merged.replaced || 0);
       setStatus('手工链路已追加');
-      setOK(`已增加链路：${String(nodes[0].data('label') || nodes[0].id())} ${ifA} -> ${String(nodes[1].data('label') || nodes[1].id())} ${ifB}`);
+      setOK(`已增加链路：${String(nodes[0].data('label') || nodes[0].id())} ${ifA} -> ${String(nodes[1].data('label') || nodes[1].id())} ${ifB}（新增 ${added}，覆盖 ${replaced}）`);
       closeAddLinkModal();
     }, { delayMs: 1300 });
   });
