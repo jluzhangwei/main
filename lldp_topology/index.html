@@ -657,6 +657,7 @@
   <button id="ctxLock">固定位置</button>
   <button id="ctxDelete">删除设备</button>
   <button id="ctxDeleteLink">删除链路</button>
+  <button id="ctxToggleEdgeExpand">展开链路</button>
   <button id="ctxEdgeDesc">添加描述</button>
   <div id="ctxSepEdit" class="ctx-sep"></div>
   <button id="ctxPathVia">设为必经点</button>
@@ -1043,6 +1044,7 @@
   let ctxAppendSingleHop = false;
   let utilByKey = new Map();
   let edgeDescByKey = new Map();
+  let expandedMergedEdgePairKeys = new Set();
   let primaryCliSource = '';
   let dragPerfMode = false;
   let expandedAutoGroupKeys = new Set();
@@ -1228,6 +1230,8 @@
       auto_group_label: '自动合组',
       ctx_create_group: '设备合组',
       ctx_delete_link: '删除链路',
+      ctx_edge_expand: '展开链路',
+      ctx_edge_collapse: '收起链路',
       ctx_copy_link: '复制链路',
       ctx_group_expand: '合组展开',
       ctx_group_collapse: '收起合组',
@@ -1306,6 +1310,8 @@
       ctx_util: '当前利用率',
       ctx_util_range: '区间利用率',
       ctx_edge_desc: '添加描述',
+      ctx_edge_expand: '展开链路',
+      ctx_edge_collapse: '收起链路',
       edge_desc_modal_title: '链路描述',
       edge_desc_target_label: '目标链路',
       edge_desc_input_label: '描述内容',
@@ -1371,6 +1377,8 @@
       auto_group_label: 'Auto Grouping',
       ctx_create_group: 'Create Group',
       ctx_delete_link: 'Delete Link',
+      ctx_edge_expand: 'Expand Links',
+      ctx_edge_collapse: 'Collapse Links',
       ctx_copy_link: 'Copy Link',
       ctx_group_expand: 'Expand Group',
       ctx_group_collapse: 'Collapse Group',
@@ -1447,6 +1455,8 @@
       ctx_util: 'Current Utilization',
       ctx_util_range: 'Range Utilization',
       ctx_edge_desc: 'Add Description',
+      ctx_edge_expand: 'Expand Links',
+      ctx_edge_collapse: 'Collapse Links',
       edge_desc_modal_title: 'Link Description',
       edge_desc_target_label: 'Target Link',
       edge_desc_input_label: 'Description',
@@ -1688,6 +1698,7 @@
     setText('ctxAddNodeRegular', 'ctx_add_node_regular');
     setText('ctxAddNodeCloud', 'ctx_add_node_cloud');
     setText('ctxAddLink', 'ctx_add_link');
+    setText('ctxToggleEdgeExpand', 'ctx_edge_expand');
     setText('ctxCreateGroup', 'ctx_create_group');
     setText('ctxDeleteLink', 'ctx_delete_link');
     setText('ctxCopyLink', 'ctx_copy_link');
@@ -1782,6 +1793,7 @@
     manualGroups = [];
     expandedManualGroupKeys = new Set();
     expandedAutoGroupKeys = new Set();
+    expandedMergedEdgePairKeys = new Set();
     if (cy) cy.elements().removeClass('groupViewHidden');
     updateGroupViewButtonState();
   }
@@ -1917,6 +1929,7 @@
       manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes),
       edgeDescEntries: exportEdgeDescEntries(),
       expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
+      expandedMergedEdgePairKeys: Array.from(expandedMergedEdgePairKeys),
       mergedMode: !!mergedMode,
       selectedNodeIds: cy ? cy.nodes(':selected').map((n) => n.id()) : [],
     };
@@ -1958,6 +1971,7 @@
       manualCanvasNodes = cloneManualCanvasNodes(snapshot.manualCanvasNodes || []);
       importEdgeDescEntries(snapshot.edgeDescEntries || [], false);
       expandedManualGroupKeys = new Set((snapshot.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
+      expandedMergedEdgePairKeys = new Set((snapshot.expandedMergedEdgePairKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
 
       $('nRows').textContent = rawRows.length;
       $('nCols').textContent = headers.length;
@@ -4616,6 +4630,7 @@
       expandedAutoGroupKeys: Array.from(expandedAutoGroupKeys),
       manualGroups: cloneManualGroups(manualGroups),
       expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
+      expandedMergedEdgePairKeys: Array.from(expandedMergedEdgePairKeys),
       mergedMode: !!mergedMode,
       selectedNodeIds: cy ? cy.nodes(':selected').map((n) => n.id()) : [],
       pan: cy ? { ...cy.pan() } : null,
@@ -4650,6 +4665,7 @@
     expandedAutoGroupKeys = new Set((snapshot.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     manualGroups = cloneManualGroups(snapshot.manualGroups || []);
     expandedManualGroupKeys = new Set((snapshot.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
+    expandedMergedEdgePairKeys = new Set((snapshot.expandedMergedEdgePairKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     $('nRows').textContent = rawRows.length;
     $('nCols').textContent = headers.length;
     if (headers.length) {
@@ -4819,20 +4835,79 @@
     return out;
   }
 
-  // 将同一对节点的多条边合并为单条
+  function buildMergedPairKey(sourceId, targetId) {
+    const s = String(sourceId || '').trim();
+    const t = String(targetId || '').trim();
+    if (!s || !t) return '';
+    return s < t ? `${s}||${t}` : `${t}||${s}`;
+  }
+
+  function edgeMergedPairKey(edge) {
+    if (!edge) return '';
+    const data = typeof edge.data === 'function' ? edge.data() : (edge.data || {});
+    if (data && typeof data === 'object') {
+      const explicit = String(data.mergedPairKey || '').trim();
+      if (explicit) return explicit;
+      const s = String(data.source || '').trim();
+      const t = String(data.target || '').trim();
+      const key = buildMergedPairKey(s, t);
+      if (key) return key;
+    }
+    if (typeof edge.source === 'function' && typeof edge.target === 'function') {
+      return buildMergedPairKey(edge.source().id(), edge.target().id());
+    }
+    return '';
+  }
+
+  function edgeCanToggleMergedExpand(edge) {
+    if (!edge || !(edge.length || edge.data)) return false;
+    const key = edgeMergedPairKey(edge);
+    if (!key) return false;
+    const data = typeof edge.data === 'function' ? edge.data() : (edge.data || {});
+    const count = Number(data?.mergedCount);
+    return Number.isFinite(count) && count > 1;
+  }
+
+  // 将同一对节点的多条边合并为单条（支持按 pair 选择性展开）
   function aggregateEdges(edges) {
     const bucket = new Map();
     edges.forEach((e) => {
       const s = e.data.source;
       const t = e.data.target;
-      const key = s < t ? `${s}||${t}` : `${t}||${s}`;
+      const key = buildMergedPairKey(s, t);
+      if (!key) return;
       if (!bucket.has(key)) bucket.set(key, []);
       bucket.get(key).push(e);
     });
+    expandedMergedEdgePairKeys = new Set(Array.from(expandedMergedEdgePairKeys).filter((k) => bucket.has(k)));
     const merged = [];
     bucket.forEach((list, key) => {
       const [a, b] = key.split('||');
       const count = list.length;
+      if (count > 1 && expandedMergedEdgePairKeys.has(key)) {
+        list.forEach((edge) => {
+          const d = edge?.data || {};
+          const utilKeys = Array.from(new Set(Array.isArray(d.utilKeys) ? d.utilKeys : (d.utilKey ? [d.utilKey] : [])));
+          const rowKeys = Array.from(new Set(Array.isArray(d.rowKeys) ? d.rowKeys : []));
+          merged.push({ data: {
+            ...d,
+            id: String(d.id || `e_${fnv1a(`${key}||${String(d.label || '')}`)}`),
+            source: String(d.source || a).trim(),
+            target: String(d.target || b).trim(),
+            label: String(d.label || '').trim(),
+            labelShown: String(d.labelShown || ''),
+            utilKeys,
+            rowKeys,
+            mergedPairKey: key,
+            mergedCount: count,
+            isMerged: false,
+            mergedExpanded: true,
+            sourcePort: String(d.sourcePort || '').trim(),
+            targetPort: String(d.targetPort || '').trim()
+          } });
+        });
+        return;
+      }
       const labels = list.map(x => x.data.label).filter(Boolean);
       const label = count > 1 ? `${count} 条链路` : (labels[0] || '');
       const utilKeys = Array.from(new Set(list.flatMap(x => Array.isArray(x.data.utilKeys) ? x.data.utilKeys : (x.data.utilKey ? [x.data.utilKey] : []))));
@@ -4846,6 +4921,10 @@
         labelShown: '',
         utilKeys,
         rowKeys,
+        mergedPairKey: key,
+        mergedCount: count,
+        isMerged: count > 1,
+        mergedExpanded: false,
         sourcePort: count > 1 ? '' : String(first.sourcePort || '').trim(),
         targetPort: count > 1 ? '' : String(first.targetPort || '').trim()
       } });
@@ -6586,7 +6665,7 @@
     const isManualGroup = ctxGroupKind() === 'manual';
     const groupKey = ctxGroupKey();
     const canToggleGroup = !!groupKey;
-    const nodeBtnIds = ['ctxLock', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxEdgeDesc'];
+    const nodeBtnIds = ['ctxLock', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc'];
     nodeBtnIds.forEach((id) => {
       const el = $(id);
       if (!el) return;
@@ -6595,7 +6674,7 @@
         return;
       }
       if (isEdgeTarget) {
-        el.style.display = (id === 'ctxUtil' || id === 'ctxUtilRange' || id === 'ctxEdgeDesc') ? '' : 'none';
+        el.style.display = (id === 'ctxUtil' || id === 'ctxUtilRange' || id === 'ctxEdgeDesc' || id === 'ctxToggleEdgeExpand') ? '' : 'none';
         return;
       }
       if (isGroupNode && ['ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxEdgeDesc'].includes(id)) {
@@ -6616,6 +6695,13 @@
     }
     if ($('ctxDeleteLink')) $('ctxDeleteLink').style.display = isEdgeTarget ? '' : 'none';
     if ($('ctxCopyLink')) $('ctxCopyLink').style.display = isEdgeTarget ? '' : 'none';
+    if ($('ctxToggleEdgeExpand')) {
+      const canToggleEdgeExpand = isEdgeTarget && edgeCanToggleMergedExpand(ctxTarget);
+      $('ctxToggleEdgeExpand').style.display = canToggleEdgeExpand ? '' : 'none';
+      const pairKey = canToggleEdgeExpand ? edgeMergedPairKey(ctxTarget) : '';
+      const isExpanded = !!(pairKey && expandedMergedEdgePairKeys.has(pairKey));
+      $('ctxToggleEdgeExpand').textContent = tr(isExpanded ? 'ctx_edge_collapse' : 'ctx_edge_expand');
+    }
     if ($('ctxToggleGroup')) {
       $('ctxToggleGroup').style.display = (!isEdgeTarget && canToggleGroup) ? '' : 'none';
       $('ctxToggleGroup').textContent = isGroupNode ? tr('ctx_group_expand') : tr('ctx_group_collapse');
@@ -6631,7 +6717,7 @@
     }
     const groups = [
       { sep: 'ctxSepAdd', ids: ['ctxAddNode', 'ctxAddNodeSubmenu'] },
-      { sep: 'ctxSepEdit', ids: ['ctxLock', 'ctxDelete', 'ctxDeleteLink', 'ctxEdgeDesc'] },
+      { sep: 'ctxSepEdit', ids: ['ctxLock', 'ctxDelete', 'ctxDeleteLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc'] },
       { sep: 'ctxSepCopy', ids: ['ctxPathVia', 'ctxAddLink', 'ctxCreateGroup', 'ctxToggleGroup', 'ctxRenameGroup'] },
       { sep: 'ctxSepQuery', ids: ['ctxCopy', 'ctxCopyIp', 'ctxCopyLink'] },
       { sep: '', ids: ['ctxUtil', 'ctxUtilRange', 'ctxAppendQuery'] }
@@ -6750,6 +6836,7 @@
         manualGroups: cloneManualGroups(manualGroups),
         manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes),
         expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
+        expandedMergedEdgePairKeys: Array.from(expandedMergedEdgePairKeys),
         mergeMode: !!mergedMode,
         colLocalHost: $('colLocalHost')?.value || '',
         colRemoteHost: $('colRemoteHost')?.value || '',
@@ -6923,6 +7010,7 @@
     manualCanvasNodes = cloneManualCanvasNodes(ui.manualCanvasNodes || snapshot?.manual_canvas_nodes || []);
     importEdgeDescEntries(ui.edgeDescriptions || snapshot?.edge_descriptions || snapshot?.edge_notes || [], false);
     expandedManualGroupKeys = new Set((ui.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
+    expandedMergedEdgePairKeys = new Set((ui.expandedMergedEdgePairKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     if (typeof ui.mergeMode === 'boolean') mergedMode = ui.mergeMode;
     setMergeButtonText();
 
@@ -7016,6 +7104,10 @@
         ...((importedUi.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean))
       ]);
     }
+    expandedMergedEdgePairKeys = new Set([
+      ...Array.from(expandedMergedEdgePairKeys),
+      ...((importedUi.expandedMergedEdgePairKeys || []).map((x) => String(x || '').trim()).filter(Boolean))
+    ]);
     const parsed = {
       headers: hs.slice(),
       rows: (srcRows.length ? srcRows : rs).slice()
@@ -9288,6 +9380,38 @@
       applyPositions(pos);
       setOK(`已删除 ${edges.length} 条链路，对应原始记录 ${removedRows} 行。`);
     }, { delayMs: 0 });
+  });
+
+  $('ctxToggleEdgeExpand').addEventListener('click', () => {
+    const edge = (ctxTarget && typeof ctxTarget.isEdge === 'function' && ctxTarget.isEdge()) ? ctxTarget : null;
+    hideCtx();
+    if (!edge || !edge.length) {
+      setOK('请先选中合并链路。');
+      return;
+    }
+    const pairKey = edgeMergedPairKey(edge);
+    const mergedCount = Number(edge.data('mergedCount'));
+    if (!pairKey || !Number.isFinite(mergedCount) || mergedCount <= 1) {
+      setOK('当前链路无需展开。');
+      return;
+    }
+    runWithRollback(() => {
+      const wasExpanded = expandedMergedEdgePairKeys.has(pairKey);
+      if (wasExpanded) expandedMergedEdgePairKeys.delete(pairKey);
+      else expandedMergedEdgePairKeys.add(pairKey);
+      const pos = capturePositions();
+      buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
+      applyPositions(pos, { fitView: false });
+      if (cy) {
+        const pairEdges = cy.edges().filter((e) => String(e.data('mergedPairKey') || '').trim() === pairKey);
+        cy.elements(':selected').unselect();
+        if (pairEdges.length) {
+          pairEdges.select();
+          pairEdges.addClass('hit');
+        }
+      }
+      setOK(wasExpanded ? '已收起该合并链路。' : `已展开该合并链路（${mergedCount} 条）。`);
+    }, { delayMs: 1300 });
   });
 
   $('ctxCreateGroup').addEventListener('click', () => {
