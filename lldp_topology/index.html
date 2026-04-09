@@ -633,7 +633,8 @@
             <option value="max" selected>查询口径：双向较大值 MAX(TX,RX)</option>
           </select>
         </div>
-        <label class="check-row"><input id="utilColorEnabled" type="checkbox" checked />链路颜色映射</label>
+        <label class="check-row"><input id="utilColorEnabled" type="checkbox" checked /><span id="utilColorEnabledLabel">链路拥塞分析</span></label>
+        <label class="check-row"><input id="utilShowImbalance" type="checkbox" /><span id="utilShowImbalanceLabel">负载分担分析</span></label>
         <label class="check-row"><input id="utilLabelEnabled" type="checkbox" checked />显示利用率标签</label>
         <label class="check-row"><input id="utilShowTxRx" type="checkbox" />显示TX/RX（TX按箭头方向）</label>
         <label class="check-row"><input id="utilShowBandwidth" type="checkbox" />显示总带宽</label>
@@ -1159,7 +1160,9 @@
       'utilShowTxRx',
       'utilShowBandwidth',
       'utilShowEdgeDesc',
-      'utilShowEdgeDescLabel'
+      'utilShowEdgeDescLabel',
+      'utilShowImbalance',
+      'utilShowImbalanceLabel'
     ]);
     const hideUtilIds = [
       'utilFilterActiveBar',
@@ -1293,6 +1296,8 @@
       btn_util_filter: '利用率过滤',
       btn_clear_util_filter: '清除过滤',
       util_show_edge_desc: '显示链路描述',
+      util_color_analysis: '链路拥塞分析',
+      util_show_imbalance: '负载分担分析',
       btn_run_sql: '执行 SQL 查询',
       btn_sql_config: 'SQL配置',
       btn_dl_sql_tmp: '下载临时 CSV',
@@ -1438,6 +1443,8 @@
       btn_util_filter: 'Util Filter',
       btn_clear_util_filter: 'Clear Filter',
       util_show_edge_desc: 'Show Link Description',
+      util_color_analysis: 'Link Congestion Analysis',
+      util_show_imbalance: 'Load Balancing Analysis',
       btn_run_sql: 'Run SQL Query',
       btn_sql_config: 'SQL Config',
       btn_dl_sql_tmp: 'Download Temp CSV',
@@ -1680,6 +1687,8 @@
     setText('openUtilFilterModal', 'btn_util_filter');
     setText('clearUtilFilterOnly', 'btn_clear_util_filter');
     setText('utilShowEdgeDescLabel', 'util_show_edge_desc');
+    setText('utilColorEnabledLabel', 'util_color_analysis');
+    setText('utilShowImbalanceLabel', 'util_show_imbalance');
     setText('runSqlGenerateModal', 'btn_run_sql');
     setText('cancelSqlGenerateModal', 'btn_cancel_query');
     setText('openSqlConfigModal', 'btn_sql_config');
@@ -1916,6 +1925,7 @@
         spacing: $('spacing')?.value || '0.5',
         stripDomain: $('stripDomain')?.value || 'yes',
         utilShowEdgeDesc: !!$('utilShowEdgeDesc')?.checked,
+        utilShowImbalance: !!$('utilShowImbalance')?.checked,
         nameClusterMode: $('nameClusterMode')?.value || 'on',
         autoGroupMode: $('autoGroupMode')?.value || 'off',
         nameClusterStrength: $('nameClusterStrength')?.value || '0.6',
@@ -1963,6 +1973,8 @@
       if ($('spacing')) $('spacing').value = snapshot.ui?.spacing || '0.5';
       if ($('stripDomain')) $('stripDomain').value = snapshot.ui?.stripDomain || 'yes';
       if ($('utilShowEdgeDesc')) $('utilShowEdgeDesc').checked = snapshot.ui?.utilShowEdgeDesc !== false;
+      if ($('utilShowImbalance')) $('utilShowImbalance').checked = !!snapshot.ui?.utilShowImbalance;
+      normalizeUtilColorMode();
       if ($('nameClusterMode')) $('nameClusterMode').value = snapshot.ui?.nameClusterMode || 'on';
       if ($('autoGroupMode')) $('autoGroupMode').value = snapshot.ui?.autoGroupMode || 'off';
       if ($('nameClusterStrength')) $('nameClusterStrength').value = snapshot.ui?.nameClusterStrength || '0.6';
@@ -2964,6 +2976,10 @@
       { selector: 'edge.util-mid', style: { 'line-color': '#ca8a04', 'target-arrow-color': '#ca8a04' } },
       { selector: 'edge.util-high', style: { 'line-color': '#dc2626', 'target-arrow-color': '#dc2626' } },
       { selector: 'edge.util-na', style: { 'line-style': 'dashed', 'line-color': '#9ca3af', 'target-arrow-color': '#9ca3af' } },
+      { selector: 'edge.imbalance-low', style: { 'line-color': '#16a34a', 'target-arrow-color': '#16a34a' } },
+      { selector: 'edge.imbalance-mid', style: { 'line-color': '#ca8a04', 'target-arrow-color': '#ca8a04' } },
+      { selector: 'edge.imbalance-high', style: { 'line-color': '#dc2626', 'target-arrow-color': '#dc2626' } },
+      { selector: 'edge.imbalance-na', style: { 'line-style': 'dashed', 'line-color': '#9ca3af', 'target-arrow-color': '#9ca3af' } },
       { selector: '.path-main', style: { 'line-color': '#2563eb', 'target-arrow-color': '#2563eb', 'width': 3.2, 'z-index-compare': 'manual', 'z-index': 1200 } },
       { selector: '.path-main2', style: { 'line-color': '#0ea5e9', 'target-arrow-color': '#0ea5e9', 'width': 3.2, 'z-index-compare': 'manual', 'z-index': 1190 } },
       { selector: '.path-alt1', style: { 'line-color': '#f59e0b', 'target-arrow-color': '#f59e0b', 'width': 2.8, 'z-index-compare': 'manual', 'z-index': 1180 } },
@@ -5837,8 +5853,9 @@
     const edgeMode = $('edgeLabelMode')?.value || 'none';
     const showUtilLabel = !!$('utilLabelEnabled')?.checked;
     const showBandwidth = !!$('utilShowBandwidth')?.checked;
+    const showImbalance = !!$('utilShowImbalance')?.checked;
     const showEdgeDesc = !!$('utilShowEdgeDesc')?.checked;
-    const showExtra = showUtilLabel || showBandwidth;
+    const showExtra = showUtilLabel || showBandwidth || showImbalance;
     cy.edges().forEach((e) => {
       const base = formatEdgePortLabel(e);
       const util = formatEdgeUtilText(e);
@@ -5967,6 +5984,34 @@
     };
   }
 
+  function utilEntryMetricValue(entry, metric = '') {
+    if (!entry || typeof entry !== 'object' || entry.status !== 'ok') return null;
+    const tx = (typeof entry.tx_pct === 'number') ? entry.tx_pct : null;
+    const rx = (typeof entry.rx_pct === 'number') ? entry.rx_pct : null;
+    const m = String(metric || currentUtilMetricValue()).trim().toLowerCase();
+    if (m === 'tx') return tx;
+    if (m === 'rx') return rx;
+    const cands = [tx, rx].filter((v) => typeof v === 'number');
+    if (!cands.length) return null;
+    if (m === 'min') return Math.min(...cands);
+    return Math.max(...cands);
+  }
+
+  function edgeImbalanceSummary(edge, metric = '') {
+    const keys = Array.isArray(edge?.data?.('utilKeys')) ? edge.data('utilKeys') : [];
+    if (keys.length < 2) return { eligible: false, count: 0, min: null, max: null, diff: null };
+    const vals = [];
+    keys.forEach((k) => {
+      const entry = utilByKey.get(String(k || '').trim().toLowerCase());
+      const value = utilEntryMetricValue(entry, metric);
+      if (typeof value === 'number') vals.push(value);
+    });
+    if (vals.length < 2) return { eligible: true, count: vals.length, min: null, max: null, diff: null };
+    const min = Math.min(...vals);
+    const max = Math.max(...vals);
+    return { eligible: true, count: vals.length, min, max, diff: max - min };
+  }
+
   function formatUtilPctLabel(prefix, value) {
     return `${prefix}:${typeof value === 'number' ? `${value.toFixed(1)}%` : 'N/A'}`;
   }
@@ -6007,14 +6052,45 @@
     return 'MAX';
   }
 
+  function normalizeUtilColorMode(changed = '') {
+    const colorEl = $('utilColorEnabled');
+    const imbalanceEl = $('utilShowImbalance');
+    if (!colorEl || !imbalanceEl) return;
+    if (changed === 'imbalance' && imbalanceEl.checked && colorEl.checked) {
+      colorEl.checked = false;
+      return;
+    }
+    if (changed === 'color' && colorEl.checked && imbalanceEl.checked) {
+      imbalanceEl.checked = false;
+      return;
+    }
+    if (!changed && colorEl.checked && imbalanceEl.checked) {
+      colorEl.checked = false;
+    }
+  }
+
+  function currentUtilColorMode() {
+    const showImbalance = !!$('utilShowImbalance')?.checked;
+    const showColor = !!$('utilColorEnabled')?.checked;
+    if (showImbalance) return 'imbalance';
+    if (showColor) return 'util';
+    return 'none';
+  }
+
   function updateUtilLegendHint() {
     const el = $('utilLegendHint');
     if (!el) return;
     const metric = currentUtilMetricLabel();
-    const enabled = !!$('utilColorEnabled')?.checked;
-    el.textContent = enabled
-      ? `颜色图例：按当前 ${metric} 口径，绿色 < 40%，黄色 40-70%，红色 ≥ 70%，灰色表示无数据。`
-      : `链路颜色映射已关闭；若开启，则按当前 ${metric} 口径使用绿色 < 40%，黄色 40-70%，红色 ≥ 70%，灰色表示无数据。`;
+    const colorMode = currentUtilColorMode();
+    if (colorMode === 'imbalance') {
+      el.textContent = '颜色图例：负载分担不均 Δ(最大-最小)，绿色 < 5%，黄色 10-20%，红色 ≥ 20%，灰色表示无数据或 5-10%。';
+      return;
+    }
+    if (colorMode === 'util') {
+      el.textContent = `颜色图例：按当前 ${metric} 口径，绿色 < 40%，黄色 40-70%，红色 ≥ 70%，灰色表示无数据。`;
+      return;
+    }
+    el.textContent = `链路拥塞分析已关闭；若开启，则按当前 ${metric} 口径使用绿色 < 40%，黄色 40-70%，红色 ≥ 70%，灰色表示无数据。`;
   }
 
   function formatPctCsvValue(value) {
@@ -6327,7 +6403,7 @@
     const portText = formatEdgePortLabel(edge);
     const utilText = formatEdgeUtilText(edge);
     const descText = formatEdgeDescText(edge);
-    const showExtra = !!$('utilLabelEnabled')?.checked || !!$('utilShowBandwidth')?.checked;
+    const showExtra = !!$('utilLabelEnabled')?.checked || !!$('utilShowBandwidth')?.checked || !!$('utilShowImbalance')?.checked;
     const showDesc = !!$('utilShowEdgeDesc')?.checked;
     if (portText) parts.push(portText);
     if (showExtra && utilText) parts.push(utilText);
@@ -6541,11 +6617,14 @@
   function formatEdgeUtilText(edge) {
     const showTxRx = !!$('utilShowTxRx')?.checked;
     const showBandwidth = !!$('utilShowBandwidth')?.checked;
+    const showImbalance = !!$('utilShowImbalance')?.checked;
     const metric = (($('utilMetric')?.value || 'max').trim().toLowerCase());
     const tx = (typeof edge.data('utilTxPct') === 'number') ? edge.data('utilTxPct') : null;
     const rx = (typeof edge.data('utilRxPct') === 'number') ? edge.data('utilRxPct') : null;
     const used = (typeof edge.data('utilUsedPct') === 'number') ? edge.data('utilUsedPct') : null;
     const bw = (typeof edge.data('utilBwBps') === 'number') ? edge.data('utilBwBps') : null;
+    const imbalance = (typeof edge.data('utilImbalancePct') === 'number') ? edge.data('utilImbalancePct') : null;
+    const imbalanceEligible = !!edge.data('utilImbalanceEligible');
     const parts = [];
     if (showTxRx) {
       parts.push(formatUtilPctLabel('TX', tx));
@@ -6555,30 +6634,56 @@
       parts.push(formatUtilPctLabel(prefix, used));
     }
     if (showBandwidth) parts.push(formatBandwidthLabel(bw));
+    if (showImbalance && imbalanceEligible) {
+      parts.push(`LBΔ:${typeof imbalance === 'number' ? `${imbalance.toFixed(1)}%` : 'N/A'}`);
+    }
     return parts.join(' ');
   }
 
   function applyUtilizationToEdges() {
     if (!cy) return;
-    const enableColor = !!$('utilColorEnabled')?.checked;
+    const colorMode = currentUtilColorMode();
+    const metric = currentUtilMetricValue();
     cy.edges().forEach((e) => {
       const summary = edgeUtilSummary(e);
       const pct = edgeUtilFromKeys(e);
+      const imbalance = edgeImbalanceSummary(e, metric);
       e.data('utilTxPct', summary.tx);
       e.data('utilRxPct', summary.rx);
       e.data('utilBwBps', summary.bw);
       e.data('utilUsedPct', pct);
-      e.removeClass('util-low util-mid util-high util-na');
+      e.data('utilImbalanceEligible', !!imbalance.eligible);
+      e.data('utilImbalancePct', (typeof imbalance.diff === 'number') ? imbalance.diff : null);
+      e.removeClass('util-low util-mid util-high util-na imbalance-low imbalance-mid imbalance-high imbalance-na');
       if (pct == null) {
         e.data('utilText', 'U:N/A');
-        if (enableColor) e.addClass('util-na');
       } else {
         e.data('utilText', `U:${pct.toFixed(1)}%`);
-        if (enableColor) {
-          if (pct >= 70) e.addClass('util-high');
-          else if (pct >= 40) e.addClass('util-mid');
-          else e.addClass('util-low');
+      }
+      if (colorMode === 'imbalance') {
+        if (!imbalance.eligible || typeof imbalance.diff !== 'number') {
+          if (imbalance.eligible) e.addClass('imbalance-na');
+        } else if (imbalance.diff >= 20) {
+          e.addClass('imbalance-high');
+        } else if (imbalance.diff >= 10) {
+          e.addClass('imbalance-mid');
+        } else if (imbalance.diff < 5) {
+          e.addClass('imbalance-low');
+        } else {
+          e.addClass('imbalance-na');
         }
+      } else if (colorMode === 'util') {
+        if (pct == null) {
+          e.addClass('util-na');
+        } else if (pct >= 70) {
+          e.addClass('util-high');
+        } else if (pct >= 40) {
+          e.addClass('util-mid');
+        } else {
+          e.addClass('util-low');
+        }
+      } else {
+        e.removeClass('util-low util-mid util-high util-na imbalance-low imbalance-mid imbalance-high imbalance-na');
       }
     });
     refreshEdgeLabelDisplay();
@@ -6587,12 +6692,14 @@
   function clearUtilizationFromGraph() {
     if (!cy) return;
     cy.edges().forEach((e) => {
-      e.removeClass('util-low util-mid util-high util-na');
+      e.removeClass('util-low util-mid util-high util-na imbalance-low imbalance-mid imbalance-high imbalance-na');
       e.data('utilText', '');
       e.data('utilTxPct', null);
       e.data('utilRxPct', null);
       e.data('utilBwBps', null);
       e.data('utilUsedPct', null);
+      e.data('utilImbalanceEligible', false);
+      e.data('utilImbalancePct', null);
     });
     refreshEdgeLabelDisplay();
   }
@@ -6815,6 +6922,7 @@
         show_tx_rx: !!$('utilShowTxRx')?.checked,
         show_bandwidth: !!$('utilShowBandwidth')?.checked,
         show_edge_desc: !!$('utilShowEdgeDesc')?.checked,
+        show_imbalance: !!$('utilShowImbalance')?.checked,
         filter_active: !!utilFilterState.active,
         filter_threshold: Number.isFinite(utilFilterState.threshold) ? Number(utilFilterState.threshold) : null
       },
@@ -6998,6 +7106,8 @@
     if ($('utilShowTxRx')) $('utilShowTxRx').checked = !!utilState.show_tx_rx;
     if ($('utilShowBandwidth')) $('utilShowBandwidth').checked = !!utilState.show_bandwidth;
     if ($('utilShowEdgeDesc')) $('utilShowEdgeDesc').checked = (utilState.show_edge_desc !== false);
+    if ($('utilShowImbalance')) $('utilShowImbalance').checked = !!utilState.show_imbalance;
+    normalizeUtilColorMode();
     utilFilterState.active = !!utilState.filter_active;
     utilFilterState.threshold = Number.isFinite(Number(utilState.filter_threshold)) ? Number(utilState.filter_threshold) : null;
     updateUtilFilterUi();
@@ -7880,6 +7990,10 @@
       if ($('utilShowEdgeDesc') && typeof p.show_edge_desc === 'boolean') {
         $('utilShowEdgeDesc').checked = p.show_edge_desc;
       }
+      if ($('utilShowImbalance') && typeof p.show_imbalance === 'boolean') {
+        $('utilShowImbalance').checked = p.show_imbalance;
+      }
+      normalizeUtilColorMode();
       if (typeof p.only_mode === 'string' && ['none', 'showOnly', 'show172'].includes(p.only_mode)) {
         viewState.onlyMode = p.only_mode;
       }
@@ -7902,6 +8016,7 @@
         auto_group_mode: ($('autoGroupMode')?.value || 'off'),
         name_cluster_strength: ($('nameClusterStrength')?.value || '0.6'),
         show_edge_desc: !!$('utilShowEdgeDesc')?.checked,
+        show_imbalance: !!$('utilShowImbalance')?.checked,
         only_mode: viewState.onlyMode || 'none'
       };
       localStorage.setItem(TOPOLOGY_UI_PREF_KEY, JSON.stringify(safe));
@@ -9243,8 +9358,11 @@
     }
   });
   $('utilColorEnabled').addEventListener('change', () => {
+    normalizeUtilColorMode('color');
     applyUtilizationToEdges();
     updateUtilLegendHint();
+    saveTopologyUiPrefs();
+    schedulePersistCurrentPageSession(80);
   });
   $('utilLabelEnabled').addEventListener('change', () => {
     refreshEdgeLabelDisplay();
@@ -9261,6 +9379,14 @@
   $('utilShowEdgeDesc').addEventListener('change', () => {
     refreshEdgeLabelDisplay();
     applyAdaptiveRenderMode();
+    saveTopologyUiPrefs();
+    schedulePersistCurrentPageSession(80);
+  });
+  $('utilShowImbalance').addEventListener('change', () => {
+    normalizeUtilColorMode('imbalance');
+    applyUtilizationToEdges();
+    applyAdaptiveRenderMode();
+    updateUtilLegendHint();
     saveTopologyUiPrefs();
     schedulePersistCurrentPageSession(80);
   });
