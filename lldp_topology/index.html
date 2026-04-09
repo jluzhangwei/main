@@ -2356,6 +2356,17 @@
     return leftId && rightId ? `${leftId}||${rightId}||${leftIf}||${rightIf}` : '';
   }
 
+  function parseRowKeyNodeIds(rowKey) {
+    const text = String(rowKey || '').trim();
+    if (!text) return null;
+    const parts = text.split('||');
+    if (parts.length < 2) return null;
+    const aId = String(parts[0] || '').trim();
+    const bId = String(parts[1] || '').trim();
+    if (!aId || !bId) return null;
+    return [aId, bId];
+  }
+
   function resolveGraphRowContext(r, cols, strip) {
     const lhRaw = String(r[cols.colLH] || '').trim();
     const rhRaw = String(r[cols.colRH] || '').trim();
@@ -4525,32 +4536,96 @@
 
   function selectSingleLinkNodes() {
     if (!cy) return;
-    const scopeNodes = cy.nodes(':visible').not('.dim').filter((n) => !n.data('isGroup'));
+    const scopeNodes = cy.nodes(':visible').not('.dim').filter((n) => (
+      !n.hasClass('filtered') && !n.hasClass('onlyHidden') && !n.hasClass('utilHidden')
+    ));
     cy.nodes().removeClass('single-link-hit');
     cy.elements(':selected').unselect();
     if (!scopeNodes.length) {
       setOK('当前没有可见设备可计算单链路节点。');
       return;
     }
-    const hits = [];
+
+    const visibleRegularNodes = [];
+    const visibleGroupNodes = [];
+    const memberToVisibleNode = new Map();
     scopeNodes.forEach((node) => {
-      const visibleNeighborIds = new Set();
-      node.connectedEdges(':visible').forEach((edge) => {
-        if (edge.hasClass('dim') || edge.hasClass('filtered') || edge.hasClass('onlyHidden') || edge.hasClass('utilHidden')) return;
-        const other = edge.source().id() === node.id() ? edge.target() : edge.source();
-        if (!other || other.empty() || other.data('isGroup')) return;
-        if (!other.visible() || other.hasClass('dim') || other.hasClass('filtered') || other.hasClass('onlyHidden') || other.hasClass('utilHidden')) return;
-        visibleNeighborIds.add(other.id());
-      });
-      if (visibleNeighborIds.size === 1) hits.push(node);
+      if (node.data('isGroup')) {
+        visibleGroupNodes.push(node);
+        const members = Array.isArray(node.data('groupMembers')) ? node.data('groupMembers') : [];
+        members.forEach((memberId) => {
+          const clean = String(memberId || '').trim();
+          if (clean) memberToVisibleNode.set(clean, node.id());
+        });
+      } else {
+        visibleRegularNodes.push(node);
+        memberToVisibleNode.set(node.id(), node.id());
+      }
     });
+    if (!memberToVisibleNode.size) {
+      setOK('当前没有可见设备可计算单链路节点。');
+      return;
+    }
+
+    const neighborsByMember = new Map();
+    const ensureNeighbors = (memberId) => {
+      if (!neighborsByMember.has(memberId)) neighborsByMember.set(memberId, new Set());
+      return neighborsByMember.get(memberId);
+    };
+    memberToVisibleNode.forEach((_, memberId) => ensureNeighbors(memberId));
+
+    cy.edges(':visible').forEach((edge) => {
+      if (edge.hasClass('dim') || edge.hasClass('filtered') || edge.hasClass('onlyHidden') || edge.hasClass('utilHidden')) return;
+      const pairs = [];
+      const rowKeys = Array.isArray(edge.data('rowKeys')) ? edge.data('rowKeys') : [];
+      rowKeys.forEach((rowKey) => {
+        const ids = parseRowKeyNodeIds(rowKey);
+        if (ids) pairs.push(ids);
+      });
+      if (!pairs.length) {
+        const src = String(edge.data('source') || '').trim();
+        const dst = String(edge.data('target') || '').trim();
+        if (src && dst) pairs.push([src, dst]);
+      }
+      pairs.forEach(([aId, bId]) => {
+        const aRep = memberToVisibleNode.get(aId);
+        const bRep = memberToVisibleNode.get(bId);
+        if (!aRep || !bRep || aRep === bRep) return;
+        ensureNeighbors(aId).add(bRep);
+        ensureNeighbors(bId).add(aRep);
+      });
+    });
+
+    const singleMemberIds = new Set();
+    neighborsByMember.forEach((neighbors, memberId) => {
+      if (neighbors.size === 1) singleMemberIds.add(memberId);
+    });
+
+    const hits = [];
+    visibleRegularNodes.forEach((node) => {
+      if (singleMemberIds.has(node.id())) hits.push(node);
+    });
+    let groupHits = 0;
+    visibleGroupNodes.forEach((node) => {
+      const members = Array.isArray(node.data('groupMembers')) ? node.data('groupMembers') : [];
+      const matched = members.some((memberId) => singleMemberIds.has(String(memberId || '').trim()));
+      if (!matched) return;
+      hits.push(node);
+      groupHits += 1;
+    });
+
     if (!hits.length) {
       setOK('当前视图中没有单链路节点。');
       return;
     }
     const selection = cy.collection(hits);
     selection.select().addClass('single-link-hit');
-    setOK(`已选中单链路节点：${selection.length} 个。`);
+    const deviceHits = Math.max(0, selection.length - groupHits);
+    if (groupHits > 0) {
+      setOK(`已选中单链路节点：${selection.length} 个（设备 ${deviceHits}，节点组 ${groupHits}）。`);
+    } else {
+      setOK(`已选中单链路节点：${selection.length} 个。`);
+    }
   }
 
   function buildScopedTopologyFromVisible() {
