@@ -137,7 +137,6 @@
     .top-hero { width: 100%; }
     body.index-lite .top-hero { display: none; }
     body.index-lite .wrap { height: 100vh; }
-    body.index-lite .section-box[data-section-key="util"] { display: none; }
     body.index-lite #ctxUtil,
     body.index-lite #ctxUtilRange,
     body.index-lite #ctxAppendQuery { display: none !important; }
@@ -511,6 +510,22 @@
           <button id="buildScopedTopo">重排选中设备</button>
           <button id="openPathFinder">查找路径</button>
         </div>
+        <div class="row inline">
+          <button id="alignHorizontal">水平对齐</button>
+          <button id="alignVertical">垂直对齐</button>
+        </div>
+        <div class="row inline">
+          <button id="alignLeft">左对齐</button>
+          <button id="alignRight">右对齐</button>
+        </div>
+        <div class="row inline">
+          <button id="alignTop">上对齐</button>
+          <button id="alignBottom">下对齐</button>
+        </div>
+        <div class="row inline">
+          <button id="distributeHorizontal">水平等间距</button>
+          <button id="distributeVertical">垂直等间距</button>
+        </div>
       </div>
 
       <div class="action-group">
@@ -525,6 +540,7 @@
         </div>
         <div class="row inline">
           <button id="selectSingleLinkNodes">单链路节点</button>
+          <button id="exitGroupView" disabled>返回主视图</button>
         </div>
       </div>
 
@@ -617,7 +633,8 @@
             <option value="max" selected>查询口径：双向较大值 MAX(TX,RX)</option>
           </select>
         </div>
-        <label class="check-row"><input id="utilColorEnabled" type="checkbox" checked />链路颜色映射</label>
+        <label class="check-row"><input id="utilColorEnabled" type="checkbox" checked /><span id="utilColorEnabledLabel">链路拥塞分析</span></label>
+        <label class="check-row"><input id="utilShowImbalance" type="checkbox" /><span id="utilShowImbalanceLabel">负载分担分析</span></label>
         <label class="check-row"><input id="utilLabelEnabled" type="checkbox" checked />显示利用率标签</label>
         <label class="check-row"><input id="utilShowTxRx" type="checkbox" />显示TX/RX（TX按箭头方向）</label>
         <label class="check-row"><input id="utilShowBandwidth" type="checkbox" />显示总带宽</label>
@@ -641,6 +658,7 @@
   <button id="ctxLock">固定位置</button>
   <button id="ctxDelete">删除设备</button>
   <button id="ctxDeleteLink">删除链路</button>
+  <button id="ctxToggleEdgeExpand">展开链路</button>
   <button id="ctxEdgeDesc">添加描述</button>
   <div id="ctxSepEdit" class="ctx-sep"></div>
   <button id="ctxPathVia">设为必经点</button>
@@ -1027,11 +1045,17 @@
   let ctxAppendSingleHop = false;
   let utilByKey = new Map();
   let edgeDescByKey = new Map();
+  let expandedMergedEdgePairKeys = new Set();
   let primaryCliSource = '';
   let dragPerfMode = false;
   let expandedAutoGroupKeys = new Set();
   let manualGroups = [];
   let expandedManualGroupKeys = new Set();
+  let groupViewState = {
+    active: false,
+    groupKey: '',
+    preSnapshot: null
+  };
   let manualCanvasNodes = [];
   const CLOUD_ICON_SVG_URI = 'https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/icons/cloud.svg';
   const INDEX_LITE_MODE = true;
@@ -1059,6 +1083,8 @@
   };
   let rollbackApplyInProgress = false;
   let rollbackArmSeq = 0;
+  let dragRollbackBeforeSnapshot = null;
+  let dragRollbackStartPos = null;
   let currentPathState = null;
   let pendingViaNodeName = '';
   let ctxCanvasPos = null;
@@ -1096,6 +1122,23 @@
     el.style.display = 'none';
   }
 
+  function hideUtilControlById(id) {
+    const el = $(id);
+    if (!el) return;
+    let target = el;
+    if (el.tagName === 'INPUT' && ['checkbox', 'radio'].includes(String(el.type || '').toLowerCase())) {
+      const label = el.closest('label');
+      if (label) target = label;
+    } else if (el.tagName === 'BUTTON') {
+      const wrap = el.parentElement;
+      if (wrap && wrap.tagName === 'DIV') target = wrap;
+    } else if (el.tagName === 'SELECT') {
+      const wrap = el.parentElement;
+      if (wrap && wrap.tagName === 'DIV') target = wrap;
+    }
+    target.style.display = 'none';
+  }
+
   function applyIndexLiteMode() {
     if (!INDEX_LITE_MODE) return;
     document.body.classList.add('index-lite');
@@ -1110,7 +1153,35 @@
     hideElementById('ctxUtilRange');
     hideElementById('ctxAppendQuery');
     const utilSection = document.querySelector('.section-box[data-section-key="util"]');
-    if (utilSection) utilSection.style.display = 'none';
+    if (utilSection) utilSection.style.display = '';
+    const keepVisibleIds = new Set([
+      'utilColorEnabled',
+      'utilLabelEnabled',
+      'utilShowTxRx',
+      'utilShowBandwidth',
+      'utilShowEdgeDesc',
+      'utilShowEdgeDescLabel',
+      'utilShowImbalance',
+      'utilShowImbalanceLabel'
+    ]);
+    const hideUtilIds = [
+      'utilFilterActiveBar',
+      'refreshUtilization',
+      'refreshUtilizationZbx',
+      'openZbxConfig',
+      'downloadUtilCache',
+      'downloadUtilDebug',
+      'openUtilFilterModal',
+      'utilDebugEnabled',
+      'utilMetric',
+      'utilResultHint',
+      'utilLegendHint',
+      'clearUtilFilterOnly'
+    ];
+    hideUtilIds.forEach((id) => {
+      if (keepVisibleIds.has(id)) return;
+      hideUtilControlById(id);
+    });
     const importHint = $('importHint');
     if (importHint) {
       importHint.textContent = '仅支持 CSV / Json 导入；导入会覆盖当前结果，追加会把新内容合并到当前图中。';
@@ -1162,6 +1233,8 @@
       auto_group_label: '自动合组',
       ctx_create_group: '设备合组',
       ctx_delete_link: '删除链路',
+      ctx_edge_expand: '展开链路',
+      ctx_edge_collapse: '收起链路',
       ctx_copy_link: '复制链路',
       ctx_group_expand: '合组展开',
       ctx_group_collapse: '收起合组',
@@ -1180,6 +1253,14 @@
       btn_select_visible: '全选可见节点',
       btn_relayout_selected: '重排选中设备',
       btn_find_path: '查找路径',
+      btn_align_horizontal: '水平对齐',
+      btn_align_vertical: '垂直对齐',
+      btn_align_left: '左对齐',
+      btn_align_right: '右对齐',
+      btn_align_top: '上对齐',
+      btn_align_bottom: '下对齐',
+      btn_distribute_horizontal: '水平等间距',
+      btn_distribute_vertical: '垂直等间距',
       node_label_short: '缩略（推荐）',
       node_label_full: '全名（容易挤）',
       node_label_full_ip: '全名+IP',
@@ -1189,6 +1270,7 @@
       btn_clear_visibility: '恢复显示',
       btn_show172: '只显示172设备',
       btn_single_link: '单链路节点',
+      btn_exit_group_view: '返回主视图',
       btn_delete_selected: '删除选中',
       btn_delete_unselected: '仅保留选中',
       btn_delete_non_adjacent: '仅保留邻接',
@@ -1214,6 +1296,8 @@
       btn_util_filter: '利用率过滤',
       btn_clear_util_filter: '清除过滤',
       util_show_edge_desc: '显示链路描述',
+      util_color_analysis: '链路拥塞分析',
+      util_show_imbalance: '负载分担分析',
       btn_run_sql: '执行 SQL 查询',
       btn_sql_config: 'SQL配置',
       btn_dl_sql_tmp: '下载临时 CSV',
@@ -1231,6 +1315,8 @@
       ctx_util: '当前利用率',
       ctx_util_range: '区间利用率',
       ctx_edge_desc: '添加描述',
+      ctx_edge_expand: '展开链路',
+      ctx_edge_collapse: '收起链路',
       edge_desc_modal_title: '链路描述',
       edge_desc_target_label: '目标链路',
       edge_desc_input_label: '描述内容',
@@ -1287,6 +1373,7 @@
       show_only_label: 'Show Only: comma=tier, slash=OR group, &=all terms, press Enter to apply',
       layer_terms_label: 'Layer Keywords (high->low, comma=layer, slash=same layer, &=all terms)',
       btn_single_link: 'Single-Link Nodes',
+      btn_exit_group_view: 'Back To Main View',
       partition_terms_label: 'Partition Keywords (left->right, comma=partition, slash=same partition, &=all terms)',
       layer_terms_hint: 'Uses the same expression syntax as partitions: comma=layer, slash=OR, &=all terms. If partitions are set, layering runs independently inside each partition.',
       partition_terms_hint: 'Uses the same expression syntax as layering: comma=partition, slash=OR, &=all terms. First matching partition wins and later partitions are skipped.',
@@ -1295,6 +1382,8 @@
       auto_group_label: 'Auto Grouping',
       ctx_create_group: 'Create Group',
       ctx_delete_link: 'Delete Link',
+      ctx_edge_expand: 'Expand Links',
+      ctx_edge_collapse: 'Collapse Links',
       ctx_copy_link: 'Copy Link',
       ctx_group_expand: 'Expand Group',
       ctx_group_collapse: 'Collapse Group',
@@ -1313,6 +1402,14 @@
       btn_select_visible: 'Select Visible Nodes',
       btn_relayout_selected: 'Relayout Selected',
       btn_find_path: 'Find Path',
+      btn_align_horizontal: 'Align Horizontally',
+      btn_align_vertical: 'Align Vertically',
+      btn_align_left: 'Align Left',
+      btn_align_right: 'Align Right',
+      btn_align_top: 'Align Top',
+      btn_align_bottom: 'Align Bottom',
+      btn_distribute_horizontal: 'Distribute Horizontally',
+      btn_distribute_vertical: 'Distribute Vertically',
       node_label_short: 'Short (Recommended)',
       node_label_full: 'Full (Crowded)',
       node_label_full_ip: 'Full + IP',
@@ -1346,6 +1443,8 @@
       btn_util_filter: 'Util Filter',
       btn_clear_util_filter: 'Clear Filter',
       util_show_edge_desc: 'Show Link Description',
+      util_color_analysis: 'Link Congestion Analysis',
+      util_show_imbalance: 'Load Balancing Analysis',
       btn_run_sql: 'Run SQL Query',
       btn_sql_config: 'SQL Config',
       btn_dl_sql_tmp: 'Download Temp CSV',
@@ -1363,6 +1462,8 @@
       ctx_util: 'Current Utilization',
       ctx_util_range: 'Range Utilization',
       ctx_edge_desc: 'Add Description',
+      ctx_edge_expand: 'Expand Links',
+      ctx_edge_collapse: 'Collapse Links',
       edge_desc_modal_title: 'Link Description',
       edge_desc_target_label: 'Target Link',
       edge_desc_input_label: 'Description',
@@ -1548,11 +1649,20 @@
     setText('selectVisible', 'btn_select_visible');
     setText('buildScopedTopo', 'btn_relayout_selected');
     setText('openPathFinder', 'btn_find_path');
+    setText('alignHorizontal', 'btn_align_horizontal');
+    setText('alignVertical', 'btn_align_vertical');
+    setText('alignLeft', 'btn_align_left');
+    setText('alignRight', 'btn_align_right');
+    setText('alignTop', 'btn_align_top');
+    setText('alignBottom', 'btn_align_bottom');
+    setText('distributeHorizontal', 'btn_distribute_horizontal');
+    setText('distributeVertical', 'btn_distribute_vertical');
     setText('fitSelection', 'btn_fit_selection');
     setText('isolateSelection', 'btn_isolate');
     setText('clearSelectionHide', 'btn_clear_visibility');
     setText('show172Only', 'btn_show172');
     setText('selectSingleLinkNodes', 'btn_single_link');
+    setText('exitGroupView', 'btn_exit_group_view');
     setText('deleteSelection', 'btn_delete_selected');
     setText('keepSelected', 'btn_delete_unselected');
     setText('keepAdjacentOnly', 'btn_delete_non_adjacent');
@@ -1577,6 +1687,8 @@
     setText('openUtilFilterModal', 'btn_util_filter');
     setText('clearUtilFilterOnly', 'btn_clear_util_filter');
     setText('utilShowEdgeDescLabel', 'util_show_edge_desc');
+    setText('utilColorEnabledLabel', 'util_color_analysis');
+    setText('utilShowImbalanceLabel', 'util_show_imbalance');
     setText('runSqlGenerateModal', 'btn_run_sql');
     setText('cancelSqlGenerateModal', 'btn_cancel_query');
     setText('openSqlConfigModal', 'btn_sql_config');
@@ -1595,6 +1707,7 @@
     setText('ctxAddNodeRegular', 'ctx_add_node_regular');
     setText('ctxAddNodeCloud', 'ctx_add_node_cloud');
     setText('ctxAddLink', 'ctx_add_link');
+    setText('ctxToggleEdgeExpand', 'ctx_edge_expand');
     setText('ctxCreateGroup', 'ctx_create_group');
     setText('ctxDeleteLink', 'ctx_delete_link');
     setText('ctxCopyLink', 'ctx_copy_link');
@@ -1685,9 +1798,13 @@
   }
 
   function clearGroupState() {
+    groupViewState = { active: false, groupKey: '', preSnapshot: null };
     manualGroups = [];
     expandedManualGroupKeys = new Set();
     expandedAutoGroupKeys = new Set();
+    expandedMergedEdgePairKeys = new Set();
+    if (cy) cy.elements().removeClass('groupViewHidden');
+    updateGroupViewButtonState();
   }
 
   function clearManualCanvasState() {
@@ -1762,14 +1879,26 @@
   function updateRollbackButtonState() {
     const undoBtn = $('rollbackUndo');
     const redoBtn = $('rollbackRedo');
+    const undoCount = rollbackState.undoStack.length;
+    const redoCount = rollbackState.redoStack.length;
     if (undoBtn) {
-      undoBtn.disabled = rollbackState.undoStack.length === 0;
-      undoBtn.textContent = tr('rollback_prev');
+      undoBtn.disabled = undoCount === 0;
+      undoBtn.textContent = `${tr('rollback_prev')}(${undoCount})`;
     }
     if (redoBtn) {
-      redoBtn.disabled = rollbackState.redoStack.length === 0;
-      redoBtn.textContent = tr('rollback_next');
+      redoBtn.disabled = redoCount === 0;
+      redoBtn.textContent = `${tr('rollback_next')}(${redoCount})`;
     }
+  }
+
+  function pushRollbackEntry(beforeSnapshot, afterSnapshot) {
+    if (!beforeSnapshot || !afterSnapshot) return;
+    rollbackState.undoStack.push({ before: beforeSnapshot, after: afterSnapshot });
+    if (rollbackState.undoStack.length > MAX_ROLLBACK_STEPS) {
+      rollbackState.undoStack = rollbackState.undoStack.slice(-MAX_ROLLBACK_STEPS);
+    }
+    rollbackState.redoStack = [];
+    updateRollbackButtonState();
   }
 
   function captureRollbackSnapshot() {
@@ -1791,11 +1920,12 @@
         layerTerms: $('layerTerms')?.value || '',
         bizIsolationTerms: $('bizIsolationTerms')?.value || '',
         layoutMode: $('layoutMode')?.value || 'layer',
-        nodeLabelMode: $('nodeLabelMode')?.value || 'full',
+        nodeLabelMode: $('nodeLabelMode')?.value || 'short',
         edgeLabelMode: $('edgeLabelMode')?.value || 'none',
         spacing: $('spacing')?.value || '0.5',
         stripDomain: $('stripDomain')?.value || 'yes',
         utilShowEdgeDesc: !!$('utilShowEdgeDesc')?.checked,
+        utilShowImbalance: !!$('utilShowImbalance')?.checked,
         nameClusterMode: $('nameClusterMode')?.value || 'on',
         autoGroupMode: $('autoGroupMode')?.value || 'off',
         nameClusterStrength: $('nameClusterStrength')?.value || '0.6',
@@ -1809,6 +1939,7 @@
       manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes),
       edgeDescEntries: exportEdgeDescEntries(),
       expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
+      expandedMergedEdgePairKeys: Array.from(expandedMergedEdgePairKeys),
       mergedMode: !!mergedMode,
       selectedNodeIds: cy ? cy.nodes(':selected').map((n) => n.id()) : [],
     };
@@ -1842,6 +1973,8 @@
       if ($('spacing')) $('spacing').value = snapshot.ui?.spacing || '0.5';
       if ($('stripDomain')) $('stripDomain').value = snapshot.ui?.stripDomain || 'yes';
       if ($('utilShowEdgeDesc')) $('utilShowEdgeDesc').checked = snapshot.ui?.utilShowEdgeDesc !== false;
+      if ($('utilShowImbalance')) $('utilShowImbalance').checked = !!snapshot.ui?.utilShowImbalance;
+      normalizeUtilColorMode();
       if ($('nameClusterMode')) $('nameClusterMode').value = snapshot.ui?.nameClusterMode || 'on';
       if ($('autoGroupMode')) $('autoGroupMode').value = snapshot.ui?.autoGroupMode || 'off';
       if ($('nameClusterStrength')) $('nameClusterStrength').value = snapshot.ui?.nameClusterStrength || '0.6';
@@ -1850,6 +1983,7 @@
       manualCanvasNodes = cloneManualCanvasNodes(snapshot.manualCanvasNodes || []);
       importEdgeDescEntries(snapshot.edgeDescEntries || [], false);
       expandedManualGroupKeys = new Set((snapshot.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
+      expandedMergedEdgePairKeys = new Set((snapshot.expandedMergedEdgePairKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
 
       $('nRows').textContent = rawRows.length;
       $('nCols').textContent = headers.length;
@@ -1886,25 +2020,37 @@
     if (!beforeSnapshot || rollbackApplyInProgress) return;
     const delay = Math.max(0, Number(delayMs) || 0);
     const seq = ++rollbackArmSeq;
+    if (delay <= 0) {
+      if (rollbackApplyInProgress) return;
+      pushRollbackEntry(beforeSnapshot, captureRollbackSnapshot());
+      return;
+    }
     setTimeout(() => {
       if (seq !== rollbackArmSeq) return;
       if (rollbackApplyInProgress) return;
-      const afterSnapshot = captureRollbackSnapshot();
-      if (!afterSnapshot) return;
-      rollbackState.undoStack.push({ before: beforeSnapshot, after: afterSnapshot });
-      if (rollbackState.undoStack.length > MAX_ROLLBACK_STEPS) {
-        rollbackState.undoStack = rollbackState.undoStack.slice(-MAX_ROLLBACK_STEPS);
-      }
-      rollbackState.redoStack = [];
-      updateRollbackButtonState();
+      pushRollbackEntry(beforeSnapshot, captureRollbackSnapshot());
     }, delay);
   }
 
   function runWithRollback(work, opts = {}) {
     const beforeSnapshot = captureRollbackSnapshot();
-    const result = work();
-    armRollbackState(beforeSnapshot, opts.delayMs || 0);
-    return result;
+    const delayMs = Math.max(0, Number(opts.delayMs) || 0);
+    try {
+      const result = work();
+      if (result && typeof result.then === 'function') {
+        return result.then((val) => {
+          if (delayMs > 0) armRollbackState(beforeSnapshot, delayMs);
+          else pushRollbackEntry(beforeSnapshot, captureRollbackSnapshot());
+          return val;
+        });
+      }
+      if (delayMs > 0) armRollbackState(beforeSnapshot, delayMs);
+      else pushRollbackEntry(beforeSnapshot, captureRollbackSnapshot());
+      return result;
+    } catch (e) {
+      setErr(`操作失败：${String(e && e.message ? e.message : e)}`);
+      return null;
+    }
   }
 
   function stopCliTimer() {
@@ -2208,6 +2354,17 @@
     const leftIf = normalizeUtilInterface(leftIsA ? li : ri) || 'n/a';
     const rightIf = normalizeUtilInterface(leftIsA ? ri : li) || 'n/a';
     return leftId && rightId ? `${leftId}||${rightId}||${leftIf}||${rightIf}` : '';
+  }
+
+  function parseRowKeyNodeIds(rowKey) {
+    const text = String(rowKey || '').trim();
+    if (!text) return null;
+    const parts = text.split('||');
+    if (parts.length < 2) return null;
+    const aId = String(parts[0] || '').trim();
+    const bId = String(parts[1] || '').trim();
+    if (!aId || !bId) return null;
+    return [aId, bId];
   }
 
   function resolveGraphRowContext(r, cols, strip) {
@@ -2830,6 +2987,10 @@
       { selector: 'edge.util-mid', style: { 'line-color': '#ca8a04', 'target-arrow-color': '#ca8a04' } },
       { selector: 'edge.util-high', style: { 'line-color': '#dc2626', 'target-arrow-color': '#dc2626' } },
       { selector: 'edge.util-na', style: { 'line-style': 'dashed', 'line-color': '#9ca3af', 'target-arrow-color': '#9ca3af' } },
+      { selector: 'edge.imbalance-low', style: { 'line-color': '#16a34a', 'target-arrow-color': '#16a34a' } },
+      { selector: 'edge.imbalance-mid', style: { 'line-color': '#ca8a04', 'target-arrow-color': '#ca8a04' } },
+      { selector: 'edge.imbalance-high', style: { 'line-color': '#dc2626', 'target-arrow-color': '#dc2626' } },
+      { selector: 'edge.imbalance-na', style: { 'line-style': 'dashed', 'line-color': '#9ca3af', 'target-arrow-color': '#9ca3af' } },
       { selector: '.path-main', style: { 'line-color': '#2563eb', 'target-arrow-color': '#2563eb', 'width': 3.2, 'z-index-compare': 'manual', 'z-index': 1200 } },
       { selector: '.path-main2', style: { 'line-color': '#0ea5e9', 'target-arrow-color': '#0ea5e9', 'width': 3.2, 'z-index-compare': 'manual', 'z-index': 1190 } },
       { selector: '.path-alt1', style: { 'line-color': '#f59e0b', 'target-arrow-color': '#f59e0b', 'width': 2.8, 'z-index-compare': 'manual', 'z-index': 1180 } },
@@ -2855,8 +3016,7 @@
           'curve-style': 'haystack',
           'target-arrow-shape': 'none',
           'label': '',
-          'text-background-opacity': 0,
-          'arrow-scale': 0
+          'text-background-opacity': 0
         }
       },
       {
@@ -2872,18 +3032,12 @@
       { selector: '.filtered', style: { 'display': 'none' } },
       { selector: '.onlyHidden', style: { 'display': 'none' } },
       { selector: '.utilHidden', style: { 'display': 'none' } },
+      { selector: '.groupViewHidden', style: { 'display': 'none' } },
       { selector: 'node:selected', style: {
         'z-index-compare': 'manual',
-        'z-index': 999
-      } },
-      { selector: ':selected', style: {
+        'z-index': 999,
         'border-width': 3,
-        'border-color': '#2563eb',
-        'shadow-blur': 14,
-        'shadow-color': '#2563eb',
-        'shadow-opacity': 0.6,
-        'shadow-offset-x': 0,
-        'shadow-offset-y': 0
+        'border-color': '#2563eb'
       } },
       { selector: 'node.manual-cloud-node:selected', style: {
         'border-width': 2,
@@ -2905,11 +3059,44 @@
       cy.elements().removeClass('hit dim');
       cy.nodes(':selected').addClass('hit');
     });
-    cy.on('grab', 'node', () => {
+    cy.on('grab', 'node', (evt) => {
       if (shouldUseDragLiteMode()) setDragPerfMode(true);
+      if (rollbackApplyInProgress) {
+        dragRollbackBeforeSnapshot = null;
+        dragRollbackStartPos = null;
+        return;
+      }
+      dragRollbackBeforeSnapshot = captureRollbackSnapshot();
+      const selected = cy.nodes(':selected');
+      const moving = (selected && selected.length)
+        ? selected
+        : (evt && evt.target ? evt.target.collection() : cy.collection());
+      const startPos = new Map();
+      moving.forEach((node) => {
+        if (!node || !node.length || !node.visible() || node.locked()) return;
+        startPos.set(node.id(), {
+          x: Number(node.position('x')) || 0,
+          y: Number(node.position('y')) || 0
+        });
+      });
+      dragRollbackStartPos = startPos.size ? startPos : null;
     });
     cy.on('free', 'node', () => {
       if (dragPerfMode) setDragPerfMode(false);
+      if (dragRollbackBeforeSnapshot && dragRollbackStartPos && dragRollbackStartPos.size) {
+        let moved = false;
+        dragRollbackStartPos.forEach((p, id) => {
+          if (moved) return;
+          const node = cy.getElementById(id);
+          if (!node || !node.length) return;
+          const nx = Number(node.position('x')) || 0;
+          const ny = Number(node.position('y')) || 0;
+          if (Math.abs(nx - p.x) > 0.5 || Math.abs(ny - p.y) > 0.5) moved = true;
+        });
+        if (moved) pushRollbackEntry(dragRollbackBeforeSnapshot, captureRollbackSnapshot());
+      }
+      dragRollbackBeforeSnapshot = null;
+      dragRollbackStartPos = null;
       refreshEdgeLabelDisplay();
       schedulePersistCurrentPageSession(120);
     });
@@ -2958,7 +3145,6 @@
         elements,
         style: cytoscapeStyleConfig(nodeLabelMode),
         layout: { name: 'preset' },
-        wheelSensitivity: 0.22,
         pixelRatio: 1,
         hideEdgesOnViewport: true,
         textureOnViewport: true
@@ -3277,6 +3463,16 @@
     reapplyViewStateAfterBuild();
     applyDeletedMaskAfterBuild();
     reapplyUtilFilterAfterBuild();
+    if (groupViewState.active) {
+      const scope = computeManualGroupViewScope(groupViewState.groupKey);
+      if (scope) {
+        applyGroupViewFilter(scope, true);
+      } else {
+        groupViewState = { active: false, groupKey: '', preSnapshot: null };
+        if (cy) cy.elements().removeClass('groupViewHidden');
+        updateGroupViewButtonState();
+      }
+    }
     if (preserveViewport && prevPan && Number.isFinite(prevZoom)) {
       cy.zoom(prevZoom);
       cy.pan(prevPan);
@@ -4340,32 +4536,96 @@
 
   function selectSingleLinkNodes() {
     if (!cy) return;
-    const scopeNodes = cy.nodes(':visible').not('.dim').filter((n) => !n.data('isGroup'));
+    const scopeNodes = cy.nodes(':visible').not('.dim').filter((n) => (
+      !n.hasClass('filtered') && !n.hasClass('onlyHidden') && !n.hasClass('utilHidden')
+    ));
     cy.nodes().removeClass('single-link-hit');
     cy.elements(':selected').unselect();
     if (!scopeNodes.length) {
       setOK('当前没有可见设备可计算单链路节点。');
       return;
     }
-    const hits = [];
+
+    const visibleRegularNodes = [];
+    const visibleGroupNodes = [];
+    const memberToVisibleNode = new Map();
     scopeNodes.forEach((node) => {
-      const visibleNeighborIds = new Set();
-      node.connectedEdges(':visible').forEach((edge) => {
-        if (edge.hasClass('dim') || edge.hasClass('filtered') || edge.hasClass('onlyHidden') || edge.hasClass('utilHidden')) return;
-        const other = edge.source().id() === node.id() ? edge.target() : edge.source();
-        if (!other || other.empty() || other.data('isGroup')) return;
-        if (!other.visible() || other.hasClass('dim') || other.hasClass('filtered') || other.hasClass('onlyHidden') || other.hasClass('utilHidden')) return;
-        visibleNeighborIds.add(other.id());
-      });
-      if (visibleNeighborIds.size === 1) hits.push(node);
+      if (node.data('isGroup')) {
+        visibleGroupNodes.push(node);
+        const members = Array.isArray(node.data('groupMembers')) ? node.data('groupMembers') : [];
+        members.forEach((memberId) => {
+          const clean = String(memberId || '').trim();
+          if (clean) memberToVisibleNode.set(clean, node.id());
+        });
+      } else {
+        visibleRegularNodes.push(node);
+        memberToVisibleNode.set(node.id(), node.id());
+      }
     });
+    if (!memberToVisibleNode.size) {
+      setOK('当前没有可见设备可计算单链路节点。');
+      return;
+    }
+
+    const neighborsByMember = new Map();
+    const ensureNeighbors = (memberId) => {
+      if (!neighborsByMember.has(memberId)) neighborsByMember.set(memberId, new Set());
+      return neighborsByMember.get(memberId);
+    };
+    memberToVisibleNode.forEach((_, memberId) => ensureNeighbors(memberId));
+
+    cy.edges(':visible').forEach((edge) => {
+      if (edge.hasClass('dim') || edge.hasClass('filtered') || edge.hasClass('onlyHidden') || edge.hasClass('utilHidden')) return;
+      const pairs = [];
+      const rowKeys = Array.isArray(edge.data('rowKeys')) ? edge.data('rowKeys') : [];
+      rowKeys.forEach((rowKey) => {
+        const ids = parseRowKeyNodeIds(rowKey);
+        if (ids) pairs.push(ids);
+      });
+      if (!pairs.length) {
+        const src = String(edge.data('source') || '').trim();
+        const dst = String(edge.data('target') || '').trim();
+        if (src && dst) pairs.push([src, dst]);
+      }
+      pairs.forEach(([aId, bId]) => {
+        const aRep = memberToVisibleNode.get(aId);
+        const bRep = memberToVisibleNode.get(bId);
+        if (!aRep || !bRep || aRep === bRep) return;
+        ensureNeighbors(aId).add(bRep);
+        ensureNeighbors(bId).add(aRep);
+      });
+    });
+
+    const singleMemberIds = new Set();
+    neighborsByMember.forEach((neighbors, memberId) => {
+      if (neighbors.size === 1) singleMemberIds.add(memberId);
+    });
+
+    const hits = [];
+    visibleRegularNodes.forEach((node) => {
+      if (singleMemberIds.has(node.id())) hits.push(node);
+    });
+    let groupHits = 0;
+    visibleGroupNodes.forEach((node) => {
+      const members = Array.isArray(node.data('groupMembers')) ? node.data('groupMembers') : [];
+      const matched = members.some((memberId) => singleMemberIds.has(String(memberId || '').trim()));
+      if (!matched) return;
+      hits.push(node);
+      groupHits += 1;
+    });
+
     if (!hits.length) {
       setOK('当前视图中没有单链路节点。');
       return;
     }
     const selection = cy.collection(hits);
     selection.select().addClass('single-link-hit');
-    setOK(`已选中单链路节点：${selection.length} 个。`);
+    const deviceHits = Math.max(0, selection.length - groupHits);
+    if (groupHits > 0) {
+      setOK(`已选中单链路节点：${selection.length} 个（设备 ${deviceHits}，节点组 ${groupHits}）。`);
+    } else {
+      setOK(`已选中单链路节点：${selection.length} 个。`);
+    }
   }
 
   function buildScopedTopologyFromVisible() {
@@ -4419,6 +4679,193 @@
   function updateCounts() {
     $('nNodes').textContent = cy ? cy.nodes().length : '-';
     $('nEdges').textContent = cy ? cy.edges().length : '-';
+  }
+
+  function updateGroupViewButtonState() {
+    const btn = $('exitGroupView');
+    if (!btn) return;
+    btn.disabled = !groupViewState.active;
+    btn.textContent = tr('btn_exit_group_view');
+  }
+
+  function captureGroupViewBaseSnapshot() {
+    return {
+      headers: headers.slice(),
+      sourceRows: cloneRows(sourceRows),
+      rawRows: cloneRows(rawRows),
+      positions: capturePositions(),
+      deletedStack: deletedStack.map((x) => (Array.isArray(x) ? x.slice() : [])),
+      viewState: {
+        filterTerms: cloneMatchExpression(viewState.filterTerms),
+        onlyMode: viewState.onlyMode || 'none',
+        onlyTerms: cloneMatchExpression(viewState.onlyTerms),
+      },
+      ui: {
+        filter: $('filter')?.value || '',
+        showOnly: $('showOnly')?.value || '',
+        layerTerms: $('layerTerms')?.value || '',
+        bizIsolationTerms: $('bizIsolationTerms')?.value || '',
+        layoutMode: $('layoutMode')?.value || 'layer',
+        nodeLabelMode: $('nodeLabelMode')?.value || 'full',
+        edgeLabelMode: $('edgeLabelMode')?.value || 'none',
+        spacing: $('spacing')?.value || '0.5',
+        stripDomain: $('stripDomain')?.value || 'yes',
+        nameClusterMode: $('nameClusterMode')?.value || 'on',
+        autoGroupMode: $('autoGroupMode')?.value || 'off',
+        nameClusterStrength: $('nameClusterStrength')?.value || '0.6',
+        colLocalHost: $('colLocalHost')?.value || '',
+        colRemoteHost: $('colRemoteHost')?.value || '',
+        colLocalIf: $('colLocalIf')?.value || '',
+        colRemoteIf: $('colRemoteIf')?.value || '',
+      },
+      expandedAutoGroupKeys: Array.from(expandedAutoGroupKeys),
+      manualGroups: cloneManualGroups(manualGroups),
+      expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
+      expandedMergedEdgePairKeys: Array.from(expandedMergedEdgePairKeys),
+      mergedMode: !!mergedMode,
+      selectedNodeIds: cy ? cy.nodes(':selected').map((n) => n.id()) : [],
+      pan: cy ? { ...cy.pan() } : null,
+      zoom: cy ? cy.zoom() : null
+    };
+  }
+
+  function restoreGroupViewBaseSnapshot(snapshot) {
+    if (!snapshot || !Array.isArray(snapshot.headers)) return false;
+    headers = snapshot.headers.slice();
+    sourceRows = cloneRows(snapshot.sourceRows || []);
+    rawRows = cloneRows(snapshot.rawRows || []);
+    deletedStack = (snapshot.deletedStack || []).map((x) => (Array.isArray(x) ? x.slice() : []));
+    rebuildDeletedNodeIdsFromStack();
+    viewState.filterTerms = cloneMatchExpression(snapshot.viewState?.filterTerms || []);
+    viewState.onlyMode = snapshot.viewState?.onlyMode || 'none';
+    viewState.onlyTerms = cloneMatchExpression(snapshot.viewState?.onlyTerms || []);
+    mergedMode = !!snapshot.mergedMode;
+    setMergeButtonText();
+    if ($('filter')) $('filter').value = snapshot.ui?.filter || '';
+    if ($('showOnly')) $('showOnly').value = snapshot.ui?.showOnly || '';
+    if ($('layerTerms')) $('layerTerms').value = snapshot.ui?.layerTerms || '';
+    if ($('bizIsolationTerms')) $('bizIsolationTerms').value = snapshot.ui?.bizIsolationTerms || '';
+    if ($('layoutMode')) $('layoutMode').value = snapshot.ui?.layoutMode || 'layer';
+    if ($('nodeLabelMode')) $('nodeLabelMode').value = snapshot.ui?.nodeLabelMode || 'short';
+    if ($('edgeLabelMode')) $('edgeLabelMode').value = snapshot.ui?.edgeLabelMode || 'none';
+    if ($('spacing')) $('spacing').value = snapshot.ui?.spacing || '0.5';
+    if ($('stripDomain')) $('stripDomain').value = snapshot.ui?.stripDomain || 'yes';
+    if ($('nameClusterMode')) $('nameClusterMode').value = snapshot.ui?.nameClusterMode || 'on';
+    if ($('autoGroupMode')) $('autoGroupMode').value = snapshot.ui?.autoGroupMode || 'off';
+    if ($('nameClusterStrength')) $('nameClusterStrength').value = snapshot.ui?.nameClusterStrength || '0.6';
+    expandedAutoGroupKeys = new Set((snapshot.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
+    manualGroups = cloneManualGroups(snapshot.manualGroups || []);
+    expandedManualGroupKeys = new Set((snapshot.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
+    expandedMergedEdgePairKeys = new Set((snapshot.expandedMergedEdgePairKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
+    $('nRows').textContent = rawRows.length;
+    $('nCols').textContent = headers.length;
+    if (headers.length) {
+      fillSelect('colLocalHost', autoPickColumn(['localhostname','local_host','src','from']));
+      fillSelect('colRemoteHost', autoPickColumn(['remotehostname','remote_host','dst','to']));
+      fillSelect('colLocalIf', autoPickColumn(['localinterface','local_if','src_if','from_if']));
+      fillSelect('colRemoteIf', autoPickColumn(['remoteinterface','remote_if','dst_if','to_if']));
+      if (snapshot.ui?.colLocalHost && headers.includes(snapshot.ui.colLocalHost)) $('colLocalHost').value = snapshot.ui.colLocalHost;
+      if (snapshot.ui?.colRemoteHost && headers.includes(snapshot.ui.colRemoteHost)) $('colRemoteHost').value = snapshot.ui.colRemoteHost;
+      if (snapshot.ui?.colLocalIf && headers.includes(snapshot.ui.colLocalIf)) $('colLocalIf').value = snapshot.ui.colLocalIf;
+      if (snapshot.ui?.colRemoteIf && headers.includes(snapshot.ui.colRemoteIf)) $('colRemoteIf').value = snapshot.ui.colRemoteIf;
+    }
+    const pos = snapshot.positions || {};
+    buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
+    applyPositions(pos);
+    if (cy && snapshot.pan && Number.isFinite(snapshot.zoom)) {
+      cy.zoom(Number(snapshot.zoom));
+      cy.pan(snapshot.pan);
+    }
+    if (Array.isArray(snapshot.selectedNodeIds) && cy) {
+      cy.elements(':selected').unselect();
+      snapshot.selectedNodeIds.forEach((id) => {
+        const n = cy.getElementById(String(id || ''));
+        if (n && n.length) n.select();
+      });
+    }
+    return true;
+  }
+
+  function computeManualGroupViewScope(groupKey) {
+    if (!cy) return null;
+    const key = String(groupKey || '').trim();
+    if (!key) return null;
+    const group = cloneManualGroups(manualGroups).find((g) => String(g.key || '').trim() === key);
+    if (!group) return null;
+    const memberIds = Array.from(new Set((group.members || []).map((id) => String(id || '').trim()).filter(Boolean)));
+    const memberNodes = memberIds.map((id) => cy.getElementById(id)).filter((n) => n && n.length && !n.data('isGroup') && n.visible());
+    if (!memberNodes.length) return null;
+    const memberSet = new Set(memberNodes.map((n) => n.id()));
+    const scopeNodeIds = new Set(memberSet);
+    memberNodes.forEach((node) => {
+      node.connectedEdges(':visible').forEach((edge) => {
+        const src = edge.source();
+        const tgt = edge.target();
+        if (src && src.length && src.visible()) scopeNodeIds.add(src.id());
+        if (tgt && tgt.length && tgt.visible()) scopeNodeIds.add(tgt.id());
+      });
+    });
+    return {
+      groupKey: key,
+      memberNodeIds: Array.from(memberSet),
+      scopeNodeIds: Array.from(scopeNodeIds)
+    };
+  }
+
+  function applyGroupViewFilter(scope, preserveViewport = false) {
+    if (!cy || !scope) return false;
+    const memberSet = new Set((scope.memberNodeIds || []).map((id) => String(id || '').trim()).filter(Boolean));
+    const scopeSet = new Set((scope.scopeNodeIds || []).map((id) => String(id || '').trim()).filter(Boolean));
+    cy.elements().removeClass('groupViewHidden');
+    cy.nodes().forEach((node) => {
+      if (!scopeSet.has(node.id())) node.addClass('groupViewHidden');
+    });
+    cy.edges().forEach((edge) => {
+      const s = edge.source().id();
+      const t = edge.target().id();
+      const inScope = scopeSet.has(s) && scopeSet.has(t);
+      const touchesMember = memberSet.has(s) || memberSet.has(t);
+      if (!inScope || !touchesMember) edge.addClass('groupViewHidden');
+    });
+    groupViewState.active = true;
+    groupViewState.groupKey = String(scope.groupKey || '').trim();
+    updateGroupViewButtonState();
+    if (!preserveViewport) {
+      const focus = cy.collection(Array.from(scopeSet).map((id) => cy.getElementById(id)).filter((n) => n && n.length));
+      if (focus.length) cy.animate({ fit: { eles: focus, padding: 120 }, duration: 280 });
+    }
+    return true;
+  }
+
+  function enterManualGroupView(groupKey) {
+    if (!cy) return;
+    const key = String(groupKey || '').trim();
+    if (!key) return;
+    if (!groupViewState.active) {
+      groupViewState.preSnapshot = captureGroupViewBaseSnapshot();
+    }
+    const pos = capturePositions();
+    expandedManualGroupKeys.add(key);
+    buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
+    const scope = computeManualGroupViewScope(key);
+    if (!scope) {
+      setErr('进入组视图失败：未找到组成员或一跳邻接。');
+      return;
+    }
+    applyGroupViewFilter(scope);
+    setStatus(`已进入组视图：${scope.memberNodeIds.length} 台组内设备，${Math.max(0, scope.scopeNodeIds.length - scope.memberNodeIds.length)} 台邻接设备`);
+    setOK('组视图已启用。当前工具继续作用于组内设备和其一跳邻接设备。');
+  }
+
+  function exitGroupView() {
+    if (!groupViewState.active) return;
+    const snap = groupViewState.preSnapshot;
+    groupViewState = { active: false, groupKey: '', preSnapshot: null };
+    if (snap) restoreGroupViewBaseSnapshot(snap);
+    if (cy) cy.elements().removeClass('groupViewHidden');
+    updateGroupViewButtonState();
+    setStatus('已返回主视图');
+    setOK('已退出组视图。');
   }
 
   function applyDeletedMaskAfterBuild() {
@@ -4479,20 +4926,79 @@
     return out;
   }
 
-  // 将同一对节点的多条边合并为单条
+  function buildMergedPairKey(sourceId, targetId) {
+    const s = String(sourceId || '').trim();
+    const t = String(targetId || '').trim();
+    if (!s || !t) return '';
+    return s < t ? `${s}||${t}` : `${t}||${s}`;
+  }
+
+  function edgeMergedPairKey(edge) {
+    if (!edge) return '';
+    const data = typeof edge.data === 'function' ? edge.data() : (edge.data || {});
+    if (data && typeof data === 'object') {
+      const explicit = String(data.mergedPairKey || '').trim();
+      if (explicit) return explicit;
+      const s = String(data.source || '').trim();
+      const t = String(data.target || '').trim();
+      const key = buildMergedPairKey(s, t);
+      if (key) return key;
+    }
+    if (typeof edge.source === 'function' && typeof edge.target === 'function') {
+      return buildMergedPairKey(edge.source().id(), edge.target().id());
+    }
+    return '';
+  }
+
+  function edgeCanToggleMergedExpand(edge) {
+    if (!edge || !(edge.length || edge.data)) return false;
+    const key = edgeMergedPairKey(edge);
+    if (!key) return false;
+    const data = typeof edge.data === 'function' ? edge.data() : (edge.data || {});
+    const count = Number(data?.mergedCount);
+    return Number.isFinite(count) && count > 1;
+  }
+
+  // 将同一对节点的多条边合并为单条（支持按 pair 选择性展开）
   function aggregateEdges(edges) {
     const bucket = new Map();
     edges.forEach((e) => {
       const s = e.data.source;
       const t = e.data.target;
-      const key = s < t ? `${s}||${t}` : `${t}||${s}`;
+      const key = buildMergedPairKey(s, t);
+      if (!key) return;
       if (!bucket.has(key)) bucket.set(key, []);
       bucket.get(key).push(e);
     });
+    expandedMergedEdgePairKeys = new Set(Array.from(expandedMergedEdgePairKeys).filter((k) => bucket.has(k)));
     const merged = [];
     bucket.forEach((list, key) => {
       const [a, b] = key.split('||');
       const count = list.length;
+      if (count > 1 && expandedMergedEdgePairKeys.has(key)) {
+        list.forEach((edge) => {
+          const d = edge?.data || {};
+          const utilKeys = Array.from(new Set(Array.isArray(d.utilKeys) ? d.utilKeys : (d.utilKey ? [d.utilKey] : [])));
+          const rowKeys = Array.from(new Set(Array.isArray(d.rowKeys) ? d.rowKeys : []));
+          merged.push({ data: {
+            ...d,
+            id: String(d.id || `e_${fnv1a(`${key}||${String(d.label || '')}`)}`),
+            source: String(d.source || a).trim(),
+            target: String(d.target || b).trim(),
+            label: String(d.label || '').trim(),
+            labelShown: String(d.labelShown || ''),
+            utilKeys,
+            rowKeys,
+            mergedPairKey: key,
+            mergedCount: count,
+            isMerged: false,
+            mergedExpanded: true,
+            sourcePort: String(d.sourcePort || '').trim(),
+            targetPort: String(d.targetPort || '').trim()
+          } });
+        });
+        return;
+      }
       const labels = list.map(x => x.data.label).filter(Boolean);
       const label = count > 1 ? `${count} 条链路` : (labels[0] || '');
       const utilKeys = Array.from(new Set(list.flatMap(x => Array.isArray(x.data.utilKeys) ? x.data.utilKeys : (x.data.utilKey ? [x.data.utilKey] : []))));
@@ -4506,6 +5012,10 @@
         labelShown: '',
         utilKeys,
         rowKeys,
+        mergedPairKey: key,
+        mergedCount: count,
+        isMerged: count > 1,
+        mergedExpanded: false,
         sourcePort: count > 1 ? '' : String(first.sourcePort || '').trim(),
         targetPort: count > 1 ? '' : String(first.targetPort || '').trim()
       } });
@@ -4958,6 +5468,101 @@
     return uniq;
   }
 
+  function selectedNodesForAlign() {
+    if (!cy) return [];
+    return cy.nodes(':selected').filter((n) => n && typeof n.isNode === 'function' && n.isNode() && n.visible()).toArray();
+  }
+
+  function applyNodePositions(nodes, resolveNextPos) {
+    if (!cy || !Array.isArray(nodes) || !nodes.length || typeof resolveNextPos !== 'function') return 0;
+    let changed = 0;
+    cy.startBatch();
+    nodes.forEach((node, index) => {
+      const current = { x: Number(node.position('x')) || 0, y: Number(node.position('y')) || 0 };
+      const next = resolveNextPos(node, index, current) || current;
+      const nx = Number(next.x);
+      const ny = Number(next.y);
+      if (!Number.isFinite(nx) || !Number.isFinite(ny)) return;
+      if (Math.abs(nx - current.x) < 0.01 && Math.abs(ny - current.y) < 0.01) return;
+      node.position({ x: nx, y: ny });
+      changed += 1;
+    });
+    cy.endBatch();
+    if (changed > 0) schedulePersistCurrentPageSession(80);
+    return changed;
+  }
+
+  function alignSelectedNodes(mode) {
+    if (!cy) return;
+    const selected = selectedNodesForAlign();
+    if (selected.length < 2) {
+      setErr('请先选中至少 2 个节点。');
+      return;
+    }
+    const movable = selected.filter((node) => !node.locked());
+    if (movable.length < 2) {
+      setErr('可移动节点不足 2 个（节点可能已固定）。');
+      return;
+    }
+    const xs = movable.map((node) => Number(node.position('x')) || 0);
+    const ys = movable.map((node) => Number(node.position('y')) || 0);
+    const avgX = xs.reduce((sum, x) => sum + x, 0) / xs.length;
+    const avgY = ys.reduce((sum, y) => sum + y, 0) / ys.length;
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const modeMap = {
+      horizontal: { label: '水平对齐', resolver: (_node, _idx, cur) => ({ x: cur.x, y: avgY }) },
+      vertical: { label: '垂直对齐', resolver: (_node, _idx, cur) => ({ x: avgX, y: cur.y }) },
+      left: { label: '左对齐', resolver: (_node, _idx, cur) => ({ x: minX, y: cur.y }) },
+      right: { label: '右对齐', resolver: (_node, _idx, cur) => ({ x: maxX, y: cur.y }) },
+      top: { label: '上对齐', resolver: (_node, _idx, cur) => ({ x: cur.x, y: minY }) },
+      bottom: { label: '下对齐', resolver: (_node, _idx, cur) => ({ x: cur.x, y: maxY }) }
+    };
+    const spec = modeMap[String(mode || '')];
+    if (!spec) return;
+    const changed = applyNodePositions(movable, spec.resolver);
+    setErr('');
+    setOK(changed > 0 ? `${spec.label}完成：移动 ${changed} 个节点。` : `${spec.label}完成：位置无需调整。`);
+  }
+
+  function distributeSelectedNodes(axis) {
+    if (!cy) return;
+    const selected = selectedNodesForAlign();
+    if (selected.length < 3) {
+      setErr('请先选中至少 3 个节点再做等间距分布。');
+      return;
+    }
+    const movable = selected.filter((node) => !node.locked());
+    if (movable.length < 3) {
+      setErr('可移动节点不足 3 个（节点可能已固定）。');
+      return;
+    }
+    const useX = String(axis || '').toLowerCase() === 'x';
+    const sorted = movable
+      .slice()
+      .sort((a, b) => (Number(a.position(useX ? 'x' : 'y')) || 0) - (Number(b.position(useX ? 'x' : 'y')) || 0));
+    const first = Number(sorted[0].position(useX ? 'x' : 'y')) || 0;
+    const last = Number(sorted[sorted.length - 1].position(useX ? 'x' : 'y')) || 0;
+    if (Math.abs(last - first) < 0.01) {
+      setErr('');
+      setOK(`已是${useX ? '水平' : '垂直'}同一坐标，无需分布。`);
+      return;
+    }
+    const step = (last - first) / (sorted.length - 1);
+    const indexById = new Map(sorted.map((node, idx) => [node.id(), idx]));
+    const changed = applyNodePositions(sorted, (node, _idx, cur) => {
+      const order = indexById.get(node.id()) || 0;
+      const nextVal = first + step * order;
+      return useX ? { x: nextVal, y: cur.y } : { x: cur.x, y: nextVal };
+    });
+    setErr('');
+    setOK(changed > 0
+      ? `${useX ? '水平' : '垂直'}等间距完成：移动 ${changed} 个节点。`
+      : `${useX ? '水平' : '垂直'}等间距完成：位置无需调整。`);
+  }
+
   function openAddLinkModal(nodes) {
     const pair = Array.isArray(nodes) ? nodes.slice(0, 2) : [];
     if (pair.length !== 2) {
@@ -5323,8 +5928,9 @@
     const edgeMode = $('edgeLabelMode')?.value || 'none';
     const showUtilLabel = !!$('utilLabelEnabled')?.checked;
     const showBandwidth = !!$('utilShowBandwidth')?.checked;
+    const showImbalance = !!$('utilShowImbalance')?.checked;
     const showEdgeDesc = !!$('utilShowEdgeDesc')?.checked;
-    const showExtra = showUtilLabel || showBandwidth;
+    const showExtra = showUtilLabel || showBandwidth || showImbalance;
     cy.edges().forEach((e) => {
       const base = formatEdgePortLabel(e);
       const util = formatEdgeUtilText(e);
@@ -5453,6 +6059,34 @@
     };
   }
 
+  function utilEntryMetricValue(entry, metric = '') {
+    if (!entry || typeof entry !== 'object' || entry.status !== 'ok') return null;
+    const tx = (typeof entry.tx_pct === 'number') ? entry.tx_pct : null;
+    const rx = (typeof entry.rx_pct === 'number') ? entry.rx_pct : null;
+    const m = String(metric || currentUtilMetricValue()).trim().toLowerCase();
+    if (m === 'tx') return tx;
+    if (m === 'rx') return rx;
+    const cands = [tx, rx].filter((v) => typeof v === 'number');
+    if (!cands.length) return null;
+    if (m === 'min') return Math.min(...cands);
+    return Math.max(...cands);
+  }
+
+  function edgeImbalanceSummary(edge, metric = '') {
+    const keys = Array.isArray(edge?.data?.('utilKeys')) ? edge.data('utilKeys') : [];
+    if (keys.length < 2) return { eligible: false, count: 0, min: null, max: null, diff: null };
+    const vals = [];
+    keys.forEach((k) => {
+      const entry = utilByKey.get(String(k || '').trim().toLowerCase());
+      const value = utilEntryMetricValue(entry, metric);
+      if (typeof value === 'number') vals.push(value);
+    });
+    if (vals.length < 2) return { eligible: true, count: vals.length, min: null, max: null, diff: null };
+    const min = Math.min(...vals);
+    const max = Math.max(...vals);
+    return { eligible: true, count: vals.length, min, max, diff: max - min };
+  }
+
   function formatUtilPctLabel(prefix, value) {
     return `${prefix}:${typeof value === 'number' ? `${value.toFixed(1)}%` : 'N/A'}`;
   }
@@ -5493,14 +6127,45 @@
     return 'MAX';
   }
 
+  function normalizeUtilColorMode(changed = '') {
+    const colorEl = $('utilColorEnabled');
+    const imbalanceEl = $('utilShowImbalance');
+    if (!colorEl || !imbalanceEl) return;
+    if (changed === 'imbalance' && imbalanceEl.checked && colorEl.checked) {
+      colorEl.checked = false;
+      return;
+    }
+    if (changed === 'color' && colorEl.checked && imbalanceEl.checked) {
+      imbalanceEl.checked = false;
+      return;
+    }
+    if (!changed && colorEl.checked && imbalanceEl.checked) {
+      colorEl.checked = false;
+    }
+  }
+
+  function currentUtilColorMode() {
+    const showImbalance = !!$('utilShowImbalance')?.checked;
+    const showColor = !!$('utilColorEnabled')?.checked;
+    if (showImbalance) return 'imbalance';
+    if (showColor) return 'util';
+    return 'none';
+  }
+
   function updateUtilLegendHint() {
     const el = $('utilLegendHint');
     if (!el) return;
     const metric = currentUtilMetricLabel();
-    const enabled = !!$('utilColorEnabled')?.checked;
-    el.textContent = enabled
-      ? `颜色图例：按当前 ${metric} 口径，绿色 < 40%，黄色 40-70%，红色 ≥ 70%，灰色表示无数据。`
-      : `链路颜色映射已关闭；若开启，则按当前 ${metric} 口径使用绿色 < 40%，黄色 40-70%，红色 ≥ 70%，灰色表示无数据。`;
+    const colorMode = currentUtilColorMode();
+    if (colorMode === 'imbalance') {
+      el.textContent = '颜色图例：负载分担不均 Δ(最大-最小)，绿色 < 5%，黄色 10-20%，红色 ≥ 20%，灰色表示无数据或 5-10%。';
+      return;
+    }
+    if (colorMode === 'util') {
+      el.textContent = `颜色图例：按当前 ${metric} 口径，绿色 < 40%，黄色 40-70%，红色 ≥ 70%，灰色表示无数据。`;
+      return;
+    }
+    el.textContent = `链路拥塞分析已关闭；若开启，则按当前 ${metric} 口径使用绿色 < 40%，黄色 40-70%，红色 ≥ 70%，灰色表示无数据。`;
   }
 
   function formatPctCsvValue(value) {
@@ -5813,7 +6478,7 @@
     const portText = formatEdgePortLabel(edge);
     const utilText = formatEdgeUtilText(edge);
     const descText = formatEdgeDescText(edge);
-    const showExtra = !!$('utilLabelEnabled')?.checked || !!$('utilShowBandwidth')?.checked;
+    const showExtra = !!$('utilLabelEnabled')?.checked || !!$('utilShowBandwidth')?.checked || !!$('utilShowImbalance')?.checked;
     const showDesc = !!$('utilShowEdgeDesc')?.checked;
     if (portText) parts.push(portText);
     if (showExtra && utilText) parts.push(utilText);
@@ -6027,11 +6692,14 @@
   function formatEdgeUtilText(edge) {
     const showTxRx = !!$('utilShowTxRx')?.checked;
     const showBandwidth = !!$('utilShowBandwidth')?.checked;
+    const showImbalance = !!$('utilShowImbalance')?.checked;
     const metric = (($('utilMetric')?.value || 'max').trim().toLowerCase());
     const tx = (typeof edge.data('utilTxPct') === 'number') ? edge.data('utilTxPct') : null;
     const rx = (typeof edge.data('utilRxPct') === 'number') ? edge.data('utilRxPct') : null;
     const used = (typeof edge.data('utilUsedPct') === 'number') ? edge.data('utilUsedPct') : null;
     const bw = (typeof edge.data('utilBwBps') === 'number') ? edge.data('utilBwBps') : null;
+    const imbalance = (typeof edge.data('utilImbalancePct') === 'number') ? edge.data('utilImbalancePct') : null;
+    const imbalanceEligible = !!edge.data('utilImbalanceEligible');
     const parts = [];
     if (showTxRx) {
       parts.push(formatUtilPctLabel('TX', tx));
@@ -6041,30 +6709,56 @@
       parts.push(formatUtilPctLabel(prefix, used));
     }
     if (showBandwidth) parts.push(formatBandwidthLabel(bw));
+    if (showImbalance && imbalanceEligible) {
+      parts.push(`LBΔ:${typeof imbalance === 'number' ? `${imbalance.toFixed(1)}%` : 'N/A'}`);
+    }
     return parts.join(' ');
   }
 
   function applyUtilizationToEdges() {
     if (!cy) return;
-    const enableColor = !!$('utilColorEnabled')?.checked;
+    const colorMode = currentUtilColorMode();
+    const metric = currentUtilMetricValue();
     cy.edges().forEach((e) => {
       const summary = edgeUtilSummary(e);
       const pct = edgeUtilFromKeys(e);
+      const imbalance = edgeImbalanceSummary(e, metric);
       e.data('utilTxPct', summary.tx);
       e.data('utilRxPct', summary.rx);
       e.data('utilBwBps', summary.bw);
       e.data('utilUsedPct', pct);
-      e.removeClass('util-low util-mid util-high util-na');
+      e.data('utilImbalanceEligible', !!imbalance.eligible);
+      e.data('utilImbalancePct', (typeof imbalance.diff === 'number') ? imbalance.diff : null);
+      e.removeClass('util-low util-mid util-high util-na imbalance-low imbalance-mid imbalance-high imbalance-na');
       if (pct == null) {
         e.data('utilText', 'U:N/A');
-        if (enableColor) e.addClass('util-na');
       } else {
         e.data('utilText', `U:${pct.toFixed(1)}%`);
-        if (enableColor) {
-          if (pct >= 70) e.addClass('util-high');
-          else if (pct >= 40) e.addClass('util-mid');
-          else e.addClass('util-low');
+      }
+      if (colorMode === 'imbalance') {
+        if (!imbalance.eligible || typeof imbalance.diff !== 'number') {
+          if (imbalance.eligible) e.addClass('imbalance-na');
+        } else if (imbalance.diff >= 20) {
+          e.addClass('imbalance-high');
+        } else if (imbalance.diff >= 10) {
+          e.addClass('imbalance-mid');
+        } else if (imbalance.diff < 5) {
+          e.addClass('imbalance-low');
+        } else {
+          e.addClass('imbalance-na');
         }
+      } else if (colorMode === 'util') {
+        if (pct == null) {
+          e.addClass('util-na');
+        } else if (pct >= 70) {
+          e.addClass('util-high');
+        } else if (pct >= 40) {
+          e.addClass('util-mid');
+        } else {
+          e.addClass('util-low');
+        }
+      } else {
+        e.removeClass('util-low util-mid util-high util-na imbalance-low imbalance-mid imbalance-high imbalance-na');
       }
     });
     refreshEdgeLabelDisplay();
@@ -6073,12 +6767,14 @@
   function clearUtilizationFromGraph() {
     if (!cy) return;
     cy.edges().forEach((e) => {
-      e.removeClass('util-low util-mid util-high util-na');
+      e.removeClass('util-low util-mid util-high util-na imbalance-low imbalance-mid imbalance-high imbalance-na');
       e.data('utilText', '');
       e.data('utilTxPct', null);
       e.data('utilRxPct', null);
       e.data('utilBwBps', null);
       e.data('utilUsedPct', null);
+      e.data('utilImbalanceEligible', false);
+      e.data('utilImbalancePct', null);
     });
     refreshEdgeLabelDisplay();
   }
@@ -6151,7 +6847,7 @@
     const isManualGroup = ctxGroupKind() === 'manual';
     const groupKey = ctxGroupKey();
     const canToggleGroup = !!groupKey;
-    const nodeBtnIds = ['ctxLock', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxEdgeDesc'];
+    const nodeBtnIds = ['ctxLock', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc'];
     nodeBtnIds.forEach((id) => {
       const el = $(id);
       if (!el) return;
@@ -6160,7 +6856,7 @@
         return;
       }
       if (isEdgeTarget) {
-        el.style.display = (id === 'ctxUtil' || id === 'ctxUtilRange' || id === 'ctxEdgeDesc') ? '' : 'none';
+        el.style.display = (id === 'ctxUtil' || id === 'ctxUtilRange' || id === 'ctxEdgeDesc' || id === 'ctxToggleEdgeExpand') ? '' : 'none';
         return;
       }
       if (isGroupNode && ['ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxEdgeDesc'].includes(id)) {
@@ -6181,6 +6877,13 @@
     }
     if ($('ctxDeleteLink')) $('ctxDeleteLink').style.display = isEdgeTarget ? '' : 'none';
     if ($('ctxCopyLink')) $('ctxCopyLink').style.display = isEdgeTarget ? '' : 'none';
+    if ($('ctxToggleEdgeExpand')) {
+      const canToggleEdgeExpand = isEdgeTarget && edgeCanToggleMergedExpand(ctxTarget);
+      $('ctxToggleEdgeExpand').style.display = canToggleEdgeExpand ? '' : 'none';
+      const pairKey = canToggleEdgeExpand ? edgeMergedPairKey(ctxTarget) : '';
+      const isExpanded = !!(pairKey && expandedMergedEdgePairKeys.has(pairKey));
+      $('ctxToggleEdgeExpand').textContent = tr(isExpanded ? 'ctx_edge_collapse' : 'ctx_edge_expand');
+    }
     if ($('ctxToggleGroup')) {
       $('ctxToggleGroup').style.display = (!isEdgeTarget && canToggleGroup) ? '' : 'none';
       $('ctxToggleGroup').textContent = isGroupNode ? tr('ctx_group_expand') : tr('ctx_group_collapse');
@@ -6196,7 +6899,7 @@
     }
     const groups = [
       { sep: 'ctxSepAdd', ids: ['ctxAddNode', 'ctxAddNodeSubmenu'] },
-      { sep: 'ctxSepEdit', ids: ['ctxLock', 'ctxDelete', 'ctxDeleteLink', 'ctxEdgeDesc'] },
+      { sep: 'ctxSepEdit', ids: ['ctxLock', 'ctxDelete', 'ctxDeleteLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc'] },
       { sep: 'ctxSepCopy', ids: ['ctxPathVia', 'ctxAddLink', 'ctxCreateGroup', 'ctxToggleGroup', 'ctxRenameGroup'] },
       { sep: 'ctxSepQuery', ids: ['ctxCopy', 'ctxCopyIp', 'ctxCopyLink'] },
       { sep: '', ids: ['ctxUtil', 'ctxUtilRange', 'ctxAppendQuery'] }
@@ -6294,6 +6997,7 @@
         show_tx_rx: !!$('utilShowTxRx')?.checked,
         show_bandwidth: !!$('utilShowBandwidth')?.checked,
         show_edge_desc: !!$('utilShowEdgeDesc')?.checked,
+        show_imbalance: !!$('utilShowImbalance')?.checked,
         filter_active: !!utilFilterState.active,
         filter_threshold: Number.isFinite(utilFilterState.threshold) ? Number(utilFilterState.threshold) : null
       },
@@ -6315,6 +7019,7 @@
         manualGroups: cloneManualGroups(manualGroups),
         manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes),
         expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
+        expandedMergedEdgePairKeys: Array.from(expandedMergedEdgePairKeys),
         mergeMode: !!mergedMode,
         colLocalHost: $('colLocalHost')?.value || '',
         colRemoteHost: $('colRemoteHost')?.value || '',
@@ -6476,6 +7181,8 @@
     if ($('utilShowTxRx')) $('utilShowTxRx').checked = !!utilState.show_tx_rx;
     if ($('utilShowBandwidth')) $('utilShowBandwidth').checked = !!utilState.show_bandwidth;
     if ($('utilShowEdgeDesc')) $('utilShowEdgeDesc').checked = (utilState.show_edge_desc !== false);
+    if ($('utilShowImbalance')) $('utilShowImbalance').checked = !!utilState.show_imbalance;
+    normalizeUtilColorMode();
     utilFilterState.active = !!utilState.filter_active;
     utilFilterState.threshold = Number.isFinite(Number(utilState.filter_threshold)) ? Number(utilState.filter_threshold) : null;
     updateUtilFilterUi();
@@ -6488,6 +7195,7 @@
     manualCanvasNodes = cloneManualCanvasNodes(ui.manualCanvasNodes || snapshot?.manual_canvas_nodes || []);
     importEdgeDescEntries(ui.edgeDescriptions || snapshot?.edge_descriptions || snapshot?.edge_notes || [], false);
     expandedManualGroupKeys = new Set((ui.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
+    expandedMergedEdgePairKeys = new Set((ui.expandedMergedEdgePairKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     if (typeof ui.mergeMode === 'boolean') mergedMode = ui.mergeMode;
     setMergeButtonText();
 
@@ -6581,6 +7289,10 @@
         ...((importedUi.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean))
       ]);
     }
+    expandedMergedEdgePairKeys = new Set([
+      ...Array.from(expandedMergedEdgePairKeys),
+      ...((importedUi.expandedMergedEdgePairKeys || []).map((x) => String(x || '').trim()).filter(Boolean))
+    ]);
     const parsed = {
       headers: hs.slice(),
       rows: (srcRows.length ? srcRows : rs).slice()
@@ -7353,6 +8065,10 @@
       if ($('utilShowEdgeDesc') && typeof p.show_edge_desc === 'boolean') {
         $('utilShowEdgeDesc').checked = p.show_edge_desc;
       }
+      if ($('utilShowImbalance') && typeof p.show_imbalance === 'boolean') {
+        $('utilShowImbalance').checked = p.show_imbalance;
+      }
+      normalizeUtilColorMode();
       if (typeof p.only_mode === 'string' && ['none', 'showOnly', 'show172'].includes(p.only_mode)) {
         viewState.onlyMode = p.only_mode;
       }
@@ -7375,6 +8091,7 @@
         auto_group_mode: ($('autoGroupMode')?.value || 'off'),
         name_cluster_strength: ($('nameClusterStrength')?.value || '0.6'),
         show_edge_desc: !!$('utilShowEdgeDesc')?.checked,
+        show_imbalance: !!$('utilShowImbalance')?.checked,
         only_mode: viewState.onlyMode || 'none'
       };
       localStorage.setItem(TOPOLOGY_UI_PREF_KEY, JSON.stringify(safe));
@@ -8716,8 +9433,11 @@
     }
   });
   $('utilColorEnabled').addEventListener('change', () => {
+    normalizeUtilColorMode('color');
     applyUtilizationToEdges();
     updateUtilLegendHint();
+    saveTopologyUiPrefs();
+    schedulePersistCurrentPageSession(80);
   });
   $('utilLabelEnabled').addEventListener('change', () => {
     refreshEdgeLabelDisplay();
@@ -8734,6 +9454,14 @@
   $('utilShowEdgeDesc').addEventListener('change', () => {
     refreshEdgeLabelDisplay();
     applyAdaptiveRenderMode();
+    saveTopologyUiPrefs();
+    schedulePersistCurrentPageSession(80);
+  });
+  $('utilShowImbalance').addEventListener('change', () => {
+    normalizeUtilColorMode('imbalance');
+    applyUtilizationToEdges();
+    applyAdaptiveRenderMode();
+    updateUtilLegendHint();
     saveTopologyUiPrefs();
     schedulePersistCurrentPageSession(80);
   });
@@ -8853,6 +9581,38 @@
       applyPositions(pos);
       setOK(`已删除 ${edges.length} 条链路，对应原始记录 ${removedRows} 行。`);
     }, { delayMs: 0 });
+  });
+
+  $('ctxToggleEdgeExpand').addEventListener('click', () => {
+    const edge = (ctxTarget && typeof ctxTarget.isEdge === 'function' && ctxTarget.isEdge()) ? ctxTarget : null;
+    hideCtx();
+    if (!edge || !edge.length) {
+      setOK('请先选中合并链路。');
+      return;
+    }
+    const pairKey = edgeMergedPairKey(edge);
+    const mergedCount = Number(edge.data('mergedCount'));
+    if (!pairKey || !Number.isFinite(mergedCount) || mergedCount <= 1) {
+      setOK('当前链路无需展开。');
+      return;
+    }
+    runWithRollback(() => {
+      const wasExpanded = expandedMergedEdgePairKeys.has(pairKey);
+      if (wasExpanded) expandedMergedEdgePairKeys.delete(pairKey);
+      else expandedMergedEdgePairKeys.add(pairKey);
+      const pos = capturePositions();
+      buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
+      applyPositions(pos, { fitView: false });
+      if (cy) {
+        const pairEdges = cy.edges().filter((e) => String(e.data('mergedPairKey') || '').trim() === pairKey);
+        cy.elements(':selected').unselect();
+        if (pairEdges.length) {
+          pairEdges.select();
+          pairEdges.addClass('hit');
+        }
+      }
+      setOK(wasExpanded ? '已收起该合并链路。' : `已展开该合并链路（${mergedCount} 条）。`);
+    }, { delayMs: 1300 });
   });
 
   $('ctxCreateGroup').addEventListener('click', () => {
@@ -9276,6 +10036,30 @@
     runWithRollback(() => buildScopedTopologyFromVisible(), { delayMs: 1300 });
   });
   $('openPathFinder').addEventListener('click', openPathModal);
+  $('alignHorizontal').addEventListener('click', () => {
+    runWithRollback(() => alignSelectedNodes('horizontal'), { delayMs: 0 });
+  });
+  $('alignVertical').addEventListener('click', () => {
+    runWithRollback(() => alignSelectedNodes('vertical'), { delayMs: 0 });
+  });
+  $('alignLeft').addEventListener('click', () => {
+    runWithRollback(() => alignSelectedNodes('left'), { delayMs: 0 });
+  });
+  $('alignRight').addEventListener('click', () => {
+    runWithRollback(() => alignSelectedNodes('right'), { delayMs: 0 });
+  });
+  $('alignTop').addEventListener('click', () => {
+    runWithRollback(() => alignSelectedNodes('top'), { delayMs: 0 });
+  });
+  $('alignBottom').addEventListener('click', () => {
+    runWithRollback(() => alignSelectedNodes('bottom'), { delayMs: 0 });
+  });
+  $('distributeHorizontal').addEventListener('click', () => {
+    runWithRollback(() => distributeSelectedNodes('x'), { delayMs: 0 });
+  });
+  $('distributeVertical').addEventListener('click', () => {
+    runWithRollback(() => distributeSelectedNodes('y'), { delayMs: 0 });
+  });
   $('saveAddLink').addEventListener('click', () => {
     const nodes = pendingAddLinkNodes.slice(0, 2);
     if (nodes.length !== 2) {
@@ -9323,9 +10107,12 @@
     if ($('edgeDescInput')) $('edgeDescInput').value = '';
   });
   $('closeEdgeDescModal').addEventListener('click', closeEdgeDescModal);
-  $('exitGroupView').addEventListener('click', () => {
-    exitGroupView();
-  });
+  const exitGroupViewBtn = $('exitGroupView');
+  if (exitGroupViewBtn) {
+    exitGroupViewBtn.addEventListener('click', () => {
+      exitGroupView();
+    });
+  }
   $('keepAdjacentOnly').addEventListener('click', () => {
     runWithRollback(() => keepAdjacentOnly(), { delayMs: 0 });
   });
@@ -9444,12 +10231,20 @@ $('filter').addEventListener('keydown', (e) => {
   $('rollbackUndo').addEventListener('click', () => {
     const entry = rollbackState.undoStack.pop();
     if (!entry) {
-      setOK('暂无可撤销操作。');
+      setOK(`暂无可撤销操作。undo=${rollbackState.undoStack.length} redo=${rollbackState.redoStack.length}`);
       updateRollbackButtonState();
       return;
     }
     rollbackArmSeq += 1;
-    const ok = applyRollbackSnapshot(entry.before);
+    let ok = false;
+    try {
+      ok = applyRollbackSnapshot(entry.before);
+    } catch (e) {
+      setErr(`撤销失败：${String(e && e.message ? e.message : e)}`);
+      rollbackState.undoStack.push(entry);
+      updateRollbackButtonState();
+      return;
+    }
     if (!ok) {
       setErr('撤销失败：快照不可用。');
       rollbackState.undoStack.push(entry);
@@ -9461,19 +10256,27 @@ $('filter').addEventListener('keydown', (e) => {
       rollbackState.redoStack = rollbackState.redoStack.slice(-MAX_ROLLBACK_STEPS);
     }
     updateRollbackButtonState();
-    setOK('已撤销上一步变更。');
+    setOK(`已撤销上一步变更。undo=${rollbackState.undoStack.length} redo=${rollbackState.redoStack.length}`);
     schedulePersistCurrentPageSession(80);
   });
 
   $('rollbackRedo').addEventListener('click', () => {
     const entry = rollbackState.redoStack.pop();
     if (!entry) {
-      setOK('暂无可恢复操作。');
+      setOK(`暂无可恢复操作。undo=${rollbackState.undoStack.length} redo=${rollbackState.redoStack.length}`);
       updateRollbackButtonState();
       return;
     }
     rollbackArmSeq += 1;
-    const ok = applyRollbackSnapshot(entry.after);
+    let ok = false;
+    try {
+      ok = applyRollbackSnapshot(entry.after);
+    } catch (e) {
+      setErr(`恢复失败：${String(e && e.message ? e.message : e)}`);
+      rollbackState.redoStack.push(entry);
+      updateRollbackButtonState();
+      return;
+    }
     if (!ok) {
       setErr('恢复失败：快照不可用。');
       rollbackState.redoStack.push(entry);
@@ -9485,7 +10288,7 @@ $('filter').addEventListener('keydown', (e) => {
       rollbackState.undoStack = rollbackState.undoStack.slice(-MAX_ROLLBACK_STEPS);
     }
     updateRollbackButtonState();
-    setOK('已恢复到撤销前状态。');
+    setOK(`已恢复到撤销前状态。undo=${rollbackState.undoStack.length} redo=${rollbackState.redoStack.length}`);
     schedulePersistCurrentPageSession(80);
   });
   window.addEventListener('pagehide', () => { persistCurrentPageSession(true); });
@@ -9493,6 +10296,7 @@ $('filter').addEventListener('keydown', (e) => {
   initLangToggle();
   applyStaticI18n();
   applyIndexLiteMode();
+  updateGroupViewButtonState();
   updateRollbackButtonState();
 </script>
 </body>
