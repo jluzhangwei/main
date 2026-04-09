@@ -540,6 +540,7 @@
         </div>
         <div class="row inline">
           <button id="selectSingleLinkNodes">单链路节点</button>
+          <button id="exitGroupView" disabled>返回主视图</button>
         </div>
       </div>
 
@@ -1047,6 +1048,11 @@
   let expandedAutoGroupKeys = new Set();
   let manualGroups = [];
   let expandedManualGroupKeys = new Set();
+  let groupViewState = {
+    active: false,
+    groupKey: '',
+    preSnapshot: null
+  };
   let manualCanvasNodes = [];
   const CLOUD_ICON_SVG_URI = 'https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/icons/cloud.svg';
   const INDEX_LITE_MODE = true;
@@ -1257,6 +1263,7 @@
       btn_clear_visibility: '恢复显示',
       btn_show172: '只显示172设备',
       btn_single_link: '单链路节点',
+      btn_exit_group_view: '返回主视图',
       btn_delete_selected: '删除选中',
       btn_delete_unselected: '仅保留选中',
       btn_delete_non_adjacent: '仅保留邻接',
@@ -1355,6 +1362,7 @@
       show_only_label: 'Show Only: comma=tier, slash=OR group, &=all terms, press Enter to apply',
       layer_terms_label: 'Layer Keywords (high->low, comma=layer, slash=same layer, &=all terms)',
       btn_single_link: 'Single-Link Nodes',
+      btn_exit_group_view: 'Back To Main View',
       partition_terms_label: 'Partition Keywords (left->right, comma=partition, slash=same partition, &=all terms)',
       layer_terms_hint: 'Uses the same expression syntax as partitions: comma=layer, slash=OR, &=all terms. If partitions are set, layering runs independently inside each partition.',
       partition_terms_hint: 'Uses the same expression syntax as layering: comma=partition, slash=OR, &=all terms. First matching partition wins and later partitions are skipped.',
@@ -1637,6 +1645,7 @@
     setText('clearSelectionHide', 'btn_clear_visibility');
     setText('show172Only', 'btn_show172');
     setText('selectSingleLinkNodes', 'btn_single_link');
+    setText('exitGroupView', 'btn_exit_group_view');
     setText('deleteSelection', 'btn_delete_selected');
     setText('keepSelected', 'btn_delete_unselected');
     setText('keepAdjacentOnly', 'btn_delete_non_adjacent');
@@ -1769,9 +1778,12 @@
   }
 
   function clearGroupState() {
+    groupViewState = { active: false, groupKey: '', preSnapshot: null };
     manualGroups = [];
     expandedManualGroupKeys = new Set();
     expandedAutoGroupKeys = new Set();
+    if (cy) cy.elements().removeClass('groupViewHidden');
+    updateGroupViewButtonState();
   }
 
   function clearManualCanvasState() {
@@ -1887,7 +1899,7 @@
         layerTerms: $('layerTerms')?.value || '',
         bizIsolationTerms: $('bizIsolationTerms')?.value || '',
         layoutMode: $('layoutMode')?.value || 'layer',
-        nodeLabelMode: $('nodeLabelMode')?.value || 'full',
+        nodeLabelMode: $('nodeLabelMode')?.value || 'short',
         edgeLabelMode: $('edgeLabelMode')?.value || 'none',
         spacing: $('spacing')?.value || '0.5',
         stripDomain: $('stripDomain')?.value || 'yes',
@@ -2979,6 +2991,7 @@
       { selector: '.filtered', style: { 'display': 'none' } },
       { selector: '.onlyHidden', style: { 'display': 'none' } },
       { selector: '.utilHidden', style: { 'display': 'none' } },
+      { selector: '.groupViewHidden', style: { 'display': 'none' } },
       { selector: 'node:selected', style: {
         'z-index-compare': 'manual',
         'z-index': 999,
@@ -3409,6 +3422,16 @@
     reapplyViewStateAfterBuild();
     applyDeletedMaskAfterBuild();
     reapplyUtilFilterAfterBuild();
+    if (groupViewState.active) {
+      const scope = computeManualGroupViewScope(groupViewState.groupKey);
+      if (scope) {
+        applyGroupViewFilter(scope, true);
+      } else {
+        groupViewState = { active: false, groupKey: '', preSnapshot: null };
+        if (cy) cy.elements().removeClass('groupViewHidden');
+        updateGroupViewButtonState();
+      }
+    }
     if (preserveViewport && prevPan && Number.isFinite(prevZoom)) {
       cy.zoom(prevZoom);
       cy.pan(prevPan);
@@ -4551,6 +4574,191 @@
   function updateCounts() {
     $('nNodes').textContent = cy ? cy.nodes().length : '-';
     $('nEdges').textContent = cy ? cy.edges().length : '-';
+  }
+
+  function updateGroupViewButtonState() {
+    const btn = $('exitGroupView');
+    if (!btn) return;
+    btn.disabled = !groupViewState.active;
+    btn.textContent = tr('btn_exit_group_view');
+  }
+
+  function captureGroupViewBaseSnapshot() {
+    return {
+      headers: headers.slice(),
+      sourceRows: cloneRows(sourceRows),
+      rawRows: cloneRows(rawRows),
+      positions: capturePositions(),
+      deletedStack: deletedStack.map((x) => (Array.isArray(x) ? x.slice() : [])),
+      viewState: {
+        filterTerms: cloneMatchExpression(viewState.filterTerms),
+        onlyMode: viewState.onlyMode || 'none',
+        onlyTerms: cloneMatchExpression(viewState.onlyTerms),
+      },
+      ui: {
+        filter: $('filter')?.value || '',
+        showOnly: $('showOnly')?.value || '',
+        layerTerms: $('layerTerms')?.value || '',
+        bizIsolationTerms: $('bizIsolationTerms')?.value || '',
+        layoutMode: $('layoutMode')?.value || 'layer',
+        nodeLabelMode: $('nodeLabelMode')?.value || 'full',
+        edgeLabelMode: $('edgeLabelMode')?.value || 'none',
+        spacing: $('spacing')?.value || '0.5',
+        stripDomain: $('stripDomain')?.value || 'yes',
+        nameClusterMode: $('nameClusterMode')?.value || 'on',
+        autoGroupMode: $('autoGroupMode')?.value || 'off',
+        nameClusterStrength: $('nameClusterStrength')?.value || '0.6',
+        colLocalHost: $('colLocalHost')?.value || '',
+        colRemoteHost: $('colRemoteHost')?.value || '',
+        colLocalIf: $('colLocalIf')?.value || '',
+        colRemoteIf: $('colRemoteIf')?.value || '',
+      },
+      expandedAutoGroupKeys: Array.from(expandedAutoGroupKeys),
+      manualGroups: cloneManualGroups(manualGroups),
+      expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
+      mergedMode: !!mergedMode,
+      selectedNodeIds: cy ? cy.nodes(':selected').map((n) => n.id()) : [],
+      pan: cy ? { ...cy.pan() } : null,
+      zoom: cy ? cy.zoom() : null
+    };
+  }
+
+  function restoreGroupViewBaseSnapshot(snapshot) {
+    if (!snapshot || !Array.isArray(snapshot.headers)) return false;
+    headers = snapshot.headers.slice();
+    sourceRows = cloneRows(snapshot.sourceRows || []);
+    rawRows = cloneRows(snapshot.rawRows || []);
+    deletedStack = (snapshot.deletedStack || []).map((x) => (Array.isArray(x) ? x.slice() : []));
+    rebuildDeletedNodeIdsFromStack();
+    viewState.filterTerms = cloneMatchExpression(snapshot.viewState?.filterTerms || []);
+    viewState.onlyMode = snapshot.viewState?.onlyMode || 'none';
+    viewState.onlyTerms = cloneMatchExpression(snapshot.viewState?.onlyTerms || []);
+    mergedMode = !!snapshot.mergedMode;
+    setMergeButtonText();
+    if ($('filter')) $('filter').value = snapshot.ui?.filter || '';
+    if ($('showOnly')) $('showOnly').value = snapshot.ui?.showOnly || '';
+    if ($('layerTerms')) $('layerTerms').value = snapshot.ui?.layerTerms || '';
+    if ($('bizIsolationTerms')) $('bizIsolationTerms').value = snapshot.ui?.bizIsolationTerms || '';
+    if ($('layoutMode')) $('layoutMode').value = snapshot.ui?.layoutMode || 'layer';
+    if ($('nodeLabelMode')) $('nodeLabelMode').value = snapshot.ui?.nodeLabelMode || 'short';
+    if ($('edgeLabelMode')) $('edgeLabelMode').value = snapshot.ui?.edgeLabelMode || 'none';
+    if ($('spacing')) $('spacing').value = snapshot.ui?.spacing || '0.5';
+    if ($('stripDomain')) $('stripDomain').value = snapshot.ui?.stripDomain || 'yes';
+    if ($('nameClusterMode')) $('nameClusterMode').value = snapshot.ui?.nameClusterMode || 'on';
+    if ($('autoGroupMode')) $('autoGroupMode').value = snapshot.ui?.autoGroupMode || 'off';
+    if ($('nameClusterStrength')) $('nameClusterStrength').value = snapshot.ui?.nameClusterStrength || '0.6';
+    expandedAutoGroupKeys = new Set((snapshot.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
+    manualGroups = cloneManualGroups(snapshot.manualGroups || []);
+    expandedManualGroupKeys = new Set((snapshot.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
+    $('nRows').textContent = rawRows.length;
+    $('nCols').textContent = headers.length;
+    if (headers.length) {
+      fillSelect('colLocalHost', autoPickColumn(['localhostname','local_host','src','from']));
+      fillSelect('colRemoteHost', autoPickColumn(['remotehostname','remote_host','dst','to']));
+      fillSelect('colLocalIf', autoPickColumn(['localinterface','local_if','src_if','from_if']));
+      fillSelect('colRemoteIf', autoPickColumn(['remoteinterface','remote_if','dst_if','to_if']));
+      if (snapshot.ui?.colLocalHost && headers.includes(snapshot.ui.colLocalHost)) $('colLocalHost').value = snapshot.ui.colLocalHost;
+      if (snapshot.ui?.colRemoteHost && headers.includes(snapshot.ui.colRemoteHost)) $('colRemoteHost').value = snapshot.ui.colRemoteHost;
+      if (snapshot.ui?.colLocalIf && headers.includes(snapshot.ui.colLocalIf)) $('colLocalIf').value = snapshot.ui.colLocalIf;
+      if (snapshot.ui?.colRemoteIf && headers.includes(snapshot.ui.colRemoteIf)) $('colRemoteIf').value = snapshot.ui.colRemoteIf;
+    }
+    const pos = snapshot.positions || {};
+    buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
+    applyPositions(pos);
+    if (cy && snapshot.pan && Number.isFinite(snapshot.zoom)) {
+      cy.zoom(Number(snapshot.zoom));
+      cy.pan(snapshot.pan);
+    }
+    if (Array.isArray(snapshot.selectedNodeIds) && cy) {
+      cy.elements(':selected').unselect();
+      snapshot.selectedNodeIds.forEach((id) => {
+        const n = cy.getElementById(String(id || ''));
+        if (n && n.length) n.select();
+      });
+    }
+    return true;
+  }
+
+  function computeManualGroupViewScope(groupKey) {
+    if (!cy) return null;
+    const key = String(groupKey || '').trim();
+    if (!key) return null;
+    const group = cloneManualGroups(manualGroups).find((g) => String(g.key || '').trim() === key);
+    if (!group) return null;
+    const memberIds = Array.from(new Set((group.members || []).map((id) => String(id || '').trim()).filter(Boolean)));
+    const memberNodes = memberIds.map((id) => cy.getElementById(id)).filter((n) => n && n.length && !n.data('isGroup') && n.visible());
+    if (!memberNodes.length) return null;
+    const memberSet = new Set(memberNodes.map((n) => n.id()));
+    const scopeNodeIds = new Set(memberSet);
+    memberNodes.forEach((node) => {
+      node.connectedEdges(':visible').forEach((edge) => {
+        const src = edge.source();
+        const tgt = edge.target();
+        if (src && src.length && src.visible()) scopeNodeIds.add(src.id());
+        if (tgt && tgt.length && tgt.visible()) scopeNodeIds.add(tgt.id());
+      });
+    });
+    return {
+      groupKey: key,
+      memberNodeIds: Array.from(memberSet),
+      scopeNodeIds: Array.from(scopeNodeIds)
+    };
+  }
+
+  function applyGroupViewFilter(scope, preserveViewport = false) {
+    if (!cy || !scope) return false;
+    const memberSet = new Set((scope.memberNodeIds || []).map((id) => String(id || '').trim()).filter(Boolean));
+    const scopeSet = new Set((scope.scopeNodeIds || []).map((id) => String(id || '').trim()).filter(Boolean));
+    cy.elements().removeClass('groupViewHidden');
+    cy.nodes().forEach((node) => {
+      if (!scopeSet.has(node.id())) node.addClass('groupViewHidden');
+    });
+    cy.edges().forEach((edge) => {
+      const s = edge.source().id();
+      const t = edge.target().id();
+      const inScope = scopeSet.has(s) && scopeSet.has(t);
+      const touchesMember = memberSet.has(s) || memberSet.has(t);
+      if (!inScope || !touchesMember) edge.addClass('groupViewHidden');
+    });
+    groupViewState.active = true;
+    groupViewState.groupKey = String(scope.groupKey || '').trim();
+    updateGroupViewButtonState();
+    if (!preserveViewport) {
+      const focus = cy.collection(Array.from(scopeSet).map((id) => cy.getElementById(id)).filter((n) => n && n.length));
+      if (focus.length) cy.animate({ fit: { eles: focus, padding: 120 }, duration: 280 });
+    }
+    return true;
+  }
+
+  function enterManualGroupView(groupKey) {
+    if (!cy) return;
+    const key = String(groupKey || '').trim();
+    if (!key) return;
+    if (!groupViewState.active) {
+      groupViewState.preSnapshot = captureGroupViewBaseSnapshot();
+    }
+    const pos = capturePositions();
+    expandedManualGroupKeys.add(key);
+    buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
+    const scope = computeManualGroupViewScope(key);
+    if (!scope) {
+      setErr('进入组视图失败：未找到组成员或一跳邻接。');
+      return;
+    }
+    applyGroupViewFilter(scope);
+    setStatus(`已进入组视图：${scope.memberNodeIds.length} 台组内设备，${Math.max(0, scope.scopeNodeIds.length - scope.memberNodeIds.length)} 台邻接设备`);
+    setOK('组视图已启用。当前工具继续作用于组内设备和其一跳邻接设备。');
+  }
+
+  function exitGroupView() {
+    if (!groupViewState.active) return;
+    const snap = groupViewState.preSnapshot;
+    groupViewState = { active: false, groupKey: '', preSnapshot: null };
+    if (snap) restoreGroupViewBaseSnapshot(snap);
+    if (cy) cy.elements().removeClass('groupViewHidden');
+    updateGroupViewButtonState();
+    setStatus('已返回主视图');
+    setOK('已退出组视图。');
   }
 
   function applyDeletedMaskAfterBuild() {
@@ -9763,6 +9971,7 @@ $('filter').addEventListener('keydown', (e) => {
   initLangToggle();
   applyStaticI18n();
   applyIndexLiteMode();
+  updateGroupViewButtonState();
   updateRollbackButtonState();
 </script>
 </body>
