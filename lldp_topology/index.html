@@ -188,6 +188,35 @@
     #ctxMenu .ctx-submenu button {
       margin-top: 4px;
     }
+    #ctxMenu .ctx-subtitle {
+      font-size: 11px;
+      color: #64748b;
+      margin: 6px 0 4px;
+      padding-left: 2px;
+      font-weight: 600;
+    }
+    #ctxMenu .ctx-color-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-bottom: 4px;
+      max-width: 114px;
+    }
+    #ctxMenu .ctx-color-swatch {
+      width: 18px;
+      height: 18px;
+      min-width: 18px;
+      padding: 0;
+      border: 1px solid #cbd5e1;
+      border-radius: 4px;
+      background: #e5e7eb;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+    }
+    #ctxMenu .ctx-color-empty {
+      font-size: 11px;
+      color: #94a3b8;
+      margin: 2px 0 6px;
+    }
     .modal-backdrop {
       position: fixed;
       inset: 0;
@@ -455,15 +484,6 @@
         <input id="showOnly" type="text" placeholder="例如：CORE,EDGE/SPINE,LEAF&TOR" />
       </div>
       <div class="row">
-        <label id="nodeColorRulesLabel">节点颜色规则（关键字:颜色，逗号或换行分隔）</label>
-        <input id="nodeColorRules" type="text" placeholder="例如：OOB:#f59e0b,CORE:#ef4444" />
-        <div class="row inline" style="margin-top:6px;">
-          <button id="applyNodeColorRules">应用颜色规则</button>
-          <button id="clearNodeColorRules">清空颜色规则</button>
-        </div>
-        <div class="hint" id="nodeColorRulesHint">规则按顺序匹配；右键手动颜色优先。</div>
-      </div>
-      <div class="row">
         <label>分层关键字（高->低，逗号分层，斜杠同层，&需全部命中，如 EDGE&CORE,CORE,AGGR/SPINE,LEAF/tor）</label>
         <input id="layerTerms" type="text" list="layerTermsHistory" value="EDGE,CORE,AGGR,LEAF" />
         <datalist id="layerTermsHistory"></datalist>
@@ -665,12 +685,22 @@
   </div>
   <div id="ctxSepAdd" class="ctx-sep"></div>
   <button id="ctxLock">固定位置</button>
-  <button id="ctxNodeColor">自定义颜色</button>
   <button id="ctxDelete">删除设备</button>
   <button id="ctxDeleteLink">删除链路</button>
   <button id="ctxToggleEdgeExpand">展开链路</button>
   <button id="ctxEdgeDesc">添加描述</button>
   <div id="ctxSepEdit" class="ctx-sep"></div>
+  <button id="ctxNodeColor">自定义颜色 ▸</button>
+  <div id="ctxNodeColorSubmenu" class="ctx-submenu">
+    <div id="ctxNodeColorRecentTitle" class="ctx-subtitle">最近使用</div>
+    <div id="ctxNodeColorRecentPalette" class="ctx-color-grid"></div>
+    <div id="ctxNodeColorPresetTitle" class="ctx-subtitle">常用颜色</div>
+    <div id="ctxNodeColorPresetPalette" class="ctx-color-grid"></div>
+    <button id="ctxNodeColorMore">更多颜色...</button>
+    <button id="ctxNodeColorClear">清除颜色</button>
+    <input id="ctxNodeColorPicker" type="color" value="#2563eb" style="display:none;" />
+  </div>
+  <div id="ctxSepColor" class="ctx-sep"></div>
   <button id="ctxPathVia">设为必经点</button>
   <button id="ctxAddLink">增加链路</button>
   <button id="ctxCreateGroup">设备合组</button>
@@ -1100,9 +1130,17 @@
   let ctxCanvasPos = null;
   let pendingAddLinkNodes = [];
   let pendingEdgeDescEdgeIds = [];
+  let nodeColorSubmenuOpen = false;
   let nodeKeywordColorRules = [];
   let manualNodeColorMap = new Map();
+  let nodeColorRecentColors = [];
+  let colorNormalizeCanvasCtx = null;
   let addNodeSubmenuOpen = false;
+  const NODE_COLOR_PRESET_VALUES = [
+    '#2563eb', '#0ea5e9', '#14b8a6', '#22c55e', '#84cc16', '#eab308',
+    '#f59e0b', '#f97316', '#ec4899', '#a855f7', '#6366f1', '#64748b'
+  ];
+  const NODE_COLOR_CONFLICT_VALUES = new Set(['#facc15', '#ef4444']);
   // 注册 fCoSE 扩展（兼容不同全局名），避免引用未定义导致脚本中断
 (() => {
     const extFcose = window.cytoscapeFcose || window.cytoFcose || window.fcose || window.fCoSE;
@@ -1324,7 +1362,11 @@
       btn_append_csv: '追加 CSV',
       btn_load_paste: '从粘贴内容载入',
       ctx_path_via: '设为必经点',
-      ctx_node_color: '自定义颜色',
+      ctx_node_color: '自定义颜色 ▸',
+      ctx_node_color_recent: '最近使用',
+      ctx_node_color_preset: '常用颜色',
+      ctx_node_color_more: '更多颜色...',
+      ctx_node_color_clear: '清除颜色',
       ctx_add_node: '添加节点 ▸',
       ctx_add_node_regular: '节点',
       ctx_add_node_cloud: 'Cloud',
@@ -1476,7 +1518,11 @@
       btn_append_csv: 'Append CSV',
       btn_load_paste: 'Load Pasted CSV',
       ctx_path_via: 'Set Via Point',
-      ctx_node_color: 'Custom Color',
+      ctx_node_color: 'Custom Color ▸',
+      ctx_node_color_recent: 'Recent',
+      ctx_node_color_preset: 'Preset',
+      ctx_node_color_more: 'More Colors...',
+      ctx_node_color_clear: 'Clear Color',
       ctx_add_node: 'Add Node ▸',
       ctx_add_node_regular: 'Node',
       ctx_add_node_cloud: 'Cloud',
@@ -1730,6 +1776,10 @@
     setText('ctxEdgeDesc', 'ctx_edge_desc');
     setText('ctxPathVia', 'ctx_path_via');
     setText('ctxNodeColor', 'ctx_node_color');
+    setText('ctxNodeColorRecentTitle', 'ctx_node_color_recent');
+    setText('ctxNodeColorPresetTitle', 'ctx_node_color_preset');
+    setText('ctxNodeColorMore', 'ctx_node_color_more');
+    setText('ctxNodeColorClear', 'ctx_node_color_clear');
     setText('ctxAddNode', 'ctx_add_node');
     setText('ctxAddNodeRegular', 'ctx_add_node_regular');
     setText('ctxAddNodeCloud', 'ctx_add_node_cloud');
@@ -1863,6 +1913,99 @@
     return '';
   }
 
+  function normalizeColorToken(raw) {
+    const color = normalizeCssColorValue(raw);
+    if (!color) return '';
+    let resolved = '';
+    try {
+      if (!colorNormalizeCanvasCtx) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 1;
+        canvas.height = 1;
+        colorNormalizeCanvasCtx = canvas.getContext('2d');
+      }
+      if (colorNormalizeCanvasCtx) {
+        colorNormalizeCanvasCtx.fillStyle = '#000000';
+        colorNormalizeCanvasCtx.fillStyle = color;
+        resolved = String(colorNormalizeCanvasCtx.fillStyle || '').toLowerCase();
+      }
+    } catch (_) {
+      resolved = '';
+    }
+    if (/^#[0-9a-f]{3}$/i.test(resolved)) {
+      return `#${resolved[1]}${resolved[1]}${resolved[2]}${resolved[2]}${resolved[3]}${resolved[3]}`.toLowerCase();
+    }
+    if (/^#[0-9a-f]{6}$/i.test(resolved)) return resolved.toLowerCase();
+    return color.toLowerCase();
+  }
+
+  function loadNodeColorRecentPrefs() {
+    try {
+      const raw = localStorage.getItem(NODE_COLOR_RECENT_KEY);
+      if (!raw) {
+        nodeColorRecentColors = [];
+        return;
+      }
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) {
+        nodeColorRecentColors = [];
+        return;
+      }
+      nodeColorRecentColors = arr
+        .map((item) => normalizeColorToken(item))
+        .filter(Boolean)
+        .slice(0, 6);
+    } catch (_) {
+      nodeColorRecentColors = [];
+    }
+  }
+
+  function saveNodeColorRecentPrefs() {
+    try {
+      localStorage.setItem(NODE_COLOR_RECENT_KEY, JSON.stringify((nodeColorRecentColors || []).slice(0, 6)));
+    } catch (_) {
+      // Ignore local storage errors.
+    }
+  }
+
+  function renderCtxColorSwatches(containerId, colors) {
+    const box = $(containerId);
+    if (!box) return;
+    box.innerHTML = '';
+    if (!Array.isArray(colors) || !colors.length) {
+      const empty = document.createElement('div');
+      empty.className = 'ctx-color-empty';
+      empty.textContent = '-';
+      box.appendChild(empty);
+      return;
+    }
+    colors.forEach((color) => {
+      const swatch = document.createElement('button');
+      swatch.type = 'button';
+      swatch.className = 'ctx-color-swatch';
+      swatch.setAttribute('data-node-color', color);
+      swatch.title = color;
+      swatch.style.background = color;
+      box.appendChild(swatch);
+    });
+  }
+
+  function renderCtxNodeColorPalette() {
+    renderCtxColorSwatches('ctxNodeColorRecentPalette', nodeColorRecentColors);
+    renderCtxColorSwatches(
+      'ctxNodeColorPresetPalette',
+      NODE_COLOR_PRESET_VALUES.map((c) => normalizeColorToken(c)).filter(Boolean)
+    );
+  }
+
+  function pushRecentNodeColor(color) {
+    const normalized = normalizeColorToken(color);
+    if (!normalized) return;
+    nodeColorRecentColors = [normalized, ...nodeColorRecentColors.filter((item) => item !== normalized)].slice(0, 6);
+    saveNodeColorRecentPrefs();
+    renderCtxNodeColorPalette();
+  }
+
   function parseNodeKeywordColorRules(raw) {
     const text = String(raw || '');
     if (!text.trim()) return { rules: [], invalid: 0 };
@@ -1943,8 +2086,6 @@
   function applyNodeColorCustomizations(opts = {}) {
     if (!cy) return;
     const silent = !!opts.silent;
-    const parsed = opts.skipParse ? { rules: nodeKeywordColorRules, invalid: 0 } : rebuildNodeKeywordColorRulesFromInput();
-    const rules = Array.isArray(parsed.rules) ? parsed.rules : [];
     cy.nodes().forEach((node) => {
       node.removeClass('keyword-color manual-color');
       node.data('keywordColor', '');
@@ -1955,14 +2096,6 @@
       if (manualColor) {
         node.data('manualColor', manualColor);
         node.addClass('manual-color');
-        return;
-      }
-      const label = String(node.data('label') || '');
-      for (const rule of rules) {
-        if (!matchTermInName(label, rule.keyword)) continue;
-        node.data('keywordColor', rule.color);
-        node.addClass('keyword-color');
-        break;
       }
     });
     const visibleNodeIds = new Set(cy.nodes().map((n) => n.id()));
@@ -1970,12 +2103,8 @@
       if (!visibleNodeIds.has(id)) manualNodeColorMap.delete(id);
     });
     if (silent) return;
-    if (parsed.invalid > 0) {
-      setErr(`节点颜色规则中有 ${parsed.invalid} 条无效项（格式：关键字:颜色）。`);
-    } else {
-      setErr('');
-    }
-    setOK(`节点颜色已更新：规则 ${rules.length} 条，手动颜色 ${manualNodeColorMap.size} 台。`);
+    setErr('');
+    setOK(`节点颜色已更新：手动颜色 ${manualNodeColorMap.size} 台。`);
   }
 
   function rebuildDeletedNodeIdsFromStack() {
@@ -5542,13 +5671,47 @@
 
   // 右键菜单
   let ctxTarget = null;
+  let ctxMenuAnchor = null;
+  function positionCtxMenuFromAnchor() {
+    const menu = $('ctxMenu');
+    if (!menu) return;
+    menu.style.display = 'block';
+    if (!ctxMenuAnchor || !Number.isFinite(ctxMenuAnchor.x) || !Number.isFinite(ctxMenuAnchor.y)) {
+      menu.style.visibility = 'visible';
+      return;
+    }
+    const margin = 8;
+    menu.style.visibility = 'hidden';
+    menu.style.left = '0px';
+    menu.style.top = '0px';
+    const rect = menu.getBoundingClientRect();
+    const width = Math.max(1, Math.ceil(rect.width || 0));
+    const height = Math.max(1, Math.ceil(rect.height || 0));
+    const vw = Math.max(0, Number(window.innerWidth || document.documentElement?.clientWidth || 0));
+    const vh = Math.max(0, Number(window.innerHeight || document.documentElement?.clientHeight || 0));
+    let left = Number(ctxMenuAnchor.x);
+    let top = Number(ctxMenuAnchor.y);
+    if (left + width + margin > vw) left -= width;
+    if (top + height + margin > vh) top -= height;
+    const maxLeft = Math.max(margin, vw - width - margin);
+    const maxTop = Math.max(margin, vh - height - margin);
+    left = Math.min(Math.max(margin, left), maxLeft);
+    top = Math.min(Math.max(margin, top), maxTop);
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
+    menu.style.visibility = 'visible';
+  }
   function hideCtx() {
     const menu = $('ctxMenu');
     menu.style.display = 'none';
+    menu.style.visibility = 'visible';
     ctxTarget = null;
+    ctxMenuAnchor = null;
     ctxCanvasPos = null;
     addNodeSubmenuOpen = false;
+    nodeColorSubmenuOpen = false;
     if ($('ctxAddNodeSubmenu')) $('ctxAddNodeSubmenu').style.display = 'none';
+    if ($('ctxNodeColorSubmenu')) $('ctxNodeColorSubmenu').style.display = 'none';
   }
 
   function ctxNodes() {
@@ -5564,6 +5727,44 @@
     if (sel.length) return sel;
     if (ctxTarget && typeof ctxTarget.isEdge === 'function' && ctxTarget.isEdge()) return ctxTarget.collection();
     return cy.collection();
+  }
+
+  function ctxColorableNodes() {
+    return ctxNodes().filter((n) => !n.data('isGroup') && String(n.data('manualNodeType') || 'node').toLowerCase() !== 'cloud');
+  }
+
+  function applyCtxNodeColor(color, opts = {}) {
+    const clear = !!opts.clear;
+    const nodes = ctxColorableNodes();
+    if (!nodes.length) {
+      setOK('请先选中要着色的节点。');
+      return false;
+    }
+    const normalizedColor = clear ? '' : normalizeCssColorValue(color);
+    if (!clear && !normalizedColor) {
+      setErr('颜色格式无效，请输入 #RRGGBB、#RGB 或浏览器支持的颜色名。');
+      return false;
+    }
+    runWithRollback(() => {
+      if (clear) {
+        nodes.forEach((n) => manualNodeColorMap.delete(n.id()));
+      } else {
+        nodes.forEach((n) => manualNodeColorMap.set(n.id(), normalizedColor));
+        pushRecentNodeColor(normalizedColor);
+      }
+      applyNodeColorCustomizations({ silent: true, skipParse: true });
+      saveTopologyUiPrefs();
+      schedulePersistCurrentPageSession(120);
+      setErr('');
+      if (clear) {
+        setOK(`已清除 ${nodes.length} 台节点的手动颜色。`);
+      } else {
+        const normalizedToken = normalizeColorToken(normalizedColor);
+        const conflict = NODE_COLOR_CONFLICT_VALUES.has(normalizedToken);
+        setOK(`已为 ${nodes.length} 台节点设置颜色：${normalizedToken || normalizedColor}${conflict ? '（提示：该颜色可能与组节点/单链路节点冲突）' : ''}`);
+      }
+    }, { delayMs: 0 });
+    return true;
   }
 
   function nextManualCanvasLabel(kind = 'node') {
@@ -7051,6 +7252,7 @@
     });
     if ($('ctxAddNode')) $('ctxAddNode').style.display = isCanvasTarget ? '' : 'none';
     if ($('ctxAddNodeSubmenu')) $('ctxAddNodeSubmenu').style.display = (isCanvasTarget && addNodeSubmenuOpen) ? 'block' : 'none';
+    const colorableNodes = (!isCanvasTarget && !isEdgeTarget) ? ctxColorableNodes() : cy.collection();
     if ($('ctxCreateGroup')) {
       const groupableNodes = ctxNodes().filter((n) => !n.data('isGroup'));
       $('ctxCreateGroup').style.display = (!isCanvasTarget && !isEdgeTarget && groupableNodes.length >= 2) ? '' : 'none';
@@ -7070,15 +7272,23 @@
     }
     if ($('ctxToggleGroup')) {
       $('ctxToggleGroup').style.display = (!isEdgeTarget && canToggleGroup) ? '' : 'none';
-      $('ctxToggleGroup').textContent = isGroupNode ? tr('ctx_group_expand') : tr('ctx_group_collapse');
+      const activeViewGroupKey = String(groupViewState.groupKey || '').trim();
+      const isActiveGroupViewMember = !!(groupViewState.active && !isGroupNode && canToggleGroup && groupKey === activeViewGroupKey);
+      $('ctxToggleGroup').textContent = isActiveGroupViewMember
+        ? tr('btn_exit_group_view')
+        : (isGroupNode ? tr('ctx_group_expand') : tr('ctx_group_collapse'));
     }
     if ($('ctxRenameGroup')) {
       $('ctxRenameGroup').style.display = (!isEdgeTarget && isManualGroup && canToggleGroup) ? '' : 'none';
     }
     if ($('ctxPathVia')) $('ctxPathVia').style.display = (!isEdgeTarget && !isGroupNode) ? '' : 'none';
     if ($('ctxNodeColor')) {
-      const colorableNodes = ctxNodes().filter((n) => !n.data('isGroup') && String(n.data('manualNodeType') || 'node').toLowerCase() !== 'cloud');
       $('ctxNodeColor').style.display = (!isCanvasTarget && !isEdgeTarget && colorableNodes.length) ? '' : 'none';
+    }
+    if ($('ctxNodeColorSubmenu')) {
+      const showColorSubmenu = (!isCanvasTarget && !isEdgeTarget && colorableNodes.length && nodeColorSubmenuOpen);
+      $('ctxNodeColorSubmenu').style.display = showColorSubmenu ? 'block' : 'none';
+      if (showColorSubmenu) renderCtxNodeColorPalette();
     }
     if (!isEdgeTarget) {
       const nodes = ctxNodes();
@@ -7087,7 +7297,8 @@
     }
     const groups = [
       { sep: 'ctxSepAdd', ids: ['ctxAddNode', 'ctxAddNodeSubmenu'] },
-      { sep: 'ctxSepEdit', ids: ['ctxLock', 'ctxNodeColor', 'ctxDelete', 'ctxDeleteLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc'] },
+      { sep: 'ctxSepEdit', ids: ['ctxLock', 'ctxDelete', 'ctxDeleteLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc'] },
+      { sep: 'ctxSepColor', ids: ['ctxNodeColor', 'ctxNodeColorSubmenu'] },
       { sep: 'ctxSepCopy', ids: ['ctxPathVia', 'ctxAddLink', 'ctxCreateGroup', 'ctxToggleGroup', 'ctxRenameGroup'] },
       { sep: 'ctxSepQuery', ids: ['ctxCopy', 'ctxCopyIp', 'ctxCopyLink'] },
       { sep: '', ids: ['ctxUtil', 'ctxUtilRange', 'ctxAppendQuery'] }
@@ -7107,11 +7318,10 @@
       sep.style.display = hasVisible && laterHasVisible ? 'block' : 'none';
     });
     const { clientX, clientY } = evt.originalEvent || {};
-    if (clientX !== undefined) {
-      menu.style.left = `${clientX}px`;
-      menu.style.top = `${clientY}px`;
+    if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
+      ctxMenuAnchor = { x: Number(clientX), y: Number(clientY) };
     }
-    menu.style.display = 'block';
+    positionCtxMenuFromAnchor();
   }
 
   function updateNodeLabels(mode) {
@@ -7768,6 +7978,7 @@
   let importInputAction = 'import'; // import | append
   const CLI_PREF_KEY = 'lldp_cli_import_prefs_v1';
   const TOPOLOGY_UI_PREF_KEY = 'lldp_topology_ui_prefs_v1';
+  const NODE_COLOR_RECENT_KEY = 'lldp_node_color_recent_v1';
   const SQL_PREF_KEY = 'lldp_sql_prefs_v1';
   const PAGE_SESSION_KEY = 'lldp_page_session_snapshot_v1';
   const PAGE_SESSION_WINDOW_NAME_PREFIX = '__lldp_page_session__=';
@@ -9855,6 +10066,11 @@
       return;
     }
     const isCollapsedGroup = !!(typeof target.data === 'function' && target.data('isGroup'));
+    const activeViewGroupKey = String(groupViewState.groupKey || '').trim();
+    if (!isCollapsedGroup && groupViewState.active && groupKey === activeViewGroupKey) {
+      exitGroupView();
+      return;
+    }
     const expandedSet = groupKind === 'manual' ? expandedManualGroupKeys : expandedAutoGroupKeys;
     runWithRollback(() => {
       if (isCollapsedGroup) expandedSet.add(groupKey);
@@ -9975,40 +10191,57 @@
   });
 
   $('ctxNodeColor').addEventListener('click', () => {
-    const nodes = ctxNodes().filter((n) => !n.data('isGroup') && String(n.data('manualNodeType') || 'node').toLowerCase() !== 'cloud');
-    hideCtx();
+    const nodes = ctxColorableNodes();
     if (!nodes.length) {
+      hideCtx();
       setOK('请先选中要着色的节点。');
       return;
     }
-    const currentColors = new Set(nodes.map((n) => normalizeCssColorValue(manualNodeColorMap.get(n.id()))).filter(Boolean));
-    const defaultColor = currentColors.size === 1 ? Array.from(currentColors)[0] : '';
-    const input = window.prompt(
-      `请输入颜色（如 #f59e0b / orange），留空可清除 ${nodes.length} 台节点颜色`,
-      defaultColor
-    );
-    if (input == null) return;
-    const trimmed = String(input || '').trim();
-    const color = normalizeCssColorValue(trimmed);
-    if (trimmed && !color) {
-      setErr('颜色格式无效，请输入 #RRGGBB、#RGB 或浏览器支持的颜色名。');
+    addNodeSubmenuOpen = false;
+    if ($('ctxAddNodeSubmenu')) $('ctxAddNodeSubmenu').style.display = 'none';
+    nodeColorSubmenuOpen = !nodeColorSubmenuOpen;
+    if ($('ctxNodeColorSubmenu')) {
+      $('ctxNodeColorSubmenu').style.display = nodeColorSubmenuOpen ? 'block' : 'none';
+      if (nodeColorSubmenuOpen) renderCtxNodeColorPalette();
+    }
+    positionCtxMenuFromAnchor();
+  });
+
+  $('ctxNodeColorSubmenu').addEventListener('click', (evt) => {
+    const swatch = evt.target.closest('button[data-node-color]');
+    if (swatch) {
+      evt.stopPropagation();
+      if (applyCtxNodeColor(swatch.getAttribute('data-node-color') || '')) hideCtx();
       return;
     }
-    runWithRollback(() => {
-      if (!trimmed) nodes.forEach((n) => manualNodeColorMap.delete(n.id()));
-      else nodes.forEach((n) => manualNodeColorMap.set(n.id(), color));
-      applyNodeColorCustomizations({ silent: true, skipParse: true });
-      saveTopologyUiPrefs();
-      schedulePersistCurrentPageSession(120);
-      setErr('');
-      if (!trimmed) setOK(`已清除 ${nodes.length} 台节点的手动颜色。`);
-      else setOK(`已为 ${nodes.length} 台节点设置颜色：${color}`);
-    }, { delayMs: 0 });
+    const btn = evt.target.closest('button');
+    if (!btn) return;
+    evt.stopPropagation();
+    if (btn.id === 'ctxNodeColorClear') {
+      if (applyCtxNodeColor('', { clear: true })) hideCtx();
+      return;
+    }
+    if (btn.id === 'ctxNodeColorMore') {
+      const picker = $('ctxNodeColorPicker');
+      if (!picker) return;
+      const firstRecent = nodeColorRecentColors[0] || NODE_COLOR_PRESET_VALUES[0] || '#2563eb';
+      if (/^#[0-9a-f]{6}$/i.test(firstRecent)) picker.value = firstRecent;
+      picker.click();
+    }
+  });
+
+  $('ctxNodeColorPicker').addEventListener('input', (evt) => {
+    const color = String(evt.target?.value || '').trim();
+    if (!color) return;
+    if (applyCtxNodeColor(color)) hideCtx();
   });
 
   $('ctxAddNode').addEventListener('click', () => {
+    nodeColorSubmenuOpen = false;
+    if ($('ctxNodeColorSubmenu')) $('ctxNodeColorSubmenu').style.display = 'none';
     addNodeSubmenuOpen = !addNodeSubmenuOpen;
     if ($('ctxAddNodeSubmenu')) $('ctxAddNodeSubmenu').style.display = addNodeSubmenuOpen ? 'block' : 'none';
+    positionCtxMenuFromAnchor();
   });
 
   $('ctxAddNodeRegular').addEventListener('click', () => {
@@ -10404,38 +10637,6 @@
   $('showOnly').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') applyShowOnly();
   });
-  $('nodeColorRules').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      $('applyNodeColorRules').click();
-    }
-  });
-  $('nodeColorRules').addEventListener('input', saveTopologyUiPrefs);
-  $('applyNodeColorRules').addEventListener('click', () => {
-    runWithRollback(() => {
-      const parsed = rebuildNodeKeywordColorRulesFromInput();
-      applyNodeColorCustomizations({ silent: true, skipParse: true });
-      saveTopologyUiPrefs();
-      schedulePersistCurrentPageSession(120);
-      if (parsed.invalid > 0) {
-        setErr(`节点颜色规则中有 ${parsed.invalid} 条无效项（格式：关键字:颜色）。`);
-      } else {
-        setErr('');
-      }
-      setOK(`已应用节点颜色规则 ${parsed.rules.length} 条。`);
-    }, { delayMs: 0 });
-  });
-  $('clearNodeColorRules').addEventListener('click', () => {
-    runWithRollback(() => {
-      if ($('nodeColorRules')) $('nodeColorRules').value = '';
-      nodeKeywordColorRules = [];
-      applyNodeColorCustomizations({ silent: true, skipParse: true });
-      saveTopologyUiPrefs();
-      schedulePersistCurrentPageSession(120);
-      setErr('');
-      setOK('已清空节点关键字颜色规则。');
-    }, { delayMs: 0 });
-  });
   $('show172Only').addEventListener('click', () => {
     runWithRollback(() => {
       viewState.onlyMode = 'show172';
@@ -10561,6 +10762,8 @@ $('filter').addEventListener('keydown', (e) => {
   });
   window.addEventListener('pagehide', () => { persistCurrentPageSession(true); });
   window.addEventListener('beforeunload', () => { persistCurrentPageSession(true); });
+  loadNodeColorRecentPrefs();
+  renderCtxNodeColorPalette();
   initLangToggle();
   applyStaticI18n();
   applyIndexLiteMode();
