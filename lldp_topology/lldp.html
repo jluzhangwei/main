@@ -700,6 +700,8 @@
   <button id="ctxAddLink">增加链路</button>
   <button id="ctxCreateGroup">设备合组</button>
   <button id="ctxToggleGroup">合组展开</button>
+  <button id="ctxRemoveFromGroup">移出节点组</button>
+  <button id="ctxExitGroupView">返回主视图</button>
   <button id="ctxRenameGroup">修改组名</button>
   <div id="ctxSepCopy" class="ctx-sep"></div>
   <button id="ctxCopy">复制名称</button>
@@ -1199,6 +1201,7 @@
       ctx_copy_link: '复制链路',
       ctx_group_expand: '合组展开',
       ctx_group_collapse: '收起合组',
+      ctx_remove_group_member: '移出节点组',
       ctx_rename_group: '修改组名',
       cluster_strength_label: '近似度强度 0~1',
       spacing_label: '分散强度',
@@ -1357,6 +1360,7 @@
       ctx_copy_link: 'Copy Link',
       ctx_group_expand: 'Expand Group',
       ctx_group_collapse: 'Collapse Group',
+      ctx_remove_group_member: 'Remove From Group',
       ctx_rename_group: 'Rename Group',
       cluster_strength_label: 'Similarity Strength 0~1',
       spacing_label: 'Dispersion Strength',
@@ -1696,6 +1700,8 @@
     setText('ctxDeleteLink', 'ctx_delete_link');
     setText('ctxCopyLink', 'ctx_copy_link');
     setText('ctxToggleGroup', 'ctx_group_expand');
+    setText('ctxRemoveFromGroup', 'ctx_remove_group_member');
+    setText('ctxExitGroupView', 'btn_exit_group_view');
     setText('ctxRenameGroup', 'ctx_rename_group');
     setText('addLinkModalTitle', 'add_link_modal_title');
     setText('saveAddLink', 'add_link_save');
@@ -4950,12 +4956,8 @@
   }
 
   function restoreGroupViewBaseSnapshot(snapshot) {
-    if (!snapshot || !Array.isArray(snapshot.headers)) return false;
-    headers = snapshot.headers.slice();
-    sourceRows = cloneRows(snapshot.sourceRows || []);
-    rawRows = cloneRows(snapshot.rawRows || []);
-    deletedStack = (snapshot.deletedStack || []).map((x) => (Array.isArray(x) ? x.slice() : []));
-    rebuildDeletedNodeIdsFromStack();
+    if (!snapshot) return false;
+    const currentPositions = capturePositions();
     viewState.filterTerms = cloneMatchExpression(snapshot.viewState?.filterTerms || []);
     viewState.onlyMode = snapshot.viewState?.onlyMode || 'none';
     viewState.onlyTerms = cloneMatchExpression(snapshot.viewState?.onlyTerms || []);
@@ -4974,7 +4976,6 @@
     if ($('autoGroupMode')) $('autoGroupMode').value = snapshot.ui?.autoGroupMode || 'off';
     if ($('nameClusterStrength')) $('nameClusterStrength').value = snapshot.ui?.nameClusterStrength || '0.6';
     expandedAutoGroupKeys = new Set((snapshot.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
-    manualGroups = cloneManualGroups(snapshot.manualGroups || []);
     expandedManualGroupKeys = new Set((snapshot.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     expandedMergedEdgePairKeys = new Set((snapshot.expandedMergedEdgePairKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     $('nRows').textContent = rawRows.length;
@@ -4989,9 +4990,8 @@
       if (snapshot.ui?.colLocalIf && headers.includes(snapshot.ui.colLocalIf)) $('colLocalIf').value = snapshot.ui.colLocalIf;
       if (snapshot.ui?.colRemoteIf && headers.includes(snapshot.ui.colRemoteIf)) $('colRemoteIf').value = snapshot.ui.colRemoteIf;
     }
-    const pos = snapshot.positions || {};
-    buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
-    applyPositions(pos);
+    buildGraph(currentPositions, { keepExactPositions: true, adjustViewport: false });
+    applyPositions(currentPositions);
     if (cy && snapshot.pan && Number.isFinite(snapshot.zoom)) {
       cy.zoom(Number(snapshot.zoom));
       cy.pan(snapshot.pan);
@@ -6101,6 +6101,50 @@
     return changed;
   }
 
+  function removeNodeFromManualGroup(nodeId, groupKey = '') {
+    const cleanNodeId = String(nodeId || '').trim();
+    const cleanGroupKey = String(groupKey || '').trim();
+    if (!cleanNodeId) return null;
+    let changed = false;
+    let removedGroupKey = '';
+    let remainingMembers = 0;
+    let dissolved = false;
+    const rebuilt = [];
+    cloneManualGroups(manualGroups).forEach((group) => {
+      const key = String(group.key || '').trim();
+      const members = Array.from(new Set((group.members || []).map((id) => String(id || '').trim()).filter(Boolean)));
+      const hit = members.includes(cleanNodeId) && (!cleanGroupKey || key === cleanGroupKey);
+      if (!hit) {
+        if (members.length >= 2) rebuilt.push({ ...group, members: members.slice() });
+        return;
+      }
+      changed = true;
+      removedGroupKey = key;
+      const leftMembers = members.filter((id) => id !== cleanNodeId);
+      if (leftMembers.length >= 2) {
+        const leftPositions = {};
+        leftMembers.forEach((id) => {
+          const p = group.memberPositions && group.memberPositions[id];
+          if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) leftPositions[id] = { x: Number(p.x), y: Number(p.y) };
+        });
+        rebuilt.push({ key, label: group.label, members: leftMembers, memberPositions: leftPositions });
+        remainingMembers = leftMembers.length;
+        dissolved = false;
+      } else {
+        remainingMembers = leftMembers.length;
+        dissolved = true;
+      }
+    });
+    if (!changed) return null;
+    manualGroups = rebuilt;
+    if (removedGroupKey && dissolved) expandedManualGroupKeys.delete(removedGroupKey);
+    return {
+      groupKey: removedGroupKey,
+      remainingMembers,
+      dissolved
+    };
+  }
+
   function formatEdgePortLabel(edge) {
     if (!edge || typeof edge.data !== 'function') return '';
     const sourcePort = String(edge.data('sourcePort') || '').trim();
@@ -7139,7 +7183,7 @@
     const isManualGroup = ctxGroupKind() === 'manual';
     const groupKey = ctxGroupKey();
     const canToggleGroup = !!groupKey;
-    const nodeBtnIds = ['ctxLock', 'ctxNodeColor', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc'];
+    const nodeBtnIds = ['ctxLock', 'ctxNodeColor', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc', 'ctxExitGroupView', 'ctxRemoveFromGroup'];
     nodeBtnIds.forEach((id) => {
       const el = $(id);
       if (!el) return;
@@ -7179,11 +7223,14 @@
     }
     if ($('ctxToggleGroup')) {
       $('ctxToggleGroup').style.display = (!isEdgeTarget && canToggleGroup) ? '' : 'none';
-      const activeViewGroupKey = String(groupViewState.groupKey || '').trim();
-      const isActiveGroupViewMember = !!(groupViewState.active && !isGroupNode && canToggleGroup && groupKey === activeViewGroupKey);
-      $('ctxToggleGroup').textContent = isActiveGroupViewMember
-        ? tr('btn_exit_group_view')
-        : (isGroupNode ? tr('ctx_group_expand') : tr('ctx_group_collapse'));
+      $('ctxToggleGroup').textContent = isGroupNode ? tr('ctx_group_expand') : tr('ctx_group_collapse');
+    }
+    if ($('ctxExitGroupView')) {
+      $('ctxExitGroupView').style.display = (groupViewState.active && !isEdgeTarget && !isCanvasTarget) ? '' : 'none';
+    }
+    if ($('ctxRemoveFromGroup')) {
+      const canRemoveFromManualGroup = (!isCanvasTarget && !isEdgeTarget && !isGroupNode && isManualGroup && canToggleGroup);
+      $('ctxRemoveFromGroup').style.display = canRemoveFromManualGroup ? '' : 'none';
     }
     if ($('ctxRenameGroup')) {
       $('ctxRenameGroup').style.display = (!isEdgeTarget && isManualGroup && canToggleGroup) ? '' : 'none';
@@ -7206,7 +7253,7 @@
       { sep: 'ctxSepAdd', ids: ['ctxAddNode', 'ctxAddNodeSubmenu'] },
       { sep: 'ctxSepEdit', ids: ['ctxLock', 'ctxDelete', 'ctxDeleteLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc'] },
       { sep: 'ctxSepColor', ids: ['ctxNodeColor', 'ctxNodeColorSubmenu'] },
-      { sep: 'ctxSepCopy', ids: ['ctxPathVia', 'ctxAddLink', 'ctxCreateGroup', 'ctxToggleGroup', 'ctxRenameGroup'] },
+      { sep: 'ctxSepCopy', ids: ['ctxPathVia', 'ctxAddLink', 'ctxCreateGroup', 'ctxToggleGroup', 'ctxRemoveFromGroup', 'ctxExitGroupView', 'ctxRenameGroup'] },
       { sep: 'ctxSepQuery', ids: ['ctxCopy', 'ctxCopyIp', 'ctxCopyLink'] },
       { sep: '', ids: ['ctxUtil', 'ctxUtilRange', 'ctxAppendQuery'] }
     ];
@@ -9960,11 +10007,6 @@
       return;
     }
     const isCollapsedGroup = !!(typeof target.data === 'function' && target.data('isGroup'));
-    const activeViewGroupKey = String(groupViewState.groupKey || '').trim();
-    if (!isCollapsedGroup && groupViewState.active && groupKey === activeViewGroupKey) {
-      exitGroupView();
-      return;
-    }
     const expandedSet = groupKind === 'manual' ? expandedManualGroupKeys : expandedAutoGroupKeys;
     runWithRollback(() => {
       if (isCollapsedGroup) expandedSet.add(groupKey);
@@ -9972,6 +10014,43 @@
       const pos = capturePositions();
       buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
       setOK(isCollapsedGroup ? '已展开合组。' : '已收起合组。');
+    }, { delayMs: 1300 });
+  });
+
+  $('ctxExitGroupView').addEventListener('click', () => {
+    hideCtx();
+    if (!groupViewState.active) {
+      setOK('当前不在组视图。');
+      return;
+    }
+    exitGroupView();
+  });
+
+  $('ctxRemoveFromGroup').addEventListener('click', () => {
+    const target = ctxTarget;
+    const node = (target && typeof target.isNode === 'function' && target.isNode() && !target.data('isGroup')) ? target : null;
+    const nodeId = node ? String(node.id() || '').trim() : '';
+    const nodeName = node ? String(node.data('label') || nodeId).trim() : '';
+    const groupKind = node ? String(node.data('groupKind') || '').trim() : '';
+    const groupKey = node ? String(node.data('manualGroupKey') || node.data('groupKey') || '').trim() : '';
+    hideCtx();
+    if (!node || !nodeId || groupKind !== 'manual' || !groupKey) {
+      setOK('当前设备不在手动节点组中。');
+      return;
+    }
+    runWithRollback(() => {
+      const removed = removeNodeFromManualGroup(nodeId, groupKey);
+      if (!removed) {
+        setOK('当前设备不在手动节点组中。');
+        return;
+      }
+      const pos = capturePositions();
+      buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
+      if (removed.dissolved) {
+        setOK(`已将 ${nodeName || nodeId} 移出节点组；原组成员不足 2 台，已自动解散。`);
+      } else {
+        setOK(`已将 ${nodeName || nodeId} 移出节点组。`);
+      }
     }, { delayMs: 1300 });
   });
 
