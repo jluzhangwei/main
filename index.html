@@ -5051,6 +5051,8 @@
   function restoreGroupViewBaseSnapshot(snapshot) {
     if (!snapshot) return false;
     const currentPositions = capturePositions();
+    const snapshotPositions = (snapshot.positions && typeof snapshot.positions === 'object') ? snapshot.positions : {};
+    const mergedPositions = { ...snapshotPositions, ...currentPositions };
     viewState.filterTerms = cloneMatchExpression(snapshot.viewState?.filterTerms || []);
     viewState.onlyMode = snapshot.viewState?.onlyMode || 'none';
     viewState.onlyTerms = cloneMatchExpression(snapshot.viewState?.onlyTerms || []);
@@ -5083,8 +5085,8 @@
       if (snapshot.ui?.colLocalIf && headers.includes(snapshot.ui.colLocalIf)) $('colLocalIf').value = snapshot.ui.colLocalIf;
       if (snapshot.ui?.colRemoteIf && headers.includes(snapshot.ui.colRemoteIf)) $('colRemoteIf').value = snapshot.ui.colRemoteIf;
     }
-    buildGraph(currentPositions, { keepExactPositions: true, adjustViewport: false });
-    applyPositions(currentPositions);
+    buildGraph(mergedPositions, { keepExactPositions: true, adjustViewport: false });
+    applyPositions(mergedPositions);
     if (cy && snapshot.pan && Number.isFinite(snapshot.zoom)) {
       cy.zoom(Number(snapshot.zoom));
       cy.pan(snapshot.pan);
@@ -5837,6 +5839,93 @@
 
   function ctxDeviceNodes() {
     return ctxNodes().filter((n) => !n.data('isGroup'));
+  }
+
+  function selectedNodesForGrouping() {
+    if (!cy) {
+      return {
+        selectedCount: 0,
+        groupNodeCount: 0,
+        memberIds: [],
+        memberPositions: {},
+        preferredLabel: ''
+      };
+    }
+    const selected = ctxNodes()
+      .filter((n) => n && typeof n.isNode === 'function' && n.isNode())
+      .toArray();
+    const memberSet = new Set();
+    const memberLabels = new Map();
+    const memberPositions = {};
+    const selectedGroupNodes = [];
+
+    selected.forEach((node) => {
+      const isGroupNode = !!node.data('isGroup');
+      if (!isGroupNode) {
+        const id = String(node.id() || '').trim();
+        if (!id) return;
+        memberSet.add(id);
+        const label = String(node.data('label') || id).trim();
+        if (label) memberLabels.set(id, label);
+        const p = node.position();
+        if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) memberPositions[id] = { x: Number(p.x), y: Number(p.y) };
+        return;
+      }
+
+      selectedGroupNodes.push(node);
+      const groupMembers = (Array.isArray(node.data('groupMembers')) ? node.data('groupMembers') : [])
+        .map((id) => String(id || '').trim())
+        .filter(Boolean);
+      const groupLabels = (Array.isArray(node.data('groupLabels')) ? node.data('groupLabels') : [])
+        .map((label) => String(label || '').trim());
+      groupMembers.forEach((id, idx) => {
+        memberSet.add(id);
+        const label = groupLabels[idx];
+        if (label) memberLabels.set(id, label);
+      });
+
+      const groupKind = String(node.data('groupKind') || (node.data('isManualGroup') ? 'manual' : '') || '').trim();
+      const groupKey = String(node.data('groupKey') || node.data('manualGroupKey') || '').trim();
+      if (groupKind === 'manual' && groupKey) {
+        const group = cloneManualGroups(manualGroups).find((g) => String(g.key || '').trim() === groupKey);
+        if (group) {
+          (group.members || []).forEach((id) => {
+            const memberId = String(id || '').trim();
+            if (memberId) memberSet.add(memberId);
+          });
+          Object.entries(group.memberPositions || {}).forEach(([id, p]) => {
+            if (!memberSet.has(String(id || '').trim())) return;
+            if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) memberPositions[String(id || '').trim()] = { x: Number(p.x), y: Number(p.y) };
+          });
+        }
+      }
+    });
+
+    const memberIds = Array.from(memberSet);
+    memberIds.forEach((id) => {
+      if (memberLabels.has(id)) return;
+      const n = cy.getElementById(id);
+      if (n && n.length && !n.data('isGroup')) {
+        memberLabels.set(id, String(n.data('label') || id).trim() || id);
+      } else {
+        memberLabels.set(id, id);
+      }
+    });
+
+    const selectedGroupLabels = selectedGroupNodes
+      .map((n) => String(n.data('label') || '').trim())
+      .filter(Boolean);
+    const preferredLabel = selectedGroupLabels.length === 1
+      ? selectedGroupLabels[0]
+      : buildGroupLabelFromMany(memberIds.map((id) => memberLabels.get(id) || id));
+
+    return {
+      selectedCount: selected.length,
+      groupNodeCount: selectedGroupLabels.length,
+      memberIds,
+      memberPositions,
+      preferredLabel: String(preferredLabel || '').trim()
+    };
   }
 
   function selectedNodesForManualLink() {
@@ -7298,8 +7387,9 @@
     if ($('ctxAddNodeSubmenu')) $('ctxAddNodeSubmenu').style.display = (isCanvasTarget && addNodeSubmenuOpen) ? 'block' : 'none';
     const colorableNodes = (!isCanvasTarget && !isEdgeTarget) ? ctxColorableNodes() : cy.collection();
     if ($('ctxCreateGroup')) {
-      const groupableNodes = ctxNodes().filter((n) => !n.data('isGroup'));
-      $('ctxCreateGroup').style.display = (!isCanvasTarget && !isEdgeTarget && groupableNodes.length >= 2) ? '' : 'none';
+      const grouping = selectedNodesForGrouping();
+      const canCreate = (!isCanvasTarget && !isEdgeTarget && grouping.selectedCount >= 2 && grouping.memberIds.length >= 2);
+      $('ctxCreateGroup').style.display = canCreate ? '' : 'none';
     }
     if ($('ctxAddLink')) {
       const linkableNodes = ctxNodes().filter((n) => !n.data('isGroup'));
@@ -10078,28 +10168,22 @@
   });
 
   $('ctxCreateGroup').addEventListener('click', () => {
-    const targetNodes = ctxNodes().filter((n) => !n.data('isGroup'));
+    const grouping = selectedNodesForGrouping();
     hideCtx();
-    if (!targetNodes.length || targetNodes.length < 2) {
-      setOK('请先选中至少 2 台设备后再执行设备合组。');
+    if (grouping.selectedCount < 2 || grouping.memberIds.length < 2) {
+      setOK('请先多选至少 2 个节点或节点组后再执行设备合组。');
       return;
     }
     runWithRollback(() => {
-      const memberIds = targetNodes.map((n) => n.id());
-      const labels = targetNodes.map((n) => String(n.data('label') || n.id()).trim());
-      const memberPositions = {};
-      targetNodes.forEach((n) => {
-        const p = n.position();
-        if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) memberPositions[n.id()] = { x: p.x, y: p.y };
-      });
-      const info = upsertManualGroup(memberIds, buildGroupLabelFromMany(labels), memberPositions);
+      const info = upsertManualGroup(grouping.memberIds, grouping.preferredLabel, grouping.memberPositions);
       if (!info) {
         setErr('设备合组失败：有效设备不足 2 台。');
         return;
       }
       const pos = capturePositions();
       buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
-      setOK(`已合组 ${info.members.length} 台设备，组名：${info.label}`);
+      const renameHint = grouping.groupNodeCount === 1 ? '（沿用单个节点组名称）' : '';
+      setOK(`已合组 ${info.members.length} 台设备，组名：${info.label}${renameHint}`);
     }, { delayMs: 1300 });
   });
 
