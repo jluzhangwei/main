@@ -450,6 +450,15 @@
         <input id="showOnly" type="text" placeholder="例如：CORE,EDGE/SPINE,LEAF&TOR" />
       </div>
       <div class="row">
+        <label id="nodeColorRulesLabel">节点颜色规则（关键字:颜色，逗号或换行分隔）</label>
+        <input id="nodeColorRules" type="text" placeholder="例如：OOB:#f59e0b,CORE:#ef4444" />
+        <div class="row inline" style="margin-top:6px;">
+          <button id="applyNodeColorRules">应用颜色规则</button>
+          <button id="clearNodeColorRules">清空颜色规则</button>
+        </div>
+        <div class="hint" id="nodeColorRulesHint">规则按顺序匹配；右键手动颜色优先。</div>
+      </div>
+      <div class="row">
         <label>分层关键字（高->低，逗号分层，斜杠同层，&需全部命中，如 EDGE&CORE,CORE,AGGR/SPINE,LEAF/tor）</label>
         <input id="layerTerms" type="text" list="layerTermsHistory" value="EDGE,CORE,AGGR,LEAF" />
         <datalist id="layerTermsHistory"></datalist>
@@ -651,6 +660,7 @@
   </div>
   <div id="ctxSepAdd" class="ctx-sep"></div>
   <button id="ctxLock">固定位置</button>
+  <button id="ctxNodeColor">自定义颜色</button>
   <button id="ctxDelete">删除设备</button>
   <button id="ctxDeleteLink">删除链路</button>
   <button id="ctxToggleEdgeExpand">展开链路</button>
@@ -1005,7 +1015,6 @@
     </div>
   </div>
 </div>
-
 <script>
   let sourceRows = [];
   let rawRows = [];
@@ -1083,6 +1092,8 @@
   let ctxCanvasPos = null;
   let pendingAddLinkNodes = [];
   let pendingEdgeDescEdgeIds = [];
+  let nodeKeywordColorRules = [];
+  let manualNodeColorMap = new Map();
   let addNodeSubmenuOpen = false;
   // 注册 fCoSE 扩展（兼容不同全局名），避免引用未定义导致脚本中断
 (() => {
@@ -1132,6 +1143,10 @@
       search_label: '定位设备（逗号分层，斜杠同组，&需全部命中，回车多选）',
       filter_label: '不显示：逗号分层，斜杠同组，&需全部命中，命中的设备会被隐藏',
       show_only_label: '只显示：逗号分层，斜杠同组，&需全部命中，回车生效（仅显示命中的设备，其余隐藏）',
+      node_color_rules_label: '节点颜色规则（关键字:颜色，逗号或换行分隔）',
+      node_color_rules_hint: '规则按顺序匹配；右键手动颜色优先。',
+      btn_apply_node_color_rules: '应用颜色规则',
+      btn_clear_node_color_rules: '清空颜色规则',
       layer_terms_label: '分层关键字（高->低，逗号分层，斜杠同层，&需全部命中，如 EDGE&CORE,CORE,AGGR/SPINE,LEAF/tor）',
       partition_terms_label: '分区关键字（左->右分区，逗号分区，斜杠同区，&需全部命中，如 PAY/SHOP,MGMT&CORE,EDGE）',
       layer_terms_hint: '规则与分区一致：逗号分层，斜杠同层 OR，&需全部命中；若设置了分区，则每个分区内独立执行分层。',
@@ -1216,6 +1231,7 @@
       btn_append_csv: '追加 CSV',
       btn_load_paste: '从粘贴内容载入',
       ctx_path_via: '设为必经点',
+      ctx_node_color: '自定义颜色',
       ctx_add_node: '添加节点 ▸',
       ctx_add_node_regular: '节点',
       ctx_add_node_cloud: 'Cloud',
@@ -1279,6 +1295,10 @@
       search_label: 'Locate Devices (comma=tier, slash=OR group, &=all terms, press Enter for multi-select)',
       filter_label: 'Hide: comma=tier, slash=OR group, &=all terms',
       show_only_label: 'Show Only: comma=tier, slash=OR group, &=all terms, press Enter to apply',
+      node_color_rules_label: 'Node Color Rules (keyword:color, split by comma or newline)',
+      node_color_rules_hint: 'Rules are matched in order; right-click manual color has higher priority.',
+      btn_apply_node_color_rules: 'Apply Color Rules',
+      btn_clear_node_color_rules: 'Clear Color Rules',
       layer_terms_label: 'Layer Keywords (high->low, comma=layer, slash=same layer, &=all terms)',
       btn_single_link: 'Single-Link Nodes',
       btn_exit_group_view: 'Back To Main View',
@@ -1363,6 +1383,7 @@
       btn_append_csv: 'Append CSV',
       btn_load_paste: 'Load Pasted CSV',
       ctx_path_via: 'Set Via Point',
+      ctx_node_color: 'Custom Color',
       ctx_add_node: 'Add Node ▸',
       ctx_add_node_regular: 'Node',
       ctx_add_node_cloud: 'Cloud',
@@ -1537,6 +1558,10 @@
     setParentLabel('search', 'search_label');
     setParentLabel('filter', 'filter_label');
     setParentLabel('showOnly', 'show_only_label');
+    setText('nodeColorRulesLabel', 'node_color_rules_label');
+    setText('nodeColorRulesHint', 'node_color_rules_hint');
+    setText('applyNodeColorRules', 'btn_apply_node_color_rules');
+    setText('clearNodeColorRules', 'btn_clear_node_color_rules');
     setParentLabel('layerTerms', 'layer_terms_label');
     setParentLabel('bizIsolationTerms', 'partition_terms_label');
     setText('layerTermsHint', 'layer_terms_hint');
@@ -1611,6 +1636,7 @@
     setText('ctxUtilRange', 'ctx_util_range');
     setText('ctxEdgeDesc', 'ctx_edge_desc');
     setText('ctxPathVia', 'ctx_path_via');
+    setText('ctxNodeColor', 'ctx_node_color');
     setText('ctxAddNode', 'ctx_add_node');
     setText('ctxAddNodeRegular', 'ctx_add_node_regular');
     setText('ctxAddNodeCloud', 'ctx_add_node_cloud');
@@ -1723,6 +1749,142 @@
     edgeDescByKey = new Map();
   }
 
+  function clearNodeColorState(opts = {}) {
+    manualNodeColorMap = new Map();
+    if (opts.keepRules) return;
+    nodeKeywordColorRules = [];
+    if ($('nodeColorRules')) $('nodeColorRules').value = '';
+  }
+
+  function normalizeCssColorValue(raw) {
+    const value = String(raw || '').trim();
+    if (!value) return '';
+    try {
+      if (window.CSS && typeof window.CSS.supports === 'function' && window.CSS.supports('color', value)) {
+        return value;
+      }
+    } catch (_) {
+      // Ignore CSS.supports errors and fallback to regex checks.
+    }
+    if (/^#[0-9a-f]{3}$/i.test(value) || /^#[0-9a-f]{6}$/i.test(value)) return value;
+    return '';
+  }
+
+  function parseNodeKeywordColorRules(raw) {
+    const text = String(raw || '');
+    if (!text.trim()) return { rules: [], invalid: 0 };
+    const chunks = text
+      .split(/[\n,;\uff0c\uff1b]+/g)
+      .map((x) => x.trim())
+      .filter(Boolean);
+    const rules = [];
+    let invalid = 0;
+    chunks.forEach((chunk) => {
+      const m = chunk.match(/^(.+?)\s*[:=\uff1a]\s*(.+)$/);
+      if (!m) {
+        invalid += 1;
+        return;
+      }
+      const keyword = String(m[1] || '').trim();
+      const color = normalizeCssColorValue(m[2]);
+      if (!keyword || !color) {
+        invalid += 1;
+        return;
+      }
+      rules.push({ keyword, color });
+    });
+    return { rules, invalid };
+  }
+
+  function normalizeManualNodeColorEntries(input) {
+    const out = [];
+    if (Array.isArray(input)) {
+      input.forEach((item) => {
+        const id = String(item?.id || '').trim();
+        const color = normalizeCssColorValue(item?.color);
+        if (!id || !color) return;
+        out.push({ id, color });
+      });
+      return out;
+    }
+    if (input && typeof input === 'object') {
+      Object.entries(input).forEach(([idRaw, colorRaw]) => {
+        const id = String(idRaw || '').trim();
+        const color = normalizeCssColorValue(colorRaw);
+        if (!id || !color) return;
+        out.push({ id, color });
+      });
+    }
+    return out;
+  }
+
+  function exportManualNodeColorEntries(visibleNodeIds = null) {
+    const out = [];
+    manualNodeColorMap.forEach((rawColor, rawId) => {
+      const id = String(rawId || '').trim();
+      if (!id) return;
+      if (visibleNodeIds && !visibleNodeIds.has(id)) return;
+      const color = normalizeCssColorValue(rawColor);
+      if (!color) return;
+      out.push({ id, color });
+    });
+    return out;
+  }
+
+  function importManualNodeColorEntries(entries, opts = {}) {
+    const overwrite = !!opts.overwrite;
+    const cleanEntries = normalizeManualNodeColorEntries(entries);
+    cleanEntries.forEach((item) => {
+      if (!overwrite && manualNodeColorMap.has(item.id)) return;
+      manualNodeColorMap.set(item.id, item.color);
+    });
+    return cleanEntries.length;
+  }
+
+  function rebuildNodeKeywordColorRulesFromInput() {
+    const parsed = parseNodeKeywordColorRules($('nodeColorRules')?.value || '');
+    nodeKeywordColorRules = parsed.rules;
+    return parsed;
+  }
+
+  function applyNodeColorCustomizations(opts = {}) {
+    if (!cy) return;
+    const silent = !!opts.silent;
+    const parsed = opts.skipParse ? { rules: nodeKeywordColorRules, invalid: 0 } : rebuildNodeKeywordColorRulesFromInput();
+    const rules = Array.isArray(parsed.rules) ? parsed.rules : [];
+    cy.nodes().forEach((node) => {
+      node.removeClass('keyword-color manual-color');
+      node.data('keywordColor', '');
+      node.data('manualColor', '');
+      if (node.data('isGroup')) return;
+      if (String(node.data('manualNodeType') || 'node').toLowerCase() === 'cloud') return;
+      const manualColor = normalizeCssColorValue(manualNodeColorMap.get(node.id()));
+      if (manualColor) {
+        node.data('manualColor', manualColor);
+        node.addClass('manual-color');
+        return;
+      }
+      const label = String(node.data('label') || '');
+      for (const rule of rules) {
+        if (!matchTermInName(label, rule.keyword)) continue;
+        node.data('keywordColor', rule.color);
+        node.addClass('keyword-color');
+        break;
+      }
+    });
+    const visibleNodeIds = new Set(cy.nodes().map((n) => n.id()));
+    manualNodeColorMap.forEach((_, id) => {
+      if (!visibleNodeIds.has(id)) manualNodeColorMap.delete(id);
+    });
+    if (silent) return;
+    if (parsed.invalid > 0) {
+      setErr(`节点颜色规则中有 ${parsed.invalid} 条无效项（格式：关键字:颜色）。`);
+    } else {
+      setErr('');
+    }
+    setOK(`节点颜色已更新：规则 ${rules.length} 条，手动颜色 ${manualNodeColorMap.size} 台。`);
+  }
+
   function rebuildDeletedNodeIdsFromStack() {
     const ids = new Set();
     for (const item of deletedStack) {
@@ -1825,6 +1987,7 @@
       ui: {
         filter: $('filter')?.value || '',
         showOnly: $('showOnly')?.value || '',
+        nodeColorRules: $('nodeColorRules')?.value || '',
         layerTerms: $('layerTerms')?.value || '',
         bizIsolationTerms: $('bizIsolationTerms')?.value || '',
         layoutMode: $('layoutMode')?.value || 'layer',
@@ -1845,6 +2008,7 @@
       expandedAutoGroupKeys: Array.from(expandedAutoGroupKeys),
       manualGroups: cloneManualGroups(manualGroups),
       manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes),
+      manualNodeColors: exportManualNodeColorEntries(),
       edgeDescEntries: exportEdgeDescEntries(),
       expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
       expandedMergedEdgePairKeys: Array.from(expandedMergedEdgePairKeys),
@@ -1870,6 +2034,7 @@
 
       if ($('filter')) $('filter').value = snapshot.ui?.filter || '';
       if ($('showOnly')) $('showOnly').value = snapshot.ui?.showOnly || '';
+      if ($('nodeColorRules')) $('nodeColorRules').value = snapshot.ui?.nodeColorRules || '';
       if ($('layerTerms')) $('layerTerms').value = snapshot.ui?.layerTerms || '';
       if ($('bizIsolationTerms')) $('bizIsolationTerms').value = snapshot.ui?.bizIsolationTerms || '';
       if ($('layoutMode')) $('layoutMode').value = snapshot.ui?.layoutMode || 'layer';
@@ -1889,6 +2054,9 @@
       expandedAutoGroupKeys = new Set((snapshot.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
       manualGroups = cloneManualGroups(snapshot.manualGroups || []);
       manualCanvasNodes = cloneManualCanvasNodes(snapshot.manualCanvasNodes || []);
+      manualNodeColorMap = new Map();
+      importManualNodeColorEntries(snapshot.manualNodeColors || [], { overwrite: true });
+      rebuildNodeKeywordColorRulesFromInput();
       importEdgeDescEntries(snapshot.edgeDescEntries || [], false);
       expandedManualGroupKeys = new Set((snapshot.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
       expandedMergedEdgePairKeys = new Set((snapshot.expandedMergedEdgePairKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
@@ -2594,6 +2762,8 @@
         colRemoteHost: $('colRemoteHost')?.value || '',
         colLocalIf: $('colLocalIf')?.value || '',
         colRemoteIf: $('colRemoteIf')?.value || '',
+        nodeColorRulesText: $('nodeColorRules')?.value || '',
+        manualNodeColors: exportManualNodeColorEntries(visibleNodeIds),
         edgeDescriptions: visibleEdgeDescEntries(visibleEdges),
         manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes).filter((node) => visibleNodeIds.has(node.id)),
         manualGroups: visibleManualGroups,
@@ -2610,6 +2780,7 @@
     clearGroupState();
     clearManualCanvasState();
     clearEdgeDescState();
+    clearNodeColorState({ keepRules: true });
     resetViewState();
     const parsed = parseCSV(text);
     headers = parsed.headers;
@@ -2708,6 +2879,7 @@
       clearDeleteState();
       clearGroupState();
       clearEdgeDescState();
+      clearNodeColorState({ keepRules: true });
       resetViewState();
       headers = [];
       sourceRows = [];
@@ -2820,6 +2992,8 @@
       { selector: 'node[role = "AGGR"]', style: { 'background-color': '#2563eb' } },
       { selector: 'node[role = "TOR"]',  style: { 'background-color': '#059669' } },
       { selector: 'node[role = "OTHER"]',style: { 'background-color': '#6b7280' } },
+      { selector: 'node.keyword-color', style: { 'background-color': 'data(keywordColor)' } },
+      { selector: 'node.manual-color', style: { 'background-color': 'data(manualColor)' } },
       {
         selector: 'node.manual-group-node',
         style: {
@@ -3351,6 +3525,7 @@
 
     // 根据分层关键字重新标记角色/层级
     applyLayersToNodes(cy.nodes());
+    applyNodeColorCustomizations({ silent: true });
 
     // 如果保留坐标，则先应用并锁定，布局后再解锁
     if (hasKeep) {
@@ -4618,6 +4793,7 @@
       ui: {
         filter: $('filter')?.value || '',
         showOnly: $('showOnly')?.value || '',
+        nodeColorRulesText: $('nodeColorRules')?.value || '',
         layerTerms: $('layerTerms')?.value || '',
         bizIsolationTerms: $('bizIsolationTerms')?.value || '',
         layoutMode: $('layoutMode')?.value || 'layer',
@@ -6762,7 +6938,7 @@
     const isManualGroup = ctxGroupKind() === 'manual';
     const groupKey = ctxGroupKey();
     const canToggleGroup = !!groupKey;
-    const nodeBtnIds = ['ctxLock', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc'];
+    const nodeBtnIds = ['ctxLock', 'ctxNodeColor', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc'];
     nodeBtnIds.forEach((id) => {
       const el = $(id);
       if (!el) return;
@@ -6774,7 +6950,7 @@
         el.style.display = (id === 'ctxUtil' || id === 'ctxUtilRange' || id === 'ctxEdgeDesc' || id === 'ctxToggleEdgeExpand') ? '' : 'none';
         return;
       }
-      if (isGroupNode && ['ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxEdgeDesc'].includes(id)) {
+      if (isGroupNode && ['ctxNodeColor', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxEdgeDesc'].includes(id)) {
         el.style.display = 'none';
         return;
       }
@@ -6807,6 +6983,10 @@
       $('ctxRenameGroup').style.display = (!isEdgeTarget && isManualGroup && canToggleGroup) ? '' : 'none';
     }
     if ($('ctxPathVia')) $('ctxPathVia').style.display = (!isEdgeTarget && !isGroupNode) ? '' : 'none';
+    if ($('ctxNodeColor')) {
+      const colorableNodes = ctxNodes().filter((n) => !n.data('isGroup') && String(n.data('manualNodeType') || 'node').toLowerCase() !== 'cloud');
+      $('ctxNodeColor').style.display = (!isCanvasTarget && !isEdgeTarget && colorableNodes.length) ? '' : 'none';
+    }
     if (!isEdgeTarget) {
       const nodes = ctxNodes();
       const locked = nodes.length ? nodes.every(n => n.locked()) : false;
@@ -6814,7 +6994,7 @@
     }
     const groups = [
       { sep: 'ctxSepAdd', ids: ['ctxAddNode', 'ctxAddNodeSubmenu'] },
-      { sep: 'ctxSepEdit', ids: ['ctxLock', 'ctxDelete', 'ctxDeleteLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc'] },
+      { sep: 'ctxSepEdit', ids: ['ctxLock', 'ctxNodeColor', 'ctxDelete', 'ctxDeleteLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc'] },
       { sep: 'ctxSepCopy', ids: ['ctxPathVia', 'ctxAddLink', 'ctxCreateGroup', 'ctxToggleGroup', 'ctxRenameGroup'] },
       { sep: 'ctxSepQuery', ids: ['ctxCopy', 'ctxCopyIp', 'ctxCopyLink'] },
       { sep: '', ids: ['ctxUtil', 'ctxUtilRange', 'ctxAppendQuery'] }
@@ -6933,6 +7113,7 @@
         expandedAutoGroupKeys: Array.from(expandedAutoGroupKeys),
         manualGroups: cloneManualGroups(manualGroups),
         manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes),
+        manualNodeColors: exportManualNodeColorEntries(),
         expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
         expandedMergedEdgePairKeys: Array.from(expandedMergedEdgePairKeys),
         mergeMode: !!mergedMode,
@@ -7081,6 +7262,7 @@
     const ui = snapshot?.ui || {};
     if ($('filter') && ui.filter != null) $('filter').value = String(ui.filter);
     if ($('showOnly') && ui.showOnly != null) $('showOnly').value = String(ui.showOnly);
+    if ($('nodeColorRules') && ui.nodeColorRulesText != null) $('nodeColorRules').value = String(ui.nodeColorRulesText);
     if ($('layerTerms') && ui.layerTerms != null) $('layerTerms').value = String(ui.layerTerms);
     if ($('stripDomain') && ui.stripDomain) $('stripDomain').value = String(ui.stripDomain);
     if ($('layoutMode') && ui.layoutMode) $('layoutMode').value = String(ui.layoutMode);
@@ -7108,6 +7290,9 @@
     expandedAutoGroupKeys = new Set((ui.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     manualGroups = cloneManualGroups(ui.manualGroups || []);
     manualCanvasNodes = cloneManualCanvasNodes(ui.manualCanvasNodes || snapshot?.manual_canvas_nodes || []);
+    manualNodeColorMap = new Map();
+    importManualNodeColorEntries(ui.manualNodeColors || {}, { overwrite: true });
+    rebuildNodeKeywordColorRulesFromInput();
     importEdgeDescEntries(ui.edgeDescriptions || snapshot?.edge_descriptions || snapshot?.edge_notes || [], false);
     expandedManualGroupKeys = new Set((ui.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     expandedMergedEdgePairKeys = new Set((ui.expandedMergedEdgePairKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
@@ -7167,6 +7352,14 @@
         }).filter(Boolean)
       : [];
     const importedUi = (appendPayload?.ui && typeof appendPayload.ui === 'object') ? appendPayload.ui : {};
+    if ($('nodeColorRules')) {
+      const importedRulesText = String(importedUi.nodeColorRulesText || '').trim();
+      if (importedRulesText && !String($('nodeColorRules').value || '').trim()) {
+        $('nodeColorRules').value = importedRulesText;
+      }
+      rebuildNodeKeywordColorRulesFromInput();
+    }
+    importManualNodeColorEntries(importedUi.manualNodeColors || {}, { overwrite: false });
     importEdgeDescEntries(
       importedUi.edgeDescriptions
       || appendPayload?.edge_descriptions
@@ -7960,6 +8153,7 @@
       if (typeof p.partition_terms === 'string' && $('bizIsolationTerms')) $('bizIsolationTerms').value = p.partition_terms;
       if (typeof p.filter_terms === 'string') $('filter').value = p.filter_terms;
       if (typeof p.show_only_terms === 'string') $('showOnly').value = p.show_only_terms;
+      if (typeof p.node_color_rules === 'string' && $('nodeColorRules')) $('nodeColorRules').value = p.node_color_rules;
       if (typeof p.name_cluster_mode === 'string' && $('nameClusterMode')) {
         $('nameClusterMode').value = p.name_cluster_mode === 'off' ? 'off' : 'on';
       }
@@ -7989,6 +8183,7 @@
       }
       if (typeof p.filter_terms === 'string') viewState.filterTerms = parseMatchExpression(p.filter_terms);
       if (typeof p.show_only_terms === 'string') viewState.onlyTerms = parseMatchExpression(p.show_only_terms);
+      if ($('nodeColorRules')) rebuildNodeKeywordColorRulesFromInput();
     } catch (_) {
       // Ignore local storage errors.
     }
@@ -8001,6 +8196,7 @@
         partition_terms: ($('bizIsolationTerms')?.value || '').trim(),
         filter_terms: ($('filter')?.value || '').trim(),
         show_only_terms: ($('showOnly')?.value || '').trim(),
+        node_color_rules: ($('nodeColorRules')?.value || '').trim(),
         name_cluster_mode: ($('nameClusterMode')?.value || 'on'),
         node_label_mode: ($('nodeLabelMode')?.value || 'full'),
         auto_group_mode: ($('autoGroupMode')?.value || 'off'),
@@ -9672,6 +9868,38 @@
     hideCtx();
   });
 
+  $('ctxNodeColor').addEventListener('click', () => {
+    const nodes = ctxNodes().filter((n) => !n.data('isGroup') && String(n.data('manualNodeType') || 'node').toLowerCase() !== 'cloud');
+    hideCtx();
+    if (!nodes.length) {
+      setOK('请先选中要着色的节点。');
+      return;
+    }
+    const currentColors = new Set(nodes.map((n) => normalizeCssColorValue(manualNodeColorMap.get(n.id()))).filter(Boolean));
+    const defaultColor = currentColors.size === 1 ? Array.from(currentColors)[0] : '';
+    const input = window.prompt(
+      `请输入颜色（如 #f59e0b / orange），留空可清除 ${nodes.length} 台节点颜色`,
+      defaultColor
+    );
+    if (input == null) return;
+    const trimmed = String(input || '').trim();
+    const color = normalizeCssColorValue(trimmed);
+    if (trimmed && !color) {
+      setErr('颜色格式无效，请输入 #RRGGBB、#RGB 或浏览器支持的颜色名。');
+      return;
+    }
+    runWithRollback(() => {
+      if (!trimmed) nodes.forEach((n) => manualNodeColorMap.delete(n.id()));
+      else nodes.forEach((n) => manualNodeColorMap.set(n.id(), color));
+      applyNodeColorCustomizations({ silent: true, skipParse: true });
+      saveTopologyUiPrefs();
+      schedulePersistCurrentPageSession(120);
+      setErr('');
+      if (!trimmed) setOK(`已清除 ${nodes.length} 台节点的手动颜色。`);
+      else setOK(`已为 ${nodes.length} 台节点设置颜色：${color}`);
+    }, { delayMs: 0 });
+  });
+
   $('ctxAddNode').addEventListener('click', () => {
     addNodeSubmenuOpen = !addNodeSubmenuOpen;
     if ($('ctxAddNodeSubmenu')) $('ctxAddNodeSubmenu').style.display = addNodeSubmenuOpen ? 'block' : 'none';
@@ -10069,6 +10297,38 @@
 
   $('showOnly').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') applyShowOnly();
+  });
+  $('nodeColorRules').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      $('applyNodeColorRules').click();
+    }
+  });
+  $('nodeColorRules').addEventListener('input', saveTopologyUiPrefs);
+  $('applyNodeColorRules').addEventListener('click', () => {
+    runWithRollback(() => {
+      const parsed = rebuildNodeKeywordColorRulesFromInput();
+      applyNodeColorCustomizations({ silent: true, skipParse: true });
+      saveTopologyUiPrefs();
+      schedulePersistCurrentPageSession(120);
+      if (parsed.invalid > 0) {
+        setErr(`节点颜色规则中有 ${parsed.invalid} 条无效项（格式：关键字:颜色）。`);
+      } else {
+        setErr('');
+      }
+      setOK(`已应用节点颜色规则 ${parsed.rules.length} 条。`);
+    }, { delayMs: 0 });
+  });
+  $('clearNodeColorRules').addEventListener('click', () => {
+    runWithRollback(() => {
+      if ($('nodeColorRules')) $('nodeColorRules').value = '';
+      nodeKeywordColorRules = [];
+      applyNodeColorCustomizations({ silent: true, skipParse: true });
+      saveTopologyUiPrefs();
+      schedulePersistCurrentPageSession(120);
+      setErr('');
+      setOK('已清空节点关键字颜色规则。');
+    }, { delayMs: 0 });
   });
   $('show172Only').addEventListener('click', () => {
     runWithRollback(() => {
