@@ -3850,15 +3850,22 @@
     )).join(', ');
   }
 
+  function normalizeMatchText(v) {
+    const text = String(v || '');
+    try {
+      return text.normalize('NFKC').toLowerCase();
+    } catch (_) {
+      return text.toLowerCase();
+    }
+  }
+
   function compactMatchText(v) {
-    return String(v || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '');
+    return normalizeMatchText(v).replace(/[^a-z0-9]+/g, '');
   }
 
   function matchTermInName(nameText, termText) {
-    const name = String(nameText || '').toLowerCase();
-    const term = String(termText || '').toLowerCase().trim();
+    const name = normalizeMatchText(nameText);
+    const term = normalizeMatchText(termText).trim();
     if (!term) return false;
     if (name.includes(term)) return true;
     const cName = compactMatchText(name);
