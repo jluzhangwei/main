@@ -321,6 +321,9 @@ data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.4","
 def test_sop_extraction_prompt_discourages_single_incident_specific_objects():
     assert "禁止将单次会话里的具体接口名" in SOP_EXTRACTION_SYSTEM_PROMPT
     assert "<接口>" in SOP_EXTRACTION_SYSTEM_PROMPT
+    assert "fallback_commands" in SOP_EXTRACTION_SYSTEM_PROMPT
+    assert "输出最终JSON前，必须进行一次自检" in SOP_EXTRACTION_SYSTEM_PROMPT
+    assert "<本端设备>" in SOP_EXTRACTION_SYSTEM_PROMPT
 
 
 def test_next_step_payload_trims_commands_and_long_outputs():

@@ -5,10 +5,40 @@ from fastapi.testclient import TestClient
 
 from app.api import routes
 from app.main import app
-from app.models.schemas import IncidentSummary, Message
+from app.models.schemas import IncidentSummary, Message, SOPStatus, SOPUpsertRequest
 
 
 client = TestClient(app)
+
+
+def _seed_test_sop(record_id: str = "test_history_ospf_flap"):
+    return routes.sop_archive.upsert_record(
+        record_id,
+        SOPUpsertRequest(
+            topic_key="test-history-ospf-flap",
+            topic_name="测试 OSPF 历史抖动取证",
+            name="测试 OSPF 历史抖动取证",
+            summary="用于测试的 OSPF 历史抖动取证 SOP。",
+            usage_hint="仅供测试匹配与引用。",
+            trigger_keywords=["ospf", "闪断", "历史"],
+            vendor_tags=["huawei_like"],
+            version_signatures=[],
+            preconditions=[],
+            anti_conditions=[],
+            evidence_goals=["协议事件日志"],
+            key_steps=[],
+            decision_points=[],
+            command_templates=[],
+            fallback_commands=[],
+            expected_findings=[],
+            source_run_ids=[],
+            generated_by_model="test",
+            generated_by_prompt_version="test",
+            review_notes="test",
+        ),
+        status=SOPStatus.published,
+        version=1,
+    )
 
 
 class ScriptedDiagnoser:
@@ -374,6 +404,7 @@ def test_service_trace_endpoint_returns_step_timings():
 
 
 def test_service_trace_records_ai_sop_reference_when_plan_mentions_archive():
+    _seed_test_sop()
     class SopReferencingDiagnoser(ScriptedDiagnoser):
         async def propose_next_step(
             self,
@@ -399,7 +430,7 @@ def test_service_trace_records_ai_sop_reference_when_plan_mentions_archive():
                 "decision": "run_command",
                 "title": "历史 OSPF 抖动取证",
                 "command": "display ospf peer",
-                "reason": "引用 history_ospf_flap SOP，先确认邻接状态与最近抖动线索。",
+                "reason": "引用 test_history_ospf_flap SOP，先确认邻接状态与最近抖动线索。",
             }
 
     original = routes.orchestrator.deepseek_diagnoser

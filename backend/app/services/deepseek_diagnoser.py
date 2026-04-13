@@ -234,11 +234,15 @@ SOP_EXTRACTION_SYSTEM_PROMPT = (
     "key_steps中的commands和command_templates只保留真正有复用价值的最小必要命令组，禁止收录明显试错命令。"
     "关键步骤应体现合理顺序：先确认什么，再确认什么，最后怎样收口。"
     "decision_points应说明某种回显意味着什么，以及下一步该如何判断。"
-    "禁止将单次会话里的具体接口名、具体管理IP、具体主机名、具体一次性对象或现场路径直接写入 key_steps、decision_points 或 command_templates。"
-    "key_steps和command_templates必须优先抽象为可复用对象。"
+    "禁止将单次会话里的具体接口名、具体管理IP、具体主机名、具体一次性对象或现场路径直接写入 summary、usage_hint、preconditions、anti_conditions、evidence_goals、key_steps、decision_points、command_templates、fallback_commands、expected_findings。"
+    "正式 SOP 内容必须优先抽象为可复用对象。"
     "如果某条命令只有在具体对象（如 Eth1/0/0、192.168.0.102、Lo1）下才成立，但其排查方法可复用，应改写成占位符形式，例如 <接口>、<邻居IP>、<目标前缀>。"
-    "如果某条步骤只对本次单一现场成立、无法泛化为未来参考，就不要写入key_steps或command_templates，可放入review_notes提示人工审核。"
+    "如果某条步骤或命令只对本次单一现场成立、无法泛化为未来参考，就不要写入正式 SOP 内容，可放入review_notes提示人工审核。"
     "生成SOP时，优先提炼“为什么查、先查什么、再查什么”，而不是把本次会话里具体查过的对象原样抄进去。"
+    "输出最终JSON前，必须进行一次自检：如果正式字段中仍包含类似 Eth1/0/0、Ethernet1/0/0、GigabitEthernet0/0/0、Lo0、Loopback0、192.168.0.1、10.0.0.0/24、设备A真实主机名 这类单次现场对象，必须先重写成占位符，再输出。"
+    "允许使用的占位符包括但不限于：<接口>、<环回接口>、<邻居IP>、<目标前缀>、<本端设备>、<对端设备>。"
+    "禁止在 expected_signals、decision_points、fallback_commands 中夹带现场对象示例；如果需要举例，也必须使用占位符，不得使用真实接口/IP。"
+    "如果无法在不泄露现场对象的前提下表达某条步骤，就删除该步骤，不要勉强保留。"
     "fallback_commands是替代性简化命令；expected_findings是调用后期望观察到的现象。"
     "review_notes要明确指出人工审核时需要重点留意什么。"
 )
@@ -322,7 +326,7 @@ class DeepSeekDiagnoser:
         self.last_error: Optional[str] = None
         self.last_error_code: Optional[str] = None
         self.last_failover_at: Optional[datetime] = None
-        self.timeout = float(os.getenv("DEEPSEEK_TIMEOUT", "30"))
+        self.timeout = float(os.getenv("DEEPSEEK_TIMEOUT", "45"))
         env_config_path = (os.getenv("NETOPS_LLM_CONFIG_PATH") or "").strip()
         self.config_path = Path(env_config_path).expanduser() if env_config_path else self._default_config_path()
         self.legacy_config_path = Path(tempfile.gettempdir()) / "netops_ai_v1_llm_config.json"

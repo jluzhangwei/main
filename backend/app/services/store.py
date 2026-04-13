@@ -74,6 +74,7 @@ class InMemoryStore:
             device=device,
             automation_level=req.automation_level,
             operation_mode=req.operation_mode,
+            sop_enabled=req.sop_enabled,
             issue_scope=req.issue_scope,
         )
         self.sessions[session.id] = session
@@ -101,6 +102,7 @@ class InMemoryStore:
                 protocol=session.device.protocol,
                 automation_level=session.automation_level,
                 operation_mode=session.operation_mode,
+                sop_enabled=session.sop_enabled,
                 status=session.status,
                 created_at=session.created_at,
             )
@@ -110,6 +112,13 @@ class InMemoryStore:
     def update_session_automation(self, session_id: str, automation_level: AutomationLevel) -> Session:
         session = self.sessions[session_id]
         session.automation_level = automation_level
+        self.sessions[session_id] = session
+        self._save_session_store()
+        return session
+
+    def update_session_sop_enabled(self, session_id: str, sop_enabled: bool) -> Session:
+        session = self.sessions[session_id]
+        session.sop_enabled = bool(sop_enabled)
         self.sessions[session_id] = session
         self._save_session_store()
         return session

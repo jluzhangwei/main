@@ -566,6 +566,95 @@ async def test_v2_collect_device_marks_failed_when_llm_plan_returns_no_plan(monk
     assert "empty_response" in str(updated.last_error)
 
 
+@pytest.mark.asyncio
+async def test_v2_collect_device_retries_once_on_llm_timeout(monkeypatch):
+    store = InMemoryStore()
+    orchestrator = JobV2Orchestrator(store, allow_simulation=True)
+    orchestrator.deepseek_diagnoser.api_key = "test-key"
+
+    device = JobDevice(
+        id="dev-1",
+        host="192.0.2.10",
+        protocol="ssh",
+        vendor="arista",
+        platform="vEOS-lab",
+        software_version="4.32.4.1M",
+        version_signature="arista|veos-lab|4.32.4.1m",
+    )
+    job = Job(
+        name="diag-job",
+        problem="检查 OSPF 状态",
+        mode=JobMode.diagnosis,
+        devices=[device],
+    )
+    orchestrator._jobs[job.id] = job
+    orchestrator._events[job.id] = []
+
+    async def _fake_get_adapter(job_id: str, device_id: str):
+        class _Adapter:
+            pass
+
+        return _Adapter()
+
+    async def _fake_run_device_command(job_id, device_id, *, title, command_text, **kwargs):
+        current_job = orchestrator._jobs[job_id]
+        current_device = next(item for item in current_job.devices if item.id == device_id)
+        current_job.command_results.append(
+            JobCommandResult(
+                job_id=job_id,
+                device_id=device_id,
+                step_no=kwargs.get("step_no", 1),
+                title=title,
+                command=command_text,
+                original_command=command_text,
+                effective_command=command_text,
+                risk_level=RiskLevel.low,
+                status=JobCommandStatus.succeeded,
+                output="ok",
+            )
+        )
+        current_job.evidences.append(
+            JobEvidence(
+                job_id=job_id,
+                device_id=device_id,
+                command_id=current_job.command_results[-1].id,
+                category="generic",
+                raw_output="ok",
+                parsed_data={"raw": "ok"},
+                conclusion="ok",
+            )
+        )
+        current_device.status = "collecting"
+        return None
+
+    attempts = {"count": 0}
+
+    async def _fake_propose(*args, **kwargs):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            return None, {"error": "llm_timeout"}
+        return (
+            {
+                "decision": "run_command",
+                "title": "继续采集",
+                "commands": ["show ip ospf neighbor"],
+                "reason": "retry succeeded",
+            },
+            {"request_payload": {"planner_context": kwargs.get("planner_context")}},
+        )
+
+    monkeypatch.setattr(orchestrator, "_get_adapter", _fake_get_adapter)
+    monkeypatch.setattr(orchestrator, "_run_device_command", _fake_run_device_command)
+    monkeypatch.setattr(orchestrator.llm_planner_bridge, "propose_next_step_with_debug", _fake_propose)
+    monkeypatch.setattr(type(orchestrator), "_baseline_collect_commands", lambda self, problem: [("版本探测", "show version")])
+
+    await orchestrator._collect_device(job.id, device.id)
+
+    assert attempts["count"] >= 2
+    retry_events = [event for event in orchestrator._events[job.id] if event.event_type == "llm_status"]
+    assert any("LLM 规划重试" in str(event.payload.get("title") or "") for event in retry_events)
+
+
 def test_v2_empty_incidents_prefers_collection_failure_summary():
     orchestrator = routes.orchestrator_v2
     job = Job(
@@ -601,6 +690,52 @@ def test_v2_empty_incidents_prefers_collection_failure_summary():
     assert job.rca_result is not None
     assert "设备采集未完成" in job.rca_result.root_cause
     assert "llm_timeout" in job.rca_result.recommendation
+
+
+@pytest.mark.asyncio
+async def test_v2_correlate_skips_llm_refine_when_all_devices_failed_collection(monkeypatch):
+    orchestrator = routes.orchestrator_v2
+    job = Job(
+        name="diag-job",
+        problem="检查 OSPF 状态",
+        mode=JobMode.diagnosis,
+        devices=[
+            JobDevice(
+                id="dev-1",
+                host="192.0.2.10",
+                protocol="ssh",
+                status="failed",
+                last_error="llm_timeout",
+                vendor="huawei",
+                platform="NE40E",
+                version_signature="huawei|ne40e|8.180",
+            ),
+            JobDevice(
+                id="dev-2",
+                host="192.0.2.11",
+                protocol="ssh",
+                status="failed",
+                last_error="llm_timeout",
+                vendor="huawei",
+                platform="NE40E",
+                version_signature="huawei|ne40e|8.180",
+            ),
+        ],
+    )
+    orchestrator._jobs[job.id] = job
+    orchestrator._events[job.id] = []
+    called = {"llm_refine": False}
+
+    async def _fake_refine(job_id: str):
+        called["llm_refine"] = True
+
+    monkeypatch.setattr(orchestrator, "_llm_refine_rca", _fake_refine)
+
+    await orchestrator._correlate_phase(job.id)
+
+    assert called["llm_refine"] is False
+    assert orchestrator._jobs[job.id].rca_result is not None
+    assert "设备采集未完成" in orchestrator._jobs[job.id].rca_result.root_cause
 
 
 def test_v2_llm_rca_payload_excludes_derived_history_and_incident_fields():

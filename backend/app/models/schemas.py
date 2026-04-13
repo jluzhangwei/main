@@ -78,11 +78,13 @@ class SessionCreateRequest(BaseModel):
     device: DeviceTarget
     automation_level: AutomationLevel = AutomationLevel.assisted
     operation_mode: OperationMode = OperationMode.diagnosis
+    sop_enabled: bool = True
     issue_scope: list[str] = Field(default_factory=lambda: ["connectivity", "interface", "routing"])
 
 
 class SessionUpdateRequest(BaseModel):
-    automation_level: AutomationLevel
+    automation_level: Optional[AutomationLevel] = None
+    sop_enabled: Optional[bool] = None
 
 
 class SessionCredentialUpdateRequest(BaseModel):
@@ -100,6 +102,7 @@ class Session(BaseModel):
     device: DeviceTarget
     automation_level: AutomationLevel = AutomationLevel.assisted
     operation_mode: OperationMode = OperationMode.diagnosis
+    sop_enabled: bool = True
     issue_scope: list[str] = Field(default_factory=list)
     status: SessionStatus = SessionStatus.open
     created_at: datetime = Field(default_factory=now_utc)
@@ -109,6 +112,7 @@ class SessionResponse(BaseModel):
     id: str
     automation_level: AutomationLevel
     operation_mode: OperationMode
+    sop_enabled: bool = True
     status: SessionStatus
     created_at: datetime
 
@@ -637,6 +641,7 @@ class JobCreateRequest(BaseModel):
     name: Optional[str] = None
     problem: str
     mode: JobMode = JobMode.diagnosis
+    sop_enabled: bool = True
     devices: list[JobDeviceRequest] = Field(default_factory=list)
     window_start: Optional[datetime] = None
     window_end: Optional[datetime] = None
@@ -788,6 +793,7 @@ class Job(BaseModel):
     name: Optional[str] = None
     problem: str
     mode: JobMode = JobMode.diagnosis
+    sop_enabled: bool = True
     status: JobStatus = JobStatus.queued
     phase: JobPhase = JobPhase.collect
     topology_mode: TopologyMode = TopologyMode.hybrid
@@ -822,6 +828,7 @@ class JobResponse(BaseModel):
     name: Optional[str] = None
     problem: str
     mode: JobMode
+    sop_enabled: bool = True
     status: JobStatus
     phase: JobPhase
     created_at: datetime
@@ -905,6 +912,7 @@ class RunCreateRequest(BaseModel):
     devices: list[JobDeviceRequest] = Field(default_factory=list)
     automation_level: AutomationLevel = AutomationLevel.assisted
     operation_mode: OperationMode = OperationMode.diagnosis
+    sop_enabled: bool = True
     issue_scope: list[str] = Field(default_factory=lambda: ["connectivity", "interface", "routing"])
     max_gap_seconds: int = 300
     topology_mode: TopologyMode = TopologyMode.hybrid
@@ -926,6 +934,7 @@ class RunResponse(BaseModel):
     phase: Optional[str] = None
     automation_level: AutomationLevel = AutomationLevel.assisted
     operation_mode: OperationMode = OperationMode.diagnosis
+    sop_enabled: bool = True
     created_at: datetime
     updated_at: Optional[datetime] = None
     started_at: Optional[datetime] = None

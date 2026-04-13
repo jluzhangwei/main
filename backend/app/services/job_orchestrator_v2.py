@@ -228,6 +228,7 @@ class JobV2Orchestrator:
             name=job.name,
             problem=job.problem,
             mode=job.mode,
+            sop_enabled=job.sop_enabled,
             status=job.status,
             phase=job.phase,
             created_at=job.created_at,
@@ -511,6 +512,8 @@ class JobV2Orchestrator:
         for key in ("iteration", "max_iterations", "with_history", "system_prompt", "request_messages", "request_payload"):
             if source.get(key) is not None:
                 payload[key] = source.get(key)
+        payload["llm_model"] = getattr(self.deepseek_diagnoser, "active_model", None) or getattr(self.deepseek_diagnoser, "model", None)
+        payload["llm_provider"] = getattr(self.deepseek_diagnoser, "provider", None)
         if device is not None:
             payload["device"] = self._job_device_trace_record(device)
         return self._compact_trace_payload(payload, max_depth=10, max_items=500, text_limit=200000)
@@ -675,6 +678,7 @@ class JobV2Orchestrator:
             name=req.name,
             problem=req.problem,
             mode=req.mode,
+            sop_enabled=req.sop_enabled,
             status=JobStatus.queued,
             phase=JobPhase.collect,
             topology_mode=req.topology_mode,
@@ -1419,12 +1423,14 @@ class JobV2Orchestrator:
                 session = self._build_llm_device_session(job, device)
                 user_problem = f"{job.problem}\n目标设备: {device.host}"
                 sop_run_key = f"{job.id}:{device.id}"
-                sop_context = self.sop_archive.prompt_context(
-                    job.problem,
-                    vendor=device.vendor,
-                    version_signature=device.version_signature,
-                    run_key=sop_run_key,
-                )
+                sop_context = ""
+                if job.sop_enabled:
+                    sop_context = self.sop_archive.prompt_context(
+                        job.problem,
+                        vendor=device.vendor,
+                        version_signature=device.version_signature,
+                        run_key=sop_run_key,
+                    )
                 planner_context = str(sop_context or "").strip()
                 self._append_trace_event(
                     job,
@@ -1459,186 +1465,223 @@ class JobV2Orchestrator:
                     )
                 self._save_state()
 
-            llm_started_at = now_utc()
-            try:
-                plan, plan_debug = await self.llm_planner_bridge.propose_next_step_with_debug(
-                    self.deepseek_diagnoser,
-                    session=session,
-                    user_problem=user_problem,
-                    commands=commands,
-                    evidences=evidences,
-                    iteration=round_no,
-                    max_iterations=max_rounds,
-                    planner_context=planner_context or None,
-                    timeout_seconds=self.llm_plan_timeout,
-                )
-            except Exception as exc:
-                llm_finished_at = now_utc()
-                async with self._state_lock:
-                    job = self._jobs.get(job_id)
-                    device = self._find_device(job, device_id) if job else None
-                    if job is not None and device is not None:
-                        self._append_trace_event(
-                            job,
-                            "llm_request",
-                            f"[{device.host}] 提交给 AI（第 {round_no} 轮）",
-                            status="failed",
-                            detail="request_exception",
-                            detail_payload={
-                                "iteration": round_no,
-                                "device": self._job_device_trace_record(device),
-                                "error": str(exc),
-                            },
-                            device=device,
-                            started_at=llm_started_at,
-                            completed_at=llm_finished_at,
-                            duration_ms=max(0, int((llm_finished_at - llm_started_at).total_seconds() * 1000)),
-                        )
-                        self._append_trace_event(
-                            job,
-                            "llm_response",
-                            f"[{device.host}] AI 原始回复（第 {round_no} 轮）",
-                            status="failed",
-                            detail=str(exc)[:280],
-                            detail_payload={"llm": {"error": str(exc)}, "device": self._job_device_trace_record(device)},
-                            device=device,
-                            started_at=llm_finished_at,
-                            completed_at=llm_finished_at,
-                            duration_ms=0,
-                        )
-                        self._append_trace_event(
-                            job,
-                            "llm_plan",
-                            f"[{device.host}] LLM 规划第 {round_no} 轮",
-                            status="failed",
-                            detail=str(exc)[:280],
-                            detail_payload={
-                                "device": self._job_device_trace_record(device),
-                                "user_problem": user_problem,
-                                "to_ai": {"error": str(exc)},
-                                "ai_response_parsed": None,
-                            },
-                            device=device,
-                            started_at=llm_started_at,
-                            completed_at=llm_finished_at,
-                            duration_ms=max(0, int((llm_finished_at - llm_started_at).total_seconds() * 1000)),
-                        )
-                        self._save_state()
-                return
-            llm_finished_at = now_utc()
-            async with self._state_lock:
-                job = self._jobs.get(job_id)
-                device = self._find_device(job, device_id) if job else None
-                if job is not None and device is not None:
-                    llm_duration = max(0, int((llm_finished_at - llm_started_at).total_seconds() * 1000))
-                    self._append_trace_event(
-                        job,
-                        "llm_request",
-                        f"[{device.host}] 提交给 AI（第 {round_no} 轮）",
-                        status="succeeded",
-                        detail="request_submitted",
-                        detail_payload=self._build_llm_request_payload(plan_debug, device=device),
-                        device=device,
-                        started_at=llm_started_at,
-                        completed_at=llm_started_at,
-                        duration_ms=0,
+            llm_retry_attempts = max(1, int(os.getenv("V2_COLLECT_LLM_RETRY_ATTEMPTS", "2")))
+            plan = None
+            plan_debug: dict[str, Any] = {}
+            for attempt_no in range(1, llm_retry_attempts + 1):
+                llm_started_at = now_utc()
+                timeout_seconds = self.llm_plan_timeout if attempt_no == 1 else max(self.llm_plan_timeout, 45.0)
+                try:
+                    plan, plan_debug = await self.llm_planner_bridge.propose_next_step_with_debug(
+                        self.deepseek_diagnoser,
+                        session=session,
+                        user_problem=user_problem,
+                        commands=commands,
+                        evidences=evidences,
+                        iteration=round_no,
+                        max_iterations=max_rounds,
+                        planner_context=planner_context or None,
+                        timeout_seconds=timeout_seconds,
                     )
-                    if not plan:
-                        self._append_trace_event(
-                            job,
-                            "llm_response",
-                            f"[{device.host}] AI 原始回复（第 {round_no} 轮）",
-                            status="failed",
-                            detail=str(plan_debug.get("error") or "LLM未返回可解析计划")[:280],
-                            detail_payload=self._build_llm_response_payload(plan_debug, None, device=device),
-                            device=device,
-                            started_at=llm_finished_at,
-                            completed_at=llm_finished_at,
-                            duration_ms=0,
-                        )
-                        self._append_trace_event(
-                            job,
-                            "llm_plan",
-                            f"[{device.host}] LLM 规划第 {round_no} 轮",
-                            status="failed",
-                            detail=str(plan_debug.get("error") or "LLM未返回可解析计划")[:280],
-                            detail_payload=self._build_llm_plan_payload(
-                                job=job,
-                                device=device,
-                                user_problem=user_problem,
-                                debug=plan_debug,
-                                parsed_plan=None,
-                            ),
-                            device=device,
-                            started_at=llm_started_at,
-                            completed_at=llm_finished_at,
-                            duration_ms=llm_duration,
-                        )
-                        self._save_state()
-                    else:
-                        decision_text = str(plan.get("decision", "")).strip() or "-"
-                        referenced_sops = self._referenced_sops_from_plan(plan, run_key=f"{job.id}:{device.id}")
-                        self._append_trace_event(
-                            job,
-                            "llm_response",
-                            f"[{device.host}] AI 原始回复（第 {round_no} 轮）",
-                            status="succeeded",
-                            detail=f"decision={decision_text}",
-                            detail_payload=self._build_llm_response_payload(plan_debug, plan, device=device),
-                            device=device,
-                            started_at=llm_finished_at,
-                            completed_at=llm_finished_at,
-                            duration_ms=0,
-                        )
-                        self._append_trace_event(
-                            job,
-                            "llm_plan",
-                            f"[{device.host}] LLM 规划第 {round_no} 轮",
-                            status="succeeded",
-                            detail=f"decision={decision_text}",
-                            detail_payload=self._build_llm_plan_payload(
-                                job=job,
-                                device=device,
-                                user_problem=user_problem,
-                                debug=plan_debug,
-                                parsed_plan=plan,
-                                referenced_sops=referenced_sops,
-                            ),
-                            device=device,
-                            started_at=llm_started_at,
-                            completed_at=llm_finished_at,
-                            duration_ms=llm_duration,
-                        )
-                        if referenced_sops:
+                except Exception as exc:
+                    llm_finished_at = now_utc()
+                    async with self._state_lock:
+                        job = self._jobs.get(job_id)
+                        device = self._find_device(job, device_id) if job else None
+                        if job is not None and device is not None:
                             self._append_trace_event(
                                 job,
-                                "sop_referenced_by_ai",
-                                f"[{device.host}] AI 引用 SOP 档案（第 {round_no} 轮）",
-                                status="succeeded",
-                                detail=" ; ".join(
-                                    [
-                                        str(item.get("name") or item.get("id") or "").strip()
-                                        for item in referenced_sops
-                                        if str(item.get("name") or item.get("id") or "").strip()
-                                    ]
-                                )[:280]
-                                or "referenced_sop_archive",
+                                "llm_request",
+                                f"[{device.host}] 提交给 AI（第 {round_no} 轮）",
+                                status="failed",
+                                detail="request_exception",
                                 detail_payload={
-                                    "device": self._job_device_trace_record(device),
                                     "iteration": round_no,
-                                    "referenced_sops": referenced_sops,
-                                    "sop_refs": plan.get("sop_refs") if isinstance(plan.get("sop_refs"), list) else [],
-                                    "why_use_this_sop": str(plan.get("why_use_this_sop", "") or ""),
-                                    "evidence_goal": str(plan.get("evidence_goal", "") or ""),
-                                    "plan_title": str(plan.get("title", "") or ""),
-                                    "plan_reason": str(plan.get("reason", "") or ""),
+                                    "attempt": attempt_no,
+                                    "device": self._job_device_trace_record(device),
+                                    "error": str(exc),
                                 },
+                                device=device,
+                                started_at=llm_started_at,
+                                completed_at=llm_finished_at,
+                                duration_ms=max(0, int((llm_finished_at - llm_started_at).total_seconds() * 1000)),
+                            )
+                            self._append_trace_event(
+                                job,
+                                "llm_response",
+                                f"[{device.host}] AI 原始回复（第 {round_no} 轮）",
+                                status="failed",
+                                detail=str(exc)[:280],
+                                detail_payload={"llm": {"error": str(exc)}, "device": self._job_device_trace_record(device), "attempt": attempt_no},
                                 device=device,
                                 started_at=llm_finished_at,
                                 completed_at=llm_finished_at,
                                 duration_ms=0,
                             )
-                        self._save_state()
+                            self._append_trace_event(
+                                job,
+                                "llm_plan",
+                                f"[{device.host}] LLM 规划第 {round_no} 轮",
+                                status="failed",
+                                detail=str(exc)[:280],
+                                detail_payload={
+                                    "device": self._job_device_trace_record(device),
+                                    "user_problem": user_problem,
+                                    "to_ai": {"error": str(exc), "attempt": attempt_no},
+                                    "ai_response_parsed": None,
+                                },
+                                device=device,
+                                started_at=llm_started_at,
+                                completed_at=llm_finished_at,
+                                duration_ms=max(0, int((llm_finished_at - llm_started_at).total_seconds() * 1000)),
+                            )
+                            self._save_state()
+                    raise
+
+                llm_finished_at = now_utc()
+                retryable_failure = not plan and str(plan_debug.get("error") or "").strip().lower() in {"llm_timeout", "empty_response"}
+                async with self._state_lock:
+                    job = self._jobs.get(job_id)
+                    device = self._find_device(job, device_id) if job else None
+                    if job is not None and device is not None:
+                        llm_duration = max(0, int((llm_finished_at - llm_started_at).total_seconds() * 1000))
+                        self._append_trace_event(
+                            job,
+                            "llm_request",
+                            f"[{device.host}] 提交给 AI（第 {round_no} 轮）",
+                            status="succeeded",
+                            detail="request_submitted",
+                            detail_payload={**self._build_llm_request_payload(plan_debug, device=device), "attempt": attempt_no},
+                            device=device,
+                            started_at=llm_started_at,
+                            completed_at=llm_started_at,
+                            duration_ms=0,
+                        )
+                        if not plan:
+                            self._append_trace_event(
+                                job,
+                                "llm_response",
+                                f"[{device.host}] AI 原始回复（第 {round_no} 轮）",
+                                status="failed",
+                                detail=str(plan_debug.get("error") or "LLM未返回可解析计划")[:280],
+                                detail_payload={**self._build_llm_response_payload(plan_debug, None, device=device), "attempt": attempt_no},
+                                device=device,
+                                started_at=llm_finished_at,
+                                completed_at=llm_finished_at,
+                                duration_ms=0,
+                            )
+                            self._append_trace_event(
+                                job,
+                                "llm_plan",
+                                f"[{device.host}] LLM 规划第 {round_no} 轮",
+                                status="failed",
+                                detail=str(plan_debug.get("error") or "LLM未返回可解析计划")[:280],
+                                detail_payload={
+                                    **self._build_llm_plan_payload(
+                                        job=job,
+                                        device=device,
+                                        user_problem=user_problem,
+                                        debug=plan_debug,
+                                        parsed_plan=None,
+                                    ),
+                                    "attempt": attempt_no,
+                                },
+                                device=device,
+                                started_at=llm_started_at,
+                                completed_at=llm_finished_at,
+                                duration_ms=llm_duration,
+                            )
+                            if retryable_failure and attempt_no < llm_retry_attempts:
+                                self._append_trace_event(
+                                    job,
+                                    "llm_status",
+                                    f"[{device.host}] LLM 规划重试",
+                                    status="running",
+                                    detail=f"attempt={attempt_no + 1}; reason={plan_debug.get('error') or 'retryable_failure'}",
+                                    detail_payload={
+                                        "device": self._job_device_trace_record(device),
+                                        "iteration": round_no,
+                                        "retry_attempt": attempt_no + 1,
+                                        "reason": plan_debug.get("error") or "retryable_failure",
+                                    },
+                                    device=device,
+                                )
+                            self._save_state()
+                        else:
+                            decision_text = str(plan.get("decision", "")).strip() or "-"
+                            referenced_sops = self._referenced_sops_from_plan(plan, run_key=f"{job.id}:{device.id}")
+                            self._append_trace_event(
+                                job,
+                                "llm_response",
+                                f"[{device.host}] AI 原始回复（第 {round_no} 轮）",
+                                status="succeeded",
+                                detail=f"decision={decision_text}",
+                                detail_payload={**self._build_llm_response_payload(plan_debug, plan, device=device), "attempt": attempt_no},
+                                device=device,
+                                started_at=llm_finished_at,
+                                completed_at=llm_finished_at,
+                                duration_ms=0,
+                            )
+                            self._append_trace_event(
+                                job,
+                                "llm_plan",
+                                f"[{device.host}] LLM 规划第 {round_no} 轮",
+                                status="succeeded",
+                                detail=f"decision={decision_text}",
+                                detail_payload={
+                                    **self._build_llm_plan_payload(
+                                        job=job,
+                                        device=device,
+                                        user_problem=user_problem,
+                                        debug=plan_debug,
+                                        parsed_plan=plan,
+                                        referenced_sops=referenced_sops,
+                                    ),
+                                    "attempt": attempt_no,
+                                },
+                                device=device,
+                                started_at=llm_started_at,
+                                completed_at=llm_finished_at,
+                                duration_ms=llm_duration,
+                            )
+                            if referenced_sops:
+                                self._append_trace_event(
+                                    job,
+                                    "sop_referenced_by_ai",
+                                    f"[{device.host}] AI 引用 SOP 档案（第 {round_no} 轮）",
+                                    status="succeeded",
+                                    detail=" ; ".join(
+                                        [
+                                            str(item.get("name") or item.get("id") or "").strip()
+                                            for item in referenced_sops
+                                            if str(item.get("name") or item.get("id") or "").strip()
+                                        ]
+                                    )[:280]
+                                    or "referenced_sop_archive",
+                                    detail_payload={
+                                        "device": self._job_device_trace_record(device),
+                                        "iteration": round_no,
+                                        "referenced_sops": referenced_sops,
+                                        "sop_refs": plan.get("sop_refs") if isinstance(plan.get("sop_refs"), list) else [],
+                                        "why_use_this_sop": str(plan.get("why_use_this_sop", "") or ""),
+                                        "evidence_goal": str(plan.get("evidence_goal", "") or ""),
+                                        "plan_title": str(plan.get("title", "") or ""),
+                                        "plan_reason": str(plan.get("reason", "") or ""),
+                                        "attempt": attempt_no,
+                                    },
+                                    device=device,
+                                    started_at=llm_finished_at,
+                                    completed_at=llm_finished_at,
+                                    duration_ms=0,
+                                )
+                            self._save_state()
+
+                if plan:
+                    break
+                if retryable_failure and attempt_no < llm_retry_attempts:
+                    continue
+                break
+
             if not plan:
                 raise RuntimeError(str(plan_debug.get("error") or "llm_plan_failed"))
 
@@ -2942,6 +2985,11 @@ class JobV2Orchestrator:
             )
             self._save_state()
 
+        async with self._state_lock:
+            job = self._jobs[job_id]
+            if not job.incidents and any(item.status == "failed" or str(item.last_error or "").strip() for item in job.devices):
+                return
+
         await self._llm_refine_rca(job_id)
 
     def _resolve_causal_graph_and_root(self, job: Job) -> None:
@@ -3478,6 +3526,8 @@ class JobV2Orchestrator:
         async with self._state_lock:
             job = self._jobs.get(job_id)
             if job is None:
+                return
+            if not job.incidents and any(item.status == "failed" or str(item.last_error or "").strip() for item in job.devices):
                 return
             payload = self._build_llm_rca_payload(job)
             prefer_zh = self._prefer_chinese_output(job.problem)

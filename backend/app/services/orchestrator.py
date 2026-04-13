@@ -2330,6 +2330,9 @@ class ConversationOrchestrator:
         vendor: str | None,
         version_signature: str | None = None,
     ) -> None:
+        session = self.store.get_session(session_id)
+        if not getattr(session, "sop_enabled", True):
+            return
         sop_text = self.sop_archive.prompt_context(
             problem,
             vendor=vendor,
@@ -2715,6 +2718,8 @@ class ConversationOrchestrator:
             value = pick(key)
             if value is not None:
                 payload[key] = value
+        payload["llm_model"] = getattr(self.deepseek_diagnoser, "active_model", None) or getattr(self.deepseek_diagnoser, "model", None)
+        payload["llm_provider"] = getattr(self.deepseek_diagnoser, "provider", None)
         if source.get("final_prompt") is not None:
             payload["final_prompt"] = source.get("final_prompt")
         if source.get("context_count") is not None:

@@ -100,6 +100,24 @@ export async function updateRunAutomation(apiKey: string, runId: string, automat
     id: payload.source_id,
     automation_level: payload.automation_level,
     operation_mode: payload.operation_mode,
+    sop_enabled: payload.sop_enabled,
+    status: payload.status === 'cancelled' ? 'closed' : payload.status === 'open' || payload.status === 'running' || payload.status === 'waiting_approval' ? 'open' : 'closed',
+    created_at: payload.created_at,
+  }
+}
+
+export async function updateRunSopMode(apiKey: string, runId: string, sopEnabled: boolean): Promise<SessionResponse> {
+  const res = await fetch(apiUrl(`/api/runs/${runId}`), {
+    method: 'PATCH',
+    headers: v2Headers(apiKey),
+    body: JSON.stringify({ sop_enabled: sopEnabled }),
+  })
+  const payload = await parseJsonResponse<RunSummary>(res, 'Failed to update SOP mode')
+  return {
+    id: payload.source_id,
+    automation_level: payload.automation_level,
+    operation_mode: payload.operation_mode,
+    sop_enabled: payload.sop_enabled,
     status: payload.status === 'cancelled' ? 'closed' : payload.status === 'open' || payload.status === 'running' || payload.status === 'waiting_approval' ? 'open' : 'closed',
     created_at: payload.created_at,
   }

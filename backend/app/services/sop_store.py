@@ -107,6 +107,9 @@ class SOPStore:
 
     @staticmethod
     def default_snapshot_path() -> Path:
+        explicit = str(os.getenv("NETOPS_SOP_SNAPSHOT_PATH", "")).strip()
+        if explicit:
+            return Path(explicit).expanduser()
         home = os.path.expanduser("~")
         if home and home != "~":
             return Path(home) / ".netops-ai-v1" / "sop_snapshot.json"
@@ -114,6 +117,9 @@ class SOPStore:
 
     @staticmethod
     def default_wal_path() -> Path:
+        explicit = str(os.getenv("NETOPS_SOP_WAL_PATH", "")).strip()
+        if explicit:
+            return Path(explicit).expanduser()
         home = os.path.expanduser("~")
         if home and home != "~":
             return Path(home) / ".netops-ai-v1" / "sop.wal"
@@ -655,7 +661,20 @@ class SOPStore:
         with self._lock:
             changed = False
             for seed in seeds:
-                if seed.id in self._records:
+                existing = self._records.get(seed.id)
+                if existing is not None:
+                    if existing.generated_by_model == "seed" and existing.status != SOPStatus.published:
+                        restored = seed.to_record()
+                        restored.matched_count = existing.matched_count
+                        restored.referenced_count = existing.referenced_count
+                        restored.success_count = existing.success_count
+                        restored.last_matched_at = existing.last_matched_at
+                        restored.last_referenced_at = existing.last_referenced_at
+                        restored.last_success_at = existing.last_success_at
+                        restored.created_at = existing.created_at
+                        restored.updated_at = now_utc()
+                        self._records[seed.id] = restored
+                        changed = True
                     continue
                 self._records[seed.id] = seed.to_record()
                 changed = True
@@ -673,6 +692,7 @@ class SOPStore:
         self._load_snapshot()
         self._replay_wal()
         self._migrate_loaded_records()
+        self._remove_seed_records()
         self._rebuild_source_index()
 
     def _load_snapshot(self) -> None:
@@ -785,6 +805,21 @@ class SOPStore:
             self._records[record_id] = updated
         if changed:
             self._write_snapshot()
+
+    def _remove_seed_records(self) -> None:
+        seed_ids = {"history_generic_forensics", "history_ospf_flap"}
+        removable = [
+            record_id
+            for record_id, record in self._records.items()
+            if record_id in seed_ids
+            or record.generated_by_model == "seed"
+            or record.generated_by_prompt_version == "seed-v1"
+        ]
+        if not removable:
+            return
+        for record_id in removable:
+            self._records.pop(record_id, None)
+        self._write_snapshot()
 
     def _write_snapshot(self) -> None:
         self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)

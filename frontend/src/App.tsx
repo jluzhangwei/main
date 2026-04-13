@@ -45,6 +45,7 @@ import {
   updateRunCredentials,
   updateRunAutomation,
   resetCommandCapability,
+  updateRunSopMode,
 } from './api/client'
 import type {
   AutomationLevel,
@@ -115,6 +116,7 @@ type HistorySessionItem = {
   sop_draft_count?: number
   sop_published_count?: number
   primary_sop_id?: string
+  sop_enabled?: boolean
 }
 
 const UI_STATE_KEY = 'netops_ui_prefs_v1'
@@ -548,6 +550,7 @@ function App() {
   const [traceListExpanded, setTraceListExpanded] = useState(false)
   const [flowLayoutMode, setFlowLayoutMode] = useState<FlowLayoutMode>('stair')
   const [activityViewMode, setActivityViewMode] = useState<ActivityViewMode>('full')
+  const [sopModeEnabled, setSopModeEnabled] = useState(true)
   const [tracePlaybackActive, setTracePlaybackActive] = useState(false)
   const [continueExecutionState, setContinueExecutionState] = useState<ContinueExecutionState | null>(null)
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true)
@@ -565,6 +568,11 @@ function App() {
   const multiJobAbortRef = useRef<{ aborted: boolean; jobId?: string } | null>(null)
 
   const sessionReady = useMemo(() => Boolean(session?.id), [session])
+  useEffect(() => {
+    if (typeof session?.sop_enabled === 'boolean') {
+      setSopModeEnabled(session.sop_enabled)
+    }
+  }, [session?.sop_enabled])
   const commandDisplayRows = useMemo(() => groupCommandsForDisplay(commands), [commands])
   const commandListRows = useMemo(
     () => [...commands].sort((a, b) => a.step_no - b.step_no),
@@ -883,6 +891,10 @@ function App() {
     [snapshotTraceView],
   )
   const snapshotPrimarySopId = selectedHistoryItem?.primary_sop_id
+  const snapshotLlmModel = useMemo(
+    () => extractLatestLlmModel(snapshotTraceView) || (selectedHistorySessionId === session?.id ? (llmStatus?.active_model || llmStatus?.model || '-') : '-'),
+    [snapshotTraceView, selectedHistorySessionId, session?.id, llmStatus?.active_model, llmStatus?.model],
+  )
   const v3SelectedJobSummary = useMemo(
     () => v3Jobs.find((item) => item.id === v3SelectedJobId),
     [v3Jobs, v3SelectedJobId],
@@ -1917,6 +1929,7 @@ function App() {
         id: data.session.id,
         automation_level: data.session.automation_level,
         operation_mode: data.session.operation_mode,
+        sop_enabled: historyItem?.sop_enabled,
         status: data.session.status,
         created_at: data.session.created_at,
       }
@@ -1982,6 +1995,7 @@ function App() {
           id: virtualSessionId,
           automation_level: payload.automation_level,
           operation_mode: payload.operation_mode,
+          sop_enabled: sopModeEnabled,
           status: 'open',
           created_at: new Date().toISOString(),
         }
@@ -2030,6 +2044,7 @@ function App() {
       const run = await createRun(resolveV3ApiKey(), {
         automation_level: payload.automation_level,
         operation_mode: payload.operation_mode,
+        sop_enabled: sopModeEnabled,
         devices: [
           {
             host,
@@ -2048,6 +2063,7 @@ function App() {
         id: run.source_id,
         automation_level: run.automation_level,
         operation_mode: run.operation_mode,
+        sop_enabled: run.sop_enabled,
         status: run.status,
         created_at: run.created_at,
       }
@@ -2222,6 +2238,26 @@ function App() {
       setLlmBatchExecutionEnabled((prev) => !prev)
     } finally {
       setLlmSaving(false)
+    }
+  }
+
+  async function handleToggleSopMode(enabled: boolean) {
+    setSopModeEnabled(enabled)
+    if (!session?.id) return
+    const runId = sessionRuntimeKind === 'multi' && multiSessionActiveJobId
+      ? toUnifiedMultiRunId(multiSessionActiveJobId)
+      : toUnifiedSingleRunId(session.id)
+    try {
+      const updated = await updateRunSopMode(resolveV3ApiKey(), runId, enabled)
+      setSession((prev) => (prev ? { ...prev, sop_enabled: updated.sop_enabled } : prev))
+      antMessage.success(`SOP 模式已${enabled ? '开启' : '关闭'}`)
+      await refreshSessionHistory()
+      if (activePage === 'service_trace' && traceTargetSessionId === session.id) {
+        await refreshServiceTraceForTarget(traceTargetSessionId, false)
+      }
+    } catch (error) {
+      setSopModeEnabled((prev) => !prev)
+      antMessage.error((error as Error).message || '切换 SOP 模式失败')
     }
   }
 
@@ -2683,6 +2719,7 @@ function App() {
           problem: buildMultiProblemStatement(content),
           automation_level: automationLevel,
           operation_mode: multiSessionConfig.operation_mode,
+          sop_enabled: sopModeEnabled,
           topology_mode: 'hybrid',
           max_gap_seconds: 300,
           max_device_concurrency: Math.min(50, Math.max(2, multiSessionConfig.hosts.length)),
@@ -2900,11 +2937,13 @@ function App() {
       const hosts = splitHostsFromSnapshot(timeline)
       const operationMode = timeline.session.operation_mode
       const historySessionId = timeline.session.id
+      const historyItem = sessionHistory.find((item) => item.id === historySessionId)
       setV3SelectedJobId(jobId)
       setSession({
         id: historySessionId,
         automation_level: timeline.session.automation_level,
         operation_mode: operationMode,
+        sop_enabled: historyItem?.sop_enabled,
         status: timeline.session.status,
         created_at: timeline.session.created_at,
       })
@@ -3027,6 +3066,7 @@ function App() {
       id: data.session.id,
       automation_level: data.session.automation_level,
       operation_mode: data.session.operation_mode,
+      sop_enabled: session?.sop_enabled,
       status: data.session.status,
       created_at: data.session.created_at,
     })
@@ -3656,6 +3696,15 @@ function App() {
                             size="small"
                             checked={activityViewMode === 'compact'}
                             onChange={(checked) => setActivityViewMode(checked ? 'compact' : 'full')}
+                          />
+                        </div>
+                        <div className="composer-inline-toggle">
+                          <span className="composer-inline-label">SOP模式</span>
+                          <Switch
+                            size="small"
+                            checked={sopModeEnabled}
+                            onChange={(checked) => void handleToggleSopMode(checked)}
+                            disabled={busy}
                           />
                         </div>
                       </div>
@@ -4489,20 +4538,28 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
               <div className="panel-card session-snapshot-panel">
                 <h3>当前会话快照</h3>
                 {historySnapshotLoading && <div className="muted">快照加载中...</div>}
-                <div className="kv"><span>已选会话</span><strong>{selectedHistoryItem?.source_id || selectedHistorySessionId || session?.id || '-'}</strong></div>
-                <div className="kv"><span>设备</span><strong>{selectedHistorySnapshotView?.session.device.host || selectedHistoryItem?.host || sessionDeviceAddress || '-'}</strong></div>
-                <div className="kv"><span>设备名称</span><strong>{formatDeviceName(selectedHistorySnapshotView?.session.device.name || selectedHistoryItem?.device_name || sessionDeviceName)}</strong></div>
-                <div className="kv"><span>模式</span><strong>{selectedHistorySnapshotView?.session.operation_mode ? operationModeLabel(selectedHistorySnapshotView.session.operation_mode) : (selectedHistoryItem?.operation_mode ? operationModeLabel(selectedHistoryItem.operation_mode) : '-')}</strong></div>
-                <div className="kv"><span>自动化等级</span><strong>{selectedHistorySnapshotView?.session.automation_level ? automationLabel(selectedHistorySnapshotView.session.automation_level) : (selectedHistoryItem?.automation_level ? automationLabel(selectedHistoryItem.automation_level) : '-')}</strong></div>
-                <div className="kv"><span>状态</span><strong>{selectedHistoryItem?.kind === 'multi' ? (selectedHistoryItem.status || '-') : (selectedHistorySnapshotView?.session.status || selectedHistoryItem?.status || '-')}</strong></div>
-                <div className="kv"><span>创建时间</span><strong>{formatTime(selectedHistorySnapshotView?.session.created_at || selectedHistoryItem?.created_at || '')}</strong></div>
-                <div className="kv"><span>最近活动</span><strong>{formatTime(snapshotUpdatedAt || '')}</strong></div>
-                <div className="kv"><span>消息数</span><strong>{selectedHistorySnapshotView?.messages.length ?? 0}</strong></div>
-                <div className="kv"><span>命令数</span><strong>{selectedHistorySnapshotView?.commands.length ?? 0}</strong></div>
-                <div className="kv"><span>证据数</span><strong>{selectedHistorySnapshotView?.evidences.length ?? 0}</strong></div>
-                <div className="kv"><span>SOP 候选命中</span><strong>{snapshotSopCandidateHits > 0 ? `是（${snapshotSopCandidateHits} 次）` : '否'}</strong></div>
-                <div className="kv"><span>AI 已引用 SOP</span><strong>{snapshotSopReferencedCount > 0 ? `是（${snapshotSopReferencedCount} 次）` : '否'}</strong></div>
-                <div className="kv"><span>关联 SOP</span><strong>{snapshotPrimarySopId || '-'}</strong></div>
+                <div className="snapshot-top-grid">
+                  <div className="snapshot-top-column">
+                    <div className="kv"><span>已选会话</span><strong>{selectedHistoryItem?.source_id || selectedHistorySessionId || session?.id || '-'}</strong></div>
+                    <div className="kv"><span>设备</span><strong>{selectedHistorySnapshotView?.session.device.host || selectedHistoryItem?.host || sessionDeviceAddress || '-'}</strong></div>
+                    <div className="kv"><span>设备名称</span><strong>{formatDeviceName(selectedHistorySnapshotView?.session.device.name || selectedHistoryItem?.device_name || sessionDeviceName)}</strong></div>
+                    <div className="kv"><span>模式</span><strong>{selectedHistorySnapshotView?.session.operation_mode ? operationModeLabel(selectedHistorySnapshotView.session.operation_mode) : (selectedHistoryItem?.operation_mode ? operationModeLabel(selectedHistoryItem.operation_mode) : '-')}</strong></div>
+                    <div className="kv"><span>自动化等级</span><strong>{selectedHistorySnapshotView?.session.automation_level ? automationLabel(selectedHistorySnapshotView.session.automation_level) : (selectedHistoryItem?.automation_level ? automationLabel(selectedHistoryItem.automation_level) : '-')}</strong></div>
+                    <div className="kv"><span>状态</span><strong>{selectedHistoryItem?.kind === 'multi' ? (selectedHistoryItem.status || '-') : (selectedHistorySnapshotView?.session.status || selectedHistoryItem?.status || '-')}</strong></div>
+                    <div className="kv"><span>创建时间</span><strong>{formatTime(selectedHistorySnapshotView?.session.created_at || selectedHistoryItem?.created_at || '')}</strong></div>
+                    <div className="kv"><span>最近活动</span><strong>{formatTime(snapshotUpdatedAt || '')}</strong></div>
+                    <div className="kv"><span>消息数</span><strong>{selectedHistorySnapshotView?.messages.length ?? 0}</strong></div>
+                    <div className="kv"><span>命令数</span><strong>{selectedHistorySnapshotView?.commands.length ?? 0}</strong></div>
+                    <div className="kv"><span>证据数</span><strong>{selectedHistorySnapshotView?.evidences.length ?? 0}</strong></div>
+                  </div>
+                  <div className="snapshot-top-column snapshot-top-column-llm">
+                    <div className="snapshot-column-title">大模型与参考</div>
+                    <div className="kv"><span>LLM 记录</span><strong>{snapshotLlmModel || '-'}</strong></div>
+                    <div className="kv"><span>SOP 候选命中</span><strong>{snapshotSopCandidateHits > 0 ? `是（${snapshotSopCandidateHits} 次）` : '否'}</strong></div>
+                    <div className="kv"><span>AI 已引用 SOP</span><strong>{snapshotSopReferencedCount > 0 ? `是（${snapshotSopReferencedCount} 次）` : '否'}</strong></div>
+                    <div className="kv"><span>关联 SOP</span><strong>{snapshotPrimarySopId || '-'}</strong></div>
+                  </div>
+                </div>
                 <div className="snapshot-text-block">
                   <span>用户问题</span>
                   <p>{snapshotLatestUserQuestion}</p>
@@ -4852,9 +4909,9 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
 
                 <div className="sop-tab-row">
                   {[
-                    { key: 'draft', label: `草稿 (${sopDrafts.length})` },
-                    { key: 'published', label: `已发布 (${sopPublished.length})` },
-                    { key: 'archived', label: `已归档 (${sopArchived.length})` },
+                    { key: 'draft', label: `草稿主题 (${countSopTopics(sopDrafts)})` },
+                    { key: 'published', label: `已发布主题 (${countSopTopics(sopPublished)})` },
+                    { key: 'archived', label: `已归档主题 (${countSopTopics(sopArchived)})` },
                     { key: 'logic', label: '说明 / 当前逻辑' },
                   ].map((tab) => (
                     <button
@@ -5178,14 +5235,20 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
 
                           <section className="sop-section-card">
                             <div className="sop-section-head">
-                              <strong>审核信息</strong>
-                              <span className="muted">沉淀过程中的人工补充和复核备注。</span>
+                              <strong>人工审核备注</strong>
+                              <span className="muted">用于记录人工复核、治理判断和后续待处理事项，不属于正式 SOP 主体内容。</span>
                             </div>
+                            {String(sopEditor.review_notes || '').includes('系统审查提示') && (
+                              <div className="sop-review-alert">
+                                <strong>系统审查提示</strong>
+                                <p>{String(sopEditor.review_notes || '').replace(/^.*?(系统审查提示：)/, '$1')}</p>
+                              </div>
+                            )}
                             <div className="sop-detail-grid">
                               <label className="sop-field sop-field-span-2">
-                                <span>审核备注</span>
+                                <span>人工审核备注</span>
                                 <Input.TextArea rows={3} value={sopEditor.review_notes || ''} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, review_notes: event.target.value } : prev)} />
-                                <small className="muted">记录人工复核时的注意事项、风险提醒或后续待完善点。</small>
+                                <small className="muted">记录人工复核时的注意事项、风险提醒、保留/删除判断或后续待完善点。</small>
                               </label>
                             </div>
                           </section>
@@ -5836,6 +5899,17 @@ function renderSummaryBrief(summary: DiagnosisSummary): string {
   return [summary.root_cause, summary.impact_scope, summary.recommendation].filter(Boolean).join(' | ')
 }
 
+function extractLatestLlmModel(steps: ServiceTraceStep[]): string | undefined {
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    const step = steps[index]
+    if (step.step_type !== 'llm_request') continue
+    const payload = isTraceRecord(step.detail_payload) ? step.detail_payload : undefined
+    const model = String(payload?.llm_model || '').trim()
+    if (model) return model
+  }
+  return undefined
+}
+
 function buildActivityCards(
   messages: ChatMessage[],
   commands: CommandExecution[],
@@ -6258,6 +6332,7 @@ function buildHistorySessionItemsFromRuns(runs: RunSummary[]): HistorySessionIte
         problem: run.problem,
         device_count: run.device_count,
         command_count: undefined,
+        sop_enabled: run.sop_enabled,
         sop_extracted: run.sop_extracted,
         sop_draft_count: run.sop_draft_count,
         sop_published_count: run.sop_published_count,
@@ -6280,6 +6355,7 @@ function buildHistorySessionItemsFromRuns(runs: RunSummary[]): HistorySessionIte
       problem: run.problem,
       device_count: run.device_count,
       command_count: undefined,
+      sop_enabled: run.sop_enabled,
       sop_extracted: run.sop_extracted,
       sop_draft_count: run.sop_draft_count,
       sop_published_count: run.sop_published_count,
@@ -6437,6 +6513,10 @@ function buildSopTopicGroups(items: SOPArchiveEntry[]): SopTopicGroup[] {
       }
     })
     .sort((a, b) => a.topicName.localeCompare(b.topicName, 'zh-CN'))
+}
+
+function countSopTopics(items: SOPArchiveEntry[]): number {
+  return buildSopTopicGroups(items).length
 }
 
 function renderSopPromptPreview(input: Pick<SOPUpsertRequest, 'topic_name' | 'topic_key' | 'summary' | 'usage_hint' | 'preconditions' | 'anti_conditions' | 'evidence_goals' | 'key_steps' | 'decision_points' | 'command_templates' | 'fallback_commands'>): string {

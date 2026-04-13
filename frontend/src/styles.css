@@ -1373,6 +1373,33 @@ button.meta-pill.active {
   overflow: auto;
 }
 
+.snapshot-top-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.9fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.snapshot-top-column {
+  display: grid;
+  gap: 0;
+}
+
+.snapshot-top-column-llm {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fbfdff;
+  padding: 8px 10px;
+  gap: 2px;
+}
+
+.snapshot-column-title {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
 .page-grid.control-layout {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: stretch;
@@ -2304,7 +2331,9 @@ button.meta-pill.active {
 }
 
 .policy-stat-card strong {
-  font-size: 16px;
+  font-size: 13px;
+  line-height: 1.25;
+  font-weight: 600;
 }
 
 .policy-list-card {
@@ -2479,8 +2508,8 @@ button.meta-pill.active {
 .sop-tab-row {
   display: inline-flex;
   flex-wrap: wrap;
-  gap: 8px;
-  padding: 4px;
+  gap: 6px;
+  padding: 3px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: #f7f9fc;
@@ -2493,8 +2522,8 @@ button.meta-pill.active {
   background: transparent;
   color: var(--muted);
   border-radius: 10px;
-  padding: 8px 14px;
-  font-size: 12px;
+  padding: 6px 11px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 1;
   cursor: pointer;
@@ -2968,6 +2997,8 @@ button.meta-pill.active {
 
 .sop-detail-head h4 {
   margin: 0 0 4px;
+  font-size: 16px;
+  line-height: 1.25;
 }
 
 .sop-audit-grid {
@@ -3005,6 +3036,27 @@ button.meta-pill.active {
 .sop-section-head .muted {
   font-size: 11px;
   line-height: 1.35;
+}
+
+.sop-review-alert {
+  border: 1px solid rgba(214, 128, 37, 0.28);
+  border-radius: 10px;
+  background: #fff6e8;
+  padding: 10px 12px;
+  display: grid;
+  gap: 4px;
+}
+
+.sop-review-alert strong {
+  font-size: 11px;
+  color: #8a5200;
+}
+
+.sop-review-alert p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #714400;
 }
 
 .history-sop-link-btn.ant-btn {
@@ -3071,6 +3123,12 @@ button.meta-pill.active {
 .sop-detail-panel .ant-input-affix-wrapper,
 .sop-detail-panel .ant-input-textarea textarea {
   font-size: 12px;
+}
+
+.sop-detail-panel .meta-pill {
+  font-size: 10px;
+  min-height: 20px;
+  padding: 0 6px;
 }
 
 .sop-detail-panel .ant-input,
@@ -4016,6 +4074,12 @@ button.meta-pill.active {
   word-break: break-word;
   max-height: 108px;
   overflow: auto;
+}
+
+@media (max-width: 980px) {
+  .snapshot-top-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .muted {

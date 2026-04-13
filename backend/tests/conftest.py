@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.api import routes
+from app.services.sop_archive import SOPArchive
 from app.services.command_capability_store import CommandCapabilityStore
 from app.services.job_orchestrator_v2 import JobV2Orchestrator
 
@@ -21,6 +22,8 @@ def reset_global_store(tmp_path, monkeypatch):
     monkeypatch.setenv("NETOPS_COMMAND_CAPABILITY_SNAPSHOT_PATH", str(capability_snapshot_path))
     monkeypatch.setenv("NETOPS_COMMAND_CAPABILITY_WAL_PATH", str(capability_wal_path))
     monkeypatch.setenv("NETOPS_V2_STATE_PATH", str(v2_state_path))
+    monkeypatch.setenv("NETOPS_SOP_SNAPSHOT_PATH", str(tmp_path / "sop_snapshot.json"))
+    monkeypatch.setenv("NETOPS_SOP_WAL_PATH", str(tmp_path / "sop.wal"))
     monkeypatch.setenv("NETOPS_SIMULATION_ONLY", "1")
 
     routes.store.sessions.clear()
@@ -50,5 +53,7 @@ def reset_global_store(tmp_path, monkeypatch):
     diagnoser.base_url = diagnoser.default_base_url
     diagnoser.model = diagnoser.default_model
     routes.orchestrator.allow_simulation = True
+    routes.sop_archive = SOPArchive()
+    routes.orchestrator.sop_archive = routes.sop_archive
     routes.orchestrator_v2 = JobV2Orchestrator(routes.store, allow_simulation=True)
     yield

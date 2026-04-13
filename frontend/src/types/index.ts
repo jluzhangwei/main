@@ -7,6 +7,7 @@ export type SessionResponse = {
   id: string
   automation_level: AutomationLevel
   operation_mode: OperationMode
+  sop_enabled?: boolean
   status: string
   created_at: string
 }
@@ -331,6 +332,7 @@ export type RunSummary = {
   phase?: string
   automation_level: AutomationLevel
   operation_mode: OperationMode
+  sop_enabled?: boolean
   created_at: string
   updated_at?: string
   started_at?: string

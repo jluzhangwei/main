@@ -9,11 +9,41 @@ from fastapi.testclient import TestClient
 
 from app.api import routes
 from app.main import app
-from app.models.schemas import IncidentSummary, Job, JobDevice, JobEvent, JobPhase, JobStatus, JobTimelineResponse
+from app.models.schemas import IncidentSummary, Job, JobDevice, JobEvent, JobPhase, JobStatus, JobTimelineResponse, SOPStatus, SOPUpsertRequest
 from app.services.unified_run_service import UnifiedRunService
 
 
 client = TestClient(app)
+
+
+def _seed_test_sop(record_id: str = "test_history_ospf_flap"):
+    return routes.sop_archive.upsert_record(
+        record_id,
+        SOPUpsertRequest(
+            topic_key="test-history-ospf-flap",
+            topic_name="测试 OSPF 历史抖动取证",
+            name="测试 OSPF 历史抖动取证",
+            summary="用于测试的 OSPF 历史抖动取证 SOP。",
+            usage_hint="仅供测试匹配与引用。",
+            trigger_keywords=["ospf", "闪断", "历史"],
+            vendor_tags=["huawei"],
+            version_signatures=[],
+            preconditions=[],
+            anti_conditions=[],
+            evidence_goals=["协议事件日志"],
+            key_steps=[],
+            decision_points=[],
+            command_templates=[],
+            fallback_commands=[],
+            expected_findings=[],
+            source_run_ids=[],
+            generated_by_model="test",
+            generated_by_prompt_version="test",
+            review_notes="test",
+        ),
+        status=SOPStatus.published,
+        version=1,
+    )
 
 
 class ScriptedDiagnoser:
@@ -385,6 +415,7 @@ def test_api_runs_multi_create_list_and_timeline():
 
 
 def test_api_runs_trace_export_and_sop_library():
+    _seed_test_sop()
     created = client.post(
         "/api/runs",
         json={
@@ -420,7 +451,7 @@ def test_api_runs_trace_export_and_sop_library():
     assert payload["total"] >= 1
     assert payload["matched"]
     matched_ids = {item["id"] for item in payload["matched"]}
-    assert "history_ospf_flap" in matched_ids
+    assert "test_history_ospf_flap" in matched_ids
 
 
 def test_api_sop_extract_and_published_update_creates_new_draft():

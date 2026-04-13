@@ -82,6 +82,7 @@ from app.models.schemas import (
     SOPStatus,
     SOPUpsertRequest,
     make_id,
+    now_utc,
 )
 from app.services.exporter import export_timeline_markdown
 from app.services.deepseek_diagnoser import SOP_EXTRACTION_PROMPT_VERSION
@@ -132,6 +133,7 @@ def _single_session_response(session_id: str) -> SessionResponse:
         id=session.id,
         automation_level=session.automation_level,
         operation_mode=session.operation_mode,
+        sop_enabled=session.sop_enabled,
         status=session.status,
         created_at=session.created_at,
     )
@@ -141,6 +143,13 @@ def _patch_single_session_automation(session_id: str, automation_level: Automati
     if session_id not in store.sessions:
         raise HTTPException(status_code=404, detail="Session not found")
     store.update_session_automation(session_id, automation_level)
+    return _single_session_response(session_id)
+
+
+def _patch_single_session_sop(session_id: str, sop_enabled: bool) -> SessionResponse:
+    if session_id not in store.sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    store.update_session_sop_enabled(session_id, sop_enabled)
     return _single_session_response(session_id)
 
 
@@ -261,6 +270,7 @@ async def create_session(req: SessionCreateRequest) -> SessionResponse:
         id=session.id,
         automation_level=session.automation_level,
         operation_mode=session.operation_mode,
+        sop_enabled=session.sop_enabled,
         status=session.status,
         created_at=session.created_at,
     )
@@ -273,7 +283,11 @@ async def list_sessions() -> list[SessionListItem]:
 
 @router.patch("/sessions/{session_id}", response_model=SessionResponse)
 async def update_session(session_id: str, req: SessionUpdateRequest) -> SessionResponse:
-    return _patch_single_session_automation(session_id, req.automation_level)
+    if req.automation_level is not None:
+        return _patch_single_session_automation(session_id, req.automation_level)
+    if req.sop_enabled is not None:
+        return _patch_single_session_sop(session_id, req.sop_enabled)
+    raise HTTPException(status_code=400, detail="no session fields to update")
 
 
 @router.patch("/sessions/{session_id}/credentials", response_model=SessionResponse)
@@ -580,13 +594,14 @@ def _normalize_command_templates(values) -> list[dict]:
 
 
 _SOP_SPECIFIC_TEXT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\bEth\d+(?:/\d+){1,2}\b", flags=re.IGNORECASE), "<接口>"),
-    (re.compile(r"\bEthernet\d+(?:/\d+){0,2}\b", flags=re.IGNORECASE), "<接口>"),
-    (re.compile(r"\bGigabitEthernet[\d/]+\b", flags=re.IGNORECASE), "<接口>"),
-    (re.compile(r"\bGE[\d/]+\b", flags=re.IGNORECASE), "<接口>"),
-    (re.compile(r"\bXGigabitEthernet[\d/]+\b", flags=re.IGNORECASE), "<接口>"),
-    (re.compile(r"\bLoopback\d+\b", flags=re.IGNORECASE), "<环回接口>"),
-    (re.compile(r"\bLo\d+\b", flags=re.IGNORECASE), "<环回接口>"),
+    (re.compile(r"Ethernet\d+(?:/\d+){0,2}", flags=re.IGNORECASE), "<接口>"),
+    (re.compile(r"XGigabitEthernet[\d/]+", flags=re.IGNORECASE), "<接口>"),
+    (re.compile(r"GigabitEthernet[\d/]+", flags=re.IGNORECASE), "<接口>"),
+    (re.compile(r"(?<![A-Za-z])Eth\d+(?:/\d+){1,2}", flags=re.IGNORECASE), "<接口>"),
+    (re.compile(r"(?<![A-Za-z])GE[\d/]+", flags=re.IGNORECASE), "<接口>"),
+    (re.compile(r"Loopback\d+", flags=re.IGNORECASE), "<环回接口>"),
+    (re.compile(r"(?<![A-Za-z])Lo\d+", flags=re.IGNORECASE), "<环回接口>"),
+    (re.compile(r"<if>", flags=re.IGNORECASE), "<接口>"),
     (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}/\d{1,2}\b"), "<目标前缀>"),
     (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "<IP>"),
 ]
@@ -1071,6 +1086,7 @@ async def create_run_api(
                 device=_run_device_to_target(req.devices[0]),
                 automation_level=req.automation_level,
                 operation_mode=req.operation_mode,
+                sop_enabled=req.sop_enabled,
                 issue_scope=req.issue_scope,
             )
         )
@@ -1098,6 +1114,7 @@ async def create_run_api(
             name=req.name,
             problem=problem,
             mode=_operation_mode_to_job_mode(req.operation_mode),
+            sop_enabled=req.sop_enabled,
             devices=req.devices,
             max_gap_seconds=req.max_gap_seconds,
             topology_mode=req.topology_mode,
@@ -1148,16 +1165,45 @@ async def patch_run_api(
     actor: ApiKeyRecord = Depends(require_v2_permission("job.write")),
 ) -> RunResponse:
     kind, source_id = _parse_unified_run_id(run_id)
-    if kind != RunKind.single:
-        raise HTTPException(status_code=409, detail="run patch currently supports single-device runs only")
-    _patch_single_session_automation(source_id, req.automation_level)
+    if kind == RunKind.single:
+        if req.automation_level is not None:
+            _patch_single_session_automation(source_id, req.automation_level)
+        if req.sop_enabled is not None:
+            _patch_single_session_sop(source_id, req.sop_enabled)
+        if req.automation_level is None and req.sop_enabled is None:
+            raise HTTPException(status_code=400, detail="no run fields to update")
+    else:
+        async with orchestrator_v2._state_lock:
+            job = orchestrator_v2._jobs.get(source_id)
+            if not job:
+                raise HTTPException(status_code=404, detail="Run not found")
+            if req.sop_enabled is not None:
+                job.sop_enabled = bool(req.sop_enabled)
+                job.updated_at = now_utc()
+                orchestrator_v2._append_event_with_trace(
+                    job,
+                    "sop_mode_updated",
+                    {"sop_enabled": job.sop_enabled},
+                    step_type="session_control",
+                    title="更新 SOP 模式",
+                    status="succeeded",
+                    detail=f"sop_enabled={str(job.sop_enabled).lower()}",
+                    detail_payload={"sop_enabled": job.sop_enabled},
+                )
+                orchestrator_v2._save_state()
+            if req.sop_enabled is None and req.automation_level is None:
+                raise HTTPException(status_code=400, detail="no run fields to update")
     payload = await get_unified_runs_service().get_run(run_id)
     await orchestrator_v2.append_audit(
         actor=actor,
         action="run.update",
         resource=f"run:{run_id}",
         status="ok",
-        detail=f"automation_level={req.automation_level.value}",
+        detail=(
+            f"automation_level={req.automation_level.value}"
+            if req.automation_level is not None
+            else f"sop_enabled={str(req.sop_enabled).lower()}"
+        ),
     )
     return payload
 
