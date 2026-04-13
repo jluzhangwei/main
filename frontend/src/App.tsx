@@ -166,6 +166,9 @@ const NAV_ITEMS = NAV_SECTIONS.flatMap((section) => section.items)
 const MODEL_OPTIONS = [
   { value: 'deepseek-chat', label: 'DeepSeek Chat' },
   { value: 'deepseek-reasoner', label: 'DeepSeek Reasoner' },
+  { value: 'codex/gpt-5.4', label: 'Codex GPT-5.4' },
+  { value: 'codex/gpt-5.3-codex', label: 'Codex GPT-5.3-Codex' },
+  { value: 'codex/gpt-5.4-mini', label: 'Codex GPT-5.4 Mini' },
   { value: 'meta/llama-3.1-70b-instruct', label: 'NVIDIA Llama 3.1 70B' },
   { value: 'gpt-5.3-codex', label: 'GPT-5.3-Codex' },
   { value: 'gpt-5.4', label: 'GPT-5.4' },
@@ -173,6 +176,7 @@ const MODEL_OPTIONS = [
 
 type LlmVendor =
   | 'deepseek'
+  | 'codex'
   | 'openai'
   | 'anthropic'
   | 'gemini'
@@ -185,6 +189,7 @@ type LlmVendor =
 
 const LLM_VENDOR_OPTIONS = [
   { value: 'deepseek', label: 'DeepSeek' },
+  { value: 'codex', label: 'Codex CLI（本机登录）' },
   { value: 'openai', label: 'OpenAI' },
   { value: 'anthropic', label: 'Anthropic' },
   { value: 'gemini', label: 'Google Gemini' },
@@ -198,6 +203,11 @@ const LLM_VENDOR_OPTIONS = [
 
 const LLM_VENDOR_MODEL_OPTIONS: Record<LlmVendor, Array<{ value: string; label: string }>> = {
   deepseek: MODEL_OPTIONS.filter((option) => option.value.startsWith('deepseek-')),
+  codex: [
+    { value: 'codex/gpt-5.4', label: 'Codex GPT-5.4' },
+    { value: 'codex/gpt-5.3-codex', label: 'Codex GPT-5.3-Codex' },
+    { value: 'codex/gpt-5.4-mini', label: 'Codex GPT-5.4 Mini' },
+  ],
   openai: [
     { value: 'gpt-5.4', label: 'GPT-5.4' },
     { value: 'gpt-5.3-codex', label: 'GPT-5.3-Codex' },
@@ -243,6 +253,11 @@ const LLM_VENDOR_MODEL_OPTIONS: Record<LlmVendor, Array<{ value: string; label: 
     { value: 'qwen2.5:7b', label: 'Qwen 2.5 7B' },
     { value: 'deepseek-r1:7b', label: 'DeepSeek R1 7B' },
   ],
+}
+
+function llmVendorLabel(vendor?: string | null): string {
+  const text = String(vendor || '').trim()
+  return LLM_VENDOR_OPTIONS.find((option) => option.value === text)?.label || text || '-'
 }
 
 const SOP_CURRENT_LOGIC_ITEMS = [
@@ -2020,7 +2035,7 @@ function App() {
 
   async function handleSaveApiKey() {
     const apiKey = llmSettingsApiKeyInput.trim()
-    if (llmVendorInput !== 'ollama' && !apiKey) {
+    if (llmVendorInput !== 'ollama' && llmVendorInput !== 'codex' && !apiKey) {
       antMessage.warning('请输入 API Key')
       return
     }
@@ -3201,6 +3216,21 @@ function App() {
     target.scrollTo({ top: target.scrollHeight, behavior: 'smooth' })
   }
 
+  function focusCommandAcrossWorkbench(commandId: string) {
+    if (!commandId) return
+    setSelectedCommandId(commandId)
+    const activityKey = `cmd:${commandId}`
+    if (!activityCards.some((item) => item.key === activityKey)) return
+    setSelectedActivityKey(activityKey)
+    window.requestAnimationFrame(() => {
+      const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+        ? CSS.escape(activityKey)
+        : activityKey.replace(/"/g, '\\"')
+      const card = document.querySelector(`.activity-card[data-activity-key="${escaped}"]`) as HTMLElement | null
+      card?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' })
+    })
+  }
+
   function jumpToTraceStep(stepId: string) {
     if (!stepId) return
     setSelectedTraceStepId(stepId)
@@ -3322,6 +3352,7 @@ function App() {
                       <article
                         key={item.key}
                         className={`activity-card ${item.kind} ${selectedActivity?.key === item.key ? 'active' : ''}`}
+                        data-activity-key={item.key}
                         onClick={() => {
                           setSelectedActivityKey(item.key)
                           if (item.kind === 'command') setSelectedCommandId(item.command.id)
@@ -3676,7 +3707,7 @@ function App() {
                             type="button"
                             key={item.id}
                             className={`command-row compact ${selectedCommand?.id === item.id ? 'active' : ''}`}
-                            onClick={() => setSelectedCommandId(item.id)}
+                            onClick={() => focusCommandAcrossWorkbench(item.id)}
                           >
                             <div className="command-row-grid">
                               <div className="command-meta-inline">
@@ -5190,10 +5221,11 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
                 <h3>AI 设置</h3>
                 <p className="muted">模型配置统一放到此页，工作台保持诊断专注。</p>
                 <div className="kv"><span>状态</span><strong>{llmStatus?.enabled ? '已启用' : '未启用'}</strong></div>
-                <div className="kv"><span>当前厂商</span><strong>{LLM_VENDOR_OPTIONS.find((option) => option.value === llmVendorInput)?.label || llmVendorInput}</strong></div>
+                <div className="kv"><span>当前厂商</span><strong>{llmVendorLabel(llmVendorInput)}</strong></div>
                 <div className="kv"><span>主模型</span><strong>{llmStatus?.model || '-'}</strong></div>
                 <div className="kv"><span>当前生效模型</span><strong>{llmStatus?.active_model || llmStatus?.model || '-'}</strong></div>
-                <div className="kv"><span>已配置厂商</span><strong>{(llmStatus?.configured_providers || []).join(' / ') || '-'}</strong></div>
+                <div className="kv"><span>已配置厂商</span><strong>{(llmStatus?.configured_providers || []).map((item) => llmVendorLabel(item)).join(' / ') || '-'}</strong></div>
+                <div className="kv"><span>Codex 登录</span><strong>{llmStatus?.codex_enabled ? '已检测到本机登录' : '未检测到'}</strong></div>
                 <div className="kv"><span>DeepSeek Key</span><strong>{llmStatus?.deepseek_enabled ? '已配置' : '未配置'}</strong></div>
                 <div className="kv"><span>NVIDIA Key</span><strong>{llmStatus?.nvidia_enabled ? '已配置' : '未配置'}</strong></div>
                 <div className="kv"><span>自动切换</span><strong>{llmFailoverEnabled ? '开启' : '关闭'}</strong></div>
@@ -5248,9 +5280,16 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
                       placeholder={
                         llmVendorInput === 'ollama'
                           ? '本地 Ollama 默认可留空；如网关要求鉴权可在此填写'
+                          : llmVendorInput === 'codex'
+                            ? 'Codex CLI 将复用本机 ~/.codex/auth.json，通常无需填写 API Key'
                           : `输入 ${LLM_VENDOR_OPTIONS.find((option) => option.value === llmVendorInput)?.label || llmVendorInput} API Key`
                       }
                     />
+                    {llmVendorInput === 'codex' && (
+                      <div className="muted" style={{ marginTop: 6 }}>
+                        当前 provider 将直接复用本机 <code>~/.codex/auth.json</code> 登录态；只有本机个人环境建议这样用。
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div className="ai-setting-actions">
@@ -5599,6 +5638,7 @@ function inferLlmVendor(input?: Pick<LLMStatus, 'model' | 'deepseek_enabled' | '
     return provider as LlmVendor
   }
   const model = String(input?.model || '').trim().toLowerCase()
+  if (model.startsWith('codex/')) return 'codex'
   if (model.startsWith('deepseek-')) return 'deepseek'
   if (['gpt-', 'o1', 'o3', 'o4'].some((prefix) => model.startsWith(prefix))) return 'openai'
   if (model.startsWith('claude')) return 'anthropic'
