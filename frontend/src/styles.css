@@ -311,6 +311,17 @@ h6 {
   font-size: 11px;
 }
 
+button.meta-pill {
+  cursor: pointer;
+}
+
+button.meta-pill.active {
+  border-color: #2468f2;
+  background: #eaf1ff;
+  color: #1f4fbf;
+  box-shadow: inset 0 0 0 1px rgba(36, 104, 242, 0.16);
+}
+
 .live-meta-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2959,6 +2970,12 @@ h6 {
   margin: 0 0 4px;
 }
 
+.sop-audit-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
 .sop-detail-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3532,11 +3549,13 @@ h6 {
 }
 
 .flow-lane-head-cell {
+  appearance: none;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fff;
   padding: 8px;
   display: flex;
+  width: 100%;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
@@ -3544,6 +3563,8 @@ h6 {
   top: 0;
   z-index: 4;
   box-shadow: 0 1px 0 rgba(193, 204, 218, 0.65);
+  cursor: pointer;
+  text-align: left;
 }
 
 .flow-lane-head-main {
@@ -3569,6 +3590,11 @@ h6 {
   z-index: 8;
 }
 
+.flow-lane-head-cell:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
 .flow-matrix-empty {
   grid-column: 1 / -1;
   border: 1px dashed var(--line-strong);
@@ -3592,7 +3618,9 @@ h6 {
 }
 
 .flow-lane-head {
+  appearance: none;
   display: flex;
+  width: 100%;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
@@ -3600,10 +3628,13 @@ h6 {
   top: 0;
   z-index: 3;
   background: #fff;
+  border: none;
   border-bottom: 1px solid var(--line);
   padding-bottom: 6px;
   min-height: 32px;
   box-sizing: border-box;
+  cursor: pointer;
+  text-align: left;
 }
 
 .flow-lane-head-main {
@@ -3627,6 +3658,11 @@ h6 {
   background: #e9f1ff;
   box-shadow: inset 0 0 0 1px #bfd4ff, 0 1px 0 rgba(193, 204, 218, 0.65);
   z-index: 8;
+}
+
+.flow-lane-head:disabled {
+  cursor: default;
+  opacity: 0.7;
 }
 
 .flow-node-list {

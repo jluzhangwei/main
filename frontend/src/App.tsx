@@ -358,6 +358,15 @@ type FlowLayoutMode = 'compact' | 'stair'
 type ActivityViewMode = 'full' | 'compact'
 type SopTab = 'draft' | 'published' | 'archived' | 'logic'
 type SopListDensity = 'compact' | 'expanded'
+type SopTopicGroup = {
+  topicKey: string
+  topicName: string
+  items: SOPArchiveEntry[]
+  latest: SOPArchiveEntry
+  draftCount: number
+  publishedCount: number
+  archivedCount: number
+}
 
 type TraceDetailSection = {
   key: string
@@ -499,6 +508,7 @@ function App() {
   const [sopDrafts, setSopDrafts] = useState<SOPArchiveEntry[]>([])
   const [sopPublished, setSopPublished] = useState<SOPArchiveEntry[]>([])
   const [sopArchived, setSopArchived] = useState<SOPArchiveEntry[]>([])
+  const [selectedSopTopicKey, setSelectedSopTopicKey] = useState<string | undefined>(undefined)
   const [selectedSopId, setSelectedSopId] = useState<string | undefined>(undefined)
   const [selectedSop, setSelectedSop] = useState<SOPArchiveEntry | null>(null)
   const [sopEditor, setSopEditor] = useState<SOPUpsertRequest | null>(null)
@@ -739,6 +749,21 @@ function App() {
     if (sopTab === 'archived') return sopArchived
     return []
   }, [sopArchived, sopDrafts, sopPublished, sopTab])
+  const currentSopTopics = useMemo(() => buildSopTopicGroups(currentSopItems), [currentSopItems])
+  const selectedSopTopic = useMemo(() => {
+    if (currentSopTopics.length === 0) return undefined
+    if (selectedSopTopicKey) {
+      return currentSopTopics.find((item) => item.topicKey === selectedSopTopicKey) || currentSopTopics[0]
+    }
+    if (selectedSopId) {
+      return currentSopTopics.find((item) => item.items.some((entry) => entry.id === selectedSopId)) || currentSopTopics[0]
+    }
+    return currentSopTopics[0]
+  }, [currentSopTopics, selectedSopTopicKey, selectedSopId])
+  const selectedTopicVersions = useMemo(
+    () => selectedSopTopic?.items || [],
+    [selectedSopTopic],
+  )
   const traceTargetSessionId = useMemo(() => {
     if (selectedHistorySessionId && sessionHistory.some((item) => item.id === selectedHistorySessionId)) {
       return selectedHistorySessionId
@@ -1033,6 +1058,26 @@ function App() {
     if (activePage !== 'sop_library') return
     void refreshSops()
   }, [activePage, sopTab])
+
+  useEffect(() => {
+    if (activePage !== 'sop_library' || sopTab === 'logic') return
+    if (currentSopTopics.length === 0) {
+      setSelectedSopTopicKey(undefined)
+      setSelectedSopId(undefined)
+      setSelectedSop(null)
+      setSopEditor(null)
+      return
+    }
+    const topic = selectedSopTopic || currentSopTopics[0]
+    if (!topic) return
+    if (selectedSopTopicKey !== topic.topicKey) {
+      setSelectedSopTopicKey(topic.topicKey)
+    }
+    const preferredId = topic.items.some((item) => item.id === selectedSopId) ? selectedSopId : topic.items[0]?.id
+    if (preferredId && preferredId !== selectedSopId) {
+      void handleSelectSop(preferredId, topic.topicKey)
+    }
+  }, [activePage, sopTab, currentSopTopics, selectedSopTopic, selectedSopTopicKey, selectedSopId])
 
   useEffect(() => {
     if (activePage !== 'service_trace') return
@@ -1481,42 +1526,33 @@ function App() {
     if (targetTab === 'logic') return
     setSopLoading(true)
     try {
-      const status = targetTab as SOPStatus
-      const payload = await listSops(resolveV3ApiKey(), status)
-      if (targetTab === 'draft') setSopDrafts(payload.items)
-      if (targetTab === 'published') setSopPublished(payload.items)
-      if (targetTab === 'archived') setSopArchived(payload.items)
-
-      const nextItems = payload.items
-      const nextSelectedId = nextItems.some((item) => item.id === selectedSopId) ? selectedSopId : nextItems[0]?.id
-      setSelectedSopId(nextSelectedId)
-      if (nextSelectedId) {
-        const detail = await getSop(resolveV3ApiKey(), nextSelectedId)
-        setSelectedSop(detail)
-        setSopEditor(toSopEditor(detail))
-      } else {
-        setSelectedSop(null)
-        setSopEditor(null)
-      }
+      const [draftPayload, publishedPayload, archivedPayload] = await Promise.all([
+        listSops(resolveV3ApiKey(), 'draft'),
+        listSops(resolveV3ApiKey(), 'published'),
+        listSops(resolveV3ApiKey(), 'archived'),
+      ])
+      setSopDrafts(draftPayload.items)
+      setSopPublished(publishedPayload.items)
+      setSopArchived(archivedPayload.items)
     } catch (error) {
-      if (targetTab === 'draft') setSopDrafts([])
-      if (targetTab === 'published') setSopPublished([])
-      if (targetTab === 'archived') setSopArchived([])
-      setSelectedSop(null)
-      setSopEditor(null)
+      setSopDrafts([])
+      setSopPublished([])
+      setSopArchived([])
       antMessage.error((error as Error).message || '加载 SOP 档案失败')
     } finally {
       setSopLoading(false)
     }
   }
 
-  async function handleSelectSop(sopId: string) {
+  async function handleSelectSop(sopId: string, topicKey?: string) {
     setSelectedSopId(sopId)
+    if (topicKey) setSelectedSopTopicKey(topicKey)
     setSopLoading(true)
     try {
       const detail = await getSop(resolveV3ApiKey(), sopId)
       setSelectedSop(detail)
       setSopEditor(toSopEditor(detail))
+      setSelectedSopTopicKey(detail.topic_key || topicKey)
     } catch (error) {
       antMessage.error((error as Error).message || '加载 SOP 详情失败')
     } finally {
@@ -1572,6 +1608,7 @@ function App() {
       }
       setActivePage('sop_library')
       setSopTab(target.tab)
+      setSelectedSopTopicKey(undefined)
       setSelectedSopId(target.id)
       await handleSelectSop(target.id)
       return
@@ -1598,6 +1635,7 @@ function App() {
       setSopTab('draft')
       await refreshSessionHistory()
       await refreshSops('draft')
+      setSelectedSopTopicKey(draft.topic_key)
       setSelectedSopId(draft.id)
       setSelectedSop(draft)
       setSopEditor(toSopEditor(draft))
@@ -1617,6 +1655,7 @@ function App() {
       const nextTab = (saved.status || 'draft') as SopTab
       setSopTab(nextTab)
       await refreshSops(nextTab)
+      setSelectedSopTopicKey(saved.topic_key)
       setSelectedSopId(saved.id)
       setSelectedSop(saved)
       setSopEditor(toSopEditor(saved))
@@ -1635,6 +1674,7 @@ function App() {
       antMessage.success('SOP 已发布，并开始参与 AI 候选匹配')
       setSopTab('published')
       await refreshSops('published')
+      setSelectedSopTopicKey(published.topic_key)
       setSelectedSopId(published.id)
       setSelectedSop(published)
       setSopEditor(toSopEditor(published))
@@ -1654,6 +1694,7 @@ function App() {
       antMessage.success('SOP 已归档，不再参与运行时匹配')
       setSopTab('archived')
       await refreshSops('archived')
+      setSelectedSopTopicKey(archived.topic_key)
       setSelectedSopId(archived.id)
       setSelectedSop(archived)
       setSopEditor(toSopEditor(archived))
@@ -1675,6 +1716,7 @@ function App() {
       antMessage.success('已重新提炼并生成新的 SOP 草稿')
       setSopTab('draft')
       await refreshSops('draft')
+      setSelectedSopTopicKey(draft.topic_key)
       setSelectedSopId(draft.id)
       setSelectedSop(draft)
       setSopEditor(toSopEditor(draft))
@@ -3246,6 +3288,16 @@ function App() {
     })
   }
 
+  function handleCycleFlowLane(laneKey: string) {
+    const lane = flowLanes.find((item) => item.key === laneKey)
+    if (!lane) return
+    const laneSteps = lane.steps.filter((step): step is ServiceTraceStep => Boolean(step))
+    if (laneSteps.length === 0) return
+    const currentIndex = selectedTraceStep ? laneSteps.findIndex((step) => step.id === selectedTraceStep.id) : -1
+    const nextStep = currentIndex >= 0 ? laneSteps[(currentIndex + 1) % laneSteps.length] : laneSteps[0]
+    jumpToTraceStep(nextStep.id)
+  }
+
   function handleToggleTracePlayback() {
     if (tracePlaybackActive) {
       setTracePlaybackActive(false)
@@ -4562,16 +4614,20 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
                       style={{ gridTemplateColumns: `repeat(${Math.max(1, flowLanes.length)}, minmax(0, 1fr))` }}
                     >
                       {flowLanes.map((lane) => (
-                        <div
+                        <button
+                          type="button"
                           key={`head-${lane.key}`}
                           className={`flow-lane-head-cell ${activeFlowLaneKey === lane.key ? 'active' : ''}`}
+                          onClick={() => handleCycleFlowLane(lane.key)}
+                          title={lane.realCount > 0 ? `点击切换到“${lane.label}”泳道的下一步` : `“${lane.label}”泳道暂无步骤`}
+                          disabled={lane.realCount === 0}
                         >
                           <div className="flow-lane-head-main">
                             <strong>{lane.label}</strong>
                             <span className={`flow-actor-pill ${traceActorClass(lane.actor)}`}>{lane.actor}</span>
                           </div>
                           <span>{traceLaneCounts[lane.key] ?? lane.realCount} 步</span>
-                        </div>
+                        </button>
                       ))}
 
                       {flowRows.length === 0 && (
@@ -4626,13 +4682,19 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
                   >
                     {flowLanes.map((lane) => (
                       <section key={lane.key} className="flow-lane">
-                        <div className={`flow-lane-head ${activeFlowLaneKey === lane.key ? 'active' : ''}`}>
+                        <button
+                          type="button"
+                          className={`flow-lane-head ${activeFlowLaneKey === lane.key ? 'active' : ''}`}
+                          onClick={() => handleCycleFlowLane(lane.key)}
+                          title={lane.realCount > 0 ? `点击切换到“${lane.label}”泳道的下一步` : `“${lane.label}”泳道暂无步骤`}
+                          disabled={lane.realCount === 0}
+                        >
                           <div className="flow-lane-head-main">
                             <strong>{lane.label}</strong>
                             <span className={`flow-actor-pill ${traceActorClass(lane.actor)}`}>{lane.actor}</span>
                           </div>
                           <span>{traceLaneCounts[lane.key] ?? lane.realCount} 步</span>
-                        </div>
+                        </button>
                         <div className="flow-node-list">
                           {lane.realCount === 0 && <div className="flow-node flow-node-empty">待触发</div>}
                           {lane.steps
@@ -4854,9 +4916,9 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
                   <div className="sop-library-grid" style={{ gridTemplateColumns: `${sopListWidth}px 10px minmax(0, 1fr)` }}>
                     <section className="panel-card sop-list-panel">
                       <div className="learning-sop-section-head compact">
-                        <strong>{sopTab === 'draft' ? '草稿列表' : sopTab === 'published' ? '已发布列表' : '已归档列表'}</strong>
+                        <strong>{sopTab === 'draft' ? '草稿主题' : sopTab === 'published' ? '已发布主题' : '已归档主题'}</strong>
                         <div className="sop-list-head-actions">
-                          <span className="muted">{currentSopItems.length} 条</span>
+                          <span className="muted">{currentSopTopics.length} 个主题</span>
                           <div className="sop-density-toggle" role="tablist" aria-label="SOP列表密度">
                             <button
                               type="button"
@@ -4876,28 +4938,32 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
                         </div>
                       </div>
                       <div className={`learning-sop-list ${sopListDensity === 'compact' ? 'is-compact' : 'is-expanded'}`}>
-                        {currentSopItems.length === 0 && <div className="policy-empty muted">当前分组暂无 SOP 记录</div>}
-                        {currentSopItems.map((entry) => (
+                        {currentSopTopics.length === 0 && <div className="policy-empty muted">当前分组暂无 SOP 主题</div>}
+                        {currentSopTopics.map((topic) => (
                           <button
-                            key={entry.id}
+                            key={topic.topicKey}
                             type="button"
-                            className={`sop-record-item ${selectedSopId === entry.id ? 'active' : ''} ${sopListDensity === 'compact' ? 'compact' : 'expanded'}`}
-                            onClick={() => void handleSelectSop(entry.id)}
+                            className={`sop-record-item ${selectedSopTopicKey === topic.topicKey ? 'active' : ''} ${sopListDensity === 'compact' ? 'compact' : 'expanded'}`}
+                            onClick={() => {
+                              setSelectedSopTopicKey(topic.topicKey)
+                              void handleSelectSop(topic.items[0].id, topic.topicKey)
+                            }}
                           >
                             <div className="sop-record-row">
                               <div className="sop-record-main compact">
-                                <strong>{entry.name}</strong>
-                                <span className="meta-pill">v{entry.version}</span>
-                                <span>{`命 ${entry.matched_count || 0}`}</span>
-                                <span>{`引 ${entry.referenced_count || 0}`}</span>
-                                <span>{`成 ${entry.success_count || 0}`}</span>
+                                <strong>{topic.topicName}</strong>
+                                <span className="meta-pill">{`版本 ${topic.items.length}`}</span>
+                                {topic.items.some((item) => item.is_current_published) ? <span className="meta-pill">当前发布</span> : null}
+                                <span>{`草 ${topic.draftCount}`}</span>
+                                <span>{`发 ${topic.publishedCount}`}</span>
+                                <span>{`归 ${topic.archivedCount}`}</span>
                               </div>
                             </div>
                             {sopListDensity === 'expanded' ? (
-                              <span className="muted">{truncateText(entry.id, 42)}</span>
+                              <span className="muted">{truncateText(topic.latest.name, 42)}</span>
                             ) : null}
                             {sopListDensity === 'expanded' ? (
-                              <span className="muted">{truncateText(entry.summary, 96)}</span>
+                              <span className="muted">{truncateText(topic.latest.summary, 96)}</span>
                             ) : null}
                           </button>
                         ))}
@@ -4917,10 +4983,10 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
                       ) : (
                         <div className="sop-detail-stack">
                           <div className="sop-detail-head">
-                            <div>
-                              <h4>{selectedSop.name}</h4>
-                              <p className="muted">{selectedSop.id} · 状态 {selectedSop.status || sopTab}</p>
-                            </div>
+                              <div>
+                                <h4>{selectedSop.name}</h4>
+                                <p className="muted">{selectedSop.topic_name} · {selectedSop.id} · 状态 {selectedSop.status || sopTab}</p>
+                              </div>
                             <div className="capability-toolbar-actions">
                               {sopTab === 'draft' && <Button size="small" type="primary" className="sop-action-btn sop-action-btn-primary" loading={sopSaving} onClick={() => void handlePublishSop()}>发布</Button>}
                               {sopTab === 'published' && <Button size="small" className="sop-action-btn" loading={sopSaving} onClick={() => void handleSaveSop()}>编辑并生成草稿</Button>}
@@ -4930,12 +4996,62 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
                             </div>
                           </div>
 
+                          <div className="sop-audit-grid">
+                            <div className="policy-stat-card">
+                              <span className="muted">提炼模型</span>
+                              <strong>{selectedSop.generated_by_model || '-'}</strong>
+                            </div>
+                            <div className="policy-stat-card">
+                              <span className="muted">提示词版本</span>
+                              <strong>{selectedSop.generated_by_prompt_version || '-'}</strong>
+                            </div>
+                            <div className="policy-stat-card">
+                              <span className="muted">来源会话数</span>
+                              <strong>{selectedSop.source_run_ids?.length || 0}</strong>
+                            </div>
+                            <div className="policy-stat-card">
+                              <span className="muted">最近来源会话</span>
+                              <strong title={(selectedSop.source_run_ids || []).join(', ') || '-'}>{selectedSop.source_run_ids?.[0] || '-'}</strong>
+                            </div>
+                          </div>
+
+                          {selectedTopicVersions.length > 0 && (
+                            <section className="sop-section-card">
+                              <div className="sop-section-head">
+                                <strong>主题版本</strong>
+                                <span className="muted">同一主题下的草稿 / 发布 / 归档版本。点击切换查看。</span>
+                              </div>
+                              <div className="sop-alias-tags">
+                                {selectedTopicVersions.map((item) => (
+                                  <button
+                                    key={item.id}
+                                    type="button"
+                                    className={`meta-pill ${selectedSopId === item.id ? 'active' : ''}`}
+                                    onClick={() => void handleSelectSop(item.id, item.topic_key)}
+                                  >
+                                    {`v${item.version} · ${item.status}${item.is_current_published ? ' · 当前发布' : ''}`}
+                                  </button>
+                                ))}
+                              </div>
+                            </section>
+                          )}
+
                           <section className="sop-section-card">
                             <div className="sop-section-head">
                               <strong>基础信息</strong>
                               <span className="muted">描述这条 SOP 是什么、从哪次会话沉淀而来。</span>
                             </div>
                             <div className="sop-detail-grid">
+                              <label className="sop-field">
+                                <span>主题名称</span>
+                                <Input value={sopEditor.topic_name || ''} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, topic_name: event.target.value } : prev)} />
+                                <small className="muted">同一类 SOP 的归档主题名称；后续版本会围绕这个主题迭代。</small>
+                              </label>
+                              <label className="sop-field">
+                                <span>主题标识</span>
+                                <Input value={sopEditor.topic_key || ''} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, topic_key: event.target.value } : prev)} />
+                                <small className="muted">用于版本归并与运行时去重的稳定标识。建议保持简短稳定。</small>
+                              </label>
                               <label className="sop-field">
                                 <span>SOP 名称</span>
                                 <Input value={sopEditor.name} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, name: event.target.value } : prev)} />
@@ -5011,6 +5127,33 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
 
                           <section className="sop-section-card">
                             <div className="sop-section-head">
+                              <strong>AI 提炼步骤</strong>
+                              <span className="muted">这部分是给下一次 AI 参考的关键步骤、关键命令与判断点，目标是减少试错。</span>
+                            </div>
+                            <div className="sop-detail-grid">
+                              <label className="sop-field sop-field-span-2">
+                                <span>关键步骤</span>
+                                <Input.TextArea rows={6} value={joinKeyStepsInput(sopEditor.key_steps)} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, key_steps: parseKeyStepsInput(event.target.value) } : prev)} />
+                                <small className="muted">每行格式：步骤标题 =&gt; 步骤目标 | 命令1 ; 命令2 | 预期信号1 ; 预期信号2</small>
+                              </label>
+                              <label className="sop-field sop-field-span-2">
+                                <span>关键判断点</span>
+                                <Input.TextArea rows={4} value={joinDecisionPointsInput(sopEditor.decision_points)} onChange={(event) => setSopEditor((prev) => prev ? { ...prev, decision_points: parseDecisionPointsInput(event.target.value) } : prev)} />
+                                <small className="muted">每行格式：看到什么信号 =&gt; 代表什么；用于帮助下一次 AI 更快收敛，而不是直接下结论。</small>
+                              </label>
+                            </div>
+                          </section>
+
+                          <section className="sop-section-card">
+                            <div className="sop-section-head">
+                              <strong>提交给 AI 的 SOP 参考预览</strong>
+                              <span className="muted">这里展示的是命中这条 SOP 时，系统实际会作为参考提交给 AI 的内容预览。</span>
+                            </div>
+                            <pre className="detail-pre">{renderSopPromptPreview(sopEditor)}</pre>
+                          </section>
+
+                          <section className="sop-section-card">
+                            <div className="sop-section-head">
                               <strong>命令策略</strong>
                               <span className="muted">建议 AI 优先参考的最小命令组与补充证据。</span>
                             </div>
@@ -5048,6 +5191,7 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
                           </section>
 
                           <div className="sop-metrics-grid">
+                            <div className="policy-stat-card"><span className="muted">主题</span><strong>{selectedSop.topic_name || '-'}</strong></div>
                             <div className="policy-stat-card"><span className="muted">命中</span><strong>{selectedSop.matched_count || 0}</strong></div>
                             <div className="policy-stat-card"><span className="muted">引用</span><strong>{selectedSop.referenced_count || 0}</strong></div>
                             <div className="policy-stat-card"><span className="muted">成功</span><strong>{selectedSop.success_count || 0}</strong></div>
@@ -5450,6 +5594,7 @@ function describePromptPolicy(key: string): PromptPolicyDescriptor {
     summary_primary: '诊断总结提示词',
     summary_review: '诊断审稿提示词',
     summary_rewrite: '诊断改写提示词',
+    sop_extraction: 'SOP 提取提示词',
     runtime_session_header_template: '运行时会话上下文模板',
     runtime_command_result_template: '运行时命令结果模板',
     runtime_finalization_prompt_template: '运行时最终总结模板',
@@ -5502,6 +5647,13 @@ function describePromptPolicy(key: string): PromptPolicyDescriptor {
       kind: '提示词',
       scope: '单设备',
       description: '当总结不够贴证据时，约束模型重写表达而不改变方向。',
+    },
+    sop_extraction: {
+      group: 'knowledge',
+      node: 'SOP提炼',
+      kind: '提示词',
+      scope: 'SOP',
+      description: '用于从历史会话中由 AI 提炼主题、关键步骤、关键命令与关键判断点，供后续 AI 参考。',
     },
     runtime_session_header_template: {
       group: 'runtime_template',
@@ -6145,6 +6297,9 @@ function buildHistorySessionItemsFromRuns(runs: RunSummary[]): HistorySessionIte
 
 function toSopEditor(entry: SOPArchiveEntry): SOPUpsertRequest {
   return {
+    topic_key: entry.topic_key || '',
+    topic_name: entry.topic_name || entry.name || '',
+    parent_version_id: entry.parent_version_id,
     name: entry.name || '',
     summary: entry.summary || '',
     usage_hint: entry.usage_hint || '',
@@ -6154,6 +6309,17 @@ function toSopEditor(entry: SOPArchiveEntry): SOPUpsertRequest {
     preconditions: [...(entry.preconditions || [])],
     anti_conditions: [...(entry.anti_conditions || [])],
     evidence_goals: [...(entry.evidence_goals || [])],
+    key_steps: (entry.key_steps || []).map((item) => ({
+      step_no: item.step_no || 1,
+      title: item.title || '',
+      goal: item.goal || '',
+      commands: [...(item.commands || [])],
+      expected_signals: [...(item.expected_signals || [])],
+    })),
+    decision_points: (entry.decision_points || []).map((item) => ({
+      signal: item.signal || '',
+      meaning: item.meaning || '',
+    })),
     command_templates: (entry.command_templates || []).map((item) => ({
       vendor: item.vendor || 'generic',
       commands: [...(item.commands || [])],
@@ -6199,6 +6365,115 @@ function joinCommandTemplatesInput(values?: Array<{ vendor: string; commands: st
   return (values || [])
     .map((item) => `${item.vendor || 'generic'} | ${(item.commands || []).join(' ; ')}`)
     .join('\n')
+}
+
+function parseKeyStepsInput(raw: string) {
+  return String(raw || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const [headPart, commandPart = '', expectedPart = ''] = line.split('|').map((item) => item.trim())
+      const [titlePart = '', goalPart = ''] = headPart.split('=>').map((item) => item.trim())
+      return {
+        step_no: index + 1,
+        title: titlePart || `关键步骤 ${index + 1}`,
+        goal: goalPart || titlePart || `关键步骤 ${index + 1}`,
+        commands: commandPart ? commandPart.split(';').map((item) => item.trim()).filter(Boolean) : [],
+        expected_signals: expectedPart ? expectedPart.split(';').map((item) => item.trim()).filter(Boolean) : [],
+      }
+    })
+}
+
+function joinKeyStepsInput(values?: Array<{ step_no: number; title: string; goal: string; commands: string[]; expected_signals: string[] }>): string {
+  return (values || [])
+    .map((item) => `${item.title || ''} => ${item.goal || ''} | ${(item.commands || []).join(' ; ')} | ${(item.expected_signals || []).join(' ; ')}`)
+    .join('\n')
+}
+
+function parseDecisionPointsInput(raw: string) {
+  return String(raw || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [signal = '', meaning = ''] = line.split('=>').map((item) => item.trim())
+      return { signal, meaning }
+    })
+    .filter((item) => item.signal && item.meaning)
+}
+
+function joinDecisionPointsInput(values?: Array<{ signal: string; meaning: string }>): string {
+  return (values || [])
+    .map((item) => `${item.signal || ''} => ${item.meaning || ''}`)
+    .join('\n')
+}
+
+function buildSopTopicGroups(items: SOPArchiveEntry[]): SopTopicGroup[] {
+  const grouped = new Map<string, SOPArchiveEntry[]>()
+  for (const item of items) {
+    const key = String(item.topic_key || item.id).trim() || item.id
+    const rows = grouped.get(key) || []
+    rows.push(item)
+    grouped.set(key, rows)
+  }
+  return Array.from(grouped.entries())
+    .map(([topicKey, rows]) => {
+      const sorted = [...rows].sort((a, b) => {
+        const av = Number(a.version || 0)
+        const bv = Number(b.version || 0)
+        if (av !== bv) return bv - av
+        return String(b.updated_at || '').localeCompare(String(a.updated_at || ''))
+      })
+      const latest = sorted[0]
+      return {
+        topicKey,
+        topicName: latest?.topic_name || latest?.name || topicKey,
+        items: sorted,
+        latest,
+        draftCount: sorted.filter((item) => item.status === 'draft').length,
+        publishedCount: sorted.filter((item) => item.status === 'published').length,
+        archivedCount: sorted.filter((item) => item.status === 'archived').length,
+      }
+    })
+    .sort((a, b) => a.topicName.localeCompare(b.topicName, 'zh-CN'))
+}
+
+function renderSopPromptPreview(input: Pick<SOPUpsertRequest, 'topic_name' | 'topic_key' | 'summary' | 'usage_hint' | 'preconditions' | 'anti_conditions' | 'evidence_goals' | 'key_steps' | 'decision_points' | 'command_templates' | 'fallback_commands'>): string {
+  const lines: string[] = []
+  lines.push('SOP档案候选（仅供AI按需调用，系统不会自动执行）：')
+  lines.push(`- topic: ${input.topic_name || '-'} [${input.topic_key || '-'}]`)
+  lines.push(`  summary: ${input.summary || '-'}`)
+  lines.push(`  usage_hint: ${input.usage_hint || '-'}`)
+  if ((input.preconditions || []).length > 0) {
+    lines.push(`  preconditions: ${(input.preconditions || []).join(' ; ')}`)
+  }
+  if ((input.anti_conditions || []).length > 0) {
+    lines.push(`  anti_conditions: ${(input.anti_conditions || []).join(' ; ')}`)
+  }
+  if ((input.evidence_goals || []).length > 0) {
+    lines.push(`  evidence_goals: ${(input.evidence_goals || []).join(' ; ')}`)
+  }
+  for (const step of input.key_steps || []) {
+    lines.push(`  key_step[${step.step_no}]: ${step.title} -> ${step.goal}`)
+    if ((step.commands || []).length > 0) {
+      lines.push(`    commands: ${(step.commands || []).join(' ; ')}`)
+    }
+    if ((step.expected_signals || []).length > 0) {
+      lines.push(`    expected_signals: ${(step.expected_signals || []).join(' ; ')}`)
+    }
+  }
+  for (const point of input.decision_points || []) {
+    lines.push(`  decision_point: ${point.signal} => ${point.meaning}`)
+  }
+  for (const template of input.command_templates || []) {
+    lines.push(`  template[${template.vendor || 'generic'}]: ${(template.commands || []).join(' ; ')}`)
+  }
+  if ((input.fallback_commands || []).length > 0) {
+    lines.push(`  fallback_commands: ${(input.fallback_commands || []).join(' ; ')}`)
+  }
+  lines.push('若你决定调用某个SOP档案，请结合当前问题和设备版本，自主判断是否采用其中步骤或命令。')
+  return lines.join('\n')
 }
 
 function parseV2ActionGroupCommandId(commandId: string): string | undefined {

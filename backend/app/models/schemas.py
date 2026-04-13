@@ -274,6 +274,7 @@ class LLMConfigResponse(BaseModel):
     batch_execution_enabled: bool = True
     model_candidates: list[str] = Field(default_factory=list)
     configured_providers: list[str] = Field(default_factory=list)
+    codex_enabled: bool = False
     deepseek_enabled: bool = False
     nvidia_enabled: bool = False
     last_error: Optional[str] = None
@@ -284,10 +285,14 @@ class LLMConfigResponse(BaseModel):
 
 class LLMPromptPolicyResponse(BaseModel):
     enabled: bool
+    provider: Optional[str] = None
     base_url: str
     nvidia_base_url: Optional[str] = None
     model: str
     batch_execution_enabled: bool = True
+    configured_providers: list[str] = Field(default_factory=list)
+    codex_enabled: bool = False
+    deepseek_enabled: bool = False
     nvidia_enabled: bool = False
     prompts: dict[str, str] = Field(default_factory=dict)
 
@@ -297,9 +302,26 @@ class SOPArchiveCommandTemplate(BaseModel):
     commands: list[str] = Field(default_factory=list)
 
 
+class SOPArchiveKeyStep(BaseModel):
+    step_no: int = 1
+    title: str
+    goal: str
+    commands: list[str] = Field(default_factory=list)
+    expected_signals: list[str] = Field(default_factory=list)
+
+
+class SOPArchiveDecisionPoint(BaseModel):
+    signal: str
+    meaning: str
+
+
 class SOPArchiveEntryResponse(BaseModel):
     id: str
     status: Optional[str] = None
+    topic_key: str
+    topic_name: str
+    parent_version_id: Optional[str] = None
+    is_current_published: bool = False
     name: str
     summary: str
     usage_hint: str
@@ -309,6 +331,8 @@ class SOPArchiveEntryResponse(BaseModel):
     preconditions: list[str] = Field(default_factory=list)
     anti_conditions: list[str] = Field(default_factory=list)
     evidence_goals: list[str] = Field(default_factory=list)
+    key_steps: list[SOPArchiveKeyStep] = Field(default_factory=list)
+    decision_points: list[SOPArchiveDecisionPoint] = Field(default_factory=list)
     command_templates: list[SOPArchiveCommandTemplate] = Field(default_factory=list)
     fallback_commands: list[str] = Field(default_factory=list)
     expected_findings: list[str] = Field(default_factory=list)
@@ -338,6 +362,10 @@ class SOPStatus(str, Enum):
 
 class SOPRecord(BaseModel):
     id: str = Field(default_factory=make_id)
+    topic_key: str = ""
+    topic_name: str = ""
+    parent_version_id: Optional[str] = None
+    is_current_published: bool = False
     version: int = 1
     status: SOPStatus = SOPStatus.draft
     name: str
@@ -349,6 +377,8 @@ class SOPRecord(BaseModel):
     preconditions: list[str] = Field(default_factory=list)
     anti_conditions: list[str] = Field(default_factory=list)
     evidence_goals: list[str] = Field(default_factory=list)
+    key_steps: list[SOPArchiveKeyStep] = Field(default_factory=list)
+    decision_points: list[SOPArchiveDecisionPoint] = Field(default_factory=list)
     command_templates: list[SOPArchiveCommandTemplate] = Field(default_factory=list)
     fallback_commands: list[str] = Field(default_factory=list)
     expected_findings: list[str] = Field(default_factory=list)
@@ -370,6 +400,10 @@ class SOPRecord(BaseModel):
         return SOPArchiveEntryResponse(
             id=self.id,
             status=self.status.value,
+            topic_key=self.topic_key,
+            topic_name=self.topic_name,
+            parent_version_id=self.parent_version_id,
+            is_current_published=self.is_current_published,
             name=self.name,
             summary=self.summary,
             usage_hint=self.usage_hint,
@@ -379,6 +413,8 @@ class SOPRecord(BaseModel):
             preconditions=list(self.preconditions),
             anti_conditions=list(self.anti_conditions),
             evidence_goals=list(self.evidence_goals),
+            key_steps=[item.model_copy(deep=True) for item in self.key_steps],
+            decision_points=[item.model_copy(deep=True) for item in self.decision_points],
             command_templates=[item.model_copy(deep=True) for item in self.command_templates],
             fallback_commands=list(self.fallback_commands),
             expected_findings=list(self.expected_findings),
@@ -406,6 +442,9 @@ class SOPExtractFromRunRequest(BaseModel):
 
 
 class SOPUpsertRequest(BaseModel):
+    topic_key: Optional[str] = None
+    topic_name: Optional[str] = None
+    parent_version_id: Optional[str] = None
     name: str
     summary: str
     usage_hint: str
@@ -415,6 +454,8 @@ class SOPUpsertRequest(BaseModel):
     preconditions: list[str] = Field(default_factory=list)
     anti_conditions: list[str] = Field(default_factory=list)
     evidence_goals: list[str] = Field(default_factory=list)
+    key_steps: list[SOPArchiveKeyStep] = Field(default_factory=list)
+    decision_points: list[SOPArchiveDecisionPoint] = Field(default_factory=list)
     command_templates: list[SOPArchiveCommandTemplate] = Field(default_factory=list)
     fallback_commands: list[str] = Field(default_factory=list)
     expected_findings: list[str] = Field(default_factory=list)

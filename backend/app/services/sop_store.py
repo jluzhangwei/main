@@ -6,13 +6,16 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import threading
 from typing import Iterable
 
 from app.models.schemas import (
     SOPArchiveCommandTemplate,
+    SOPArchiveDecisionPoint,
     SOPArchiveEntryResponse,
+    SOPArchiveKeyStep,
     SOPListResponse,
     SOPPublishResponse,
     SOPRecord,
@@ -29,11 +32,15 @@ class SOPSeed:
     summary: str
     usage_hint: str
     trigger_keywords: tuple[str, ...]
+    topic_key: str | None = None
+    topic_name: str | None = None
     vendor_tags: tuple[str, ...] = ()
     version_signatures: tuple[str, ...] = ()
     preconditions: tuple[str, ...] = ()
     anti_conditions: tuple[str, ...] = ()
     evidence_goals: tuple[str, ...] = ()
+    key_steps: tuple[tuple[int, str, str, tuple[str, ...], tuple[str, ...]], ...] = ()
+    decision_points: tuple[tuple[str, str], ...] = ()
     command_templates: tuple[tuple[str, tuple[str, ...]], ...] = ()
     fallback_commands: tuple[str, ...] = ()
     expected_findings: tuple[str, ...] = ()
@@ -41,8 +48,11 @@ class SOPSeed:
     def to_record(self) -> SOPRecord:
         return SOPRecord(
             id=self.id,
+            topic_key=self.topic_key or self.id,
+            topic_name=self.topic_name or self.name,
             version=1,
             status=SOPStatus.published,
+            is_current_published=True,
             name=self.name,
             summary=self.summary,
             usage_hint=self.usage_hint,
@@ -52,6 +62,20 @@ class SOPSeed:
             preconditions=list(self.preconditions),
             anti_conditions=list(self.anti_conditions),
             evidence_goals=list(self.evidence_goals),
+            key_steps=[
+                SOPArchiveKeyStep(
+                    step_no=step_no,
+                    title=title,
+                    goal=goal,
+                    commands=list(commands),
+                    expected_signals=list(expected_signals),
+                )
+                for step_no, title, goal, commands, expected_signals in self.key_steps
+            ],
+            decision_points=[
+                SOPArchiveDecisionPoint(signal=signal, meaning=meaning)
+                for signal, meaning in self.decision_points
+            ],
             command_templates=[
                 SOPArchiveCommandTemplate(vendor=vendor, commands=list(commands))
                 for vendor, commands in self.command_templates
@@ -158,15 +182,22 @@ class SOPStore:
         with self._lock:
             existing = self._records.get(record_id)
             now = now_utc()
+            normalized_topic_name = self._normalize_topic_name(payload.topic_name, fallback=payload.name)
+            normalized_topic_key = self._normalize_topic_key(payload.topic_key, fallback=normalized_topic_name)
             if existing:
                 record = existing.model_copy(deep=True)
             else:
                 record = SOPRecord(
                     id=record_id,
+                    topic_key=normalized_topic_key,
+                    topic_name=normalized_topic_name,
                     name=payload.name.strip(),
                     summary=payload.summary.strip(),
                     usage_hint=payload.usage_hint.strip(),
                 )
+            record.topic_key = normalized_topic_key
+            record.topic_name = normalized_topic_name
+            record.parent_version_id = str(payload.parent_version_id or "").strip() or record.parent_version_id
             record.name = payload.name.strip()
             record.summary = payload.summary.strip()
             record.usage_hint = payload.usage_hint.strip()
@@ -176,6 +207,8 @@ class SOPStore:
             record.preconditions = self._normalize_text_list(payload.preconditions)
             record.anti_conditions = self._normalize_text_list(payload.anti_conditions)
             record.evidence_goals = self._normalize_text_list(payload.evidence_goals)
+            record.key_steps = [item.model_copy(deep=True) for item in payload.key_steps]
+            record.decision_points = [item.model_copy(deep=True) for item in payload.decision_points]
             record.command_templates = [item.model_copy(deep=True) for item in payload.command_templates]
             record.fallback_commands = self._normalize_text_list(payload.fallback_commands)
             record.expected_findings = self._normalize_text_list(payload.expected_findings)
@@ -185,6 +218,8 @@ class SOPStore:
             record.review_notes = (payload.review_notes or "").strip() or None
             if status is not None:
                 record.status = status
+            if record.status != SOPStatus.published:
+                record.is_current_published = False
             if version is not None:
                 record.version = version
             if existing is None:
@@ -199,11 +234,29 @@ class SOPStore:
         with self._lock:
             record = self._records[record_id].model_copy(deep=True)
             previous_status = record.status
+            archived_ids: list[str] = []
+            for item in list(self._records.values()):
+                if item.topic_key != record.topic_key or item.id == record.id or item.status != SOPStatus.published:
+                    continue
+                previous = item.model_copy(deep=True)
+                previous.status = SOPStatus.archived
+                previous.is_current_published = False
+                previous.updated_at = now_utc()
+                self._records[previous.id] = previous
+                archived_ids.append(previous.id)
             record.status = SOPStatus.published
+            record.is_current_published = True
             record.published_at = now_utc()
             record.updated_at = now_utc()
             self._records[record.id] = record
-            self._append_wal({"op": "publish", "record_id": record_id, "published_at": record.published_at.isoformat()})
+            self._append_wal(
+                {
+                    "op": "publish",
+                    "record_id": record_id,
+                    "published_at": record.published_at.isoformat(),
+                    "archived_record_ids": archived_ids,
+                }
+            )
             return SOPPublishResponse(
                 item=record.to_archive_response(),
                 previous_status=previous_status,
@@ -215,6 +268,7 @@ class SOPStore:
             record = self._records[record_id].model_copy(deep=True)
             previous_status = record.status
             record.status = SOPStatus.archived
+            record.is_current_published = False
             record.updated_at = now_utc()
             self._records[record.id] = record
             self._append_wal({"op": "archive", "record_id": record_id})
@@ -224,6 +278,12 @@ class SOPStore:
                 current_status=record.status,
             )
 
+    def next_version_for_topic(self, topic_key: str) -> int:
+        normalized = self._normalize_topic_key(topic_key)
+        with self._lock:
+            versions = [item.version for item in self._records.values() if item.topic_key == normalized]
+            return (max(versions) if versions else 0) + 1
+
     def delete_record(self, record_id: str) -> bool:
         with self._lock:
             if record_id not in self._records:
@@ -232,6 +292,104 @@ class SOPStore:
             self._rebuild_source_index()
             self._append_wal({"op": "delete", "record_id": record_id})
             return True
+
+    def cleanup_historical_records(self) -> dict[str, int]:
+        with self._lock:
+            if not self._records:
+                return {"before": 0, "after": 0, "deleted": 0, "topics_merged": 0}
+
+            before = len(self._records)
+            touched_topics: set[str] = set()
+
+            # Normalize topic naming first so later dedupe works across old variants like "-v2".
+            for record_id, record in list(self._records.items()):
+                updated = record.model_copy(deep=True)
+                canonical_name = self._canonical_topic_name(updated.topic_name or updated.name)
+                canonical_key = self._canonical_topic_key(updated.topic_key or canonical_name)
+                if updated.topic_name != canonical_name or updated.topic_key != canonical_key:
+                    updated.topic_name = canonical_name
+                    updated.topic_key = canonical_key
+                    self._records[record_id] = updated
+                    touched_topics.add(canonical_key)
+
+            grouped: dict[str, list[SOPRecord]] = defaultdict(list)
+            for record in self._records.values():
+                grouped[record.topic_key].append(record)
+
+            records_to_delete: set[str] = set()
+            for topic_key, rows in grouped.items():
+                canonical_name = self._canonical_topic_name(rows[0].topic_name or rows[0].name)
+                fingerprint_groups: dict[tuple[object, ...], list[SOPRecord]] = defaultdict(list)
+                for row in rows:
+                    fingerprint_groups[self._semantic_fingerprint(row)].append(row)
+
+                deduped_rows: list[SOPRecord] = []
+                for group_rows in fingerprint_groups.values():
+                    primary = self._choose_primary_record(group_rows)
+                    merged = primary.model_copy(deep=True)
+                    merged.topic_key = topic_key
+                    merged.topic_name = canonical_name
+                    merged.source_run_ids = self._normalize_text_list(
+                        source_id
+                        for item in group_rows
+                        for source_id in (item.source_run_ids or [])
+                    )
+                    merged.matched_count = sum(int(item.matched_count or 0) for item in group_rows)
+                    merged.referenced_count = sum(int(item.referenced_count or 0) for item in group_rows)
+                    merged.success_count = sum(int(item.success_count or 0) for item in group_rows)
+                    merged.last_matched_at = self._max_datetime(item.last_matched_at for item in group_rows)
+                    merged.last_referenced_at = self._max_datetime(item.last_referenced_at for item in group_rows)
+                    merged.last_success_at = self._max_datetime(item.last_success_at for item in group_rows)
+                    merged.updated_at = self._max_datetime(item.updated_at for item in group_rows) or merged.updated_at
+                    self._records[merged.id] = merged
+                    deduped_rows.append(merged)
+                    for item in group_rows:
+                        if item.id != merged.id:
+                            records_to_delete.add(item.id)
+
+                published = [item for item in deduped_rows if item.status == SOPStatus.published]
+                published_primary = self._choose_primary_record(published) if published else None
+                for item in deduped_rows:
+                    current = self._records.get(item.id)
+                    if not current:
+                        continue
+                    changed = False
+                    if published_primary and current.status == SOPStatus.published and current.id != published_primary.id:
+                        current.status = SOPStatus.archived
+                        current.is_current_published = False
+                        changed = True
+                    elif published_primary and current.id == published_primary.id:
+                        if not current.is_current_published:
+                            current.is_current_published = True
+                            changed = True
+                    elif current.is_current_published:
+                        current.is_current_published = False
+                        changed = True
+                    if current.topic_name != canonical_name:
+                        current.topic_name = canonical_name
+                        changed = True
+                    if changed:
+                        current.updated_at = now_utc()
+                        self._records[current.id] = current
+
+            for record_id in records_to_delete:
+                self._records.pop(record_id, None)
+
+            self._rebuild_source_index()
+            self._append_wal(
+                {
+                    "op": "cleanup_history",
+                    "deleted_record_ids": sorted(records_to_delete),
+                    "ts": now_utc().isoformat(),
+                }
+            )
+            after = len(self._records)
+            return {
+                "before": before,
+                "after": after,
+                "deleted": before - after,
+                "topics_merged": len(touched_topics),
+            }
 
     def matched_entries(
         self,
@@ -343,8 +501,7 @@ class SOPStore:
         grouped: dict[tuple[object, ...], SOPArchiveEntryResponse] = {}
         for entry in entries:
             key = (
-                entry.name.strip().lower(),
-                entry.summary.strip().lower(),
+                entry.topic_key.strip().lower() or entry.name.strip().lower(),
                 tuple(sorted(item.strip().lower() for item in entry.vendor_tags)),
                 tuple(sorted(item.strip().lower() for item in entry.version_signatures)),
                 tuple(sorted(item.strip().lower() for item in entry.trigger_keywords)),
@@ -419,6 +576,81 @@ class SOPStore:
             items.append(text)
         return items
 
+    def _canonical_topic_name(self, value: str | None) -> str:
+        text = str(value or "").strip()
+        text = re.sub(r"[\s_-]*v\d+$", "", text, flags=re.IGNORECASE).strip()
+        return text or "未命名主题"
+
+    def _canonical_topic_key(self, value: str | None) -> str:
+        return self._normalize_topic_key(None, fallback=self._canonical_topic_name(value))
+
+    def _semantic_fingerprint(self, record: SOPRecord) -> tuple[object, ...]:
+        return (
+            record.summary.strip().lower(),
+            record.usage_hint.strip().lower(),
+            tuple(item.strip().lower() for item in record.trigger_keywords),
+            tuple(item.strip().lower() for item in record.vendor_tags),
+            tuple(item.strip().lower() for item in record.version_signatures),
+            tuple(item.strip().lower() for item in record.preconditions),
+            tuple(item.strip().lower() for item in record.anti_conditions),
+            tuple(item.strip().lower() for item in record.evidence_goals),
+            tuple(
+                (
+                    int(step.step_no or 0),
+                    step.title.strip().lower(),
+                    step.goal.strip().lower(),
+                    tuple(command.strip().lower() for command in step.commands),
+                    tuple(signal.strip().lower() for signal in step.expected_signals),
+                )
+                for step in record.key_steps
+            ),
+            tuple(
+                (
+                    point.signal.strip().lower(),
+                    point.meaning.strip().lower(),
+                )
+                for point in record.decision_points
+            ),
+            tuple(
+                (
+                    item.vendor.strip().lower(),
+                    tuple(command.strip().lower() for command in item.commands),
+                )
+                for item in record.command_templates
+            ),
+            tuple(item.strip().lower() for item in record.fallback_commands),
+            tuple(item.strip().lower() for item in record.expected_findings),
+        )
+
+    def _choose_primary_record(self, rows: Iterable[SOPRecord]) -> SOPRecord:
+        return sorted(
+            list(rows),
+            key=lambda item: (
+                0 if item.is_current_published else 1,
+                0 if item.status == SOPStatus.published else 1 if item.status == SOPStatus.draft else 2,
+                -int(item.version or 0),
+                -(item.updated_at.timestamp() if item.updated_at else 0),
+                -(item.created_at.timestamp() if item.created_at else 0),
+            ),
+        )[0]
+
+    def _max_datetime(self, values: Iterable[datetime | None]) -> datetime | None:
+        cleaned = [item for item in values if item is not None]
+        return max(cleaned) if cleaned else None
+
+    def _normalize_topic_name(self, value: str | None, *, fallback: str | None = None) -> str:
+        text = str(value or "").strip()
+        if text:
+            return text
+        return str(fallback or "").strip() or "未命名主题"
+
+    def _normalize_topic_key(self, value: str | None, *, fallback: str | None = None) -> str:
+        raw = str(value or "").strip().lower()
+        if not raw:
+            raw = str(fallback or "").strip().lower()
+        normalized = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "-", raw).strip("-")
+        return normalized or "sop-topic"
+
     def _apply_seeds(self, seeds: Iterable[SOPSeed]) -> None:
         with self._lock:
             changed = False
@@ -440,6 +672,7 @@ class SOPStore:
     def _load(self) -> None:
         self._load_snapshot()
         self._replay_wal()
+        self._migrate_loaded_records()
         self._rebuild_source_index()
 
     def _load_snapshot(self) -> None:
@@ -486,7 +719,15 @@ class SOPStore:
             record = self._records.get(record_id)
             if not record:
                 return
+            for archived_id in event.get("archived_record_ids", []) or []:
+                archived = self._records.get(str(archived_id))
+                if not archived:
+                    continue
+                archived.status = SOPStatus.archived
+                archived.is_current_published = False
+                self._records[archived.id] = archived
             record.status = SOPStatus.published
+            record.is_current_published = True
             published_at = str(event.get("published_at") or "").strip()
             record.published_at = datetime.fromisoformat(published_at) if published_at else now_utc()
             self._records[record.id] = record
@@ -497,6 +738,7 @@ class SOPStore:
             if not record:
                 return
             record.status = SOPStatus.archived
+            record.is_current_published = False
             self._records[record.id] = record
             return
         if op == "delete":
@@ -516,12 +758,33 @@ class SOPStore:
                 elif kind == "success":
                     record.success_count += 1
                 self._records[record.id] = record
+            return
+        if op == "cleanup_history":
+            for record_id in event.get("deleted_record_ids", []) or []:
+                self._records.pop(str(record_id), None)
 
     def _append_wal(self, event: dict) -> None:
         self.wal_path.parent.mkdir(parents=True, exist_ok=True)
         with self.wal_path.open("a", encoding="utf-8") as fp:
             fp.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
         self._write_snapshot()
+
+    def _migrate_loaded_records(self) -> None:
+        changed = False
+        for record_id, record in list(self._records.items()):
+            updated = record.model_copy(deep=True)
+            if not updated.topic_name:
+                updated.topic_name = updated.name
+                changed = True
+            if not updated.topic_key:
+                updated.topic_key = self._normalize_topic_key(None, fallback=updated.topic_name or updated.name)
+                changed = True
+            if updated.status != SOPStatus.published and updated.is_current_published:
+                updated.is_current_published = False
+                changed = True
+            self._records[record_id] = updated
+        if changed:
+            self._write_snapshot()
 
     def _write_snapshot(self) -> None:
         self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)

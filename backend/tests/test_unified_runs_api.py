@@ -190,6 +190,38 @@ def test_multi_trace_finalizes_instant_running_session_control_steps():
     assert ("[192.0.2.10] 开始设备采集", "succeeded") in statuses
 
 
+def test_normalize_sop_upsert_request_generalizes_incident_specific_objects():
+    payload = routes._normalize_sop_upsert_request(
+        {
+            "topic_name": "LLDP互通但OSPF邻接不建立排查（华为VRP）",
+            "topic_key": "lldp-ospf-adjacency-huawei",
+            "name": "LLDP互通但OSPF邻接不建立排查（华为VRP）",
+            "summary": "聚焦 Eth1/0/0 两端接口的 OSPF 不起邻现象",
+            "usage_hint": "用于 192.168.0.102 与 192.168.0.103 之间 OSPF 邻接不建立",
+            "preconditions": ["接口 Eth1/0/0 已知为互联口"],
+            "key_steps": [
+                {
+                    "step_no": 1,
+                    "title": "检查 Eth1/0/0 接口",
+                    "goal": "验证 Eth1/0/0 是否具备起邻条件",
+                    "commands": ["display interface Eth1/0/0", "display ospf interface Eth1/0/0"],
+                    "expected_signals": ["Eth1/0/0 协议状态正常"],
+                }
+            ],
+            "command_templates": [
+                {"vendor": "Huawei VRP", "commands": ["display interface Eth1/0/0", "display ospf interface Eth1/0/0"]}
+            ],
+        },
+        source_run_id="run_m:test",
+    )
+
+    assert "<接口>" in payload.summary
+    assert payload.key_steps[0].commands == ["display interface <接口>", "display ospf interface <接口>"]
+    assert payload.command_templates[0].commands == ["display interface <接口>", "display ospf interface <接口>"]
+    assert payload.review_notes is not None
+    assert "系统审查提示" in payload.review_notes
+
+
 def test_api_runs_single_create_and_reject_pending_action():
     payload = {
         "problem": "检查接口并继续诊断",
@@ -388,7 +420,7 @@ def test_api_runs_trace_export_and_sop_library():
     assert payload["total"] >= 1
     assert payload["matched"]
     matched_ids = {item["id"] for item in payload["matched"]}
-    assert "history_generic_forensics" in matched_ids
+    assert "history_ospf_flap" in matched_ids
 
 
 def test_api_sop_extract_and_published_update_creates_new_draft():

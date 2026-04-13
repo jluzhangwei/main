@@ -220,21 +220,32 @@ REWRITE_SYSTEM_PROMPT = (
 SOP_EXTRACTION_SYSTEM_PROMPT = (
     "你是网络故障知识库提炼器。"
     "任务是从一次真实诊断会话中提炼可复用的SOP草稿。"
-    "目标不是复述会话，而是抽取未来可复用的方法。"
+    "目标不是复述会话，而是抽取未来可复用的方法，并重点产出能帮助下一个AI减少试错的关键步骤和关键命令。"
     "严格依据输入证据，不得编造未出现的对象、命令或结论。"
     "只输出JSON对象。"
-    "字段必须是: name, summary, usage_hint, trigger_keywords, vendor_tags, version_signatures, preconditions, anti_conditions, evidence_goals, command_templates, fallback_commands, expected_findings, review_notes。"
+    "字段必须是: topic_name, topic_key, name, summary, usage_hint, trigger_keywords, vendor_tags, version_signatures, preconditions, anti_conditions, evidence_goals, key_steps, decision_points, command_templates, fallback_commands, expected_findings, review_notes。"
+    "topic_name表示这条SOP所属主题；topic_key是稳定主题标识，可用简短英文/中文短语。"
+    "key_steps必须是数组，每项结构为{step_no, title, goal, commands, expected_signals}。"
+    "decision_points必须是数组，每项结构为{signal, meaning}。"
     "command_templates必须是数组，每项结构为{vendor, commands}。"
     "trigger_keywords应面向未来检索，不要只是抄用户原句。"
     "preconditions描述适用前提；anti_conditions描述不应调用该SOP的条件。"
     "evidence_goals描述该SOP期望验证到的关键信号。"
-    "command_templates只保留真正有复用价值的最小必要命令组，禁止收录明显试错命令。"
+    "key_steps中的commands和command_templates只保留真正有复用价值的最小必要命令组，禁止收录明显试错命令。"
+    "关键步骤应体现合理顺序：先确认什么，再确认什么，最后怎样收口。"
+    "decision_points应说明某种回显意味着什么，以及下一步该如何判断。"
+    "禁止将单次会话里的具体接口名、具体管理IP、具体主机名、具体一次性对象或现场路径直接写入 key_steps、decision_points 或 command_templates。"
+    "key_steps和command_templates必须优先抽象为可复用对象。"
+    "如果某条命令只有在具体对象（如 Eth1/0/0、192.168.0.102、Lo1）下才成立，但其排查方法可复用，应改写成占位符形式，例如 <接口>、<邻居IP>、<目标前缀>。"
+    "如果某条步骤只对本次单一现场成立、无法泛化为未来参考，就不要写入key_steps或command_templates，可放入review_notes提示人工审核。"
+    "生成SOP时，优先提炼“为什么查、先查什么、再查什么”，而不是把本次会话里具体查过的对象原样抄进去。"
     "fallback_commands是替代性简化命令；expected_findings是调用后期望观察到的现象。"
     "review_notes要明确指出人工审核时需要重点留意什么。"
 )
 
 SUPPORTED_LLM_PROVIDERS = (
     "deepseek",
+    "codex",
     "openai",
     "anthropic",
     "gemini",
@@ -257,6 +268,8 @@ OPENAI_COMPATIBLE_PROVIDERS = {
     "ollama",
 }
 
+CODEX_DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/codex"
+
 
 class DeepSeekDiagnoser:
     def __init__(self) -> None:
@@ -264,6 +277,7 @@ class DeepSeekDiagnoser:
         self.default_nvidia_base_url = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1").strip().rstrip("/")
         self.default_provider_base_urls: dict[str, str] = {
             "deepseek": self.default_base_url,
+            "codex": os.getenv("CODEX_BASE_URL", CODEX_DEFAULT_BASE_URL).strip().rstrip("/"),
             "openai": os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/"),
             "anthropic": os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1").strip().rstrip("/"),
             "gemini": os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/"),
@@ -278,6 +292,7 @@ class DeepSeekDiagnoser:
         self.provider = os.getenv("LLM_PROVIDER", "").strip().lower() or self._infer_provider_from_model(self.default_model)
         self.provider_api_keys: dict[str, str] = {
             "deepseek": os.getenv("DEEPSEEK_API_KEY", "").strip(),
+            "codex": "",
             "openai": os.getenv("OPENAI_API_KEY", "").strip(),
             "anthropic": os.getenv("ANTHROPIC_API_KEY", "").strip(),
             "gemini": os.getenv("GEMINI_API_KEY", "").strip(),
@@ -317,6 +332,8 @@ class DeepSeekDiagnoser:
     @property
     def enabled(self) -> bool:
         if str(self.provider).strip().lower() == "ollama":
+            return True
+        if self._has_codex_auth():
             return True
         return any(bool(value) for value in self.provider_api_keys.values()) or bool(self.api_key or self.nvidia_api_key)
 
@@ -410,6 +427,7 @@ class DeepSeekDiagnoser:
             "batch_execution_enabled": self.batch_execution_enabled,
             "model_candidates": list(self.model_candidates),
             "configured_providers": [name for name in SUPPORTED_LLM_PROVIDERS if self._provider_is_configured(name)],
+            "codex_enabled": self._has_codex_auth(),
             "deepseek_enabled": bool(self.api_key),
             "nvidia_enabled": bool(self.nvidia_api_key),
             "last_error": self.last_error,
@@ -430,6 +448,8 @@ class DeepSeekDiagnoser:
             "batch_execution_enabled": self.batch_execution_enabled,
             "model_candidates": list(self.model_candidates),
             "configured_providers": [name for name in SUPPORTED_LLM_PROVIDERS if self._provider_is_configured(name)],
+            "codex_enabled": self._has_codex_auth(),
+            "deepseek_enabled": bool(self.api_key),
             "nvidia_enabled": bool(self.nvidia_api_key),
             "last_error": self.last_error,
             "last_error_code": self.last_error_code,
@@ -439,6 +459,7 @@ class DeepSeekDiagnoser:
                 "summary_primary": PRIMARY_SUMMARY_SYSTEM_PROMPT,
                 "summary_review": REVIEW_SYSTEM_PROMPT,
                 "summary_rewrite": REWRITE_SYSTEM_PROMPT,
+                "sop_extraction": SOP_EXTRACTION_SYSTEM_PROMPT,
             },
         }
 
@@ -593,6 +614,8 @@ class DeepSeekDiagnoser:
 
     def _provider_is_configured(self, provider: str) -> bool:
         name = str(provider or "").strip().lower()
+        if name == "codex":
+            return self._has_codex_auth()
         if name == "ollama":
             return self.provider == "ollama" or bool(self.provider_api_keys.get(name, "").strip())
         if name == "deepseek":
@@ -604,6 +627,8 @@ class DeepSeekDiagnoser:
     def _infer_provider_from_model(self, model: str, fallback: Optional[str] = None) -> str:
         model_text = str(model or "").strip().lower()
         fallback_text = str(fallback or "").strip().lower()
+        if model_text.startswith("codex/"):
+            return "codex"
         if model_text.startswith("deepseek"):
             return "deepseek"
         if model_text.startswith(("gpt-", "o1", "o3", "o4")):
@@ -1176,13 +1201,15 @@ class DeepSeekDiagnoser:
         self, request_body: dict[str, Any]
     ) -> tuple[Optional[dict[str, Any]], Optional[str], Optional[str]]:
         model = str(request_body.get("model") or "").strip()
-        provider = self._infer_provider_from_model(model, fallback=self.provider)
+        provider = self._resolve_effective_provider(model=model, provider=self.provider)
         request_base_url = self._resolve_request_base_url(model=model, provider=provider)
         request_api_key = self._resolve_request_api_key(model=model, provider=provider, base_url=request_base_url)
-        if provider != "ollama" and not request_api_key:
+        if provider not in {"ollama", "codex"} and not request_api_key:
             return None, f"[{model}] missing api key", "api_key_missing"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
+                if provider == "codex":
+                    return await self._post_codex(client, model, request_body, request_base_url)
                 if provider in OPENAI_COMPATIBLE_PROVIDERS:
                     return await self._post_openai_compatible(client, provider, model, request_body, request_base_url, request_api_key)
                 if provider == "anthropic":
@@ -1212,6 +1239,37 @@ class DeepSeekDiagnoser:
         if isinstance(data, dict):
             return data, None, None
         return None, f"[{model}] invalid response payload", "invalid_payload"
+
+    async def _post_codex(
+        self,
+        client: httpx.AsyncClient,
+        model: str,
+        request_body: dict[str, Any],
+        base_url: str,
+    ) -> tuple[Optional[dict[str, Any]], Optional[str], Optional[str]]:
+        credential = self._load_codex_auth()
+        if not credential:
+            return None, f"[{model}] missing codex auth", "api_key_missing"
+        payload = self._build_codex_request(model=model, request_body=request_body)
+        endpoint = f"{base_url.rstrip('/')}/responses"
+        resp = await client.post(
+            endpoint,
+            headers={
+                "Authorization": f"Bearer {credential['access_token']}",
+                "ChatGPT-Account-ID": credential["account_id"],
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+                "originator": "codex_cli_rs",
+            },
+            json=payload,
+        )
+        if resp.status_code >= 400:
+            return self._http_error(model, resp)
+        text = resp.text
+        data = self._collect_codex_sse_response(text)
+        if data is None:
+            return None, f"[{model}] invalid codex response payload", "invalid_payload"
+        return data, None, None
 
     async def _post_anthropic(
         self,
@@ -1308,6 +1366,115 @@ class DeepSeekDiagnoser:
             code = "provider_unavailable"
         return None, f"[{model}] HTTP {resp.status_code}: {snippet[:220]}", code
 
+    def _codex_auth_path(self) -> Path:
+        explicit = str(os.getenv("CODEX_AUTH_PATH", "")).strip()
+        if explicit:
+            return Path(explicit).expanduser()
+        codex_home = str(os.getenv("CODEX_HOME", "")).strip()
+        if codex_home:
+            return Path(codex_home).expanduser() / "auth.json"
+        return Path.home() / ".codex" / "auth.json"
+
+    def _load_codex_auth(self) -> Optional[dict[str, str]]:
+        path = self._codex_auth_path()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
+        access_token = str(data.get("access_token") or tokens.get("access_token") or "").strip()
+        account_id = str(data.get("account_id") or tokens.get("account_id") or "").strip()
+        if not access_token or not account_id:
+            return None
+        return {"access_token": access_token, "account_id": account_id}
+
+    def _has_codex_auth(self) -> bool:
+        return self._load_codex_auth() is not None
+
+    def _build_codex_request(self, *, model: str, request_body: dict[str, Any]) -> dict[str, Any]:
+        messages = list(request_body.get("messages") or [])
+        instructions = ""
+        items: list[dict[str, Any]] = []
+        for item in messages:
+            role = str(item.get("role", "")).strip()
+            content = str(item.get("content", "")).strip()
+            if not content:
+                continue
+            if role == "system":
+                instructions = content
+                continue
+            if role in {"user", "assistant"}:
+                items.append({"role": role, "content": content})
+        return {
+            "model": model.removeprefix("codex/"),
+            "instructions": instructions or "You are a helpful assistant.",
+            "input": items,
+            "store": False,
+            "stream": True,
+            "reasoning": {
+                "effort": "medium",
+                "summary": "detailed",
+            },
+        }
+
+    def _collect_codex_sse_response(self, text: str) -> Optional[dict[str, Any]]:
+        completed: Optional[dict[str, Any]] = None
+        output_items: dict[int, dict[str, Any]] = {}
+        for payload in self._iter_codex_sse_events(text):
+            event_type = str(payload.get("type") or "").strip()
+            if event_type == "response.output_item.done":
+                try:
+                    idx = int(payload.get("output_index"))
+                    item = payload.get("item")
+                    if isinstance(item, dict):
+                        output_items[idx] = item
+                except Exception:
+                    continue
+            elif event_type == "response.completed":
+                response = payload.get("response")
+                if isinstance(response, dict):
+                    completed = response
+        if not completed:
+            return None
+        output = completed.get("output")
+        if isinstance(output, list) and output_items:
+            max_idx = max(output_items.keys())
+            while len(output) <= max_idx:
+                output.append(None)
+            for idx, item in output_items.items():
+                output[idx] = item
+        return completed
+
+    def _iter_codex_sse_events(self, text: str) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        data_lines: list[str] = []
+        for raw_line in str(text or "").splitlines():
+            line = raw_line.rstrip("\r")
+            if not line.strip():
+                if data_lines:
+                    payload_text = "\n".join(data_lines).strip()
+                    data_lines = []
+                    if payload_text and payload_text != "[DONE]":
+                        try:
+                            payload = json.loads(payload_text)
+                        except Exception:
+                            payload = None
+                        if isinstance(payload, dict):
+                            events.append(payload)
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+        if data_lines:
+            payload_text = "\n".join(data_lines).strip()
+            if payload_text and payload_text != "[DONE]":
+                try:
+                    payload = json.loads(payload_text)
+                except Exception:
+                    payload = None
+                if isinstance(payload, dict):
+                    events.append(payload)
+        return events
+
     def _normalize_model_candidates(self, values: list[str]) -> list[str]:
         out: list[str] = []
         seen: set[str] = set()
@@ -1326,6 +1493,7 @@ class DeepSeekDiagnoser:
         provider = self._infer_provider_from_model(preferred, fallback=self.provider)
         provider_defaults: dict[str, list[str]] = {
             "deepseek": ["deepseek-chat", "deepseek-reasoner"],
+            "codex": ["codex/gpt-5.4", "codex/gpt-5.3-codex", "codex/gpt-5.4-mini"],
             "openai": ["gpt-5.4", "gpt-5.3-codex", "gpt-4.1"],
             "anthropic": ["claude-3-7-sonnet-latest", "claude-3-5-sonnet-latest"],
             "gemini": ["gemini-2.5-pro", "gemini-2.5-flash"],
@@ -1340,17 +1508,19 @@ class DeepSeekDiagnoser:
         return self._normalize_model_candidates([preferred, *self.model_candidates, *fallback_defaults])
 
     def _resolve_request_base_url(self, *, model: str, provider: Optional[str] = None) -> str:
-        provider_name = self._infer_provider_from_model(model, fallback=provider or self.provider)
+        provider_name = self._resolve_effective_provider(model=model, provider=provider)
         configured = str(self.provider_base_urls.get(provider_name, "") or "").strip().rstrip("/")
         if configured:
             return configured
         return self.default_provider_base_urls.get(provider_name, self.default_base_url)
 
     def _resolve_request_api_key(self, *, model: str, provider: Optional[str] = None, base_url: str) -> str:
-        provider_name = self._infer_provider_from_model(model, fallback=provider or self.provider)
+        provider_name = self._resolve_effective_provider(model=model, provider=provider)
         current_base_url = str(base_url or "").strip().lower()
         if "nvidia.com" in current_base_url:
             return self.provider_api_keys.get("nvidia", "") or self.nvidia_api_key
+        if provider_name == "codex":
+            return ""
         if provider_name == "ollama":
             return self.provider_api_keys.get("ollama", "")
         if provider_name == "deepseek":
@@ -1358,6 +1528,14 @@ class DeepSeekDiagnoser:
         if provider_name == "nvidia":
             return self.provider_api_keys.get(provider_name, "") or self.nvidia_api_key
         return self.provider_api_keys.get(provider_name, "")
+
+    def _resolve_effective_provider(self, *, model: str, provider: Optional[str] = None) -> str:
+        provider_name = self._infer_provider_from_model(model, fallback=provider or self.provider)
+        model_text = str(model or "").strip().lower()
+        if provider_name == "openai" and model_text.startswith("gpt-5"):
+            if not self.provider_api_keys.get("openai", "").strip() and self._has_codex_auth():
+                return "codex"
+        return provider_name
 
     def _is_nvidia_model(self, model_text: str) -> bool:
         if not model_text:
@@ -1398,6 +1576,37 @@ class DeepSeekDiagnoser:
         )
 
     def _extract_content(self, data: dict[str, Any]) -> str:
+        try:
+            output = data["output"]
+            if isinstance(output, list):
+                text_parts: list[str] = []
+                for item in output:
+                    if not isinstance(item, dict):
+                        continue
+                    item_type = str(item.get("type", "")).strip()
+                    if item_type == "message":
+                        content = item.get("content")
+                        if isinstance(content, list):
+                            for chunk in content:
+                                if not isinstance(chunk, dict):
+                                    continue
+                                chunk_type = str(chunk.get("type", "")).strip()
+                                if chunk_type in {"output_text", "summary_text"}:
+                                    text = str(chunk.get("text", "")).strip()
+                                    if text:
+                                        text_parts.append(text)
+                    elif item_type == "reasoning":
+                        summary = item.get("summary")
+                        if isinstance(summary, list):
+                            for chunk in summary:
+                                if isinstance(chunk, dict):
+                                    text = str(chunk.get("text", "")).strip()
+                                    if text:
+                                        text_parts.append(text)
+                if text_parts:
+                    return "\n".join(text_parts).strip()
+        except Exception:
+            pass
         try:
             return str(data["choices"][0]["message"]["content"])
         except Exception:

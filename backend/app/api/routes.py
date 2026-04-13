@@ -74,6 +74,8 @@ from app.models.schemas import (
     OperationMode,
     SOPArchiveResponse,
     SOPArchiveEntryResponse,
+    SOPArchiveDecisionPoint,
+    SOPArchiveKeyStep,
     SOPExtractFromRunRequest,
     SOPListResponse,
     SOPPublishResponse,
@@ -577,6 +579,73 @@ def _normalize_command_templates(values) -> list[dict]:
     return rows
 
 
+_SOP_SPECIFIC_TEXT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bEth\d+(?:/\d+){1,2}\b", flags=re.IGNORECASE), "<接口>"),
+    (re.compile(r"\bEthernet\d+(?:/\d+){0,2}\b", flags=re.IGNORECASE), "<接口>"),
+    (re.compile(r"\bGigabitEthernet[\d/]+\b", flags=re.IGNORECASE), "<接口>"),
+    (re.compile(r"\bGE[\d/]+\b", flags=re.IGNORECASE), "<接口>"),
+    (re.compile(r"\bXGigabitEthernet[\d/]+\b", flags=re.IGNORECASE), "<接口>"),
+    (re.compile(r"\bLoopback\d+\b", flags=re.IGNORECASE), "<环回接口>"),
+    (re.compile(r"\bLo\d+\b", flags=re.IGNORECASE), "<环回接口>"),
+    (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}/\d{1,2}\b"), "<目标前缀>"),
+    (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "<IP>"),
+]
+
+
+def _contains_specific_sop_object(value: object) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return any(pattern.search(text) is not None for pattern, _replacement in _SOP_SPECIFIC_TEXT_PATTERNS)
+
+
+def _generalize_sop_text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    result = text
+    for pattern, replacement in _SOP_SPECIFIC_TEXT_PATTERNS:
+        result = pattern.sub(replacement, result)
+    result = re.sub(r"\s{2,}", " ", result).strip()
+    return result
+
+
+def _normalize_key_steps(values) -> list[dict]:
+    rows: list[dict] = []
+    for idx, item in enumerate(values or [], start=1):
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip() or f"关键步骤 {idx}"
+        goal = str(item.get("goal") or "").strip()
+        commands = _normalize_text_list(item.get("commands") or [])
+        expected_signals = _normalize_text_list(item.get("expected_signals") or item.get("expected_findings") or [])
+        if not goal and not commands:
+            continue
+        rows.append(
+            {
+                "step_no": int(item.get("step_no") or idx),
+                "title": _generalize_sop_text(title),
+                "goal": _generalize_sop_text(goal or title),
+                "commands": [_generalize_sop_text(command) for command in commands],
+                "expected_signals": [_generalize_sop_text(signal) for signal in expected_signals],
+            }
+        )
+    return rows
+
+
+def _normalize_decision_points(values) -> list[dict]:
+    rows: list[dict] = []
+    for item in values or []:
+        if not isinstance(item, dict):
+            continue
+        signal = str(item.get("signal") or "").strip()
+        meaning = str(item.get("meaning") or "").strip()
+        if not signal or not meaning:
+            continue
+        rows.append({"signal": _generalize_sop_text(signal), "meaning": _generalize_sop_text(meaning)})
+    return rows
+
+
 def _truncate_text(value: object, limit: int) -> str:
     text = str(value or "").strip()
     if len(text) <= limit:
@@ -690,23 +759,61 @@ def _build_sop_extract_payload(run_timeline: RunTimelineResponse) -> dict:
 
 
 def _normalize_sop_upsert_request(parsed: dict, *, source_run_id: str) -> SOPUpsertRequest:
+    specific_object_detected = False
+
+    def _generalize_and_track(value: object) -> str:
+        nonlocal specific_object_detected
+        original = str(value or "").strip()
+        if _contains_specific_sop_object(original):
+            specific_object_detected = True
+        return _generalize_sop_text(original)
+
+    topic_name = _generalize_sop_text(parsed.get("topic_name") or parsed.get("name") or "") or f"SOP主题-{source_run_id[:8]}"
+    topic_key = str(parsed.get("topic_key") or "").strip() or topic_name
+    existing_review_notes = _generalize_and_track(parsed.get("review_notes") or "")
+    review_notes_parts = [existing_review_notes] if existing_review_notes else []
+    name = _generalize_and_track(parsed.get("name") or "") or f"SOP-{source_run_id[:8]}"
+    summary = _generalize_and_track(parsed.get("summary") or "") or "由 AI 从历史会话提炼的 SOP 草稿"
+    usage_hint = _generalize_and_track(parsed.get("usage_hint") or "") or "调用前请人工审核适用条件和最小命令组。"
+    trigger_keywords = [_generalize_and_track(item) for item in _normalize_text_list(parsed.get("trigger_keywords") or [])]
+    version_signatures = [_generalize_and_track(item) for item in _normalize_text_list(parsed.get("version_signatures") or [])]
+    preconditions = [_generalize_and_track(item) for item in _normalize_text_list(parsed.get("preconditions") or [])]
+    anti_conditions = [_generalize_and_track(item) for item in _normalize_text_list(parsed.get("anti_conditions") or [])]
+    evidence_goals = [_generalize_and_track(item) for item in _normalize_text_list(parsed.get("evidence_goals") or [])]
+    key_steps = [SOPArchiveKeyStep.model_validate(item) for item in _normalize_key_steps(parsed.get("key_steps") or [])]
+    decision_points = [SOPArchiveDecisionPoint.model_validate(item) for item in _normalize_decision_points(parsed.get("decision_points") or [])]
+    command_templates = [
+        {
+            "vendor": str(item.get("vendor") or "generic").strip() or "generic",
+            "commands": [_generalize_and_track(command) for command in (item.get("commands") or [])],
+        }
+        for item in _normalize_command_templates(parsed.get("command_templates") or [])
+    ]
+    fallback_commands = [_generalize_and_track(item) for item in _normalize_text_list(parsed.get("fallback_commands") or [])]
+    expected_findings = [_generalize_and_track(item) for item in _normalize_text_list(parsed.get("expected_findings") or [])]
+    if specific_object_detected:
+        review_notes_parts.append("系统审查提示：原始 AI 提炼结果包含单次现场对象，已在入库前做占位符泛化，请人工确认是否仍具备广泛复用意义。")
     return SOPUpsertRequest(
-        name=str(parsed.get("name") or "").strip() or f"SOP-{source_run_id[:8]}",
-        summary=str(parsed.get("summary") or "").strip() or "由 AI 从历史会话提炼的 SOP 草稿",
-        usage_hint=str(parsed.get("usage_hint") or "").strip() or "调用前请人工审核适用条件和最小命令组。",
-        trigger_keywords=_normalize_text_list(parsed.get("trigger_keywords") or []),
+        topic_key=topic_key,
+        topic_name=topic_name,
+        name=name,
+        summary=summary,
+        usage_hint=usage_hint,
+        trigger_keywords=trigger_keywords,
         vendor_tags=_normalize_text_list(parsed.get("vendor_tags") or []),
-        version_signatures=_normalize_text_list(parsed.get("version_signatures") or []),
-        preconditions=_normalize_text_list(parsed.get("preconditions") or []),
-        anti_conditions=_normalize_text_list(parsed.get("anti_conditions") or []),
-        evidence_goals=_normalize_text_list(parsed.get("evidence_goals") or []),
-        command_templates=_normalize_command_templates(parsed.get("command_templates") or []),
-        fallback_commands=_normalize_text_list(parsed.get("fallback_commands") or []),
-        expected_findings=_normalize_text_list(parsed.get("expected_findings") or []),
+        version_signatures=version_signatures,
+        preconditions=preconditions,
+        anti_conditions=anti_conditions,
+        evidence_goals=evidence_goals,
+        key_steps=key_steps,
+        decision_points=decision_points,
+        command_templates=command_templates,
+        fallback_commands=fallback_commands,
+        expected_findings=expected_findings,
         source_run_ids=[source_run_id],
         generated_by_model=orchestrator.deepseek_diagnoser.status().get("active_model") or orchestrator.deepseek_diagnoser.status().get("model"),
         generated_by_prompt_version=SOP_EXTRACTION_PROMPT_VERSION,
-        review_notes=str(parsed.get("review_notes") or "").strip() or None,
+        review_notes=" ".join(part for part in review_notes_parts if part).strip() or None,
     )
 
 
@@ -777,11 +884,11 @@ async def extract_sop_from_run_api(
     )
     if not draft_payload:
         raise HTTPException(status_code=503, detail=orchestrator.deepseek_diagnoser.last_error or "LLM failed to extract SOP draft")
-    _, draft_count, published_count = sop_archive.source_run_counts(source_run_id)
-    version = max(1, draft_count + published_count + 1)
+    normalized = _normalize_sop_upsert_request(draft_payload, source_run_id=source_run_id)
+    version = sop_archive.store.next_version_for_topic(normalized.topic_key or normalized.name)
     record = sop_archive.upsert_record(
         make_id(),
-        _normalize_sop_upsert_request(draft_payload, source_run_id=source_run_id),
+        normalized,
         status=SOPStatus.draft,
         version=version,
     )

@@ -8,6 +8,8 @@ SEED_SOPS: tuple[SOPSeed, ...] = (
     SOPSeed(
         id="history_generic_forensics",
         name="历史故障通用取证",
+        topic_key="历史故障通用取证",
+        topic_name="历史故障通用取证",
         summary="用于上次/历史/闪断/间歇类问题，优先建议日志、告警、时间线类取证。",
         usage_hint=(
             "这是可选 SOP 档案，不会被系统自动执行。"
@@ -15,6 +17,14 @@ SEED_SOPS: tuple[SOPSeed, ...] = (
         ),
         trigger_keywords=("上次", "历史", "曾经", "闪断", "抖动", "间歇", "flap", "history", "last", "intermittent"),
         evidence_goals=("日志证据", "告警证据", "时间线证据"),
+        key_steps=(
+            (1, "建立时间锚点", "先确认设备当前时间，避免历史日志时间轴错位。", ("show clock", "display clock"), ("获得当前时间",)),
+            (2, "抓取历史日志", "优先读取日志与告警，确认是否存在可回溯的异常记录。", ("show logging | last 200", "display logbuffer", "display alarm active"), ("定位异常时间", "提取关联日志",)),
+        ),
+        decision_points=(
+            ("日志中存在明确异常时间点", "后续排查应围绕该时间点的接口、协议、告警链继续收窄。"),
+            ("日志为空或不可得", "不能直接下根因，需明确标注历史证据不足并转向当前状态取证。"),
+        ),
         command_templates=(
             ("generic", ("show clock", "display clock", "show logging | last 200", "display logbuffer", "display alarm active")),
         ),
@@ -23,6 +33,8 @@ SEED_SOPS: tuple[SOPSeed, ...] = (
     SOPSeed(
         id="history_ospf_flap",
         name="OSPF 历史抖动取证",
+        topic_key="OSPF 历史抖动取证",
+        topic_name="OSPF 历史抖动取证",
         summary="用于 OSPF 闪断/邻接抖动，优先查看协议日志、邻接变化和接口关联证据。",
         usage_hint=(
             "只有当用户问题明确涉及 OSPF 的历史抖动或上次故障时才考虑调用。"
@@ -31,6 +43,14 @@ SEED_SOPS: tuple[SOPSeed, ...] = (
         trigger_keywords=("ospf", "闪断", "抖动", "flap", "history", "last", "上次", "历史"),
         vendor_tags=("huawei", "arista"),
         evidence_goals=("协议事件日志", "邻接变化", "接口关联状态"),
+        key_steps=(
+            (1, "抓协议历史日志", "先确认 OSPF 是否出现过 down/up、邻接 flap 等记录。", ("display logbuffer | include OSPF|DOWN|UP", "show logging | include OSPF|ADJ|DOWN|UP"), ("出现 OSPF 事件",)),
+            (2, "确认当前邻接状态", "再检查当前邻接是否恢复，用于区分历史问题和当前问题。", ("display ospf peer", "show ip ospf neighbor"), ("当前邻接状态",)),
+        ),
+        decision_points=(
+            ("日志有 flap，但当前邻接正常", "更偏向历史抖动已恢复，应补链路或告警时间线证据。"),
+            ("日志无 flap 且当前邻接也异常", "说明更可能是当前持续性配置/链路问题。"),
+        ),
         command_templates=(
             ("huawei", ("display logbuffer | include OSPF|DOWN|UP", "display ospf peer", "display alarm active | include OSPF")),
             ("arista", ("show logging | include OSPF|ADJ|DOWN|UP", "show ip ospf neighbor", "show interfaces status")),
@@ -135,6 +155,7 @@ class SOPArchive:
         ]
         for item in matched:
             lines.append(f"- {item.id}: {item.name} (v{item.version})")
+            lines.append(f"  topic: {item.topic_name} [{item.topic_key}]")
             lines.append(f"  summary: {item.summary}")
             lines.append(f"  usage_hint: {item.usage_hint}")
             if item.preconditions:
@@ -143,6 +164,14 @@ class SOPArchive:
                 lines.append(f"  anti_conditions: {' ; '.join(item.anti_conditions)}")
             if item.evidence_goals:
                 lines.append(f"  evidence_goals: {' ; '.join(item.evidence_goals)}")
+            for step in item.key_steps:
+                lines.append(f"  key_step[{step.step_no}]: {step.title} -> {step.goal}")
+                if step.commands:
+                    lines.append(f"    commands: {' ; '.join(step.commands)}")
+                if step.expected_signals:
+                    lines.append(f"    expected_signals: {' ; '.join(step.expected_signals)}")
+            for decision in item.decision_points:
+                lines.append(f"  decision_point: {decision.signal} => {decision.meaning}")
             for template in item.command_templates:
                 lines.append(f"  template[{template.vendor}]: {' ; '.join(template.commands)}")
             if item.fallback_commands:

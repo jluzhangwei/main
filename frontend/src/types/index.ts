@@ -106,6 +106,7 @@ export type LLMStatus = {
   batch_execution_enabled?: boolean
   model_candidates?: string[]
   configured_providers?: string[]
+  codex_enabled?: boolean
   deepseek_enabled?: boolean
   nvidia_enabled?: boolean
   last_error?: string
@@ -122,6 +123,8 @@ export type LLMPromptPolicy = {
   model: string
   batch_execution_enabled?: boolean
   configured_providers?: string[]
+  codex_enabled?: boolean
+  deepseek_enabled?: boolean
   nvidia_enabled?: boolean
   prompts: Record<string, string>
 }
@@ -196,9 +199,26 @@ export type SOPArchiveCommandTemplate = {
   commands: string[]
 }
 
+export type SOPArchiveKeyStep = {
+  step_no: number
+  title: string
+  goal: string
+  commands: string[]
+  expected_signals: string[]
+}
+
+export type SOPArchiveDecisionPoint = {
+  signal: string
+  meaning: string
+}
+
 export type SOPArchiveEntry = {
   id: string
   status?: SOPStatus
+  topic_key: string
+  topic_name: string
+  parent_version_id?: string
+  is_current_published: boolean
   name: string
   summary: string
   usage_hint: string
@@ -208,6 +228,8 @@ export type SOPArchiveEntry = {
   preconditions: string[]
   anti_conditions: string[]
   evidence_goals: string[]
+  key_steps: SOPArchiveKeyStep[]
+  decision_points: SOPArchiveDecisionPoint[]
   command_templates: SOPArchiveCommandTemplate[]
   fallback_commands: string[]
   expected_findings: string[]
@@ -242,6 +264,9 @@ export type SOPExtractFromRunRequest = {
 }
 
 export type SOPUpsertRequest = {
+  topic_key?: string
+  topic_name?: string
+  parent_version_id?: string
   name: string
   summary: string
   usage_hint: string
@@ -251,6 +276,8 @@ export type SOPUpsertRequest = {
   preconditions: string[]
   anti_conditions: string[]
   evidence_goals: string[]
+  key_steps: SOPArchiveKeyStep[]
+  decision_points: SOPArchiveDecisionPoint[]
   command_templates: SOPArchiveCommandTemplate[]
   fallback_commands: string[]
   expected_findings: string[]

@@ -4,7 +4,7 @@ import json
 import pytest
 
 from app.models.schemas import CommandExecution, CommandStatus, DeviceProtocol, DeviceTarget, Evidence, RiskLevel, Session
-from app.services.deepseek_diagnoser import DeepSeekDiagnoser
+from app.services.deepseek_diagnoser import DeepSeekDiagnoser, SOP_EXTRACTION_SYSTEM_PROMPT
 
 
 class StubDiagnoser(DeepSeekDiagnoser):
@@ -111,6 +111,7 @@ def test_delete_saved_llm_config_removes_temp_file(tmp_path, monkeypatch):
     monkeypatch.setenv("NETOPS_LLM_CONFIG_PATH", str(config_path))
     monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-chat")
+    monkeypatch.setenv("CODEX_AUTH_PATH", str(tmp_path / "missing-codex-auth.json"))
 
     diagnoser = DeepSeekDiagnoser()
     diagnoser.configure(api_key="sk-persisted")
@@ -225,6 +226,101 @@ def test_loading_config_resets_legacy_cross_provider_base_url(tmp_path, monkeypa
     assert diagnoser.provider == "deepseek"
     assert diagnoser.base_url == "https://api.deepseek.com"
     assert diagnoser.nvidia_base_url == "https://integrate.api.nvidia.com/v1"
+
+
+def test_codex_auth_loader_supports_nested_tokens(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    auth_path = codex_home / "auth.json"
+    auth_path.write_text(
+        json.dumps(
+            {
+                "tokens": {
+                    "access_token": "codex-access",
+                    "account_id": "codex-account",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.delenv("CODEX_AUTH_PATH", raising=False)
+
+    diagnoser = DeepSeekDiagnoser()
+    loaded = diagnoser._load_codex_auth()
+
+    assert loaded == {"access_token": "codex-access", "account_id": "codex-account"}
+
+
+def test_gpt5_routes_to_codex_when_openai_key_absent_and_codex_auth_exists(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "codex-access", "account_id": "codex-account"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    diagnoser = DeepSeekDiagnoser()
+
+    assert diagnoser._resolve_effective_provider(model="gpt-5.4", provider="openai") == "codex"
+
+
+def test_gpt5_keeps_openai_when_openai_key_present(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "codex-access", "account_id": "codex-account"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+
+    diagnoser = DeepSeekDiagnoser()
+
+    assert diagnoser._resolve_effective_provider(model="gpt-5.4", provider="openai") == "openai"
+
+
+def test_extract_content_supports_codex_output_shape():
+    diagnoser = DeepSeekDiagnoser()
+    text = diagnoser._extract_content(
+        {
+            "output": [
+                {
+                    "type": "reasoning",
+                    "summary": [{"text": "thinking summary"}],
+                },
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "{\"decision\":\"final\"}"}],
+                },
+            ]
+        }
+    )
+    assert text == "thinking summary\n{\"decision\":\"final\"}"
+
+
+def test_collect_codex_sse_response_parses_completed_and_output_items():
+    diagnoser = DeepSeekDiagnoser()
+    body = """event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","content":[{"type":"output_text","text":"ready"}]}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.4","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}
+
+"""
+
+    data = diagnoser._collect_codex_sse_response(body)
+
+    assert data is not None
+    assert data["id"] == "resp_1"
+    assert data["output"][0]["content"][0]["text"] == "ready"
+
+
+def test_sop_extraction_prompt_discourages_single_incident_specific_objects():
+    assert "禁止将单次会话里的具体接口名" in SOP_EXTRACTION_SYSTEM_PROMPT
+    assert "<接口>" in SOP_EXTRACTION_SYSTEM_PROMPT
 
 
 def test_next_step_payload_trims_commands_and_long_outputs():
