@@ -642,8 +642,37 @@ class UnifiedRunService:
                     detail_payload={"final_summary": summary.model_dump(mode="json")},
                 )
             )
-        steps = self._dedupe_steps(self._sort_trace_steps(steps))
+        steps = self._finalize_instant_running_steps(self._dedupe_steps(self._sort_trace_steps(steps)), raw)
         return ServiceTraceResponse(session_id=session_id, steps=steps)
+
+    def _finalize_instant_running_steps(
+        self,
+        steps: list[ServiceTraceStep],
+        raw: JobTimelineResponse,
+    ) -> list[ServiceTraceStep]:
+        if self._enum_value(raw.job.status) not in {"completed", "failed", "cancelled"}:
+            return steps
+        finalized: list[ServiceTraceStep] = []
+        for step in steps:
+            if (
+                step.status == "running"
+                and step.step_type == "session_control"
+                and (
+                    step.title.startswith("阶段切换：")
+                    or step.title.endswith("开始设备采集")
+                    or step.title.endswith("开始执行命令组")
+                )
+            ):
+                detail_payload = dict(step.detail_payload or {})
+                if detail_payload.get("status") == "running":
+                    detail_payload["status"] = "succeeded"
+                detail = step.detail
+                if step.title.startswith("阶段切换：") and detail:
+                    detail = detail.replace("status=running", "status=succeeded")
+                finalized.append(step.model_copy(update={"status": "succeeded", "detail": detail, "detail_payload": detail_payload}))
+                continue
+            finalized.append(step)
+        return finalized
 
     def _build_native_trace_step(self, event: JobEvent, session_id: str) -> ServiceTraceStep | None:
         event_type = str(event.event_type or "").strip()

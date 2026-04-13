@@ -9,7 +9,8 @@ from fastapi.testclient import TestClient
 
 from app.api import routes
 from app.main import app
-from app.models.schemas import IncidentSummary
+from app.models.schemas import IncidentSummary, Job, JobDevice, JobEvent, JobPhase, JobStatus, JobTimelineResponse
+from app.services.unified_run_service import UnifiedRunService
 
 
 client = TestClient(app)
@@ -162,6 +163,31 @@ def _stream_run_events(run_id: str, *, timeout_chunks: int = 200) -> str:
             if index >= timeout_chunks:
                 break
         return "".join(chunks)
+
+
+def test_multi_trace_finalizes_instant_running_session_control_steps():
+    service = UnifiedRunService(routes.orchestrator.store, routes.orchestrator, routes.orchestrator_v2, routes.sop_archive)
+    job = Job(
+        id="job-running-history",
+        problem="check ospf state",
+        status=JobStatus.completed,
+        phase=JobPhase.conclude,
+        devices=[JobDevice(id="dev-1", host="192.0.2.10", protocol="ssh")],
+    )
+    timeline = JobTimelineResponse(
+        job=job,
+        events=[
+            JobEvent(job_id=job.id, seq_no=1, event_type="phase_changed", payload={"phase": "collect", "status": "running"}),
+            JobEvent(job_id=job.id, seq_no=2, event_type="device_collect_started", payload={"device_id": "dev-1", "host": "192.0.2.10"}),
+            JobEvent(job_id=job.id, seq_no=3, event_type="job_completed", payload={"mode": "diagnosis"}),
+        ],
+    )
+
+    trace = service._normalize_multi_trace(timeline)
+    statuses = {(step.title, step.status) for step in trace.steps}
+
+    assert ("阶段切换：采集", "succeeded") in statuses
+    assert ("[192.0.2.10] 开始设备采集", "succeeded") in statuses
 
 
 def test_api_runs_single_create_and_reject_pending_action():
