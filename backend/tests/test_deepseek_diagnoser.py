@@ -318,6 +318,23 @@ data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.4","
     assert data["output"][0]["content"][0]["text"] == "ready"
 
 
+def test_candidate_model_order_stays_within_same_provider():
+    diagnoser = DeepSeekDiagnoser()
+    diagnoser.model_candidates = [
+        "deepseek-chat",
+        "codex/gpt-5.3-codex",
+        "meta/llama-3.1-70b-instruct",
+        "deepseek-reasoner",
+    ]
+
+    ordered = diagnoser._candidate_model_order("deepseek-chat")
+
+    assert "deepseek-chat" in ordered
+    assert "deepseek-reasoner" in ordered
+    assert "codex/gpt-5.3-codex" not in ordered
+    assert "meta/llama-3.1-70b-instruct" not in ordered
+
+
 def test_sop_extraction_prompt_discourages_single_incident_specific_objects():
     assert "禁止将单次会话里的具体接口名" in SOP_EXTRACTION_SYSTEM_PROMPT
     assert "<接口>" in SOP_EXTRACTION_SYSTEM_PROMPT

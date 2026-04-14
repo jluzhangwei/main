@@ -692,6 +692,32 @@ def test_v2_empty_incidents_prefers_collection_failure_summary():
     assert "llm_timeout" in job.rca_result.recommendation
 
 
+def test_v2_collection_failure_summary_prefers_transport_advice_for_ssh_errors():
+    orchestrator = routes.orchestrator_v2
+    job = Job(
+        name="diag-job",
+        problem="检查 OSPF 状态",
+        mode=JobMode.diagnosis,
+        devices=[
+            JobDevice(
+                id="dev-1",
+                host="192.0.2.10",
+                protocol="ssh",
+                status="failed",
+                last_error="TCP connection to device failed",
+                vendor="arista",
+                platform="vEOS-lab",
+                version_signature="arista|veos-lab|4.32.4.1m",
+            )
+        ],
+    )
+
+    orchestrator._resolve_causal_graph_and_root(job)
+
+    assert job.rca_result is not None
+    assert "SSH/TCP" in job.rca_result.recommendation
+
+
 @pytest.mark.asyncio
 async def test_v2_correlate_skips_llm_refine_when_all_devices_failed_collection(monkeypatch):
     orchestrator = routes.orchestrator_v2

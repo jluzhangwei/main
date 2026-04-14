@@ -3000,6 +3000,25 @@ class JobV2Orchestrator:
             if failed_devices:
                 failed_hosts = "、".join(item.host for item in failed_devices[:4])
                 failure_samples = "；".join(str(item.last_error or "unknown_error").strip()[:120] for item in failed_devices[:2])
+                combined_errors = " ".join(str(item.last_error or "").strip().lower() for item in failed_devices)
+                if any(token in combined_errors for token in ("llm_timeout", "empty_response", "auth_error", "provider_http_error", "api key", "model")):
+                    recommendation = (
+                        f"建议先排查模型连通性、Key/端点配置与设备权限，再重试。最近错误：{failure_samples}"
+                        if prefer_zh
+                        else f"Check model connectivity, key/endpoint configuration, and device permissions before retrying. Recent errors: {failure_samples}"
+                    )
+                elif any(token in combined_errors for token in ("ssh", "tcp connection", "connection refused", "connection reset", "protocol banner", "timed out", "netmiko")):
+                    recommendation = (
+                        f"建议先排查设备 SSH/TCP 可达性、账号权限、会话上限与网络抖动，再重试。最近错误：{failure_samples}"
+                        if prefer_zh
+                        else f"Check device SSH/TCP reachability, credentials, session limits, and network stability before retrying. Recent errors: {failure_samples}"
+                    )
+                else:
+                    recommendation = (
+                        f"建议先检查设备连通性、会话权限与最近错误后重试。最近错误：{failure_samples}"
+                        if prefer_zh
+                        else f"Check device reachability, session permissions, and recent errors before retrying. Recent errors: {failure_samples}"
+                    )
                 base_root_cause = (
                     f"设备采集未完成，无法进入根因判断。失败设备：{failed_hosts}。"
                     if prefer_zh
@@ -3009,11 +3028,6 @@ class JobV2Orchestrator:
                     f"当前涉及设备 {len(job.devices)} 台，其中 {len(failed_devices)} 台采集失败。"
                     if prefer_zh
                     else f"{len(job.devices)} devices in scope, with {len(failed_devices)} collection failures."
-                )
-                recommendation = (
-                    f"建议先排查模型连通性、Key/端点配置与设备权限，再重试。最近错误：{failure_samples}"
-                    if prefer_zh
-                    else f"Check model connectivity, key/endpoint configuration, and device permissions before retrying. Recent errors: {failure_samples}"
                 )
                 job.rca_result = RCAResult(
                     job_id=job.id,

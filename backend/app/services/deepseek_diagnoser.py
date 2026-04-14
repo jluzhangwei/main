@@ -1509,7 +1509,12 @@ class DeepSeekDiagnoser:
             "ollama": ["llama3.1:8b", "qwen2.5:7b"],
         }
         fallback_defaults = provider_defaults.get(provider, ["deepseek-chat"])
-        return self._normalize_model_candidates([preferred, *self.model_candidates, *fallback_defaults])
+        provider_scoped_existing = [
+            item
+            for item in self.model_candidates
+            if self._resolve_effective_provider(model=item, provider=provider) == provider
+        ]
+        return self._normalize_model_candidates([preferred, *provider_scoped_existing, *fallback_defaults])
 
     def _resolve_request_base_url(self, *, model: str, provider: Optional[str] = None) -> str:
         provider_name = self._resolve_effective_provider(model=model, provider=provider)
