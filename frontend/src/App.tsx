@@ -9,6 +9,7 @@ import {
   approveRunActions,
   configureLlm,
   createRun,
+  getBackendHealth,
   deleteCommandCapability,
   deleteLlmConfig,
   deleteSop,
@@ -370,6 +371,8 @@ type SopTopicGroup = {
   archivedCount: number
 }
 
+type ServiceLampState = 'ok' | 'warn' | 'err' | 'idle'
+
 type TraceDetailSection = {
   key: string
   title: string
@@ -452,6 +455,9 @@ function App() {
   const [confirmingCommandId, setConfirmingCommandId] = useState<string | undefined>(undefined)
 
   const [llmStatus, setLlmStatus] = useState<LLMStatus | null>(null)
+  const [backendHealthStatus, setBackendHealthStatus] = useState<ServiceLampState>('idle')
+  const [llmServiceStatus, setLlmServiceStatus] = useState<ServiceLampState>('idle')
+  const [serviceMonitorUpdatedAt, setServiceMonitorUpdatedAt] = useState<string>('')
   const [llmPromptPolicy, setLlmPromptPolicy] = useState<LLMPromptPolicy | null>(null)
   const [llmVendorInput, setLlmVendorInput] = useState<LlmVendor>('deepseek')
   const [llmSettingsApiKeyInput, setLlmSettingsApiKeyInput] = useState('')
@@ -1484,6 +1490,41 @@ function App() {
       setBootstrapped(true)
     }
     void load()
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    let timer: number | undefined
+
+    const refreshMonitor = async () => {
+      const [healthResult, llmResult] = await Promise.allSettled([
+        getBackendHealth(),
+        getLlmStatus(),
+      ])
+      if (cancelled) return
+
+      if (healthResult.status === 'fulfilled' && healthResult.value?.status === 'ok') {
+        setBackendHealthStatus('ok')
+      } else {
+        setBackendHealthStatus('err')
+      }
+
+      if (llmResult.status === 'fulfilled') {
+        const status = llmResult.value
+        setLlmServiceStatus(status.enabled && !status.last_error ? 'ok' : status.enabled ? 'warn' : 'err')
+      } else {
+        setLlmServiceStatus('err')
+      }
+
+      setServiceMonitorUpdatedAt(new Date().toISOString())
+      timer = window.setTimeout(() => void refreshMonitor(), 10000)
+    }
+
+    void refreshMonitor()
+    return () => {
+      cancelled = true
+      if (timer) window.clearTimeout(timer)
+    }
   }, [])
 
   async function refreshPromptPolicy() {
@@ -3364,7 +3405,8 @@ function App() {
           </div>
         </div>
           <div className="brand-meta">
-          <span className={`status-chip ${llmStatus?.enabled ? 'ok' : 'warn'}`}>LLM {llmStatus?.enabled ? 'ON' : 'OFF'}</span>
+          <span className={`status-chip status-chip-strong ${backendHealthStatus === 'ok' ? 'ok' : 'err'}`}>后端 {backendHealthStatus === 'ok' ? 'ON' : 'OFF'}</span>
+          <span className={`status-chip status-chip-strong ${llmServiceStatus === 'ok' ? 'ok' : llmServiceStatus === 'warn' ? 'warn' : 'err'}`}>LLM {llmServiceStatus === 'ok' ? 'ON' : llmServiceStatus === 'warn' ? 'WARN' : 'OFF'}</span>
           <span className="status-chip">Mode {session?.operation_mode ? operationModeLabel(session.operation_mode) : '-'}</span>
           <span className="status-chip">Session {sessionReady ? 'READY' : 'IDLE'}</span>
         </div>

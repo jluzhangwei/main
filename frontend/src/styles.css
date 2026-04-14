@@ -114,6 +114,18 @@ h6 {
   background: rgba(169, 84, 6, 0.08);
 }
 
+.status-chip.err {
+  color: #b42318;
+  border-color: rgba(180, 35, 24, 0.28);
+  background: rgba(180, 35, 24, 0.08);
+}
+
+.status-chip.status-chip-strong {
+  min-height: 28px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .shell-body {
   min-height: 0;
   display: grid;
@@ -327,6 +339,62 @@ button.meta-pill.active {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 6px;
+}
+
+.service-monitor-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.service-monitor-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px 10px;
+}
+
+.service-monitor-card > div {
+  display: grid;
+  gap: 2px;
+}
+
+.service-monitor-card strong {
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.service-monitor-card span:last-child {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.service-monitor-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #9aa4b2;
+  box-shadow: 0 0 0 3px rgba(154, 164, 178, 0.12);
+  flex: 0 0 auto;
+}
+
+.service-monitor-card.ok .service-monitor-dot {
+  background: #1f9d57;
+  box-shadow: 0 0 0 3px rgba(31, 157, 87, 0.14);
+}
+
+.service-monitor-card.warn .service-monitor-dot {
+  background: #d68025;
+  box-shadow: 0 0 0 3px rgba(214, 128, 37, 0.14);
+}
+
+.service-monitor-card.err .service-monitor-dot {
+  background: #d92d20;
+  box-shadow: 0 0 0 3px rgba(217, 45, 32, 0.14);
 }
 
 .live-meta-item {

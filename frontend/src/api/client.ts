@@ -159,6 +159,14 @@ export async function getLlmStatus(): Promise<LLMStatus> {
   return res.json()
 }
 
+export async function getBackendHealth(): Promise<{ status: string }> {
+  const res = await fetch(apiUrl('/health'))
+  if (!res.ok) {
+    throw new Error('Failed to load backend health')
+  }
+  return res.json()
+}
+
 export async function configureLlm(input: {
   provider?: string
   apiKey?: string
