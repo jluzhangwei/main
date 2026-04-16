@@ -85,7 +85,7 @@ from app.models.schemas import (
     now_utc,
 )
 from app.services.exporter import export_timeline_markdown
-from app.services.deepseek_diagnoser import SOP_EXTRACTION_PROMPT_VERSION
+from app.services.llm_diagnoser import SOP_EXTRACTION_PROMPT_VERSION
 from app.services.job_orchestrator_v2 import JobV2Orchestrator
 from app.services.orchestrator import ConversationOrchestrator
 from app.services.sop_archive import SOPArchive
@@ -104,6 +104,9 @@ orchestrator_v2 = JobV2Orchestrator(
     store,
     allow_simulation=os.getenv("NETOPS_ALLOW_SIMULATION_FALLBACK", "0").strip().lower() in {"1", "true", "yes"},
 )
+# Use one shared LLM diagnoser instance for single-run and multi-run pipelines.
+# This keeps provider/model config and runtime health (last_error) consistent.
+orchestrator_v2.deepseek_diagnoser = orchestrator.deepseek_diagnoser
 sop_archive = SOPArchive()
 
 
@@ -1144,18 +1147,90 @@ async def post_run_message_api(
     actor: ApiKeyRecord = Depends(require_v2_permission("job.write")),
 ):
     kind, source_id = _parse_unified_run_id(run_id)
-    if kind != RunKind.single:
-        raise HTTPException(status_code=409, detail="run messages currently support single-device runs only")
-    if source_id not in store.sessions:
-        raise HTTPException(status_code=404, detail="Run not found")
+    content = str(req.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="message content is required")
+
+    if kind == RunKind.single:
+        if source_id not in store.sessions:
+            raise HTTPException(status_code=404, detail="Run not found")
+        await orchestrator_v2.append_audit(
+            actor=actor,
+            action="run.message",
+            resource=f"run:{run_id}",
+            status="ok",
+        )
+        generator = orchestrator.stream_message(source_id, content)
+        return StreamingResponse(generator, media_type="text/event-stream")
+
+    async with orchestrator_v2._state_lock:
+        source_job = orchestrator_v2._jobs.get(source_id)
+        if not source_job:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+    if source_job.status not in {JobStatus.completed, JobStatus.failed, JobStatus.cancelled}:
+        raise HTTPException(
+            status_code=409,
+            detail="multi-device run is active; wait for completion before sending a follow-up message",
+        )
+
+    followup_req = JobCreateRequest(
+        name=source_job.name,
+        problem=content,
+        mode=source_job.mode,
+        sop_enabled=bool(source_job.sop_enabled),
+        devices=[
+            JobDeviceRequest(
+                host=device.host,
+                name=device.name,
+                port=device.port,
+                protocol=device.protocol,
+                vendor=device.vendor,
+                username=device.username,
+                password=device.password,
+                jump_host=device.jump_host,
+                jump_port=device.jump_port,
+                jump_username=device.jump_username,
+                jump_password=device.jump_password,
+                api_token=device.api_token,
+                device_type=device.device_type,
+            )
+            for device in source_job.devices
+        ],
+        max_gap_seconds=source_job.max_gap_seconds,
+        topology_mode=source_job.topology_mode,
+        topology_edges=source_job.external_topology_edges or [],
+        max_device_concurrency=source_job.max_device_concurrency,
+        execution_policy=source_job.execution_policy,
+        webhook_url=source_job.webhook_url,
+        webhook_events=source_job.webhook_events or [],
+    )
+    created = await orchestrator_v2.create_job(
+        followup_req,
+        actor_key_id=actor.id,
+    )
+    followup_run_id = UnifiedRunService.multi_run_id(created.id)
+
     await orchestrator_v2.append_audit(
         actor=actor,
         action="run.message",
         resource=f"run:{run_id}",
         status="ok",
+        detail=f"multi_followup={followup_run_id}",
     )
-    generator = orchestrator.stream_message(source_id, req.content)
-    return StreamingResponse(generator, media_type="text/event-stream")
+
+    async def _multi_followup_stream():
+        payload = {
+            "run_id": followup_run_id,
+            "source_run_id": run_id,
+            "kind": "multi",
+            "accepted": True,
+        }
+        yield f"event: run_created\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        done = {"run_id": followup_run_id, "status": "accepted"}
+        yield f"event: completed\ndata: {json.dumps(done, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(_multi_followup_stream(), media_type="text/event-stream")
 
 
 @router_api.patch("/runs/{run_id}", response_model=RunResponse)

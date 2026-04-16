@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 import threading
 import time
 
@@ -139,8 +141,11 @@ class ScriptedDiagnoser:
 
 @pytest.fixture(autouse=True)
 def use_scripted_diagnoser(monkeypatch):
-    original = routes.orchestrator.deepseek_diagnoser
-    routes.orchestrator.deepseek_diagnoser = ScriptedDiagnoser()
+    original_single = routes.orchestrator.deepseek_diagnoser
+    original_multi = routes.orchestrator_v2.deepseek_diagnoser
+    scripted = ScriptedDiagnoser()
+    routes.orchestrator.deepseek_diagnoser = scripted
+    routes.orchestrator_v2.deepseek_diagnoser = scripted
 
     def _launch_single_run_task(session_id: str, problem: str):
         coro = routes._consume_single_run(session_id, problem)
@@ -155,7 +160,8 @@ def use_scripted_diagnoser(monkeypatch):
         lambda: [("版本探测", "show version"), ("接口摘要", "show ip interface brief"), ("权限探测", "show privilege")],
     )
     yield
-    routes.orchestrator.deepseek_diagnoser = original
+    routes.orchestrator.deepseek_diagnoser = original_single
+    routes.orchestrator_v2.deepseek_diagnoser = original_multi
 
 
 def _internal() -> dict[str, str]:
@@ -193,6 +199,10 @@ def _stream_run_events(run_id: str, *, timeout_chunks: int = 200) -> str:
             if index >= timeout_chunks:
                 break
         return "".join(chunks)
+
+
+def test_single_and_multi_share_same_diagnoser_instance():
+    assert routes.orchestrator_v2.deepseek_diagnoser is routes.orchestrator.deepseek_diagnoser
 
 
 def test_multi_trace_finalizes_instant_running_session_control_steps():
@@ -317,6 +327,50 @@ def test_api_runs_single_message_stream_uses_unified_run_endpoint():
     run = client.get(f"/api/runs/{run_id}", headers=_internal())
     assert run.status_code == 200, run.text
     assert run.json()["status"] == "waiting_approval"
+
+
+def test_api_runs_multi_message_stream_creates_followup_run():
+    created = client.post(
+        "/api/runs",
+        json={
+            "problem": "检查两台设备 OSPF 状态",
+            "automation_level": "assisted",
+            "operation_mode": "diagnosis",
+            "devices": [
+                {
+                    "host": "192.168.0.83",
+                    "protocol": "ssh",
+                    "vendor": "huawei",
+                },
+                {
+                    "host": "192.168.0.84",
+                    "protocol": "ssh",
+                    "vendor": "huawei",
+                },
+            ],
+        },
+        headers=_internal(),
+    )
+    assert created.status_code == 200, created.text
+    source_run_id = created.json()["id"]
+    completed = _wait_run_status(source_run_id, {"completed", "failed", "cancelled"})
+    assert completed.get("status") in {"completed", "failed", "cancelled"}
+
+    body = _stream_run_message(source_run_id, "继续排查邻接与路由发布关系")
+    assert "event: run_created" in body
+    assert "event: completed" in body
+
+    run_match = re.search(r'event: run_created\s+data: (\{.*\})', body)
+    assert run_match, body
+    payload = json.loads(run_match.group(1))
+    followup_run_id = payload.get("run_id")
+    assert isinstance(followup_run_id, str) and followup_run_id.startswith("run_m:")
+    assert payload.get("source_run_id") == source_run_id
+
+    followup = client.get(f"/api/runs/{followup_run_id}", headers=_internal())
+    assert followup.status_code == 200, followup.text
+    assert followup.json()["kind"] == "multi"
+    assert followup.json()["problem"] == "继续排查邻接与路由发布关系"
 
 
 def test_api_runs_single_patch_automation_and_credentials():
