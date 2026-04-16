@@ -273,6 +273,27 @@ def test_followup_question_replaces_previous_summary():
         routes.orchestrator.deepseek_diagnoser = original
 
 
+def test_followup_question_replaces_previous_assistant_final_message():
+    session_id = _create_session("assisted", "diagnosis")
+    original = routes.orchestrator.deepseek_diagnoser
+    routes.orchestrator.deepseek_diagnoser = FollowupSummaryDiagnoser()
+    try:
+        _stream_message(session_id, "先看 ospf 状态")
+        _stream_message(session_id, "现在改查 lldp 邻居")
+
+        timeline = client.get(f"/v1/sessions/{session_id}/timeline")
+        assert timeline.status_code == 200
+        data = timeline.json()
+
+        assistant_messages = [item["content"] for item in data["messages"] if item["role"] == "assistant"]
+        assert assistant_messages, "expected assistant final summary messages"
+        latest_assistant = assistant_messages[-1]
+        assert "现在改查 lldp 邻居" in latest_assistant
+        assert "先看 ospf 状态" not in latest_assistant
+    finally:
+        routes.orchestrator.deepseek_diagnoser = original
+
+
 def test_full_auto_session_executes_without_confirmation():
     session_id = _create_session("full_auto", "config")
     body = _stream_message(session_id, "请自动修复接口故障")
