@@ -11,7 +11,9 @@ from fastapi.testclient import TestClient
 
 from app.api import routes
 from app.main import app
-from app.models.schemas import IncidentSummary, Job, JobDevice, JobEvent, JobPhase, JobStatus, JobTimelineResponse, SOPStatus, SOPUpsertRequest
+from app.models.schemas import CommandExecution, CommandStatus, DeviceProtocol, DeviceTarget, IncidentSummary, Job, JobDevice, JobEvent, JobPhase, JobStatus, JobTimelineResponse, RiskLevel, SOPStatus, SOPUpsertRequest, SessionCreateRequest, SessionStatus
+from app.services.orchestrator import ConversationOrchestrator
+from app.services.store import InMemoryStore
 from app.services.unified_run_service import UnifiedRunService
 
 
@@ -203,6 +205,38 @@ def _stream_run_events(run_id: str, *, timeout_chunks: int = 200) -> str:
 
 def test_single_and_multi_share_same_diagnoser_instance():
     assert routes.orchestrator_v2.deepseek_diagnoser is routes.orchestrator.deepseek_diagnoser
+
+
+@pytest.mark.asyncio
+async def test_single_timeline_session_closes_when_rejection_has_effective_summary():
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    service = UnifiedRunService(store, orchestrator, routes.orchestrator_v2, routes.sop_archive)
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(host="192.0.2.10", protocol=DeviceProtocol.ssh),
+        )
+    )
+    store.add_command(
+        CommandExecution(
+            session_id=session.id,
+            step_no=1,
+            title="进入配置模式",
+            command="configure terminal",
+            adapter_type=DeviceProtocol.ssh,
+            risk_level=RiskLevel.high,
+            status=CommandStatus.rejected,
+            error="Rejected by operator",
+        )
+    )
+
+    payload = await service.get_timeline(UnifiedRunService.single_run_id(session.id))
+
+    assert payload.run.status == "failed"
+    assert payload.timeline.summary is not None
+    assert payload.timeline.summary.mode == "unavailable"
+    assert payload.timeline.session.status == SessionStatus.closed
 
 
 def test_multi_trace_finalizes_instant_running_session_control_steps():

@@ -2648,11 +2648,13 @@ function App() {
   }
 
   function buildMultiProblemStatement(userContent: string): string {
-    const recent = messages.slice(-8).map((item) => `${item.role === 'user' ? '用户' : item.role === 'assistant' ? 'AI' : '系统'}: ${item.content}`)
-    const summaryHint = summary ? `上轮结论: ${renderSummaryBrief(summary)}` : ''
-    const contextBlock = [summaryHint, ...recent].filter(Boolean).join('\n')
+    const priorUserContext = messages
+      .filter((item) => item.role === 'user')
+      .slice(-6)
+      .map((item) => `用户: ${item.content}`)
+    const contextBlock = priorUserContext.join('\n')
     if (!contextBlock) return userContent
-    return `当前用户请求: ${userContent}\n\n会话上下文:\n${contextBlock}`
+    return `当前用户请求: ${userContent}\n\n历史用户上下文（不含已完成结论）:\n${contextBlock}`
   }
 
   function buildMultiSessionDevices(config: MultiSessionConfig): Array<Record<string, unknown>> {
@@ -2755,6 +2757,7 @@ function App() {
     setMessages((prev) => [...prev, userMessage])
     setSelectedActivityKey(`msg:${userMessage.id}`)
     setBusy(true)
+    setSummary(undefined)
     setContinueExecutionState(null)
     try {
       const key = resolveV3ApiKey()
@@ -2807,6 +2810,7 @@ function App() {
     if (continueBaselineStepNo === undefined) {
       setContinueExecutionState(null)
     }
+    setSummary(undefined)
 
     const activeSessionId = session.id
     setResumedSessionId(activeSessionId)

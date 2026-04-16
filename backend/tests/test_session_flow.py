@@ -135,6 +135,37 @@ class ScriptedDiagnoser:
         }
 
 
+class FollowupSummaryDiagnoser(ScriptedDiagnoser):
+    async def propose_next_step(
+        self,
+        *,
+        session,
+        user_problem: str,
+        commands,
+        evidences,
+        iteration: int,
+        max_iterations: int,
+        conversation_history=None,
+    ):
+        if iteration == 1:
+            return {
+                "decision": "final",
+                "root_cause": f"summary for {user_problem}",
+                "impact_scope": "impact",
+                "recommendation": "next",
+                "confidence": 0.6,
+                "evidence_refs": [],
+            }
+        return {
+            "decision": "final",
+            "root_cause": f"summary for {user_problem}",
+            "impact_scope": "impact",
+            "recommendation": "next",
+            "confidence": 0.6,
+            "evidence_refs": [],
+        }
+
+
 @pytest.fixture(autouse=True)
 def use_scripted_diagnoser():
     original = routes.orchestrator.deepseek_diagnoser
@@ -218,6 +249,28 @@ def test_assisted_session_requires_confirmation_for_non_whitelisted_high_risk_co
     assert any(command["status"] == "succeeded" for command in data["commands"])
     assert any(command["status"] == "pending_confirm" for command in data["commands"])
     assert len(data["evidences"]) >= 1
+
+
+def test_followup_question_replaces_previous_summary():
+    session_id = _create_session("assisted", "diagnosis")
+    original = routes.orchestrator.deepseek_diagnoser
+    routes.orchestrator.deepseek_diagnoser = FollowupSummaryDiagnoser()
+    try:
+        first = _stream_message(session_id, "先看 ospf 状态")
+        assert "final_summary" in first
+        first_timeline = client.get(f"/v1/sessions/{session_id}/timeline")
+        assert first_timeline.status_code == 200
+        assert "先看 ospf 状态" in first_timeline.json()["summary"]["root_cause"]
+
+        second = _stream_message(session_id, "现在改查 lldp 邻居")
+        assert "final_summary" in second
+        second_timeline = client.get(f"/v1/sessions/{session_id}/timeline")
+        assert second_timeline.status_code == 200
+        summary = second_timeline.json()["summary"]["root_cause"]
+        assert "现在改查 lldp 邻居" in summary
+        assert "先看 ospf 状态" not in summary
+    finally:
+        routes.orchestrator.deepseek_diagnoser = original
 
 
 def test_full_auto_session_executes_without_confirmation():
