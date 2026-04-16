@@ -633,6 +633,35 @@ async def test_config_mode_allows_mutating_command_to_continue_policy_pipeline()
     assert target[0].constraint_source in {"full_auto_allow", "policy_allow", "default_allow"}
 
 
+@pytest.mark.asyncio
+async def test_rejecting_last_pending_confirmation_sets_unavailable_summary():
+    store = InMemoryStore()
+    orchestrator = ConversationOrchestrator(store)
+    orchestrator.deepseek_diagnoser = _SingleCommandDiagnoser("configure terminal")
+
+    session = store.create_session(
+        SessionCreateRequest(
+            device=DeviceTarget(host="10.0.0.34", protocol=DeviceProtocol.ssh),
+            automation_level=AutomationLevel.assisted,
+            operation_mode=OperationMode.config,
+        )
+    )
+
+    async for _ in orchestrator.stream_message(session.id, "配置模式执行配置命令"):
+        pass
+
+    pending = [cmd for cmd in store.list_commands(session.id) if cmd.status == CommandStatus.pending_confirm]
+    assert len(pending) == 1
+
+    result = await orchestrator.confirm_command(session.id, pending[0].id, ConfirmCommandRequest(approved=False))
+
+    assert result.status == CommandStatus.rejected
+    summary = store.get_summary(session.id)
+    assert summary is not None
+    assert summary.mode == "unavailable"
+    assert "人工拒绝" in summary.root_cause
+
+
 def test_recent_failed_plan_reason_detects_same_recent_failed_command():
     store = InMemoryStore()
     orchestrator = ConversationOrchestrator(store)

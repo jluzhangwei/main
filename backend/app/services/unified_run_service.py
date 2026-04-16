@@ -143,13 +143,33 @@ class UnifiedRunService:
         values = [item for item in values if item is not None]
         return max(values) if values else session.created_at
 
+    def _single_effective_summary(self, session_id: str) -> IncidentSummary | None:
+        summary = self.store.get_summary(session_id)
+        if summary is not None:
+            return summary
+        commands = self.store.list_commands(session_id)
+        pending = any(item.status == CommandStatus.pending_confirm for item in commands)
+        rejected = [item for item in commands if item.status == CommandStatus.rejected]
+        if pending or not rejected:
+            return None
+        if session_id in self.orchestrator._running_sessions:
+            return None
+        return IncidentSummary(
+            session_id=session_id,
+            mode="unavailable",
+            root_cause="高风险命令已被人工拒绝，本次变更演练未继续执行。",
+            impact_scope="未执行高风险变更，设备运行状态保持不变。",
+            recommendation="如需继续，请在确认变更窗口与目标接口后重新发起任务，或改用只读排查模式。",
+            confidence=1.0,
+        )
+
     def _single_run_status(self, session_id: str) -> RunStatus:
         latest_message = self.store.list_messages(session_id)[-1] if self.store.list_messages(session_id) else None
         if latest_message and latest_message.role == "system" and "手动停止" in latest_message.content:
             return RunStatus.cancelled
         if self._single_pending_leader_command_ids(session_id):
             return RunStatus.waiting_approval
-        summary = self.store.get_summary(session_id)
+        summary = self._single_effective_summary(session_id)
         if summary is not None:
             if summary.mode in {"error", "unavailable"}:
                 return RunStatus.failed
@@ -316,6 +336,7 @@ class UnifiedRunService:
             if source_id not in self.store.sessions:
                 raise KeyError(run_id)
             timeline = self.store.get_timeline(source_id)
+            timeline.summary = self._single_effective_summary(source_id)
             service_trace = self.store.get_service_trace(source_id)
             return RunTimelineResponse(
                 run=self.build_single_run_response(source_id),

@@ -51,7 +51,10 @@ class ConversationOrchestrator:
         self.sop_archive = SOPArchive()
         self.allow_simulation = allow_simulation
         self.max_autonomous_steps = int(os.getenv("AUTONOMOUS_MAX_STEPS", "8"))
-        default_llm_timeout = max(60.0, float(getattr(self.llm_diagnoser, "timeout", 30.0)) * 2 + 15.0)
+        # Keep single-run planning responsive. The diagnoser already has its own
+        # provider timeout, so the outer guard should be a modest cushion rather
+        # than a multi-minute wait that looks like a hung session in the UI.
+        default_llm_timeout = max(60.0, float(getattr(self.llm_diagnoser, "timeout", 30.0)) + 15.0)
         self.llm_plan_timeout = float(os.getenv("LLM_PLAN_TIMEOUT", str(default_llm_timeout)))
         self._session_adapters: dict[str, object] = {}
         self._trace_perf_started: dict[str, float] = {}
@@ -2773,6 +2776,8 @@ class ConversationOrchestrator:
         if not request.approved:
             command.status = CommandStatus.rejected
             command.error = "Rejected by operator"
+            command.completed_at = now_utc()
+            command.duration_ms = 0
             self.store.update_command(command)
             if command.batch_id:
                 for queued in self.store.list_commands(session_id):
@@ -2786,6 +2791,13 @@ class ConversationOrchestrator:
                         queued.completed_at = now_utc()
                         queued.duration_ms = 0
                         self.store.update_command(queued)
+            if not self._has_pending_confirmation(session_id):
+                summary = self._build_no_conclusion_summary(session_id)
+                summary.mode = "unavailable"
+                summary.root_cause = "高风险命令已被人工拒绝，本次变更演练未继续执行。"
+                summary.impact_scope = "未执行高风险变更，设备运行状态保持不变。"
+                summary.recommendation = "如需继续，请在确认变更窗口与目标接口后重新发起任务，或改用只读排查模式。"
+                self.store.set_summary(summary)
             return ConfirmCommandResponse(
                 command_id=command.id,
                 status=command.status,
