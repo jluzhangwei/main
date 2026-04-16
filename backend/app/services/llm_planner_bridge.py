@@ -83,6 +83,8 @@ class LLMPlannerBridge:
                 debug["timeout_seconds"] = float(timeout_seconds)
                 if planner_context is not None:
                     debug["planner_context"] = planner_context
+                if hasattr(diagnoser, "mark_runtime_health"):
+                    diagnoser.mark_runtime_health(error="llm_timeout", code="llm_timeout")
                 return None, debug
 
         return await _call()

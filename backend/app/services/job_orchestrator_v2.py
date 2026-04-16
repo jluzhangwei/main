@@ -63,7 +63,7 @@ from app.services.command_runtime import (
     apply_device_profile_to_job_device,
     parse_command_runtime,
 )
-from app.services.deepseek_diagnoser import DeepSeekDiagnoser
+from app.services.llm_diagnoser import LLMDiagnoser
 from app.services.llm_planner_bridge import LLMPlannerBridge
 from app.services.planner_signal_runtime import build_filter_capability_context, build_output_compaction_context
 from app.services.risk_engine import RiskEngine
@@ -79,10 +79,10 @@ class JobV2Orchestrator:
         self.store = store
         self.allow_simulation = allow_simulation
         self.risk_engine = RiskEngine()
-        self.deepseek_diagnoser = DeepSeekDiagnoser()
+        self.llm_diagnoser = LLMDiagnoser()
         self.llm_planner_bridge = LLMPlannerBridge()
         self.sop_archive = SOPArchive()
-        default_llm_timeout = getattr(self.deepseek_diagnoser, "timeout", 30.0)
+        default_llm_timeout = getattr(self.llm_diagnoser, "timeout", 30.0)
         self.llm_plan_timeout = float(os.getenv("LLM_PLAN_TIMEOUT", str(default_llm_timeout)))
 
         self._jobs: dict[str, Job] = {}
@@ -98,6 +98,14 @@ class JobV2Orchestrator:
         self._state_lock = asyncio.Lock()
         self._state_path = self._resolve_state_path()
         self._load_state()
+
+    @property
+    def deepseek_diagnoser(self):
+        return self.llm_diagnoser
+
+    @deepseek_diagnoser.setter
+    def deepseek_diagnoser(self, value):
+        self.llm_diagnoser = value
 
     def _resolve_state_path(self) -> Path:
         env = (os.getenv("NETOPS_V2_STATE_PATH") or "").strip()

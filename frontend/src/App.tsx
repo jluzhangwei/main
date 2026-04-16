@@ -5,6 +5,20 @@ import { AutomationLevelSelector } from './components/AutomationLevelSelector'
 import { DeviceForm } from './components/DeviceForm'
 import { TaskModeSelector } from './components/TaskModeSelector'
 import {
+  parseV2ActionGroupCommandId,
+  parseV2HistoryJobId,
+  resolveApprovalRunTarget,
+  resolveCurrentRuntimeRunId,
+  resolveHistorySnapshotRunId,
+  resolveStopRunId,
+  resolveUnifiedRunId,
+  supportsRunCredentialPatch,
+  toUnifiedMultiRunId,
+  toUnifiedSingleRunId,
+  toV2HistorySessionId,
+  type RunRuntimeKind,
+} from './runtime/runRuntime'
+import {
   archiveSop,
   approveRunActions,
   configureLlm,
@@ -44,7 +58,6 @@ import {
   updateCommandPolicy,
   updateRiskPolicy,
   updateRunCredentials,
-  updateRunAutomation,
   resetCommandCapability,
   updateRunSopMode,
 } from './api/client'
@@ -442,7 +455,7 @@ function App() {
   const [automationLevel, setAutomationLevel] = useState<AutomationLevel>('assisted')
   const [operationMode, setOperationMode] = useState<OperationMode>('diagnosis')
   const [session, setSession] = useState<SessionResponse | null>(null)
-  const [sessionRuntimeKind, setSessionRuntimeKind] = useState<'single' | 'multi'>('single')
+  const [sessionRuntimeKind, setSessionRuntimeKind] = useState<RunRuntimeKind>('single')
   const [multiSessionConfig, setMultiSessionConfig] = useState<MultiSessionConfig | null>(null)
   const [multiSessionActiveJobId, setMultiSessionActiveJobId] = useState<string | undefined>(undefined)
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -574,6 +587,20 @@ function App() {
   const multiJobAbortRef = useRef<{ aborted: boolean; jobId?: string } | null>(null)
 
   const sessionReady = useMemo(() => Boolean(session?.id), [session])
+  const isMultiRuntime = useMemo(() => sessionRuntimeKind === 'multi', [sessionRuntimeKind])
+  const hasActiveMultiRuntime = useMemo(
+    () => isMultiRuntime && Boolean(multiSessionActiveJobId),
+    [isMultiRuntime, multiSessionActiveJobId],
+  )
+  const currentRuntimeRunId = useMemo(
+    () => resolveCurrentRuntimeRunId({
+      session,
+      sessionRuntimeKind,
+      multiSessionActiveJobId,
+    }),
+    [session, sessionRuntimeKind, multiSessionActiveJobId],
+  )
+
   useEffect(() => {
     if (typeof session?.sop_enabled === 'boolean') {
       setSopModeEnabled(session.sop_enabled)
@@ -1408,28 +1435,10 @@ function App() {
 
   useEffect(() => {
     if (!session?.id) return
-    if (session.automation_level === automationLevel) return
-
-    let canceled = false
-
-    const syncAutomation = async () => {
-      try {
-        const updated = await updateRunAutomation(resolveV3ApiKey(), toUnifiedSingleRunId(session.id), automationLevel)
-        if (canceled) return
-        setSession(updated)
-        antMessage.success(`命令执行控制等级已切换为 ${automationLabel(updated.automation_level)}`)
-      } catch {
-        if (canceled) return
-        antMessage.error('命令执行控制等级切换失败，已恢复原设置')
-        setAutomationLevel(session.automation_level)
-      }
+    if (session.automation_level !== automationLevel) {
+      setAutomationLevel(session.automation_level)
     }
-
-    void syncAutomation()
-    return () => {
-      canceled = true
-    }
-  }, [automationLevel, session])
+  }, [session?.id, session?.automation_level])
 
   useEffect(() => {
     const loadPromptPolicy = async () => {
@@ -1511,7 +1520,7 @@ function App() {
 
       if (llmResult.status === 'fulfilled') {
         const status = llmResult.value
-        setLlmServiceStatus(status.enabled && !status.last_error ? 'ok' : status.enabled ? 'warn' : 'err')
+        setLlmServiceStatus(deriveLlmServiceLamp(status))
       } else {
         setLlmServiceStatus('err')
       }
@@ -2284,12 +2293,9 @@ function App() {
 
   async function handleToggleSopMode(enabled: boolean) {
     setSopModeEnabled(enabled)
-    if (!session?.id) return
-    const runId = sessionRuntimeKind === 'multi' && multiSessionActiveJobId
-      ? toUnifiedMultiRunId(multiSessionActiveJobId)
-      : toUnifiedSingleRunId(session.id)
+    if (!session?.id || !currentRuntimeRunId) return
     try {
-      const updated = await updateRunSopMode(resolveV3ApiKey(), runId, enabled)
+      const updated = await updateRunSopMode(resolveV3ApiKey(), currentRuntimeRunId, enabled)
       setSession((prev) => (prev ? { ...prev, sop_enabled: updated.sop_enabled } : prev))
       antMessage.success(`SOP 模式已${enabled ? '开启' : '关闭'}`)
       await refreshSessionHistory()
@@ -2792,7 +2798,7 @@ function App() {
       return
     }
 
-    if (sessionRuntimeKind === 'multi') {
+    if (isMultiRuntime) {
       await handleSendMulti(content)
       return
     }
@@ -2887,7 +2893,12 @@ function App() {
 
   async function handleStopCurrentSession() {
     if (!session?.id) return
-    if (sessionRuntimeKind === 'multi') {
+    const activeRunId = resolveStopRunId({
+      session,
+      sessionRuntimeKind,
+      multiSessionActiveJobId,
+    })
+    if (isMultiRuntime) {
       setStoppingSession(true)
       const activeJobId = multiSessionActiveJobId
       try {
@@ -2905,8 +2916,8 @@ function App() {
             created_at: new Date().toISOString(),
           },
         ])
-        if (activeJobId) {
-          await stopRun(resolveV3ApiKey(), toUnifiedMultiRunId(activeJobId))
+        if (activeJobId && activeRunId) {
+          await stopRun(resolveV3ApiKey(), activeRunId)
         }
         antMessage.success('当前多设备协同已停止')
       } catch (error) {
@@ -2922,7 +2933,9 @@ function App() {
       setBusy(false)
       setResumedSessionId(undefined)
       setContinueExecutionState(null)
-      await stopRun(resolveV3ApiKey(), toUnifiedSingleRunId(session.id))
+      if (activeRunId) {
+        await stopRun(resolveV3ApiKey(), activeRunId)
+      }
       await Promise.all([refreshTimeline(session.id), refreshServiceTrace(session.id)])
       setBusy(false)
       antMessage.success('当前会话已停止')
@@ -2944,6 +2957,8 @@ function App() {
       const targetHost = (hostHint || sessionDeviceAddress || '').trim()
       const cached = targetHost ? loadDeviceAuth(targetHost) : undefined
       if (
+        supportsRunCredentialPatch('single')
+        && (
         cached
         && (cached.username
           || cached.password
@@ -2951,6 +2966,7 @@ function App() {
           || cached.jump_username
           || cached.jump_password
           || cached.api_token)
+        )
       ) {
         try {
           await updateRunCredentials(resolveV3ApiKey(), toUnifiedSingleRunId(sessionId), {
@@ -3046,7 +3062,17 @@ function App() {
       setSelectedHistorySnapshotTrace([])
     }
     try {
-      const resolvedRunId = runId || (v2JobId ? toUnifiedMultiRunId(v2JobId) : toUnifiedSingleRunId(target))
+      const resolvedRunId = resolveHistorySnapshotRunId({
+        historyId: target,
+        explicitRunId: runId,
+        sessionHistory,
+        activeSessionId: session?.id,
+        sessionRuntimeKind,
+        multiSessionActiveJobId,
+      })
+      if (!resolvedRunId) {
+        throw new Error('未找到对应运行记录')
+      }
       const [data, traceData] = await Promise.all([
         buildTimelineSnapshotFromRun(resolvedRunId, target),
         getRunTrace(resolveV3ApiKey(), resolvedRunId),
@@ -3193,8 +3219,13 @@ function App() {
 
   async function handleConfirmCommandInline(commandId: string, approved: boolean) {
     if (!session?.id) return
-    const v2ActionGroupId = parseV2ActionGroupCommandId(commandId)
-    if (v2ActionGroupId && multiSessionActiveJobId) {
+    const approvalTarget = resolveApprovalRunTarget({
+      session,
+      commandId,
+      hasActiveMultiRuntime,
+      multiSessionActiveJobId,
+    })
+    if (approvalTarget?.kind === 'multi' && approvalTarget.actionGroupId) {
       setConfirmingCommandId(commandId)
       setBusy(true)
       try {
@@ -3203,17 +3234,17 @@ function App() {
         const actionIds = (pendingConfirmMeta?.commands || [])
           .map((item) => parseV2ActionGroupCommandId(item.id))
           .filter((item): item is string => Boolean(item))
-        const targetIds = actionIds.length > 0 ? actionIds : [v2ActionGroupId]
+        const targetIds = actionIds.length > 0 ? actionIds : [approvalTarget.actionGroupId]
         if (approved) {
-          await approveRunActions(key, toUnifiedMultiRunId(multiSessionActiveJobId), targetIds, 'workbench-confirm')
-          const state = await monitorMultiJobUntilPauseOrDone(multiSessionActiveJobId)
+          await approveRunActions(key, approvalTarget.runId, targetIds, 'workbench-confirm')
+          const state = await monitorMultiJobUntilPauseOrDone(multiSessionActiveJobId!)
           if (state === 'done' || state === 'stopped') {
             setMultiSessionActiveJobId(undefined)
           }
           antMessage.success(targetIds.length > 1 ? '已确认并执行命令组' : '已确认执行命令组')
         } else {
-          await rejectRunActions(key, toUnifiedMultiRunId(multiSessionActiveJobId), targetIds, 'workbench-reject')
-          const state = await monitorMultiJobUntilPauseOrDone(multiSessionActiveJobId)
+          await rejectRunActions(key, approvalTarget.runId, targetIds, 'workbench-reject')
+          const state = await monitorMultiJobUntilPauseOrDone(multiSessionActiveJobId!)
           if (state === 'done' || state === 'stopped') {
             setMultiSessionActiveJobId(undefined)
           }
@@ -3230,10 +3261,13 @@ function App() {
     }
     setConfirmingCommandId(commandId)
     try {
+      if (!approvalTarget) {
+        throw new Error('未找到对应运行记录')
+      }
       if (approved) {
-        await approveRunActions(resolveV3ApiKey(), toUnifiedSingleRunId(session.id), [commandId], 'workbench-confirm')
+        await approveRunActions(resolveV3ApiKey(), approvalTarget.runId, [commandId], 'workbench-confirm')
       } else {
-        await rejectRunActions(resolveV3ApiKey(), toUnifiedSingleRunId(session.id), [commandId], 'workbench-reject')
+        await rejectRunActions(resolveV3ApiKey(), approvalTarget.runId, [commandId], 'workbench-reject')
       }
       await Promise.all([refreshTimeline(), refreshServiceTrace()])
       if (approved) {
@@ -3404,9 +3438,14 @@ function App() {
             <p className="muted">AIOps Workbench</p>
           </div>
         </div>
-          <div className="brand-meta">
+        <div className="brand-meta">
           <span className={`status-chip status-chip-strong ${backendHealthStatus === 'ok' ? 'ok' : 'err'}`}>后端 {backendHealthStatus === 'ok' ? 'ON' : 'OFF'}</span>
-          <span className={`status-chip status-chip-strong ${llmServiceStatus === 'ok' ? 'ok' : llmServiceStatus === 'warn' ? 'warn' : 'err'}`}>LLM {llmServiceStatus === 'ok' ? 'ON' : llmServiceStatus === 'warn' ? 'WARN' : 'OFF'}</span>
+          <span
+            className={`status-chip status-chip-strong ${llmServiceStatus === 'ok' ? 'ok' : llmServiceStatus === 'warn' ? 'warn' : 'err'}`}
+            title={buildLlmStatusTooltip(llmStatus)}
+          >
+            LLM {llmServiceStatus === 'ok' ? 'ON' : llmServiceStatus === 'warn' ? 'WARN' : 'OFF'}
+          </span>
           <span className="status-chip">Mode {session?.operation_mode ? operationModeLabel(session.operation_mode) : '-'}</span>
           <span className="status-chip">Session {sessionReady ? 'READY' : 'IDLE'}</span>
         </div>
@@ -3760,7 +3799,7 @@ function App() {
                             || (
                               !busy
                               && !stoppingSession
-                              && !(sessionRuntimeKind === 'multi' && !!multiSessionActiveJobId)
+                              && !hasActiveMultiRuntime
                             )
                           }
                           loading={stoppingSession}
@@ -4055,7 +4094,12 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/runs' \\
                 <h3>连接控制</h3>
                 <p className="muted">统一入口：输入一个地址=单设备，多地址（逗号/空格/换行分隔）=多设备协同。</p>
                 <div className="control-card-stack">
-                  <AutomationLevelSelector className="control-card-tight" value={automationLevel} onChange={setAutomationLevel} />
+                  <AutomationLevelSelector
+                    className="control-card-tight"
+                    value={automationLevel}
+                    onChange={setAutomationLevel}
+                    disabled={false}
+                  />
                   <TaskModeSelector className="control-card-tight" value={operationMode} onChange={setOperationMode} />
                   <DeviceForm
                     className="control-card-tight"
@@ -6265,27 +6309,30 @@ function sleepMs(ms: number): Promise<void> {
   })
 }
 
-function resolveUnifiedRunId(options: {
-  targetId?: string
-  sessionHistory: HistorySessionItem[]
-  activeSessionId?: string
-  sessionRuntimeKind?: 'single' | 'multi'
-  multiSessionActiveJobId?: string
-}): string | undefined {
-  const sid = String(options.targetId || '').trim()
-  if (!sid) return undefined
-  const historyItem = options.sessionHistory.find((item) => item.id === sid)
-  if (historyItem?.run_id) return historyItem.run_id
-  const v2JobId = parseV2HistoryJobId(sid)
-  if (v2JobId) return toUnifiedMultiRunId(v2JobId)
-  if (
-    options.activeSessionId === sid
-    && options.sessionRuntimeKind === 'multi'
-    && options.multiSessionActiveJobId
-  ) {
-    return toUnifiedMultiRunId(options.multiSessionActiveJobId)
+function deriveLlmServiceLamp(status: LLMStatus | null): ServiceLampState {
+  if (!status?.enabled) return 'err'
+  if (status.last_error || status.last_error_code || status.unavailable_reason) return 'warn'
+  return 'ok'
+}
+
+function buildLlmStatusTooltip(status: LLMStatus | null): string {
+  if (!status) return 'LLM 状态未知'
+  const lines = [
+    `当前模型: ${status.active_model || status.model || '-'}`,
+  ]
+  if (status.provider) {
+    lines.push(`Provider: ${status.provider}`)
   }
-  return toUnifiedSingleRunId(sid)
+  if (status.last_error_code) {
+    lines.push(`最近错误代码: ${status.last_error_code}`)
+  }
+  if (status.last_error) {
+    lines.push(`最近错误: ${status.last_error}`)
+  }
+  if (status.unavailable_reason && status.unavailable_reason !== status.last_error_code) {
+    lines.push(`不可用原因: ${status.unavailable_reason}`)
+  }
+  return lines.join('\n')
 }
 
 function getMaxTraceSeqNo(traceSteps: ServiceTraceStep[]): number {
@@ -6316,24 +6363,6 @@ function mergeTraceSteps(current: ServiceTraceStep[], incoming: ServiceTraceStep
     }
     return leftSeq - rightSeq
   })
-}
-
-function toV2HistorySessionId(jobId: string): string {
-  return `v2job:${String(jobId || '').trim()}`
-}
-
-function toUnifiedSingleRunId(sessionId: string): string {
-  return `run_s:${String(sessionId || '').trim()}`
-}
-
-function toUnifiedMultiRunId(jobId: string): string {
-  return `run_m:${String(jobId || '').trim()}`
-}
-
-function parseV2HistoryJobId(historyId: string): string | undefined {
-  const value = String(historyId || '').trim()
-  if (!value.startsWith('v2job:')) return undefined
-  return value.slice('v2job:'.length).trim() || undefined
 }
 
 function mapRunToV2JobSummary(run: RunSummary): V2JobSummary {
@@ -6596,12 +6625,6 @@ function renderSopPromptPreview(input: Pick<SOPUpsertRequest, 'topic_name' | 'to
   }
   lines.push('若你决定调用某个SOP档案，请结合当前问题和设备版本，自主判断是否采用其中步骤或命令。')
   return lines.join('\n')
-}
-
-function parseV2ActionGroupCommandId(commandId: string): string | undefined {
-  const value = String(commandId || '').trim()
-  if (!value.startsWith('v2ag:')) return undefined
-  return value.slice(5).trim() || undefined
 }
 
 function splitHostsFromSnapshot(timeline: Timeline): string[] {

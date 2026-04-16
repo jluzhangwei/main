@@ -275,7 +275,7 @@ OPENAI_COMPATIBLE_PROVIDERS = {
 CODEX_DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
 
-class DeepSeekDiagnoser:
+class LLMDiagnoser:
     def __init__(self) -> None:
         self.default_base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip().rstrip("/")
         self.default_nvidia_base_url = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1").strip().rstrip("/")
@@ -736,6 +736,7 @@ class DeepSeekDiagnoser:
         }
         if not self.enabled:
             debug["error"] = "llm_disabled"
+            self.mark_runtime_health(error="llm_disabled", code="llm_disabled")
             return None, debug
 
         if conversation_history:
@@ -756,15 +757,18 @@ class DeepSeekDiagnoser:
             debug["raw_response"] = self._clip_trace_text(content, 200000)
             if not content:
                 debug["error"] = "empty_response"
+                self.mark_runtime_health(error="empty_response", code="empty_response")
                 return None, debug
             parsed = self._parse_json_object(content)
             if not parsed:
                 debug["error"] = "unparseable_json"
+                self.mark_runtime_health(error="unparseable_json", code="unparseable_json")
                 return None, debug
             decision = str(parsed.get("decision", "")).strip().lower()
             if decision not in {"run_command", "final"}:
                 debug["error"] = f"invalid_decision:{decision}"
                 debug["parsed_response"] = parsed
+                self.mark_runtime_health(error=debug["error"], code="invalid_decision")
                 return None, debug
             parsed["decision"] = decision
             promoted = self._promote_final_to_run_command_if_actionable(
@@ -776,6 +780,7 @@ class DeepSeekDiagnoser:
                 debug["promotion"] = promoted
                 parsed = promoted["plan"]
             debug["parsed_response"] = parsed
+            self.mark_runtime_health(error=None, code=None)
             return parsed, debug
 
         payload = self._build_next_step_payload(
@@ -798,16 +803,19 @@ class DeepSeekDiagnoser:
         debug["raw_response"] = self._clip_trace_text(content, 200000)
         if not content:
             debug["error"] = "empty_response"
+            self.mark_runtime_health(error="empty_response", code="empty_response")
             return None, debug
         parsed = self._parse_json_object(content)
         if not parsed:
             debug["error"] = "unparseable_json"
+            self.mark_runtime_health(error="unparseable_json", code="unparseable_json")
             return None, debug
 
         decision = str(parsed.get("decision", "")).strip().lower()
         if decision not in {"run_command", "final"}:
             debug["error"] = f"invalid_decision:{decision}"
             debug["parsed_response"] = parsed
+            self.mark_runtime_health(error=debug["error"], code="invalid_decision")
             return None, debug
         parsed["decision"] = decision
         promoted = self._promote_final_to_run_command_if_actionable(
@@ -819,6 +827,7 @@ class DeepSeekDiagnoser:
             debug["promotion"] = promoted
             parsed = promoted["plan"]
         debug["parsed_response"] = parsed
+        self.mark_runtime_health(error=None, code=None)
         return parsed, debug
 
     def _promote_final_to_run_command_if_actionable(
@@ -1569,6 +1578,14 @@ class DeepSeekDiagnoser:
             return self.last_error_code
         return None
 
+    def mark_runtime_health(self, *, error: str | None = None, code: str | None = None) -> None:
+        if error:
+            self.last_error = str(error)[:300]
+            self.last_error_code = str(code or "llm_runtime_error").strip() or "llm_runtime_error"
+            return
+        self.last_error = None
+        self.last_error_code = None
+
     def _next_step_prompt(self, *, with_history: bool) -> str:
         base = NEXT_STEP_SYSTEM_PROMPT_WITH_HISTORY if with_history else NEXT_STEP_SYSTEM_PROMPT
         if not self.batch_execution_enabled:
@@ -1691,3 +1708,8 @@ class DeepSeekDiagnoser:
             confidence=confidence,
             evidence_refs=evidence_refs,
         )
+
+
+# Backward-compatible alias while the rest of the codebase and tests finish
+# migrating away from provider-specific naming.
+DeepSeekDiagnoser = LLMDiagnoser

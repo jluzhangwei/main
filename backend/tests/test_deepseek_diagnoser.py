@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import pytest
 
 from app.models.schemas import CommandExecution, CommandStatus, DeviceProtocol, DeviceTarget, Evidence, RiskLevel, Session
-from app.services.deepseek_diagnoser import DeepSeekDiagnoser, SOP_EXTRACTION_SYSTEM_PROMPT
+from app.services.llm_diagnoser import DeepSeekDiagnoser, SOP_EXTRACTION_SYSTEM_PROMPT
+from app.services.llm_planner_bridge import LLMPlannerBridge
 
 
 class StubDiagnoser(DeepSeekDiagnoser):
@@ -132,7 +134,7 @@ def test_llm_config_migrates_from_legacy_temp_file(tmp_path, monkeypatch):
 
     monkeypatch.delenv("NETOPS_LLM_CONFIG_PATH", raising=False)
     monkeypatch.setenv("HOME", str(home_dir))
-    monkeypatch.setattr("app.services.deepseek_diagnoser.tempfile.gettempdir", lambda: str(legacy_tmp))
+    monkeypatch.setattr("app.services.llm_diagnoser.tempfile.gettempdir", lambda: str(legacy_tmp))
 
     legacy_path = legacy_tmp / "netops_ai_v1_llm_config.json"
     legacy_path.write_text(
@@ -411,3 +413,53 @@ def test_final_without_actionable_commands_is_not_promoted():
     }
     promoted = diagnoser._promote_final_to_run_command_if_actionable(plan, iteration=2, max_iterations=6)
     assert promoted is None
+
+
+@pytest.mark.asyncio
+async def test_planner_bridge_marks_timeout_in_runtime_health():
+    session, commands, evidences = _sample_session_bundle()
+
+    class TimeoutDiagnoser(DeepSeekDiagnoser):
+        def __init__(self):
+            super().__init__()
+            self.api_key = "stub-key"
+
+        async def propose_next_step_with_debug(self, **kwargs):
+            await asyncio.sleep(0.05)
+            return {"decision": "run_command", "command": "show version"}, {}
+
+    diagnoser = TimeoutDiagnoser()
+    bridge = LLMPlannerBridge()
+    plan, debug = await bridge.propose_next_step_with_debug(
+        diagnoser,
+        session=session,
+        user_problem="check interface",
+        commands=commands,
+        evidences=evidences,
+        iteration=1,
+        max_iterations=2,
+        timeout_seconds=0.01,
+    )
+
+    assert plan is None
+    assert debug["error"] == "llm_timeout"
+    assert diagnoser.last_error_code == "llm_timeout"
+
+
+@pytest.mark.asyncio
+async def test_empty_response_marks_runtime_health():
+    session, commands, evidences = _sample_session_bundle()
+    diagnoser = StubDiagnoser(responses=[""])
+
+    plan, debug = await diagnoser.propose_next_step_with_debug(
+        session=session,
+        user_problem="check interface",
+        commands=commands,
+        evidences=evidences,
+        iteration=1,
+        max_iterations=2,
+    )
+
+    assert plan is None
+    assert debug["error"] == "empty_response"
+    assert diagnoser.last_error_code == "empty_response"

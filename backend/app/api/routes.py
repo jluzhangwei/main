@@ -106,7 +106,7 @@ orchestrator_v2 = JobV2Orchestrator(
 )
 # Use one shared LLM diagnoser instance for single-run and multi-run pipelines.
 # This keeps provider/model config and runtime health (last_error) consistent.
-orchestrator_v2.deepseek_diagnoser = orchestrator.deepseek_diagnoser
+orchestrator_v2.llm_diagnoser = orchestrator.llm_diagnoser
 sop_archive = SOPArchive()
 
 
@@ -382,14 +382,14 @@ async def reset_risk_policy() -> RiskPolicy:
 
 @router.get("/llm/status", response_model=LLMConfigResponse)
 async def get_llm_status() -> LLMConfigResponse:
-    status = orchestrator.deepseek_diagnoser.status()
+    status = orchestrator.llm_diagnoser.status()
     return LLMConfigResponse(**status)
 
 
 @router.post("/llm/config", response_model=LLMConfigResponse)
 async def configure_llm(req: LLMConfigRequest) -> LLMConfigResponse:
     _call_with_supported_kwargs(
-        orchestrator.deepseek_diagnoser.configure,
+        orchestrator.llm_diagnoser.configure,
         provider=req.provider,
         api_key=req.api_key,
         nvidia_api_key=req.nvidia_api_key,
@@ -401,20 +401,20 @@ async def configure_llm(req: LLMConfigRequest) -> LLMConfigResponse:
         model_candidates=req.model_candidates,
         batch_execution_enabled=req.batch_execution_enabled,
     )
-    status = orchestrator.deepseek_diagnoser.status()
+    status = orchestrator.llm_diagnoser.status()
     return LLMConfigResponse(**status)
 
 
 @router.delete("/llm/config", response_model=LLMConfigResponse)
 async def delete_llm_config() -> LLMConfigResponse:
-    orchestrator.deepseek_diagnoser.delete_saved_config()
-    status = orchestrator.deepseek_diagnoser.status()
+    orchestrator.llm_diagnoser.delete_saved_config()
+    status = orchestrator.llm_diagnoser.status()
     return LLMConfigResponse(**status)
 
 
 @router.get("/llm/prompt-policy", response_model=LLMPromptPolicyResponse)
 async def get_llm_prompt_policy() -> LLMPromptPolicyResponse:
-    payload = orchestrator.deepseek_diagnoser.prompt_strategy()
+    payload = orchestrator.llm_diagnoser.prompt_strategy()
     runtime = orchestrator.prompt_runtime_policy()
     prompts = payload.get("prompts")
     if isinstance(prompts, dict):
@@ -829,7 +829,7 @@ def _normalize_sop_upsert_request(parsed: dict, *, source_run_id: str) -> SOPUps
         fallback_commands=fallback_commands,
         expected_findings=expected_findings,
         source_run_ids=[source_run_id],
-        generated_by_model=orchestrator.deepseek_diagnoser.status().get("active_model") or orchestrator.deepseek_diagnoser.status().get("model"),
+        generated_by_model=orchestrator.llm_diagnoser.status().get("active_model") or orchestrator.llm_diagnoser.status().get("model"),
         generated_by_prompt_version=SOP_EXTRACTION_PROMPT_VERSION,
         review_notes=" ".join(part for part in review_notes_parts if part).strip() or None,
     )
@@ -897,11 +897,11 @@ async def extract_sop_from_run_api(
         raise HTTPException(status_code=400, detail="cannot extract SOP without final conclusion/summary")
     if not run_timeline.timeline.commands or not run_timeline.timeline.evidences:
         raise HTTPException(status_code=400, detail="cannot extract SOP without commands and evidences")
-    draft_payload = await orchestrator.deepseek_diagnoser.extract_sop_draft(
+    draft_payload = await orchestrator.llm_diagnoser.extract_sop_draft(
         run_payload=_build_sop_extract_payload(run_timeline),
     )
     if not draft_payload:
-        raise HTTPException(status_code=503, detail=orchestrator.deepseek_diagnoser.last_error or "LLM failed to extract SOP draft")
+        raise HTTPException(status_code=503, detail=orchestrator.llm_diagnoser.last_error or "LLM failed to extract SOP draft")
     normalized = _normalize_sop_upsert_request(draft_payload, source_run_id=source_run_id)
     version = sop_archive.store.next_version_for_topic(normalized.topic_key or normalized.name)
     record = sop_archive.upsert_record(
@@ -1290,9 +1290,68 @@ async def patch_run_credentials_api(
     actor: ApiKeyRecord = Depends(require_v2_permission("job.write")),
 ) -> RunResponse:
     kind, source_id = _parse_unified_run_id(run_id)
-    if kind != RunKind.single:
-        raise HTTPException(status_code=409, detail="run credential patch currently supports single-device runs only")
-    _patch_single_session_credentials(source_id, req)
+    if kind == RunKind.single:
+        _patch_single_session_credentials(source_id, req)
+    else:
+        terminal = {JobStatus.completed, JobStatus.failed, JobStatus.cancelled}
+        async with orchestrator_v2._state_lock:
+            job = orchestrator_v2._jobs.get(source_id)
+            if not job:
+                raise HTTPException(status_code=404, detail="Run not found")
+            if job.status not in terminal:
+                raise HTTPException(
+                    status_code=409,
+                    detail="multi-device run is active; wait for completion before patching shared credentials",
+                )
+
+            updated_fields: list[str] = []
+
+            def _apply_if_present(field_name: str, value):
+                nonlocal updated_fields
+                if value is None:
+                    return
+                updated_fields.append(field_name)
+                for device in job.devices:
+                    if field_name in {"jump_port"}:
+                        setattr(device, field_name, int(value))
+                    else:
+                        setattr(device, field_name, str(value).strip() or None)
+
+            _apply_if_present("username", req.username)
+            _apply_if_present("password", req.password)
+            _apply_if_present("jump_host", req.jump_host)
+            _apply_if_present("jump_port", req.jump_port)
+            _apply_if_present("jump_username", req.jump_username)
+            _apply_if_present("jump_password", req.jump_password)
+            _apply_if_present("api_token", req.api_token)
+
+            if not updated_fields:
+                raise HTTPException(status_code=400, detail="no credential fields to update")
+
+            job.updated_at = now_utc()
+            orchestrator_v2._append_event_with_trace(
+                job,
+                "credentials_updated",
+                {
+                    "scope": "all_devices",
+                    "device_count": len(job.devices),
+                    "updated_fields": sorted(set(updated_fields)),
+                },
+                step_type="session_control",
+                title="更新多设备凭据",
+                status="succeeded",
+                detail=(
+                    f"scope=all_devices; updated={','.join(sorted(set(updated_fields)))}; "
+                    f"devices={len(job.devices)}"
+                ),
+                detail_payload={
+                    "scope": "all_devices",
+                    "device_count": len(job.devices),
+                    "updated_fields": sorted(set(updated_fields)),
+                },
+            )
+            orchestrator_v2._save_state()
+
     payload = await get_unified_runs_service().get_run(run_id)
     await orchestrator_v2.append_audit(
         actor=actor,

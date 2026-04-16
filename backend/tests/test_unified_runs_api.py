@@ -420,6 +420,60 @@ def test_api_runs_single_patch_automation_and_credentials():
     assert session.device.jump_username == "jumper"
 
 
+def test_api_runs_multi_patch_credentials_after_completion():
+    created = client.post(
+        "/api/runs",
+        json={
+            "problem": "查一下两台设备的关联异常",
+            "operation_mode": "diagnosis",
+            "automation_level": "assisted",
+            "devices": [
+                {
+                    "host": "192.168.0.83",
+                    "protocol": "ssh",
+                    "vendor": "huawei",
+                },
+                {
+                    "host": "192.168.0.84",
+                    "protocol": "ssh",
+                    "vendor": "huawei",
+                },
+            ],
+        },
+        headers=_internal(),
+    )
+    assert created.status_code == 200, created.text
+    run = created.json()
+    run_id = run["id"]
+    source_id = run["source_id"]
+
+    done = _wait_run_status(run_id, {"completed", "failed", "cancelled"})
+    assert done["status"] in {"completed", "failed", "cancelled"}
+
+    patched = client.patch(
+        f"/api/runs/{run_id}/credentials",
+        json={
+            "username": "ops-user",
+            "password": "ops-pass",
+            "jump_host": "10.0.0.10",
+            "jump_port": 2222,
+            "jump_username": "jump-user",
+        },
+        headers=_internal(),
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["kind"] == "multi"
+
+    job = routes.orchestrator_v2._jobs[source_id]
+    assert len(job.devices) == 2
+    for device in job.devices:
+        assert device.username == "ops-user"
+        assert device.password == "ops-pass"
+        assert device.jump_host == "10.0.0.10"
+        assert device.jump_port == 2222
+        assert device.jump_username == "jump-user"
+
+
 def test_api_runs_multi_create_list_and_timeline():
     payload = {
         "problem": "查一下两台设备的关联异常",

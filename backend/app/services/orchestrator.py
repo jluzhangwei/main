@@ -32,7 +32,7 @@ from app.services.command_runtime import (
 )
 from app.services.compound_command_runtime import run_compound_command_batch
 from app.services.adapter_runtime import close_connected_adapter, ensure_connected_adapter
-from app.services.deepseek_diagnoser import DeepSeekDiagnoser
+from app.services.llm_diagnoser import LLMDiagnoser
 from app.services.llm_planner_bridge import LLMPlannerBridge
 from app.services.planner_signal_runtime import build_filter_capability_context, build_output_compaction_context
 from app.services.risk_engine import RiskEngine
@@ -46,17 +46,25 @@ class ConversationOrchestrator:
         self.store = store
         self.risk_engine = RiskEngine()
         self.command_policy_engine = CommandPolicyEngine()
-        self.deepseek_diagnoser = DeepSeekDiagnoser()
+        self.llm_diagnoser = LLMDiagnoser()
         self.llm_planner_bridge = LLMPlannerBridge()
         self.sop_archive = SOPArchive()
         self.allow_simulation = allow_simulation
         self.max_autonomous_steps = int(os.getenv("AUTONOMOUS_MAX_STEPS", "8"))
-        default_llm_timeout = max(60.0, float(getattr(self.deepseek_diagnoser, "timeout", 30.0)) * 2 + 15.0)
+        default_llm_timeout = max(60.0, float(getattr(self.llm_diagnoser, "timeout", 30.0)) * 2 + 15.0)
         self.llm_plan_timeout = float(os.getenv("LLM_PLAN_TIMEOUT", str(default_llm_timeout)))
         self._session_adapters: dict[str, object] = {}
         self._trace_perf_started: dict[str, float] = {}
         self._stop_requested_sessions: set[str] = set()
         self._running_sessions: set[str] = set()
+
+    @property
+    def deepseek_diagnoser(self):
+        return self.llm_diagnoser
+
+    @deepseek_diagnoser.setter
+    def deepseek_diagnoser(self, value):
+        self.llm_diagnoser = value
 
     def prompt_runtime_policy(self) -> dict[str, str]:
         return {
