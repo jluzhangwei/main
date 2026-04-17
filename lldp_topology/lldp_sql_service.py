@@ -83,6 +83,7 @@ CLI_QUERY_JOB_LOCK = threading.Lock()
 CLI_QUERY_JOB_TTL_SEC = int(os.getenv("CLI_QUERY_JOB_TTL_SEC", "21600") or "21600")
 ZABBIX_URL_DEFAULT = ""
 ZABBIX_API_TOKEN_DEFAULT = ""
+NDMP_API_URL_DEFAULT = "https://space.shopee.io/apis/ndmp/v2/device_interface/query"
 
 
 class ZabbixConfigSaveRequest(BaseModel):
@@ -213,6 +214,17 @@ def zabbix_verify_ssl(verify_ssl_override: bool | None = None) -> bool:
     if "verify_ssl" in saved:
         return bool(saved.get("verify_ssl"))
     raw = get_env("ZABBIX_VERIFY_SSL", "false").lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def ndmp_api_url(url_override: str | None = None) -> str:
+    return str(url_override or get_env("NDMP_API_URL", NDMP_API_URL_DEFAULT)).strip()
+
+
+def ndmp_verify_ssl(verify_ssl_override: bool | None = None) -> bool:
+    if isinstance(verify_ssl_override, bool):
+        return verify_ssl_override
+    raw = get_env("NDMP_VERIFY_SSL", "false").lower()
     return raw in {"1", "true", "yes", "on"}
 
 
@@ -1836,6 +1848,17 @@ class CliQueryRequest(BaseModel):
     cli_command_timeout: int | None = None
 
 
+class NdmpQueryRequest(BaseModel):
+    device_hostname: str | None = None
+    device_ip: str | None = None
+    query_mode: str = Field(default="auto")
+    max_depth: int = Field(default=1, ge=1, le=3)
+    only_link_up: bool = True
+    timeout_seconds: int = Field(default=20, ge=3, le=120)
+    ndmp_url: str | None = None
+    verify_ssl: bool | None = None
+
+
 class LinkUtilTarget(BaseModel):
     source_device: str
     source_interface: str
@@ -2297,6 +2320,417 @@ def _zabbix_rpc(
     if last_exc:
         raise RuntimeError(str(last_exc))
     raise RuntimeError("Zabbix request failed: no valid API endpoint candidate")
+
+
+def _ndmp_pick(record: dict[str, Any], keys: list[str]) -> str:
+    for key in keys:
+        cur: Any = record
+        ok = True
+        for seg in key.split("."):
+            if isinstance(cur, dict):
+                cur = cur.get(seg)
+            else:
+                ok = False
+                break
+        if not ok or cur is None:
+            continue
+        txt = str(cur).strip()
+        if txt:
+            return txt
+    return ""
+
+
+def _extract_ndmp_interfaces(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [x for x in payload if isinstance(x, dict)]
+    if not isinstance(payload, dict):
+        return []
+
+    for key in ("device_interfaces", "interfaces", "rows", "items", "list", "result"):
+        val = payload.get(key)
+        if isinstance(val, list):
+            return [x for x in val if isinstance(x, dict)]
+
+    for key in ("data", "result", "payload"):
+        if key in payload:
+            out = _extract_ndmp_interfaces(payload.get(key))
+            if out:
+                return out
+    return []
+
+
+def _is_link_status_up(status: str) -> bool:
+    norm = re.sub(r"[\s_\-]+", "", str(status or "").strip().lower())
+    return norm in {"up", "true", "1", "connected", "linkup", "operup", "upup"}
+
+
+def _is_ndmp_not_found_error(err: str) -> bool:
+    low = str(err or "").strip().lower()
+    return ("not found" in low) and ("device " in low or " host " in low or "hostname" in low)
+
+
+def _build_ndmp_lldp_rows(
+    *,
+    response_body: Any,
+    query_value: str,
+    only_link_up: bool,
+    depth: int = 1,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    interfaces = _extract_ndmp_interfaces(response_body)
+    rows: list[dict[str, Any]] = []
+    skipped_by_status = 0
+    skipped_no_neighbor = 0
+    skipped_no_endpoint = 0
+
+    for item in interfaces:
+        if not isinstance(item, dict):
+            continue
+
+        link_status = _ndmp_pick(
+            item,
+            [
+                "link_status",
+                "oper_status",
+                "status",
+                "neighbor.link_status",
+                "neighbor.status",
+            ],
+        )
+        if only_link_up and link_status and not _is_link_status_up(link_status):
+            skipped_by_status += 1
+            continue
+
+        local_name = _ndmp_pick(
+            item,
+            [
+                "device_hostname",
+                "local_device_hostname",
+                "localhostname",
+                "hostname",
+                "device_name",
+                "neighbor.local_device_hostname",
+            ],
+        )
+        local_ip = _ndmp_pick(
+            item,
+            [
+                "device_ip",
+                "local_device_ip",
+                "ipaddr",
+                "sourceip",
+                "management_ip",
+                "mgmt_ip",
+                "neighbor.local_device_ip",
+            ],
+        )
+        local_if = _ndmp_pick(
+            item,
+            [
+                "interface_name",
+                "local_interface_name",
+                "localinterface",
+                "port_name",
+                "ifname",
+                "name",
+                "neighbor.local_interface_name",
+            ],
+        )
+
+        remote_name = _ndmp_pick(
+            item,
+            [
+                "neighbor_device_hostname",
+                "remote_device_hostname",
+                "lldp_neighbor_hostname",
+                "neighbor_hostname",
+                "peer_device_hostname",
+                "remotehostname",
+                "neighbor.device_hostname",
+                "neighbor.hostname",
+                "peer.hostname",
+            ],
+        )
+        remote_ip = _ndmp_pick(
+            item,
+            [
+                "neighbor_device_ip",
+                "remote_device_ip",
+                "lldp_neighbor_ip",
+                "neighbor_ip",
+                "peer_device_ip",
+                "remoteip",
+                "neighbor.device_ip",
+                "peer.device_ip",
+            ],
+        )
+        remote_if = _ndmp_pick(
+            item,
+            [
+                "neighbor_interface_name",
+                "remote_interface_name",
+                "lldp_neighbor_interface_name",
+                "lldp_neighbor_port",
+                "neighbor_interface",
+                "peer_interface_name",
+                "remoteinterface",
+                "neighbor.interface_name",
+                "peer.interface_name",
+            ],
+        )
+        remote_vendor = _ndmp_pick(
+            item,
+            [
+                "neighbor_vendor",
+                "neighbor_device_vendor",
+                "remote_vendor",
+                "peer_vendor",
+                "neighbor.vendor",
+            ],
+        )
+
+        local_node = local_name or local_ip or query_value
+        remote_node = remote_name or remote_ip
+
+        if not (remote_name or remote_ip or remote_if):
+            skipped_no_neighbor += 1
+            continue
+        if not (local_node and remote_node):
+            skipped_no_endpoint += 1
+            continue
+
+        src_ip = local_ip if _looks_like_ip(local_ip) else (local_node if _looks_like_ip(local_node) else "")
+        dst_ip = remote_ip if _looks_like_ip(remote_ip) else (remote_node if _looks_like_ip(remote_node) else "")
+        rows.append(
+            {
+                "depth": int(depth),
+                "localhostname": local_node,
+                "sourceip": src_ip,
+                "localinterface": local_if or "N/A",
+                "remotehostname": remote_node,
+                "remoteinterface": remote_if or "N/A",
+                "remotevendor": remote_vendor,
+                "remoteip": dst_ip,
+            }
+        )
+
+    return dedupe_lldp_rows(rows), {
+        "interface_count": len(interfaces),
+        "neighbor_interface_count": len(rows),
+        "skipped_by_status_count": skipped_by_status,
+        "skipped_no_neighbor_count": skipped_no_neighbor,
+        "skipped_no_endpoint_count": skipped_no_endpoint,
+    }
+
+
+def _ndmp_query_json(
+    *,
+    ndmp_url: str,
+    payload: dict[str, Any],
+    timeout_seconds: int,
+    ssl_ctx: ssl.SSLContext,
+) -> Any:
+    req = urllib.request.Request(
+        ndmp_url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=max(3, int(timeout_seconds)), context=ssl_ctx) as resp:
+            raw_text = resp.read().decode("utf-8", errors="ignore")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"NDMP HTTP {exc.code}: {detail or exc.reason}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"NDMP request failed: {exc}") from exc
+
+    if not raw_text.strip():
+        raise RuntimeError("NDMP 返回为空")
+    try:
+        return json.loads(raw_text)
+    except Exception as exc:
+        raise RuntimeError(f"NDMP 返回非 JSON：{exc}") from exc
+
+
+def _run_ndmp_lldp_query(
+    *,
+    query_value: str,
+    query_mode: str,
+    max_depth: int,
+    only_link_up: bool,
+    timeout_seconds: int,
+    ndmp_url_override: str | None = None,
+    verify_ssl_override: bool | None = None,
+) -> dict[str, Any]:
+    ndmp_url = ndmp_api_url(ndmp_url_override)
+    if not ndmp_url:
+        raise RuntimeError("Missing NDMP_API_URL")
+
+    mode = str(query_mode or "").strip().lower()
+    if mode not in {"auto", "device_hostname", "device_ip"}:
+        mode = "auto"
+    if mode == "auto":
+        mode = "device_ip" if _looks_like_ip(query_value) else "device_hostname"
+    depth_limit = min(3, max(1, int(max_depth or 1)))
+    ssl_ctx = ssl.create_default_context() if ndmp_verify_ssl(verify_ssl_override) else ssl._create_unverified_context()
+    started = time.perf_counter()
+
+    frontier: list[str] = [query_value]
+    visited_targets: set[str] = set()
+    all_rows: list[dict[str, Any]] = []
+    queried_devices: list[dict[str, Any]] = []
+    failed_queries: list[dict[str, Any]] = []
+    depth_summaries: list[dict[str, Any]] = []
+    total_interface_count = 0
+    total_neighbor_interface_count = 0
+    total_skipped_by_status_count = 0
+    total_skipped_no_neighbor_count = 0
+    total_skipped_no_endpoint_count = 0
+
+    for depth in range(1, depth_limit + 1):
+        current_targets: list[str] = []
+        current_keys: set[str] = set()
+        for target in frontier:
+            normalized = normalize_device_id(target)
+            if not normalized:
+                continue
+            key = normalized.lower()
+            if key in visited_targets or key in current_keys:
+                continue
+            current_keys.add(key)
+            current_targets.append(normalized)
+
+        if not current_targets:
+            break
+
+        next_frontier: list[str] = []
+        next_keys: set[str] = set()
+        depth_submitted = len(current_targets)
+        depth_succeeded = 0
+        depth_failed = 0
+        depth_interface_count = 0
+        depth_neighbor_rows = 0
+
+        for target in current_targets:
+            target_key = target.lower()
+            visited_targets.add(target_key)
+            payload_mode = mode if depth == 1 else ("device_ip" if _looks_like_ip(target) else "device_hostname")
+            payload: dict[str, Any] = {"device_ip": target} if payload_mode == "device_ip" else {"device_hostname": target}
+            try:
+                body = _ndmp_query_json(
+                    ndmp_url=ndmp_url,
+                    payload=payload,
+                    timeout_seconds=timeout_seconds,
+                    ssl_ctx=ssl_ctx,
+                )
+            except Exception as exc:
+                depth_failed += 1
+                failed_queries.append(
+                    {
+                        "depth": depth,
+                        "target": target,
+                        "query_mode": payload_mode,
+                        "error": str(exc),
+                    }
+                )
+                continue
+
+            depth_succeeded += 1
+            queried_devices.append({"depth": depth, "target": target, "query_mode": payload_mode})
+            rows, stats = _build_ndmp_lldp_rows(
+                response_body=body,
+                query_value=target,
+                only_link_up=bool(only_link_up),
+                depth=depth,
+            )
+            all_rows.extend(rows)
+
+            depth_interface_count += int(stats.get("interface_count", 0) or 0)
+            depth_neighbor_rows += int(stats.get("neighbor_interface_count", 0) or 0)
+            total_interface_count += int(stats.get("interface_count", 0) or 0)
+            total_neighbor_interface_count += int(stats.get("neighbor_interface_count", 0) or 0)
+            total_skipped_by_status_count += int(stats.get("skipped_by_status_count", 0) or 0)
+            total_skipped_no_neighbor_count += int(stats.get("skipped_no_neighbor_count", 0) or 0)
+            total_skipped_no_endpoint_count += int(stats.get("skipped_no_endpoint_count", 0) or 0)
+
+            if depth >= depth_limit:
+                continue
+
+            for row in rows:
+                candidate = str(row.get("remoteip", "") or "").strip()
+                if not _looks_like_ip(candidate):
+                    candidate = str(row.get("remotehostname", "") or "").strip()
+                candidate = normalize_device_id(candidate)
+                if not candidate:
+                    continue
+                ckey = candidate.lower()
+                if ckey in visited_targets or ckey in next_keys:
+                    continue
+                next_keys.add(ckey)
+                next_frontier.append(candidate)
+
+        depth_summaries.append(
+            {
+                "depth": depth,
+                "submitted": depth_submitted,
+                "succeeded": depth_succeeded,
+                "failed": depth_failed,
+                "next_targets": len(next_frontier),
+                "interface_count": depth_interface_count,
+                "neighbor_interface_count": depth_neighbor_rows,
+            }
+        )
+        frontier = next_frontier
+        if not frontier:
+            break
+
+    start_not_found = False
+    start_not_found_targets: list[str] = []
+    if not queried_devices and failed_queries:
+        only_not_found = all(_is_ndmp_not_found_error(str(item.get("error") or "")) for item in failed_queries)
+        if not only_not_found:
+            first = failed_queries[0]
+            raise RuntimeError(str(first.get("error") or "all NDMP queries failed"))
+        start_not_found = True
+        start_not_found_targets = sorted(
+            {
+                str(item.get("target") or "").strip()
+                for item in failed_queries
+                if str(item.get("target") or "").strip()
+            }
+        )
+
+    rows = dedupe_lldp_rows(all_rows)
+    safe_name, out_path, csv_text = write_rows_to_csv(
+        f"lldp_ndmp_{query_value.replace('/', '_').replace(' ', '_')}",
+        rows,
+    )
+    return {
+        "ok": True,
+        "mode": "ndmp",
+        "query_mode": mode,
+        "query_value": query_value,
+        "max_depth": depth_limit,
+        "only_link_up": bool(only_link_up),
+        "timeout_seconds": int(timeout_seconds),
+        "elapsed_seconds": max(0.0, time.perf_counter() - started),
+        "row_count": len(rows),
+        "queried_count": len(queried_devices),
+        "failed_count": len(failed_queries),
+        "queried_devices": queried_devices,
+        "failed_queries": failed_queries,
+        "depth_summaries": depth_summaries,
+        "start_not_found": start_not_found,
+        "start_not_found_targets": start_not_found_targets,
+        "temp_file": str(out_path),
+        "download_url": f"/api/lldp-csv/file/{safe_name}",
+        "csv_text": csv_text,
+        "interface_count": total_interface_count,
+        "neighbor_interface_count": total_neighbor_interface_count,
+        "skipped_by_status_count": total_skipped_by_status_count,
+        "skipped_no_neighbor_count": total_skipped_no_neighbor_count,
+        "skipped_no_endpoint_count": total_skipped_no_endpoint_count,
+    }
 
 
 def _normalize_units_multiplier(units: str, item_key: str = "") -> float:
@@ -4595,6 +5029,42 @@ def query_lldp_csv_via_cli(payload: CliQueryRequest) -> dict[str, Any]:
         "debug_download_url": f"/api/lldp-debug/file/{debug_safe_name}",
         "csv_text": csv_text,
     }
+
+
+@app.post("/api/ndmp/lldp-csv")
+def query_lldp_csv_via_ndmp(payload: NdmpQueryRequest) -> dict[str, Any]:
+    mode_raw = str(payload.query_mode or "auto").strip().lower()
+    if mode_raw in {"hostname", "device_hostname"}:
+        query_mode = "device_hostname"
+    elif mode_raw in {"ip", "device_ip"}:
+        query_mode = "device_ip"
+    else:
+        query_mode = "auto"
+
+    host = normalize_device_id(payload.device_hostname or "")
+    ip = normalize_device_id(payload.device_ip or "")
+    if query_mode == "device_hostname":
+        query_value = host or ip
+    elif query_mode == "device_ip":
+        query_value = ip or host
+    else:
+        query_value = ip if _looks_like_ip(ip) else host or ip
+    query_value = normalize_device_id(query_value)
+    if not query_value:
+        raise HTTPException(status_code=400, detail="device_hostname or device_ip is required")
+
+    try:
+        return _run_ndmp_lldp_query(
+            query_value=query_value,
+            query_mode=query_mode,
+            max_depth=int(payload.max_depth or 1),
+            only_link_up=bool(payload.only_link_up),
+            timeout_seconds=int(payload.timeout_seconds or 20),
+            ndmp_url_override=payload.ndmp_url,
+            verify_ssl_override=payload.verify_ssl,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"NDMP query failed: {exc}") from exc
 
 
 @app.post("/api/cli/link-utilization/tasks")

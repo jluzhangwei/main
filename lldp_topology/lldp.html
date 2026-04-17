@@ -393,6 +393,7 @@
           <label id="lblImportMode">导入方式</label>
           <select id="importMode">
             <option value="cli">CLI 导入</option>
+            <option value="ndmp">NDMP 导入</option>
             <option value="csv">CSV 导入</option>
             <option value="sql">SQL 导入</option>
             <option value="json">Json 导入</option>
@@ -790,6 +791,40 @@
         <button class="closeImportModalBtn">关闭</button>
       </div>
       <div class="hint" id="cliResultHintModal"></div>
+    </div>
+
+    <div id="importNdmpPanel" class="row hidden">
+      <div class="modal-form-grid">
+        <div class="field span-2">
+          <label>设备名称或IP</label>
+          <input id="ndmpDeviceInputModal" type="text" placeholder="例如：TW-TFN3-AOV-BO13U29-R023-AGGR-01 或 10.59.100.199" />
+        </div>
+        <div class="field">
+          <label>查询字段</label>
+          <select id="ndmpQueryModeModal">
+            <option value="auto">自动识别（推荐）</option>
+            <option value="hostname">device_hostname</option>
+            <option value="ip">device_ip</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>轮循次数（1-3）</label>
+          <input id="ndmpMaxDepthModal" type="number" min="1" max="3" step="1" value="1" />
+        </div>
+        <div class="field">
+          <label>请求超时（秒）</label>
+          <input id="ndmpTimeoutModal" type="number" min="3" max="120" step="1" value="20" />
+        </div>
+        <div class="field span-2">
+          <label><input id="ndmpOnlyUpModal" type="checkbox" checked style="width:auto; margin-right:8px;" />仅 link_status = up（取消勾选可查询非 up 历史状态）</label>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="runNdmpGenerateModal" class="primary">执行 NDMP 查询</button>
+        <button id="downloadNdmpCsvModal">下载临时 CSV</button>
+        <button class="closeImportModalBtn">关闭</button>
+      </div>
+      <div class="hint" id="ndmpResultHintModal"></div>
     </div>
 
     <div id="importCsvPanel" class="row hidden">
@@ -1266,6 +1301,8 @@
       btn_sql_config: 'SQL配置',
       btn_dl_sql_tmp: '下载临时 CSV',
       btn_run_cli: '执行 CLI 查询',
+      btn_run_ndmp: '执行 NDMP 查询',
+      btn_dl_ndmp_tmp: '下载临时 CSV',
       btn_cancel_query: '取消查询',
       btn_dl_cli_tmp: '导出临时 CSV',
       btn_pick_csv: '选择 CSV 文件',
@@ -1316,6 +1353,7 @@
       rollback_next: '恢复',
       import_mode_sql: 'SQL 导入',
       import_mode_cli: 'CLI 导入',
+      import_mode_ndmp: 'NDMP 导入',
       import_mode_csv: 'CSV 导入',
       import_mode_json: 'Json 导入',
       util_filter_active: '已启用利用率过滤：>= {threshold}%',
@@ -1423,6 +1461,8 @@
       btn_sql_config: 'SQL Config',
       btn_dl_sql_tmp: 'Download Temp CSV',
       btn_run_cli: 'Run CLI Query',
+      btn_run_ndmp: 'Run NDMP Query',
+      btn_dl_ndmp_tmp: 'Download Temp CSV',
       btn_cancel_query: 'Cancel Query',
       btn_dl_cli_tmp: 'Export Temp CSV',
       btn_pick_csv: 'Select CSV File',
@@ -1473,6 +1513,7 @@
       rollback_next: 'Redo',
       import_mode_sql: 'SQL Import',
       import_mode_cli: 'CLI Import',
+      import_mode_ndmp: 'NDMP Import',
       import_mode_csv: 'CSV Import',
       import_mode_json: 'Json Import',
       util_filter_active: 'Utilization filter active: >= {threshold}%',
@@ -1677,6 +1718,8 @@
     setText('openSqlConfigModal', 'btn_sql_config');
     setText('downloadSqlCsvModal', 'btn_dl_sql_tmp');
     setText('runCliGenerateModal', 'btn_run_cli');
+    setText('runNdmpGenerateModal', 'btn_run_ndmp');
+    setText('downloadNdmpCsvModal', 'btn_dl_ndmp_tmp');
     setText('cancelCliGenerateModal', 'btn_cancel_query');
     setText('downloadCliCsvModal', 'btn_dl_cli_tmp');
     setText('pickCsvModal', 'btn_pick_csv');
@@ -1731,6 +1774,7 @@
 
     setOptionText('importMode', 'sql', 'import_mode_sql');
     setOptionText('importMode', 'cli', 'import_mode_cli');
+    setOptionText('importMode', 'ndmp', 'import_mode_ndmp');
     setOptionText('importMode', 'csv', 'import_mode_csv');
     setOptionText('importMode', 'json', 'import_mode_json');
     setOptionText('nameClusterMode', 'on', 'on');
@@ -8053,6 +8097,7 @@
   let utilCacheLoadedAt = '';
   let importInputAction = 'import'; // import | append
   const CLI_PREF_KEY = 'lldp_cli_import_prefs_v1';
+  const NDMP_PREF_KEY = 'lldp_ndmp_import_prefs_v1';
   const TOPOLOGY_UI_PREF_KEY = 'lldp_topology_ui_prefs_v1';
   const NODE_COLOR_RECENT_KEY = 'lldp_node_color_recent_v1';
   const SQL_PREF_KEY = 'lldp_sql_prefs_v1';
@@ -8235,6 +8280,114 @@
     }
   }
 
+  async function runNdmpGenerateAndBuild(opts = {}) {
+    const action = String(opts.action || importInputAction || 'import').trim();
+    const input = String(opts.input != null ? opts.input : ($('ndmpDeviceInputModal')?.value || '')).trim();
+    const modeRaw = String(opts.queryMode != null ? opts.queryMode : ($('ndmpQueryModeModal')?.value || 'auto')).trim().toLowerCase();
+    const queryMode = (modeRaw === 'hostname' || modeRaw === 'device_hostname')
+      ? 'device_hostname'
+      : ((modeRaw === 'ip' || modeRaw === 'device_ip') ? 'device_ip' : 'auto');
+    const maxDepthRaw = parseInt(String(opts.maxDepth != null ? opts.maxDepth : ($('ndmpMaxDepthModal')?.value || '1')).trim(), 10);
+    const maxDepth = ctxAppendSingleHop
+      ? 1
+      : (Number.isFinite(maxDepthRaw) ? Math.min(3, Math.max(1, maxDepthRaw)) : 1);
+    const onlyLinkUp = (opts.onlyLinkUp != null) ? !!opts.onlyLinkUp : !!($('ndmpOnlyUpModal')?.checked);
+    const timeoutRaw = parseInt(String(opts.timeoutSeconds != null ? opts.timeoutSeconds : ($('ndmpTimeoutModal')?.value || '20')).trim(), 10);
+    const timeoutSeconds = Number.isFinite(timeoutRaw) ? Math.min(120, Math.max(3, timeoutRaw)) : 20;
+    if (!input) {
+      setErr('请先输入设备名称或IP');
+      return;
+    }
+
+    const reqPayload = {
+      query_mode: queryMode,
+      max_depth: maxDepth,
+      only_link_up: !!onlyLinkUp,
+      timeout_seconds: timeoutSeconds
+    };
+    if (queryMode === 'device_ip' || (queryMode === 'auto' && isIpv4(input))) reqPayload.device_ip = input;
+    else reqPayload.device_hostname = input;
+    saveNdmpPrefs({
+      device_input: input,
+      query_mode: queryMode,
+      max_depth: maxDepth,
+      only_link_up: !!onlyLinkUp,
+      timeout_seconds: timeoutSeconds
+    });
+
+    setErr('');
+    setOK('');
+    setStatus('NDMP 查询中...');
+    if ($('ndmpResultHintModal')) $('ndmpResultHintModal').textContent = '';
+    try {
+      const base = apiBaseUrl();
+      const startedAt = Date.now();
+      const resp = await fetch(`${base}/api/ndmp/lldp-csv`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(reqPayload)
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || !data?.ok) throw new Error(data?.detail || `HTTP ${resp.status}`);
+
+      lastSqlDownloadUrl = data.download_url ? `${base}${data.download_url}` : '';
+      const elapsedSec = Math.max(
+        Math.floor((Date.now() - startedAt) / 1000),
+        Math.floor(Number(data.elapsed_seconds || 0))
+      );
+      const hintParts = [
+        `NDMP 返回 ${data.row_count || 0} 行`,
+        `轮循 ${data.max_depth || maxDepth} 层`,
+        `查询设备 ${data.queried_count || 0}（失败 ${data.failed_count || 0}）`,
+        `接口 ${data.interface_count || 0}`,
+        `邻接接口 ${data.neighbor_interface_count || 0}`,
+        `状态过滤跳过 ${data.skipped_by_status_count || 0}`,
+        `耗时 ${elapsedSec}s`
+      ];
+      if ($('ndmpResultHintModal')) $('ndmpResultHintModal').textContent = hintParts.join('，');
+
+      let merged = { mergedRows: rawRows.length, addedRows: 0, replacedRows: 0 };
+      if (data.csv_text) {
+        merged = applyQueryCsvText(data.csv_text, {
+          append: action === 'append',
+          sourceName: 'ndmp',
+          restoreDeletedFromQuery: action === 'append'
+        });
+      }
+      if ((data.row_count || 0) > 0) {
+        if (action === 'append') {
+          setStatus('NDMP 数据已追加并生成拓扑');
+          setOK(`已完成 NDMP 追加：输入 ${input}，轮循 ${data.max_depth || maxDepth} 层，查询设备 ${data.queried_count || 0} 台，结果 ${data.row_count || 0} 行，新增 ${merged.addedRows} 行，覆盖 ${merged.replacedRows || 0} 行，当前总计 ${merged.mergedRows} 行。`);
+        } else {
+          setStatus('NDMP 数据已载入并生成拓扑');
+          setOK(`已完成 NDMP 导入：输入 ${input}，轮循 ${data.max_depth || maxDepth} 层，查询设备 ${data.queried_count || 0} 台，结果 ${data.row_count || 0} 行。`);
+        }
+      } else {
+        setStatus('NDMP 查询完成（无可用邻接）');
+        const suggest = onlyLinkUp ? '（可取消“仅 link_status = up”后重试）' : '';
+        const notFoundTargets = Array.isArray(data.start_not_found_targets) ? data.start_not_found_targets.filter(Boolean) : [];
+        if (data.start_not_found && notFoundTargets.length) {
+          setErr(`NDMP 未找到设备：${notFoundTargets.join(', ')}。建议改用 device_ip 或检查 CMDB/设备名。`);
+        }
+        setOK(`NDMP 查询完成：输入 ${input}，轮循 ${data.max_depth || maxDepth} 层，查询设备 ${data.queried_count || 0} 台，结果 0 行${suggest}`);
+      }
+
+      return {
+        ok: true,
+        rowCount: Number(data.row_count || 0),
+        mergedRows: Number(merged?.mergedRows || 0),
+        addedRows: Number(merged?.addedRows || 0),
+        replacedRows: Number(merged?.replacedRows || 0)
+      };
+    } catch (e) {
+      setStatus('NDMP 查询失败');
+      setErr(`NDMP 查询失败：${String(e && e.message ? e.message : e)}`);
+      throw e;
+    } finally {
+      ctxAppendSingleHop = false;
+    }
+  }
+
   function downloadLastSqlCsv() {
     if (!lastSqlDownloadUrl) {
       setErr('暂无可下载的 SQL 临时 CSV，请先执行一次 SQL 生成。');
@@ -8374,6 +8527,32 @@
     }
   }
 
+  function loadNdmpPrefs() {
+    try {
+      const raw = localStorage.getItem(NDMP_PREF_KEY);
+      if (!raw) return;
+      const p = JSON.parse(raw);
+      if (typeof p.device_input === 'string' && $('ndmpDeviceInputModal')) $('ndmpDeviceInputModal').value = p.device_input;
+      if (typeof p.query_mode === 'string' && $('ndmpQueryModeModal')) {
+        const v = p.query_mode.toLowerCase();
+        if (v === 'hostname' || v === 'device_hostname') $('ndmpQueryModeModal').value = 'hostname';
+        else if (v === 'ip' || v === 'device_ip') $('ndmpQueryModeModal').value = 'ip';
+        else $('ndmpQueryModeModal').value = 'auto';
+      }
+      if (typeof p.only_link_up === 'boolean' && $('ndmpOnlyUpModal')) $('ndmpOnlyUpModal').checked = p.only_link_up;
+      if (p.max_depth != null && $('ndmpMaxDepthModal')) {
+        const d = Number(p.max_depth);
+        if (Number.isFinite(d)) $('ndmpMaxDepthModal').value = String(Math.min(3, Math.max(1, Math.floor(d))));
+      }
+      if (p.timeout_seconds != null && $('ndmpTimeoutModal')) {
+        const n = Number(p.timeout_seconds);
+        if (Number.isFinite(n)) $('ndmpTimeoutModal').value = String(Math.min(120, Math.max(3, Math.floor(n))));
+      }
+    } catch (_) {
+      // Ignore local storage errors.
+    }
+  }
+
   async function loadSqlPrefs() {
     let hasLocal = false;
     try {
@@ -8489,11 +8668,31 @@
     }
   }
 
+  function saveNdmpPrefs(payload) {
+    try {
+      const modeRaw = String(payload.query_mode || 'auto').trim().toLowerCase();
+      const mode = (modeRaw === 'hostname' || modeRaw === 'device_hostname')
+        ? 'hostname'
+        : ((modeRaw === 'ip' || modeRaw === 'device_ip') ? 'ip' : 'auto');
+      const safe = {
+        device_input: String(payload.device_input || '').trim(),
+        query_mode: mode,
+        max_depth: Number(payload.max_depth || 1) || 1,
+        only_link_up: payload.only_link_up !== false,
+        timeout_seconds: Number(payload.timeout_seconds || 20) || 20
+      };
+      localStorage.setItem(NDMP_PREF_KEY, JSON.stringify(safe));
+    } catch (_) {
+      // Ignore local storage errors.
+    }
+  }
+
   async function clearConnectionPrefs() {
     if (!confirm('确认删除当前浏览器保存的连接配置？这会清空 SQL、CLI 与 Zabbix 的本地保存项。')) return;
     try {
       localStorage.removeItem(SQL_PREF_KEY);
       localStorage.removeItem(CLI_PREF_KEY);
+      localStorage.removeItem(NDMP_PREF_KEY);
     } catch (_) {
       // Ignore local storage errors.
     }
@@ -8511,6 +8710,11 @@
     if ($('cliPingPrecheckModal')) $('cliPingPrecheckModal').checked = false;
     if ($('cliConnectTimeoutModal')) $('cliConnectTimeoutModal').value = '15';
     if ($('cliCommandTimeoutModal')) $('cliCommandTimeoutModal').value = '45';
+    if ($('ndmpDeviceInputModal')) $('ndmpDeviceInputModal').value = '';
+    if ($('ndmpQueryModeModal')) $('ndmpQueryModeModal').value = 'auto';
+    if ($('ndmpMaxDepthModal')) $('ndmpMaxDepthModal').value = '1';
+    if ($('ndmpOnlyUpModal')) $('ndmpOnlyUpModal').checked = true;
+    if ($('ndmpTimeoutModal')) $('ndmpTimeoutModal').value = '20';
     if ($('zbxServerUrl')) $('zbxServerUrl').value = '';
     if ($('zbxApiToken')) $('zbxApiToken').value = '';
     if ($('zbxVerifySsl')) $('zbxVerifySsl').checked = false;
@@ -9196,13 +9400,16 @@
   function showImportPanel(mode) {
     const sql = $('importSqlPanel');
     const cli = $('importCliPanel');
+    const ndmp = $('importNdmpPanel');
     const csv = $('importCsvPanel');
-    if (!sql || !cli || !csv) return;
+    if (!sql || !cli || !csv || !ndmp) return;
     sql.classList.add('hidden');
     cli.classList.add('hidden');
+    ndmp.classList.add('hidden');
     csv.classList.add('hidden');
     if (mode === 'sql') sql.classList.remove('hidden');
     else if (mode === 'cli') cli.classList.remove('hidden');
+    else if (mode === 'ndmp') ndmp.classList.remove('hidden');
     else if (mode === 'csv') csv.classList.remove('hidden');
   }
 
@@ -9355,6 +9562,12 @@
     }
   });
   $('downloadSqlCsvModal').addEventListener('click', downloadLastSqlCsv);
+  $('runNdmpGenerateModal').addEventListener('click', async () => {
+    try {
+      await runNdmpGenerateAndBuild({ action: importInputAction });
+    } catch (_) {}
+  });
+  $('downloadNdmpCsvModal').addEventListener('click', downloadLastSqlCsv);
 
   async function runCliGenerateAndBuild(opts = {}) {
     const addr = String(opts.addr != null ? opts.addr : ($('cliDeviceAddrModal').value || '')).trim();
@@ -9569,6 +9782,7 @@
     if (e.target && e.target.id === 'importModal') closeImportModal();
   });
   loadCliPrefs();
+  loadNdmpPrefs();
   loadSqlPrefs();
   loadZbxPrefs();
   loadTopologyUiPrefs();
@@ -10476,13 +10690,33 @@
     return ip || fallbackIps[0] || label;
   }
 
+  function isNdmpNotFoundError(message) {
+    const m = String(message || '').toLowerCase();
+    return m.includes('ndmp') && m.includes('not found');
+  }
+
+  function resolveNdmpAppendTargetForNode(node, queryMode = 'auto') {
+    const mode = String(queryMode || 'auto').toLowerCase();
+    const label = String(node?.data('label') || '').trim();
+    const ip = resolveCliQueryTargetForNode(node);
+    const host = String(label || '').trim();
+    if (mode === 'device_ip' || mode === 'ip') {
+      return { target: ip || host, label: host, fallbackIp: ip || '', fallbackHost: host || '' };
+    }
+    if (mode === 'device_hostname' || mode === 'hostname') {
+      return { target: host || ip, label: host, fallbackIp: ip || '', fallbackHost: host || '' };
+    }
+    // auto mode: keep hostname first (current UX), fallback to IP on not-found.
+    return { target: host || ip, label: host, fallbackIp: ip || '', fallbackHost: host || '' };
+  }
+
   $('ctxAppendQuery').addEventListener('click', async () => {
     const nodes = ctxNodes().filter((n) => !n.data('isGroup'));
     if (!nodes.length) return hideCtx();
     const mode = ($('importMode')?.value || 'sql').toLowerCase();
 
-    if (mode === 'csv') {
-      setErr('CSV 模式不支持右键追加查询，请切换为 SQL 或 CLI。');
+    if (mode === 'csv' || mode === 'json') {
+      setErr('当前模式不支持右键追加查询，请切换为 SQL / CLI / NDMP。');
       return hideCtx();
     }
 
@@ -10524,6 +10758,74 @@
         }
       }
       setOK(`已完成 SQL 批量追加：选中 ${targets.length} 台，成功 ${okCount} 台，失败 ${failCount} 台，新增 ${addedRows} 行，覆盖 ${replacedRows} 行，当前总计 ${rawRows.length} 行。`);
+      return;
+    }
+
+    if (mode === 'ndmp') {
+      const ndmpModeRaw = String($('ndmpQueryModeModal')?.value || 'auto').trim().toLowerCase();
+      const ndmpMode = (ndmpModeRaw === 'hostname' || ndmpModeRaw === 'device_hostname')
+        ? 'device_hostname'
+        : ((ndmpModeRaw === 'ip' || ndmpModeRaw === 'device_ip') ? 'device_ip' : 'auto');
+      const targets = [];
+      const seen = new Set();
+      nodes.forEach((node) => {
+        const item = resolveNdmpAppendTargetForNode(node, ndmpMode);
+        const key = String(item.target || '').trim().toLowerCase();
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        targets.push(item);
+      });
+      if (!targets.length) {
+        setErr('当前选中节点没有可用于 NDMP 查询的设备名称/IP。');
+        return;
+      }
+      let okCount = 0;
+      let failCount = 0;
+      let fallbackIpCount = 0;
+      let addedRows = 0;
+      let replacedRows = 0;
+      for (let i = 0; i < targets.length; i++) {
+        const item = targets[i];
+        try {
+          ctxAppendSingleHop = true;
+          if ($('ndmpDeviceInputModal')) $('ndmpDeviceInputModal').value = item.target;
+          setOK(`正在以 NDMP 方式追加查询：${item.target}${item.target !== item.label ? `（节点：${item.label}）` : ''}${targets.length > 1 ? `（${i + 1}/${targets.length}）` : ''}`);
+          const result = await runNdmpGenerateAndBuild({
+            action: 'append',
+            input: item.target,
+            queryMode: ndmpMode,
+            maxDepth: 1
+          });
+          addedRows += Number(result?.addedRows || 0);
+          replacedRows += Number(result?.replacedRows || 0);
+          okCount += 1;
+          continue;
+        } catch (e) {
+          const msg = String(e && e.message ? e.message : e);
+          const canFallbackToIp = ndmpMode !== 'device_ip' && isIpv4(item.fallbackIp) && String(item.fallbackIp || '').trim().toLowerCase() !== String(item.target || '').trim().toLowerCase();
+          if (canFallbackToIp && isNdmpNotFoundError(msg)) {
+            try {
+              ctxAppendSingleHop = true;
+              if ($('ndmpDeviceInputModal')) $('ndmpDeviceInputModal').value = item.fallbackIp;
+              setOK(`NDMP 主机名未命中，改用 IP 追加查询：${item.fallbackIp}${targets.length > 1 ? `（${i + 1}/${targets.length}）` : ''}`);
+              const retry = await runNdmpGenerateAndBuild({
+                action: 'append',
+                input: item.fallbackIp,
+                queryMode: 'device_ip',
+                maxDepth: 1
+              });
+              addedRows += Number(retry?.addedRows || 0);
+              replacedRows += Number(retry?.replacedRows || 0);
+              okCount += 1;
+              fallbackIpCount += 1;
+              continue;
+            } catch (_) {}
+          }
+          failCount += 1;
+        }
+      }
+      const fallbackText = fallbackIpCount > 0 ? `，IP 回退成功 ${fallbackIpCount} 台` : '';
+      setOK(`已完成 NDMP 批量追加：选中 ${targets.length} 台，成功 ${okCount} 台，失败 ${failCount} 台${fallbackText}，新增 ${addedRows} 行，覆盖 ${replacedRows} 行，当前总计 ${rawRows.length} 行。`);
       return;
     }
 
