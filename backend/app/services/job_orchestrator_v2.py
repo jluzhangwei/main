@@ -747,6 +747,140 @@ class JobV2Orchestrator:
         self._tasks[job.id] = task
         return self._job_summary(job)
 
+    async def continue_job(
+        self,
+        job_id: str,
+        problem: str,
+        *,
+        actor_key_id: str | None = None,
+    ) -> JobResponse:
+        content = str(problem or "").strip()
+        if not content:
+            raise ValueError("problem is required")
+
+        async with self._state_lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            if not self._terminal(job.status):
+                raise ValueError("job is active")
+
+            job.problem = content
+            job.mode = self._job_mode_from_problem(content, fallback=job.mode)
+            job.status = JobStatus.queued
+            job.phase = JobPhase.collect
+            job.error = None
+            job.started_at = None
+            job.completed_at = None
+            job.updated_at = now_utc()
+            job.incidents = []
+            job.clusters = []
+            job.causal_edges = []
+            job.rca_result = None
+            job.action_groups = []
+            if actor_key_id:
+                job.requester_key_id = actor_key_id
+            for device in job.devices:
+                device.status = "pending"
+                device.last_error = None
+            self._append_trace_event(
+                job,
+                "user_input",
+                "接收用户追加请求",
+                status="succeeded",
+                detail=content[:280],
+                detail_payload={
+                    "user_input": content,
+                    "continued": True,
+                    "mode": job.mode.value,
+                    "device_count": len(job.devices),
+                },
+            )
+            self._append_event_with_trace(
+                job,
+                "job_continued",
+                {"job_id": job.id, "continued": True, "mode": job.mode.value},
+                step_type="session_control",
+                title="继续多设备协同任务",
+                status="succeeded",
+                detail=f"continued=true; mode={job.mode.value}",
+                detail_payload={"job_id": job.id, "continued": True, "mode": job.mode.value},
+                completed_at=job.updated_at,
+                duration_ms=0,
+            )
+            self._save_state()
+
+        task = asyncio.create_task(self._run_job(job_id), name=f"v2-job-{job_id}-continue")
+        self._tasks[job_id] = task
+        return self._job_summary(self._jobs[job_id])
+
+    async def continue_job(
+        self,
+        job_id: str,
+        problem: str,
+        *,
+        actor_key_id: str | None = None,
+    ) -> JobResponse:
+        content = str(problem or "").strip()
+        if not content:
+            raise ValueError("problem is required")
+
+        async with self._state_lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            if not self._terminal(job.status):
+                raise ValueError("job is active")
+
+            next_mode = self._job_mode_from_problem(content, fallback=job.mode)
+            job.problem = content
+            job.mode = next_mode
+            job.status = JobStatus.queued
+            job.phase = JobPhase.collect
+            job.error = None
+            job.started_at = None
+            job.completed_at = None
+            job.updated_at = now_utc()
+            job.incidents = []
+            job.clusters = []
+            job.causal_edges = []
+            job.rca_result = None
+            if actor_key_id:
+                job.requester_key_id = actor_key_id
+            for device in job.devices:
+                device.status = "pending"
+                device.last_error = None
+            self._append_trace_event(
+                job,
+                "user_input",
+                "接收用户追加请求",
+                status="succeeded",
+                detail=content[:280],
+                detail_payload={
+                    "user_input": content,
+                    "continued": True,
+                    "mode": job.mode.value,
+                    "device_count": len(job.devices),
+                },
+            )
+            self._append_event_with_trace(
+                job,
+                "job_continued",
+                {"job_id": job.id, "mode": job.mode.value, "continued": True},
+                step_type="session_control",
+                title="继续多设备协同任务",
+                status="succeeded",
+                detail=f"mode={job.mode.value}; continued=true",
+                detail_payload={"job_id": job.id, "mode": job.mode.value, "continued": True},
+                completed_at=job.updated_at,
+                duration_ms=0,
+            )
+            self._save_state()
+
+        task = asyncio.create_task(self._run_job(job_id), name=f"v2-job-{job_id}-continue")
+        self._tasks[job_id] = task
+        return self._job_summary(self._jobs[job_id])
+
     async def list_jobs(
         self,
         *,
@@ -3314,6 +3448,16 @@ class JobV2Orchestrator:
             return "status_check"
         return "generic"
 
+    def _job_mode_from_problem(self, problem: str, *, fallback: JobMode = JobMode.diagnosis) -> JobMode:
+        intent = self._infer_problem_intent(problem)
+        if intent == "repair":
+            return JobMode.repair
+        if intent == "status_check":
+            return JobMode.inspection
+        if intent in {"root_cause", "generic"}:
+            return JobMode.diagnosis if fallback != JobMode.repair else fallback
+        return fallback
+
     def _incident_matches_focus(self, incident: IncidentEvent, focus: str) -> bool:
         if focus == "generic":
             return True
@@ -4076,6 +4220,11 @@ class JobV2Orchestrator:
                         )
                     )
 
+        if not action_groups and job.mode == JobMode.repair:
+            action_groups = await self._generate_ai_repair_action_groups(job_id)
+
+        async with self._state_lock:
+            job = self._jobs[job_id]
             job.action_groups = action_groups
             if action_groups and any(item.status == JobActionGroupStatus.pending_approval for item in action_groups):
                 job.phase = JobPhase.approve
@@ -4152,6 +4301,183 @@ class JobV2Orchestrator:
                 "write memory",
             ],
         )
+
+    async def _generate_ai_repair_action_groups(self, job_id: str) -> list[JobActionGroup]:
+        async with self._state_lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return []
+            payload = self._build_llm_rca_payload(job)
+            devices = {str(item.host or "").strip(): item for item in job.devices if str(item.host or "").strip()}
+
+        prefer_zh = self._prefer_chinese_output(job.problem)
+        if prefer_zh:
+            system_prompt = (
+                "你是网络运维修复计划助手。"
+                "当前任务已经明确是配置/修复意图。"
+                "请严格基于当前多设备证据，输出一个 JSON 对象："
+                "{\"plans\":[{\"device_host\":\"...\",\"title\":\"...\",\"commands\":[...],\"rollback_commands\":[...]}]}。"
+                "只在证据足以支持修复动作时输出 plans；如果证据不足以安全下发配置，则返回空数组。"
+                "每个 plan 必须至少包含一条真正的配置变更命令，不能只给 show/display 只读命令。"
+                "commands 应包含最小必要的修复命令和必要的保存命令；rollback_commands 应给出最小回退命令。"
+                "禁止编造设备、接口或配置事实；若无法确认，就返回空 plans。"
+            )
+        else:
+            system_prompt = (
+                "You are a network repair planning assistant. "
+                "The task intent is explicit configuration/remediation. "
+                "Return strict JSON only: {\"plans\":[{\"device_host\":\"...\",\"title\":\"...\",\"commands\":[...],\"rollback_commands\":[...]}]}. "
+                "Only emit plans when the evidence is strong enough to support a repair action. "
+                "Each plan must contain at least one real mutating configuration command, not only show/display commands. "
+                "Include the minimal repair commands and rollback_commands. "
+                "Do not invent facts; if evidence is insufficient, return an empty plans array."
+            )
+
+        content = await self.deepseek_diagnoser._chat_completion(
+            system_prompt=system_prompt,
+            user_payload=payload,
+        )
+        if not content:
+            return []
+        parsed = self.deepseek_diagnoser._parse_json_object(content) or {}
+        plans = parsed.get("plans")
+        if not isinstance(plans, list):
+            return []
+
+        groups: list[JobActionGroup] = []
+        for item in plans:
+            if not isinstance(item, dict):
+                continue
+            host = str(item.get("device_host") or "").strip()
+            device = devices.get(host)
+            if device is None:
+                continue
+            commands = [str(cmd).strip() for cmd in (item.get("commands") or []) if str(cmd).strip()]
+            rollback_commands = [str(cmd).strip() for cmd in (item.get("rollback_commands") or []) if str(cmd).strip()]
+            if not commands or not any(self._looks_like_mutating_repair_command(command) for command in commands):
+                continue
+            risk_level = self._max_risk_level(commands)
+            groups.append(
+                JobActionGroup(
+                    job_id=job_id,
+                    device_id=device.id,
+                    title=str(item.get("title") or f"AI建议修复 {device.host}").strip() or f"AI建议修复 {device.host}",
+                    commands=commands[:8],
+                    risk_level=risk_level,
+                    requires_approval=True,
+                    rollback_commands=rollback_commands[:8],
+                    status=JobActionGroupStatus.pending_approval,
+                )
+            )
+        if groups:
+            return groups
+        return self._generate_interface_ip_repair_fallback(job_id)
+
+    def _looks_like_mutating_repair_command(self, command: str) -> bool:
+        normalized = " ".join(str(command or "").strip().lower().split())
+        if not normalized:
+            return False
+        keywords = (
+            "configure terminal",
+            "system-view",
+            "interface ",
+            "ip address ",
+            "undo shutdown",
+            "shutdown",
+            "ospf enable",
+            "ospf ",
+            "undo ospf",
+            "network ",
+            "area ",
+            "commit",
+            "save",
+            "write memory",
+        )
+        return any(token in normalized for token in keywords)
+
+    def _generate_interface_ip_repair_fallback(self, job_id: str) -> list[JobActionGroup]:
+        job = self._jobs.get(job_id)
+        if job is None:
+            return []
+
+        per_device_candidates: dict[str, list[str]] = {}
+        for evidence in job.evidences or []:
+            raw = str(evidence.raw_output or "")
+            if not raw:
+                continue
+            matches = re.findall(r"Interface:\s+0\.0\.0\.0\s+\(([^)]+)\)", raw, flags=re.IGNORECASE)
+            if matches:
+                per_device_candidates.setdefault(evidence.device_id, []).extend(matches)
+                continue
+            for line in raw.splitlines():
+                text = line.strip()
+                if not text:
+                    continue
+                if "unassigned" not in text.lower():
+                    continue
+                iface_match = re.match(r"^([A-Za-z][A-Za-z0-9/.\-]+)\s+", text)
+                if iface_match:
+                    per_device_candidates.setdefault(evidence.device_id, []).append(iface_match.group(1))
+
+        if len(per_device_candidates) < 2:
+            return []
+
+        groups: list[JobActionGroup] = []
+        subnet_base = 200
+        for index, device in enumerate(job.devices, start=1):
+            candidates = per_device_candidates.get(device.id) or []
+            if not candidates:
+                continue
+            interface_name = candidates[0]
+            ip_addr = f"192.168.{subnet_base}.{index}"
+            vendor = str(device.vendor or "").strip().lower()
+            if "huawei" in vendor:
+                commands = [
+                    "system-view",
+                    f"interface {interface_name}",
+                    f"ip address {ip_addr} 255.255.255.0",
+                    "ospf enable 1 area 0.0.0.0",
+                    "return",
+                    "save",
+                ]
+                rollback_commands = [
+                    "system-view",
+                    f"interface {interface_name}",
+                    "undo ospf enable 1 area 0.0.0.0",
+                    "undo ip address",
+                    "return",
+                    "save",
+                ]
+            else:
+                commands = [
+                    "configure terminal",
+                    f"interface {interface_name}",
+                    f"ip address {ip_addr}/24",
+                    "ip ospf area 0.0.0.0",
+                    "end",
+                    "write memory",
+                ]
+                rollback_commands = [
+                    "configure terminal",
+                    f"interface {interface_name}",
+                    "no ip ospf area 0.0.0.0",
+                    "no ip address",
+                    "end",
+                    "write memory",
+                ]
+            groups.append(
+                JobActionGroup(
+                    job_id=job.id,
+                    device_id=device.id,
+                    title=f"为 {device.host} 的 {interface_name} 配置互联 IP 并启用 OSPF",
+                    commands=commands,
+                    risk_level=RiskLevel.high,
+                    requires_approval=True,
+                    rollback_commands=rollback_commands,
+                    status=JobActionGroupStatus.pending_approval,
+                )
+            )
+        return groups if len(groups) >= 2 else []
 
     async def _resume_job_execution(self, job_id: str) -> None:
         async with self._state_lock:

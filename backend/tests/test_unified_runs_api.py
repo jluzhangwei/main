@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from app.api import routes
 from app.main import app
-from app.models.schemas import CommandExecution, CommandStatus, DeviceProtocol, DeviceTarget, IncidentSummary, Job, JobDevice, JobEvent, JobPhase, JobStatus, JobTimelineResponse, RiskLevel, SOPStatus, SOPUpsertRequest, SessionCreateRequest, SessionStatus
+from app.models.schemas import CommandExecution, CommandStatus, DeviceProtocol, DeviceTarget, IncidentSummary, Job, JobActionGroup, JobActionGroupStatus, JobDevice, JobEvent, JobPhase, JobStatus, JobTimelineResponse, RiskLevel, SOPStatus, SOPUpsertRequest, SessionCreateRequest, SessionStatus
 from app.services.orchestrator import ConversationOrchestrator
 from app.services.store import InMemoryStore
 from app.services.unified_run_service import UnifiedRunService
@@ -138,6 +138,28 @@ class ScriptedDiagnoser:
             "base_url": self.base_url,
             "model": self.model,
             "prompts": {},
+        }
+
+
+class FollowupSummaryDiagnoser(ScriptedDiagnoser):
+    async def propose_next_step(
+        self,
+        *,
+        session,
+        user_problem: str,
+        commands,
+        evidences,
+        iteration: int,
+        max_iterations: int,
+        conversation_history=None,
+    ):
+        return {
+            "decision": "final",
+            "root_cause": f"summary for {user_problem}",
+            "impact_scope": "impact",
+            "recommendation": "next",
+            "confidence": 0.5,
+            "evidence_refs": [],
         }
 
 
@@ -363,7 +385,54 @@ def test_api_runs_single_message_stream_uses_unified_run_endpoint():
     assert run.json()["status"] == "waiting_approval"
 
 
-def test_api_runs_multi_message_stream_creates_followup_run():
+def test_api_runs_single_followup_message_replaces_previous_summary():
+    original_single = routes.orchestrator.deepseek_diagnoser
+    original_multi = routes.orchestrator_v2.deepseek_diagnoser
+    followup = FollowupSummaryDiagnoser()
+    routes.orchestrator.deepseek_diagnoser = followup
+    routes.orchestrator_v2.deepseek_diagnoser = followup
+    try:
+        created = client.post(
+            "/api/runs",
+            json={
+                "automation_level": "assisted",
+                "operation_mode": "diagnosis",
+                "devices": [
+                    {
+                        "host": "192.168.0.88",
+                        "protocol": "ssh",
+                        "vendor": "huawei_like",
+                    }
+                ],
+            },
+            headers=_internal(),
+        )
+        assert created.status_code == 200, created.text
+        run_id = created.json()["id"]
+
+        first = _stream_run_message(run_id, "先看 ospf 状态")
+        assert "final_summary" in first
+        first_timeline = client.get(f"/api/runs/{run_id}/timeline", headers=_internal())
+        assert first_timeline.status_code == 200, first_timeline.text
+        assert "先看 ospf 状态" in first_timeline.json()["timeline"]["summary"]["root_cause"]
+
+        second = _stream_run_message(run_id, "现在改查 lldp 邻居")
+        assert "final_summary" in second
+        second_timeline = client.get(f"/api/runs/{run_id}/timeline", headers=_internal())
+        assert second_timeline.status_code == 200, second_timeline.text
+        payload = second_timeline.json()["timeline"]
+        assert "现在改查 lldp 邻居" in payload["summary"]["root_cause"]
+        assert "先看 ospf 状态" not in payload["summary"]["root_cause"]
+        assistant_messages = [item["content"] for item in payload["messages"] if item["role"] == "assistant"]
+        assert assistant_messages
+        assert "现在改查 lldp 邻居" in assistant_messages[-1]
+        assert "先看 ospf 状态" not in assistant_messages[-1]
+    finally:
+        routes.orchestrator.deepseek_diagnoser = original_single
+        routes.orchestrator_v2.deepseek_diagnoser = original_multi
+
+
+def test_api_runs_multi_message_stream_continues_same_run():
     created = client.post(
         "/api/runs",
         json={
@@ -391,20 +460,115 @@ def test_api_runs_multi_message_stream_creates_followup_run():
     assert completed.get("status") in {"completed", "failed", "cancelled"}
 
     body = _stream_run_message(source_run_id, "继续排查邻接与路由发布关系")
-    assert "event: run_created" in body
+    assert "event: run_resumed" in body
     assert "event: completed" in body
 
-    run_match = re.search(r'event: run_created\s+data: (\{.*\})', body)
+    run_match = re.search(r'event: run_resumed\s+data: (\{.*\})', body)
     assert run_match, body
     payload = json.loads(run_match.group(1))
-    followup_run_id = payload.get("run_id")
-    assert isinstance(followup_run_id, str) and followup_run_id.startswith("run_m:")
+    assert payload.get("run_id") == source_run_id
     assert payload.get("source_run_id") == source_run_id
+    assert payload.get("continued") is True
 
-    followup = client.get(f"/api/runs/{followup_run_id}", headers=_internal())
+    followup = client.get(f"/api/runs/{source_run_id}", headers=_internal())
     assert followup.status_code == 200, followup.text
     assert followup.json()["kind"] == "multi"
     assert followup.json()["problem"] == "继续排查邻接与路由发布关系"
+
+
+def test_api_runs_multi_followup_problem_does_not_embed_previous_summary():
+    created = client.post(
+        "/api/runs",
+        json={
+            "problem": "先检查 ospf 状态",
+            "automation_level": "assisted",
+            "operation_mode": "diagnosis",
+            "devices": [
+                {
+                    "host": "192.168.0.83",
+                    "protocol": "ssh",
+                    "vendor": "huawei",
+                },
+                {
+                    "host": "192.168.0.84",
+                    "protocol": "ssh",
+                    "vendor": "huawei",
+                },
+            ],
+        },
+        headers=_internal(),
+    )
+    assert created.status_code == 200, created.text
+    source_run_id = created.json()["id"]
+    completed = _wait_run_status(source_run_id, {"completed", "failed", "cancelled"})
+    assert completed.get("status") in {"completed", "failed", "cancelled"}
+
+    body = _stream_run_message(source_run_id, "现在改查 lldp 邻居")
+    run_match = re.search(r'event: run_resumed\s+data: (\{.*\})', body)
+    assert run_match, body
+    payload = json.loads(run_match.group(1))
+    followup_run_id = payload["run_id"]
+    assert followup_run_id == source_run_id
+
+    followup = client.get(f"/api/runs/{followup_run_id}", headers=_internal())
+    assert followup.status_code == 200, followup.text
+    assert followup.json()["problem"] == "现在改查 lldp 邻居"
+    assert "AI summary placeholder" not in followup.json()["problem"]
+    assert "先检查 ospf 状态" not in followup.json()["problem"]
+
+    timeline = client.get(f"/api/runs/{followup_run_id}/timeline", headers=_internal())
+    assert timeline.status_code == 200, timeline.text
+    messages = timeline.json()["timeline"]["messages"]
+    user_messages = [item["content"] for item in messages if item["role"] == "user"]
+    assert user_messages
+    assert user_messages[-1] == "现在改查 lldp 邻居"
+
+
+@pytest.mark.asyncio
+async def test_api_runs_multi_followup_config_intent_updates_same_run_mode_and_waits_for_approval(monkeypatch):
+    async def _fake_repair_groups(job_id: str):
+        async with routes.orchestrator_v2._state_lock:
+            job = routes.orchestrator_v2._jobs[job_id]
+            return [
+                JobActionGroup(
+                    job_id=job.id,
+                    device_id=job.devices[0].id,
+                    title="AI建议修复配置",
+                    commands=["system-view", "interface Ethernet1/0/0", "ip address 192.168.10.1 24"],
+                    risk_level=RiskLevel.high,
+                    requires_approval=True,
+                    status=JobActionGroupStatus.pending_approval,
+                )
+            ]
+
+    monkeypatch.setattr(routes.orchestrator_v2, "_generate_ai_repair_action_groups", _fake_repair_groups)
+
+    created = client.post(
+        "/api/runs",
+        json={
+            "problem": "先检查 ospf 状态",
+            "automation_level": "assisted",
+            "operation_mode": "diagnosis",
+            "devices": [
+                {"host": "192.168.0.83", "protocol": "ssh", "vendor": "huawei"},
+                {"host": "192.168.0.84", "protocol": "ssh", "vendor": "huawei"},
+            ],
+        },
+        headers=_internal(),
+    )
+    assert created.status_code == 200, created.text
+    run_id = created.json()["id"]
+    completed = _wait_run_status(run_id, {"completed", "failed", "cancelled"})
+    assert completed.get("status") in {"completed", "failed", "cancelled"}
+
+    body = _stream_run_message(run_id, "帮我在这两个设备邻居地址配置上IP，让OSPF能起来，你自己选择192.168.x.x网段")
+    assert "event: run_resumed" in body
+
+    waiting = _wait_run_status(run_id, {"waiting_approval", "failed", "completed"})
+    assert waiting["id"] == run_id
+    assert waiting["operation_mode"] == "config"
+    assert waiting["status"] == "waiting_approval"
+    assert waiting["pending_actions"] >= 1
 
 
 def test_api_runs_single_patch_automation_and_credentials():

@@ -5,6 +5,7 @@ import inspect
 import json
 import os
 import re
+import time
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -1174,60 +1175,39 @@ async def post_run_message_api(
             detail="multi-device run is active; wait for completion before sending a follow-up message",
         )
 
-    followup_req = JobCreateRequest(
-        name=source_job.name,
-        problem=content,
-        mode=source_job.mode,
-        sop_enabled=bool(source_job.sop_enabled),
-        devices=[
-            JobDeviceRequest(
-                host=device.host,
-                name=device.name,
-                port=device.port,
-                protocol=device.protocol,
-                vendor=device.vendor,
-                username=device.username,
-                password=device.password,
-                jump_host=device.jump_host,
-                jump_port=device.jump_port,
-                jump_username=device.jump_username,
-                jump_password=device.jump_password,
-                api_token=device.api_token,
-                device_type=device.device_type,
-            )
-            for device in source_job.devices
-        ],
-        max_gap_seconds=source_job.max_gap_seconds,
-        topology_mode=source_job.topology_mode,
-        topology_edges=source_job.external_topology_edges or [],
-        max_device_concurrency=source_job.max_device_concurrency,
-        execution_policy=source_job.execution_policy,
-        webhook_url=source_job.webhook_url,
-        webhook_events=source_job.webhook_events or [],
-    )
-    created = await orchestrator_v2.create_job(
-        followup_req,
+    updated = await orchestrator_v2.continue_job(
+        source_id,
+        content,
         actor_key_id=actor.id,
     )
-    followup_run_id = UnifiedRunService.multi_run_id(created.id)
+    resumed_run_id = UnifiedRunService.multi_run_id(updated.id)
 
     await orchestrator_v2.append_audit(
         actor=actor,
         action="run.message",
         resource=f"run:{run_id}",
         status="ok",
-        detail=f"multi_followup={followup_run_id}",
+        detail=f"multi_continue={resumed_run_id}",
     )
 
     async def _multi_followup_stream():
+        message_payload = {
+            "id": f"runmsg:user:{source_id}:{int(time.time() * 1000)}",
+            "session_id": UnifiedRunService.history_session_id_for_multi(source_id),
+            "role": "user",
+            "content": content,
+            "created_at": now_utc().isoformat(),
+        }
+        yield f"event: message_ack\ndata: {json.dumps({'message': message_payload}, ensure_ascii=False)}\n\n"
         payload = {
-            "run_id": followup_run_id,
+            "run_id": resumed_run_id,
             "source_run_id": run_id,
             "kind": "multi",
             "accepted": True,
+            "continued": True,
         }
-        yield f"event: run_created\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-        done = {"run_id": followup_run_id, "status": "accepted"}
+        yield f"event: run_resumed\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        done = {"run_id": resumed_run_id, "status": "accepted"}
         yield f"event: completed\ndata: {json.dumps(done, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(_multi_followup_stream(), media_type="text/event-stream")

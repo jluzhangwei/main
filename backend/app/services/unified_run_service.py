@@ -336,10 +336,16 @@ class UnifiedRunService:
             if source_id not in self.store.sessions:
                 raise KeyError(run_id)
             timeline = self.store.get_timeline(source_id)
+            run = self.build_single_run_response(source_id)
             timeline.summary = self._single_effective_summary(source_id)
+            timeline.session.status = (
+                SessionStatus.closed
+                if run.status in {RunStatus.completed, RunStatus.failed, RunStatus.cancelled}
+                else SessionStatus.open
+            )
             service_trace = self.store.get_service_trace(source_id)
             return RunTimelineResponse(
-                run=self.build_single_run_response(source_id),
+                run=run,
                 payload=timeline.model_dump(mode="json"),
                 trace=[item.model_dump(mode="json") for item in service_trace.steps],
                 timeline=timeline,
@@ -402,15 +408,34 @@ class UnifiedRunService:
 
     def _build_multi_messages(self, raw: JobTimelineResponse, session_id: str) -> list[Message]:
         messages: list[Message] = []
+        user_steps = [
+            event for event in sorted(list(raw.events or []), key=lambda item: int(item.seq_no or 0))
+            if str((event.payload or {}).get("trace_step_type") or event.event_type or "").strip() == "user_input"
+        ]
+        if user_steps:
+            for index, event in enumerate(user_steps, start=1):
+                payload = event.payload if isinstance(event.payload, dict) else {}
+                content = str(payload.get("user_input") or "").strip()
+                if not content:
+                    continue
+                messages.append(
+                    Message(
+                        id=f"runmsg:user:{raw.job.id}:{index}",
+                        session_id=session_id,
+                        role="user",
+                        content=content,
+                        created_at=event.created_at,
+                    )
+                )
         problem = str(raw.job.problem or "").strip()
-        if problem:
+        if problem and (not messages or messages[-1].content != problem):
             messages.append(
                 Message(
-                    id=f"runmsg:user:{raw.job.id}",
+                    id=f"runmsg:user:{raw.job.id}:latest",
                     session_id=session_id,
                     role="user",
                     content=problem,
-                    created_at=raw.job.created_at,
+                    created_at=raw.job.updated_at or raw.job.created_at,
                 )
             )
         summary = self._build_multi_summary(raw, session_id)

@@ -284,6 +284,46 @@ def test_v2_extract_rca_followup_commands_maps_recommendation_to_target_devices(
     ]
 
 
+def test_v2_generate_interface_ip_repair_fallback_builds_pending_groups():
+    job = Job(
+        id="job-repair-fallback",
+        problem="帮我在这两个设备邻居地址配置上IP，让OSPF能起来",
+        mode=JobMode.repair,
+        devices=[
+            JobDevice(id="dev-a", host="192.168.0.83", protocol="ssh", vendor="huawei"),
+            JobDevice(id="dev-b", host="192.168.0.84", protocol="ssh", vendor="huawei"),
+        ],
+        evidences=[
+            JobEvidence(
+                job_id="job-repair-fallback",
+                device_id="dev-a",
+                command_id="cmd-a",
+                category="protocol",
+                raw_output="Interface: 0.0.0.0 (Eth1/0/0)\nCost: 1 State: Down",
+                parsed_data={},
+                conclusion="interface down",
+            ),
+            JobEvidence(
+                job_id="job-repair-fallback",
+                device_id="dev-b",
+                command_id="cmd-b",
+                category="protocol",
+                raw_output="Interface: 0.0.0.0 (Eth1/0/0)\nCost: 1 State: Down",
+                parsed_data={},
+                conclusion="interface down",
+            ),
+        ],
+    )
+    routes.orchestrator_v2._jobs[job.id] = job
+
+    groups = routes.orchestrator_v2._generate_interface_ip_repair_fallback(job.id)
+
+    assert len(groups) == 2
+    assert all(item.status == JobActionGroupStatus.pending_approval for item in groups)
+    assert all(item.requires_approval for item in groups)
+    assert all("ip address" in " ; ".join(item.commands).lower() for item in groups)
+
+
 def test_v2_history_evidence_summary_marks_missing_flap_logs_as_insufficient():
     job = Job(
         name="history-job",

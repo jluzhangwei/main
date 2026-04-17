@@ -2761,27 +2761,42 @@ function App() {
     setContinueExecutionState(null)
     try {
       const key = resolveV3ApiKey()
-      const requestId = `workbench-multi-${Date.now()}`
-      const created = await createRun(
-        key,
-        {
-          name: requestId,
-          problem: buildMultiProblemStatement(content),
-          automation_level: automationLevel,
-          operation_mode: multiSessionConfig.operation_mode,
-          sop_enabled: sopModeEnabled,
-          topology_mode: 'hybrid',
-          max_gap_seconds: 300,
-          max_device_concurrency: Math.min(50, Math.max(2, multiSessionConfig.hosts.length)),
-          execution_policy: 'stop_on_failure',
-          devices: buildMultiSessionDevices(multiSessionConfig),
-        },
-        requestId,
-      )
-      setMultiSessionActiveJobId(created.source_id)
-      setV3SelectedJobId(created.source_id)
-      multiJobAbortRef.current = { aborted: false, jobId: created.source_id }
-      const state = await monitorMultiJobUntilPauseOrDone(created.source_id)
+      const baseJobId = multiSessionActiveJobId || v3SelectedJobId
+      let targetJobId = baseJobId
+      if (targetJobId) {
+        await streamRunMessage(key, toUnifiedMultiRunId(targetJobId), content, (event, payload) => {
+          if (event === 'message_ack' && payload.message) {
+            const msg = payload.message as ChatMessage
+            setMessages((prev) => (prev.some((item) => item.id === msg.id) ? prev : [...prev, msg]))
+          }
+        })
+      } else {
+        const requestId = `workbench-multi-${Date.now()}`
+        const created = await createRun(
+          key,
+          {
+            name: requestId,
+            problem: buildMultiProblemStatement(content),
+            automation_level: automationLevel,
+            operation_mode: multiSessionConfig.operation_mode,
+            sop_enabled: sopModeEnabled,
+            topology_mode: 'hybrid',
+            max_gap_seconds: 300,
+            max_device_concurrency: Math.min(50, Math.max(2, multiSessionConfig.hosts.length)),
+            execution_policy: 'stop_on_failure',
+            devices: buildMultiSessionDevices(multiSessionConfig),
+          },
+          requestId,
+        )
+        targetJobId = created.source_id
+      }
+      if (!targetJobId) {
+        throw new Error('未找到可继续执行的多设备任务')
+      }
+      setMultiSessionActiveJobId(targetJobId)
+      setV3SelectedJobId(targetJobId)
+      multiJobAbortRef.current = { aborted: false, jobId: targetJobId }
+      const state = await monitorMultiJobUntilPauseOrDone(targetJobId)
       if (state === 'done' || state === 'stopped') {
         setMultiSessionActiveJobId(undefined)
       }
