@@ -805,6 +805,43 @@ def _looks_like_ip(s: str) -> bool:
     return all(0 <= n <= 255 for n in nums)
 
 
+_INVALID_DEVICE_NAME_TOKENS = {"", "none", "null", "n/a", "na", "unknown", "-", "--"}
+
+
+def _clean_device_name_token(raw: str | None) -> str:
+    name = str(raw or "").strip()
+    if not name:
+        return ""
+    if name.lower() in _INVALID_DEVICE_NAME_TOKENS:
+        return ""
+    return name
+
+
+def _name_lookup_variants(raw: str | None) -> list[str]:
+    base = _clean_device_name_token(raw)
+    if not base:
+        return []
+    vals: list[str] = []
+
+    def add(value: str) -> None:
+        v = _clean_device_name_token(value)
+        if not v:
+            return
+        key = v.lower()
+        if key not in vals:
+            vals.append(key)
+
+    add(base)
+    if "." in base:
+        add(base.split(".", 1)[0])
+    compact = re.sub(r"\s+", "", base)
+    if compact and compact != base:
+        add(compact)
+        if "." in compact:
+            add(compact.split(".", 1)[0])
+    return vals
+
+
 def classify_ssh_failure(text: str) -> str:
     low = (text or "").lower()
     if "invalid credentials" in low or "too many authentication failures" in low:
@@ -2364,6 +2401,86 @@ def _is_link_status_up(status: str) -> bool:
     return norm in {"up", "true", "1", "connected", "linkup", "operup", "upup"}
 
 
+def _extract_first_ipv4(text: str) -> str:
+    s = str(text or "").strip()
+    if not s:
+        return ""
+    if _looks_like_ip(s):
+        return s
+    m = re.search(r"((?:\d{1,3}\.){3}\d{1,3})", s)
+    if not m:
+        return ""
+    candidate = m.group(1)
+    return candidate if _looks_like_ip(candidate) else ""
+
+
+def _is_mgmt_interface_name(iface: str) -> bool:
+    name = re.sub(r"\s+", "", str(iface or "").strip().lower())
+    if not name:
+        return False
+    if any(
+        name.startswith(prefix)
+        for prefix in (
+            "meth",
+            "mgmt",
+            "management",
+            "managementethernet",
+            "fxp",
+            "oob",
+            "vme",
+        )
+    ):
+        return True
+    return ("mgmt" in name) or ("management" in name)
+
+
+def _normalize_ndmp_source_ip_per_host(rows: list[dict[str, Any]], query_value: str) -> None:
+    if not rows:
+        return
+    query_ip = _extract_first_ipv4(query_value)
+    host_scores: dict[str, dict[str, tuple[int, int]]] = {}
+    host_original_case: dict[str, str] = {}
+    for row in rows:
+        host = str(row.get("localhostname", "") or "").strip()
+        sip = _extract_first_ipv4(str(row.get("sourceip", "") or ""))
+        if not host or not sip:
+            continue
+        host_key = host.lower()
+        host_original_case.setdefault(host_key, host)
+        iface = str(row.get("localinterface", "") or "").strip()
+        score = 1
+        if _is_mgmt_interface_name(iface):
+            score += 120
+        if query_ip and sip == query_ip:
+            score += 80
+        prev_score, prev_count = host_scores.setdefault(host_key, {}).get(sip, (0, 0))
+        host_scores[host_key][sip] = (prev_score + score, prev_count + 1)
+
+    canonical_by_host: dict[str, str] = {}
+    for host_key, candidates in host_scores.items():
+        if not candidates:
+            continue
+        best_ip = sorted(
+            candidates.items(),
+            key=lambda item: (
+                -item[1][0],  # weighted score
+                -item[1][1],  # occurrence count
+                item[0],      # stable tie-break
+            ),
+        )[0][0]
+        canonical_by_host[host_key] = best_ip
+
+    if not canonical_by_host:
+        return
+    for row in rows:
+        host = str(row.get("localhostname", "") or "").strip().lower()
+        if not host:
+            continue
+        canonical_ip = canonical_by_host.get(host)
+        if canonical_ip:
+            row["sourceip"] = canonical_ip
+
+
 def _is_ndmp_not_found_error(err: str) -> bool:
     low = str(err or "").strip().lower()
     return ("not found" in low) and ("device " in low or " host " in low or "hostname" in low)
@@ -2392,6 +2509,7 @@ def _build_ndmp_lldp_rows(
                 "link_status",
                 "oper_status",
                 "status",
+                "protocol_status",
                 "neighbor.link_status",
                 "neighbor.status",
             ],
@@ -2420,6 +2538,10 @@ def _build_ndmp_lldp_rows(
                 "sourceip",
                 "management_ip",
                 "mgmt_ip",
+                "interface_ip",
+                "local_mgmt_address",
+                "management_address",
+                "device_management_ip",
                 "neighbor.local_device_ip",
             ],
         )
@@ -2445,6 +2567,7 @@ def _build_ndmp_lldp_rows(
                 "neighbor_hostname",
                 "peer_device_hostname",
                 "remotehostname",
+                "neighbor_hostname",
                 "neighbor.device_hostname",
                 "neighbor.hostname",
                 "peer.hostname",
@@ -2459,7 +2582,11 @@ def _build_ndmp_lldp_rows(
                 "neighbor_ip",
                 "peer_device_ip",
                 "remoteip",
+                "neighbor_mgmt_address",
+                "neighbor_management_ip",
+                "management_address",
                 "neighbor.device_ip",
+                "neighbor.management_address",
                 "peer.device_ip",
             ],
         )
@@ -2470,6 +2597,7 @@ def _build_ndmp_lldp_rows(
                 "remote_interface_name",
                 "lldp_neighbor_interface_name",
                 "lldp_neighbor_port",
+                "neighbor_interface",
                 "neighbor_interface",
                 "peer_interface_name",
                 "remoteinterface",
@@ -2488,7 +2616,9 @@ def _build_ndmp_lldp_rows(
             ],
         )
 
-        local_node = local_name or local_ip or query_value
+        # Some NDMP payloads omit per-row local hostname but include interface_ip.
+        # Keep local node identity stable to queried target first, and store IP in sourceip.
+        local_node = local_name or query_value or local_ip
         remote_node = remote_name or remote_ip
 
         if not (remote_name or remote_ip or remote_if):
@@ -2498,8 +2628,8 @@ def _build_ndmp_lldp_rows(
             skipped_no_endpoint += 1
             continue
 
-        src_ip = local_ip if _looks_like_ip(local_ip) else (local_node if _looks_like_ip(local_node) else "")
-        dst_ip = remote_ip if _looks_like_ip(remote_ip) else (remote_node if _looks_like_ip(remote_node) else "")
+        src_ip = _extract_first_ipv4(local_ip) or (local_node if _looks_like_ip(local_node) else "")
+        dst_ip = _extract_first_ipv4(remote_ip) or (remote_node if _looks_like_ip(remote_node) else "")
         rows.append(
             {
                 "depth": int(depth),
@@ -2701,6 +2831,30 @@ def _run_ndmp_lldp_query(
         )
 
     rows = dedupe_lldp_rows(all_rows)
+    # NDMP payload often has only neighbor_mgmt_address; backfill source IP by hostname mapping.
+    host_to_ip: dict[str, str] = {}
+    for r in rows:
+        rh = str(r.get("remotehostname", "") or "").strip()
+        rip = _extract_first_ipv4(str(r.get("remoteip", "") or ""))
+        if not (rh and rip):
+            continue
+        host_to_ip.setdefault(rh.lower(), rip)
+        host_to_ip.setdefault(rh.split(".", 1)[0].lower(), rip)
+    for r in rows:
+        sip = _extract_first_ipv4(str(r.get("sourceip", "") or ""))
+        if sip:
+            r["sourceip"] = sip
+            continue
+        lh = str(r.get("localhostname", "") or "").strip()
+        if not lh:
+            r["sourceip"] = ""
+            continue
+        mapped = host_to_ip.get(lh.lower()) or host_to_ip.get(lh.split(".", 1)[0].lower()) or ""
+        r["sourceip"] = mapped
+    # NDMP may return per-interface local IP (e.g. 10.254.*) instead of a device management IP.
+    # Normalize each device's sourceip to one canonical value to avoid polluting node IP identity.
+    _normalize_ndmp_source_ip_per_host(rows, query_value)
+
     safe_name, out_path, csv_text = write_rows_to_csv(
         f"lldp_ndmp_{query_value.replace('/', '_').replace(' ', '_')}",
         rows,
@@ -2876,11 +3030,34 @@ def _zabbix_iface_match_score(item: dict[str, Any], iface: str) -> int:
 def _zabbix_item_kind(item: dict[str, Any]) -> str:
     name = str(item.get("name", "") or "").lower()
     key = str(item.get("key_", "") or "").lower()
-    if "ifhighspeed[" in key or "ifspeed[" in key or "speed of interface" in name:
+    if (
+        "ifhighspeed[" in key
+        or "ifspeed[" in key
+        or "speed of interface" in name
+        or "interface speed" in name
+        or "bandwidth of interface" in name
+        or "interface bandwidth" in name
+    ):
         return "speed"
-    if "ifhcoutoctets[" in key or "ifoutoctets[" in key or "outgoing traffic" in name or "bits sent" in name:
+    if (
+        "ifhcoutoctets[" in key
+        or "ifoutoctets[" in key
+        or "outgoing traffic" in name
+        or "outbound traffic" in name
+        or "bits sent" in name
+        or "bits transmit" in name
+        or "tx traffic" in name
+    ):
         return "tx"
-    if "ifhcinoctets[" in key or "ifinoctets[" in key or "incoming traffic" in name or "bits received" in name:
+    if (
+        "ifhcinoctets[" in key
+        or "ifinoctets[" in key
+        or "incoming traffic" in name
+        or "inbound traffic" in name
+        or "bits received" in name
+        or "bits receive" in name
+        or "rx traffic" in name
+    ):
         return "rx"
     return ""
 
@@ -2939,7 +3116,11 @@ def _pick_best_zabbix_host_for_target(
     verify_ssl_override: bool | None = None,
 ) -> tuple[dict[str, str] | None, list[dict[str, Any]], dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
     ip_host = host_map_by_ip.get(src_ip)
-    name_host = host_map_by_name.get(source_name.lower()) if source_name else None
+    name_host = None
+    for name_key in _name_lookup_variants(source_name):
+        name_host = host_map_by_name.get(name_key)
+        if name_host:
+            break
 
     candidates: list[tuple[str, dict[str, str], bool]] = []
     seen_hostids: set[str] = set()
@@ -3011,6 +3192,31 @@ def _zabbix_get_host_map_by_ip(
         hostid = str(row.get("hostid", "")).strip()
         if ip and hostid and ip not in ip_to_hostid:
             ip_to_hostid[ip] = hostid
+    unresolved_ips = [ip for ip in ips if ip not in ip_to_hostid]
+    if unresolved_ips:
+        unresolved_set = set(unresolved_ips)
+        extra_hosts = _zabbix_rpc(
+            "host.get",
+            {
+                "output": ["hostid", "host", "name"],
+                "search": {"host": unresolved_ips, "name": unresolved_ips},
+                "searchByAny": True,
+                "limit": max(50, len(unresolved_ips) * 6),
+            },
+            url_override=url_override,
+            token_override=token_override,
+            verify_ssl_override=verify_ssl_override,
+        ) or []
+        for row in extra_hosts:
+            hostid = str(row.get("hostid", "")).strip()
+            host = str(row.get("host", "")).strip()
+            name = str(row.get("name", "")).strip()
+            if not hostid:
+                continue
+            if host in unresolved_set and host not in ip_to_hostid:
+                ip_to_hostid[host] = hostid
+            if name in unresolved_set and name not in ip_to_hostid:
+                ip_to_hostid[name] = hostid
     if not ip_to_hostid:
         return {}
     hosts = _zabbix_rpc(
@@ -3042,31 +3248,35 @@ def _zabbix_get_host_map_by_name(
     token_override: str | None = None,
     verify_ssl_override: bool | None = None,
 ) -> dict[str, dict[str, str]]:
-    wanted = [str(n or "").strip() for n in names if str(n or "").strip()]
-    if not wanted:
+    wanted_raw = [_clean_device_name_token(str(n or "").strip()) for n in names]
+    wanted_raw = [n for n in wanted_raw if n]
+    if not wanted_raw:
+        return {}
+    search_terms = sorted({term for n in wanted_raw for term in _name_lookup_variants(n)})
+    wanted_l = set(search_terms)
+    if not search_terms:
         return {}
     rows = _zabbix_rpc(
         "host.get",
         {
             "output": ["hostid", "host", "name"],
-            "search": {"host": wanted, "name": wanted},
+            "search": {"host": search_terms, "name": search_terms},
             "searchByAny": True,
-            "limit": max(50, len(wanted) * 5),
+            "limit": max(50, len(search_terms) * 6),
         },
         url_override=url_override,
         token_override=token_override,
         verify_ssl_override=verify_ssl_override,
     ) or []
     out: dict[str, dict[str, str]] = {}
-    wanted_l = {w.lower() for w in wanted}
     for row in rows:
         host = str(row.get("host", "")).strip()
         name = str(row.get("name", "")).strip()
-        keys = []
-        if host and host.lower() in wanted_l:
-            keys.append(host.lower())
-        if name and name.lower() in wanted_l:
-            keys.append(name.lower())
+        keys: list[str] = []
+        for candidate in (host, name):
+            for variant in _name_lookup_variants(candidate):
+                if variant in wanted_l and variant not in keys:
+                    keys.append(variant)
         for key in keys:
             out.setdefault(
                 key,
@@ -3278,6 +3488,36 @@ def _zabbix_speed_bps_with_fallback(
     return None
 
 
+def _infer_bw_bps_from_iface_name(iface: str) -> float | None:
+    raw = str(iface or "").strip()
+    if not raw:
+        return None
+    norm = raw.replace(" ", "").lower()
+
+    # Prefer explicit numeric speed hints in interface name: 10GE/25GE/100GE/400GE...
+    for m in re.finditer(r"(\d{1,4})ge", norm):
+        try:
+            ge_val = int(m.group(1))
+        except Exception:
+            continue
+        if ge_val in {1, 10, 25, 40, 50, 100, 200, 400, 800}:
+            return float(ge_val) * 1_000_000_000.0
+
+    prefix_map_gbps: list[tuple[tuple[str, ...], float]] = [
+        (("hundredgige", "hundredgigabitethernet", "hu"), 100.0),
+        (("tengige", "tengigabitethernet", "te", "xe-"), 10.0),
+        (("twentyfivegige", "twentyfivegigabitethernet"), 25.0),
+        (("fortygige", "fortygigabitethernet"), 40.0),
+        (("gigabitethernet", "gi"), 1.0),
+        (("fastethernet", "fa"), 0.1),
+    ]
+    for prefixes, gbps in prefix_map_gbps:
+        if any(norm.startswith(p) for p in prefixes):
+            return gbps * 1_000_000_000.0
+
+    return None
+
+
 def collect_zabbix_link_utilization(
     targets: list[LinkUtilTarget],
     metric: str,
@@ -3305,6 +3545,16 @@ def collect_zabbix_link_utilization(
         t for t in (targets or [])
         if _looks_like_ip(str(t.source_device or "").strip()) and str(t.source_interface or "").strip()
     ]
+    ip_name_hints: dict[str, str] = {}
+    for t in cleaned_targets:
+        src_ip_hint = str(t.source_device or "").strip()
+        src_name_hint = _clean_device_name_token(str(t.source_name or "").strip())
+        if _looks_like_ip(src_ip_hint) and src_name_hint:
+            ip_name_hints.setdefault(src_ip_hint, src_name_hint)
+        peer_ip_hint = str(t.peer_device or "").strip()
+        peer_name_hint = _clean_device_name_token(str(t.peer_name or "").strip())
+        if _looks_like_ip(peer_ip_hint) and peer_name_hint:
+            ip_name_hints.setdefault(peer_ip_hint, peer_name_hint)
     device_ips = sorted({
         ip for ip in (
             str(t.source_device or "").strip() for t in cleaned_targets
@@ -3316,13 +3566,13 @@ def collect_zabbix_link_utilization(
     })
     source_names = sorted({
         name for name in (
-            str(t.source_name or "").strip() for t in cleaned_targets
+            _clean_device_name_token(str(t.source_name or "").strip()) for t in cleaned_targets
         ) if name
     } | {
         name for name in (
-            str(t.peer_name or "").strip() for t in cleaned_targets
+            _clean_device_name_token(str(t.peer_name or "").strip()) for t in cleaned_targets
         ) if name
-    })
+    } | set(ip_name_hints.values()))
     host_map = _zabbix_get_host_map_by_ip(
         device_ips,
         url_override=zabbix_url,
@@ -3345,10 +3595,14 @@ def collect_zabbix_link_utilization(
         src_ip = str(target.source_device or "").strip()
         iface = str(target.source_interface or "").strip()
         util_key = str(target.util_key or "").strip()
-        source_name = str(target.source_name or "").strip()
+        source_name = _clean_device_name_token(str(target.source_name or "").strip())
+        if not source_name and util_key.startswith("name:"):
+            source_name = _clean_device_name_token(util_key.split("||", 1)[0][5:])
+        if not source_name and _looks_like_ip(src_ip):
+            source_name = ip_name_hints.get(src_ip, "")
         peer_ip = str(target.peer_device or "").strip()
         peer_iface = str(target.peer_interface or "").strip()
-        peer_name = str(target.peer_name or "").strip()
+        peer_name = _clean_device_name_token(str(target.peer_name or "").strip())
         host, items, tx_item, rx_item, speed_item = _pick_best_zabbix_host_for_target(
             src_ip,
             source_name,
@@ -3469,6 +3723,15 @@ def collect_zabbix_link_utilization(
                     if isinstance(bw_bps, (int, float)) and bw_bps > 0:
                         bandwidth_cache[(peer_ip, peer_iface)] = float(bw_bps)
                         bandwidth_cache[(src_ip, iface)] = float(bw_bps)
+        if not (isinstance(bw_bps, (int, float)) and bw_bps > 0):
+            inferred_bw = _infer_bw_bps_from_iface_name(iface)
+            if not (isinstance(inferred_bw, (int, float)) and inferred_bw > 0) and peer_iface:
+                inferred_bw = _infer_bw_bps_from_iface_name(peer_iface)
+            if isinstance(inferred_bw, (int, float)) and inferred_bw > 0:
+                bw_bps = float(inferred_bw)
+                bandwidth_cache[(src_ip, iface)] = float(inferred_bw)
+                if _looks_like_ip(peer_ip) and peer_iface:
+                    bandwidth_cache[(peer_ip, peer_iface)] = float(inferred_bw)
         tx_pct = (tx_bps / bw_bps * 100.0) if (tx_bps is not None and bw_bps and bw_bps > 0) else None
         rx_pct = (rx_bps / bw_bps * 100.0) if (rx_bps is not None and bw_bps and bw_bps > 0) else None
         if metric_l == "tx":

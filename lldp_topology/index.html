@@ -2511,6 +2511,13 @@
     const name = normalizeEntityName(deviceNameOrIp);
     return name ? name.toLowerCase() : '';
   }
+  function sanitizeDeviceNameToken(value) {
+    const s = String(value || '').trim();
+    if (!s) return '';
+    const low = s.toLowerCase();
+    if (['none', 'null', 'n/a', 'na', 'unknown', '-', '--'].includes(low)) return '';
+    return s;
+  }
   function buildUtilKey(deviceNameOrIp, iface, ipHint = '') {
     const ident = inferUtilIdentity(deviceNameOrIp, ipHint);
     const nif = normalizeUtilInterface(iface);
@@ -2647,7 +2654,9 @@
     };
     return {
       colLH: pick('colLocalHost', ['localhostname', 'local_host', 'src', 'from', '源设备名称']),
-      colLI: pick('colLocalIf', ['localinterface', 'local_if', 'src_if', 'from_if', '源设备端口'])
+      colLI: pick('colLocalIf', ['localinterface', 'local_if', 'src_if', 'from_if', '源设备端口']),
+      colRH: pick('colRemoteHost', ['remotehostname', 'remote_host', 'dst', 'to', '目的设备名称']),
+      colRI: pick('colRemoteIf', ['remoteinterface', 'remote_if', 'dst_if', 'to_if', '目的设备端口'])
     };
   }
 
@@ -8770,30 +8779,72 @@
     const scopeEdges = (opts && opts.scopeEdges && typeof opts.scopeEdges.intersection === 'function')
       ? opts.scopeEdges
       : null;
-    const { colLH, colLI } = resolveUtilSourceColumns();
+    const { colLH, colLI, colRH, colRI } = resolveUtilSourceColumns();
     const allByUtilKey = new Map();
+    const resolveNameByIp = (ip) => {
+      const target = String(ip || '').trim();
+      if (!isIpv4(target) || !cy) return '';
+      let nameHit = '';
+      cy.nodes().some((n) => {
+        const ips = normalizeIpList(n.data('ips') || n.data('ip'));
+        if (!ips.includes(target)) return false;
+        const label = sanitizeDeviceNameToken(n.data('label'));
+        if (label && !isIpv4(label)) {
+          nameHit = label;
+          return true;
+        }
+        return false;
+      });
+      return nameHit;
+    };
+    const resolvePeerFromRow = (r) => {
+      const peerRaw = sanitizeDeviceNameToken(r[colRH]);
+      const peerIf = String(r[colRI] || '').trim();
+      const peerIpHint = rowValue(r, ['目的设备IP', '目的设备ip', 'remoteip']);
+      let peerDevice = isIpv4(peerIpHint) ? peerIpHint : peerRaw;
+      if (!isIpv4(peerDevice)) {
+        const mapHit = deviceNameToIpMap.get(peerRaw) || deviceNameToIpMap.get(stripAfterDot(peerRaw));
+        const hit1 = nodeIpMap.get(peerRaw);
+        const hit2 = nodeIpMap.get(stripAfterDot(peerRaw));
+        const cand = mapHit || hit1 || hit2;
+        if (cand && isIpv4(cand)) peerDevice = cand;
+      }
+      const peerName = (!isIpv4(peerRaw) ? peerRaw : '') || resolveNameByIp(peerDevice);
+      return {
+        peer_device: peerDevice || '',
+        peer_name: peerName || '',
+        peer_interface: peerIf || ''
+      };
+    };
     for (const r of rawRows) {
-      const srcRaw = String(r[colLH] || '').trim();
+      const srcRawBase = String(r[colLH] || '').trim();
+      const srcRaw = sanitizeDeviceNameToken(srcRawBase);
       const srcIf = String(r[colLI] || '').trim();
-      if (!srcRaw || !srcIf) continue;
       const sourceIpHint = rowValue(r, ['源设备IP', '源设备ip', 'ipaddr', 'sourceip']);
-      if (matchSource && !matchSource({ row: r, srcRaw, srcIf, sourceIpHint })) continue;
-      const utilKey = buildUtilKey(srcRaw, srcIf, sourceIpHint);
+      const srcNameOrIp = srcRaw || (isIpv4(srcRawBase) ? srcRawBase : '') || sourceIpHint;
+      if (!srcIf || !srcNameOrIp) continue;
+      if (matchSource && !matchSource({ row: r, srcRaw: srcNameOrIp, srcIf, sourceIpHint })) continue;
+      const utilKey = buildUtilKey(srcNameOrIp, srcIf, sourceIpHint);
       if (!utilKey) continue;
       const dedupeKey = utilKey;
-      let queryDevice = isIpv4(sourceIpHint) ? sourceIpHint : srcRaw;
+      let queryDevice = isIpv4(sourceIpHint) ? sourceIpHint : srcNameOrIp;
       if (!isIpv4(queryDevice)) {
-        const mapHit = deviceNameToIpMap.get(srcRaw) || deviceNameToIpMap.get(stripAfterDot(srcRaw));
-        const hit1 = nodeIpMap.get(srcRaw);
-        const hit2 = nodeIpMap.get(stripAfterDot(srcRaw));
+        const mapHit = deviceNameToIpMap.get(srcNameOrIp) || deviceNameToIpMap.get(stripAfterDot(srcNameOrIp));
+        const hit1 = nodeIpMap.get(srcNameOrIp);
+        const hit2 = nodeIpMap.get(stripAfterDot(srcNameOrIp));
         const cand = mapHit || hit1 || hit2;
         if (cand && isIpv4(cand)) queryDevice = cand;
       }
+      const sourceName = (!isIpv4(srcRaw) ? srcRaw : '') || resolveNameByIp(queryDevice);
       if (!allByUtilKey.has(utilKey)) {
+        const peer = resolvePeerFromRow(r);
         allByUtilKey.set(utilKey, {
           source_device: queryDevice,
-          source_name: srcRaw,
+          source_name: sourceName || '',
           source_interface: srcIf,
+          peer_device: peer.peer_device,
+          peer_name: peer.peer_name,
+          peer_interface: peer.peer_interface,
           util_key: utilKey,
           dedupe_key: dedupeKey
         });
