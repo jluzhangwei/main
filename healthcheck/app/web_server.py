@@ -797,7 +797,11 @@ def _ai_prompt_key(prompt_source: str) -> str:
 
 
 def _ai_report_name(task_id: str, model: str = "", provider: str = "", prompt_source: str = "") -> str:
-    return f"ai_analysis_{_ai_task_key(task_id)}_{_ai_model_key(model, provider)}_{_ai_prompt_key(prompt_source)}.md"
+    task_key = _ai_task_key(task_id)
+    combo_raw = f"{provider or ''}|{model or ''}|{prompt_source or ''}"
+    combo_hash = hashlib.sha1(combo_raw.encode("utf-8", errors="ignore")).hexdigest()[:8]
+    ts = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    return f"ai_analysis_{task_key}_{ts}_{combo_hash}.md"
 
 
 def list_ai_report_files(task_id: str, limit: int = 20, include_legacy: bool = False) -> List[Path]:

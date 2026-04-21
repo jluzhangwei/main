@@ -12,8 +12,8 @@ TOKEN_RETRY_PATTERN = re.compile(
 )
 PASSWORD_PATTERN = re.compile(r"(enter\s+password|password)\s*:\s*$", re.IGNORECASE | re.MULTILINE)
 FAIL_PATTERN = re.compile(
-    r"(permission denied|connection timed out|could not resolve|connection refused|no route to host|closed by remote host)",
+    r"(permission denied|authentication failed|received disconnect|connection is closed by ssh server|"
+    r"connection timed out|could not resolve|connection refused|no route to host|closed by remote host)",
     re.IGNORECASE,
 )
 ANSI_PATTERN = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
-

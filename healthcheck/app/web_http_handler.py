@@ -285,7 +285,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         task_id = str((task_row or {}).get("task_id", "") or "").strip()
         if task_id:
-            for p in list_ai_report_files(task_id, limit=200):
+            for p in list_ai_report_files(task_id, limit=200, include_legacy=True):
                 try:
                     if p.is_file():
                         p.unlink()

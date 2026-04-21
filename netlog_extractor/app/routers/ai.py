@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from ..ai.prompt_store import (
@@ -444,6 +444,40 @@ async def get_analysis(analysis_id: str, request: Request):
     if not data:
         raise HTTPException(status_code=404, detail="analysis not found")
     return data
+
+
+@router.get("/api/tasks/{task_id}/analysis/active")
+async def get_task_active_analysis(task_id: str, request: Request):
+    payload = request.app.state.ai_manager.get_active_by_task(task_id)
+    if not payload:
+        return {"ok": True, "active": False}
+    return {"ok": True, "active": True, "analysis_id": payload.get("analysis_id", ""), "status": payload}
+
+
+@router.get("/api/tasks/{task_id}/analysis/latest")
+async def get_task_latest_analysis(task_id: str, request: Request):
+    payload = request.app.state.ai_manager.get_latest_by_task(task_id)
+    if not payload:
+        return {"ok": True, "found": False}
+    return {"ok": True, "found": True, "analysis_id": payload.get("analysis_id", ""), "status": payload}
+
+
+@router.get("/api/tasks/{task_id}/analysis/history")
+async def get_task_analysis_history(task_id: str, request: Request, limit: int = 12):
+    items = request.app.state.ai_manager.list_history(task_id, limit=max(1, min(int(limit), 100)))
+    return {"ok": True, "items": items}
+
+
+@router.get("/api/tasks/{task_id}/analysis/history/{file_name}")
+async def download_task_analysis_history(task_id: str, file_name: str, request: Request):
+    safe_name = Path(file_name).name
+    if safe_name != file_name or not safe_name.startswith("analysis_"):
+        raise HTTPException(status_code=400, detail="invalid file")
+    path = request.app.state.ai_manager.output_root / task_id / "ai_reports" / safe_name
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="file not found")
+    media = "text/markdown; charset=utf-8" if safe_name.endswith(".md") else "application/json"
+    return FileResponse(path.as_posix(), media_type=media, filename=safe_name)
 
 
 @router.post("/api/ai/test_connection")

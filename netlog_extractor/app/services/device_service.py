@@ -88,7 +88,7 @@ async def run_device_collection(
     debug_path = output_dir / "debug.log" if debug_mode else None
     recorder = DebugRecorder(debug_path)
 
-    if device.jump_mode == "smc":
+    if device.jump_mode in {"smc", "smc_pam_nd"}:
         return await asyncio.wait_for(
             _run_device_via_smc(device, output_dir, user_start, user_end, context_lines, recorder),
             timeout=per_device_timeout,
@@ -140,18 +140,25 @@ async def _run_device_via_smc(
     context_lines: int,
     debug: DebugRecorder,
 ) -> dict[str, Any]:
-    await debug.write(f"[DEVICE] {device.device_ip}:{device.device_port} mode=smc")
-    smc_cmd = device.smc_command or f"smc server toc {device.jump_host}"
+    await debug.write(f"[DEVICE] {device.device_ip}:{device.device_port} mode={device.jump_mode}")
+    if device.jump_mode == "smc_pam_nd":
+        smc_cmd = device.smc_command or "smc pam nd ssh {device_ip}"
+        session_mode = "pam_nd_direct"
+    else:
+        smc_cmd = device.smc_command or f"smc server toc {device.jump_host}"
+        session_mode = "jump_shell"
     cli = SmcShellClient(
         SmcShellConfig(
             smc_command=smc_cmd,
             device_ip=device.device_ip,
+            device_port=int(device.device_port or 22),
             username=device.username,
             password=device.password,
             jump_host=device.jump_host,
             jump_port=int(device.jump_port or 22),
             timeout=30,
             debug=debug.sync_write,
+            session_mode=session_mode,
         )
     )
     try:

@@ -94,3 +94,26 @@ class TaskDB:
             )
             for row in rows
         ]
+
+    def delete_tasks(self, task_ids: list[str]) -> int:
+        ids = [str(t or "").strip() for t in (task_ids or []) if str(t or "").strip()]
+        if not ids:
+            return 0
+        placeholders = ",".join(["?"] * len(ids))
+        with self._lock:
+            cur = self._conn.execute(f"DELETE FROM tasks WHERE task_id IN ({placeholders})", ids)
+            self._conn.commit()
+            return int(cur.rowcount or 0)
+
+    def delete_tasks_exact(self, task_ids: list[str]) -> list[str]:
+        ids = [str(t or "").strip() for t in (task_ids or []) if str(t or "").strip()]
+        if not ids:
+            return []
+        deleted: list[str] = []
+        with self._lock:
+            for tid in ids:
+                cur = self._conn.execute("DELETE FROM tasks WHERE task_id = ?", (tid,))
+                if int(cur.rowcount or 0) > 0:
+                    deleted.append(tid)
+            self._conn.commit()
+        return deleted

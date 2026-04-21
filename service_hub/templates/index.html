@@ -128,6 +128,9 @@
     .service-card[data-service-id="netlog"]::after {
       background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 220 220'%3E%3Cg fill='none' stroke='%231d4ed8' stroke-width='8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='24' y='28' width='170' height='160' rx='14'/%3E%3Cpath d='M42 68h132M42 92h132M42 116h94M42 140h72'/%3E%3Cpath d='M36 170l32-22 28 18 30-32 30 16 28-26'/%3E%3C/g%3E%3C/svg%3E");
     }
+    .service-card[data-service-id="netclaw"]::after {
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 220 220'%3E%3Cg fill='none' stroke='%237c3aed' stroke-width='8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M38 172c18-54 58-104 128-116'/%3E%3Cpath d='M71 176c12-34 36-70 82-88'/%3E%3Ccircle cx='60' cy='58' r='18'/%3E%3Ccircle cx='162' cy='56' r='16'/%3E%3Ccircle cx='112' cy='124' r='18'/%3E%3Cpath d='M73 71l24 38M145 69l-22 37M97 124H53M127 124h40M99 140l-22 32M125 141l22 30'/%3E%3C/g%3E%3C/svg%3E");
+    }
     .service-card[data-service-id="healthcheck"]::after {
       background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 220 220'%3E%3Cg fill='none' stroke='%23d84f1d' stroke-width='8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M110 32l60 24v40c0 42-22 73-60 92-38-19-60-50-60-92V56z'/%3E%3Cpath d='M54 124h30l14-24 20 40 16-30h32'/%3E%3C/g%3E%3C/svg%3E");
     }
@@ -167,6 +170,7 @@
     }
     .icon-lldp { background: linear-gradient(135deg, #0f8a4a, #0e6d69); }
     .icon-netlog { background: linear-gradient(135deg, #1d4ed8, #1e40af); }
+    .icon-netclaw { background: linear-gradient(135deg, #7c3aed, #5b21b6); }
     .icon-healthcheck { background: linear-gradient(135deg, #d84f1d, #b42318); }
     .name {
       margin: 0;
@@ -276,7 +280,7 @@
   {% if active_tab == 'help' %}
   <section class="panel">
     <h1>{{ 'Help - Service Hub Guide' if is_en else 'Help - Service Hub 功能说明' }}</h1>
-    <p class="sub">{{ 'This page centrally manages LLDP, Netlog and HealthCheck services.' if is_en else '该页面用于统一管理 LLDP、Netlog、HealthCheck 三个服务。' }}</p>
+    <p class="sub">{{ 'This page centrally manages LLDP, Netlog, NetClaw and HealthCheck services.' if is_en else '该页面用于统一管理 LLDP、Netlog、NetClaw、HealthCheck 四个服务。' }}</p>
     <div style="margin-top:14px; display:grid; gap:10px;">
       <div><b>{{ '1. Toggle Control' if is_en else '1. 开关控制' }}</b>{{ ': Use one toggle per service to start/stop.' if is_en else '：每个服务只有一个开关按钮，点击后执行启停。' }}</div>
       <div><b>{{ '2. Color Legend' if is_en else '2. 颜色定义' }}</b>{{ ': Yellow=processing, Green=running, Red=stopped.' if is_en else '：黄色=处理中，绿色=运行中，红色=已停止。' }}</div>
@@ -298,13 +302,14 @@
                data-running="{{ '1' if svc.running else '0' }}">
         <div class="service-btn">
           <div class="icon icon-{{ svc.service_id }}">
-            {% if svc.service_id == 'lldp' %}LLDP{% elif svc.service_id == 'netlog' %}LOG{% else %}HC{% endif %}
+            {% if svc.service_id == 'lldp' %}LLDP{% elif svc.service_id == 'netlog' %}LOG{% elif svc.service_id == 'netclaw' %}🦞{% else %}HC{% endif %}
           </div>
           <h2 class="name">{{ svc.name }}</h2>
           <p class="desc">
             {% if is_en %}
               {% if svc.service_id == 'lldp' %}LLDP topology collection and visualization
               {% elif svc.service_id == 'netlog' %}Network log extraction and AI analysis
+              {% elif svc.service_id == 'netclaw' %}Network diagnosis and AI guided troubleshooting
               {% else %}Device inspection execution and reporting{% endif %}
             {% else %}
               {{ svc.subtitle }}

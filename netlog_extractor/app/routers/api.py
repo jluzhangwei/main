@@ -5,7 +5,7 @@ import json
 import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
 router = APIRouter(prefix="/api", tags=["api"])
@@ -83,3 +83,15 @@ async def download_zip(task_id: str, request: Request):
     zip_buf.seek(0)
     headers = {"Content-Disposition": f'attachment; filename="{task_id}.zip"'}
     return StreamingResponse(zip_buf, media_type="application/zip", headers=headers)
+
+
+@router.post("/tasks/delete")
+async def delete_tasks_api(request: Request, payload: dict = Body(default={})):
+    ids = payload.get("task_ids", [])
+    if not isinstance(ids, list):
+        raise HTTPException(status_code=400, detail="task_ids must be a list")
+    ids = [str(x or "").strip() for x in ids if str(x or "").strip()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="task_ids is empty")
+    result = request.app.state.task_manager.delete_tasks(ids)
+    return {"ok": True, **result}

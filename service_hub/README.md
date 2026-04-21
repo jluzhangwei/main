@@ -15,6 +15,8 @@ cd /Users/zhangwei/python/service_hub
 
 默认管理页地址：`http://127.0.0.1:18888/`
 
+`./run.sh` 默认以守护进程模式启动（终端关闭后仍保持运行），可避免前端按钮出现 `TypeError: Failed to fetch` 这类后端离线问题。
+
 首次启动会自动创建登录库：`service_hub/state/auth_db.json`。
 
 - 默认管理员账号：`admin`
@@ -25,7 +27,12 @@ cd /Users/zhangwei/python/service_hub
 ## 可选参数
 
 - 指定管理页端口：`HUB_PORT=19999 ./run.sh`
-- 启用开发热更新：`./run.sh --reload`
+- 前台运行（便于调试）：`./run.sh start --foreground`
+- 启用开发热更新（前台）：`./run.sh start --reload`
+- 停止服务：`./run.sh stop`
+- 重启服务：`./run.sh restart`
+- 查看状态：`./run.sh status`
+- 查看日志：`./run.sh logs`
 
 ## 页面能力
 

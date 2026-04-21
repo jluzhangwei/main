@@ -794,6 +794,54 @@
       if (aiReportStatusEl) aiReportStatusEl.textContent = msg || "AI 报告：待生成";
     }}
 
+    function ensureAiHistoryContainer() {{
+      let box = document.getElementById("ai_reports");
+      if (box) return box;
+      const host = document.getElementById("ai-analysis");
+      if (!host) return null;
+      box = document.createElement("div");
+      box.id = "ai_reports";
+      box.className = "ai-history-block";
+      const title = document.createElement("div");
+      title.className = "ai-history-title";
+      title.textContent = currentLang === "en" ? "Analysis History" : "分析历史";
+      box.appendChild(title);
+      host.appendChild(box);
+      return box;
+    }}
+
+    function appendAiHistoryFromResponse(data) {{
+      if (!data || !data.analysis_report_name) return;
+      const box = ensureAiHistoryContainer();
+      if (!box) return;
+      const empty = box.querySelector(".ai-history-empty");
+      if (empty) empty.remove();
+      const row = document.createElement("div");
+      row.className = "ai-history-row";
+      const fileName = String(data.analysis_report_name || "");
+      const stem = fileName.replace(/\.md$/i, "");
+      const now = new Date();
+      const ts = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0") + "-" + String(now.getDate()).padStart(2, "0")
+        + " " + String(now.getHours()).padStart(2, "0") + ":" + String(now.getMinutes()).padStart(2, "0") + ":" + String(now.getSeconds()).padStart(2, "0");
+      const status = String(data.status || "done");
+      const provider = String(data.provider_used || "-");
+      const model = String(data.model_used || "-");
+      const sep = '<span class="ai-history-sep">|</span>';
+      row.innerHTML =
+        '<span class="ai-history-file">' + stem + "</span>"
+        + sep + ts
+        + sep + status
+        + sep + provider
+        + sep + model
+        + sep + '<a href="/download_ai?name=' + encodeURIComponent(fileName) + '&lang=' + encodeURIComponent(currentLang) + '">.md</a>';
+      const title = box.querySelector(".ai-history-title");
+      if (title && title.nextSibling) {{
+        box.insertBefore(row, title.nextSibling);
+      }} else {{
+        box.appendChild(row);
+      }}
+    }}
+
     function updateAnalysisProgress(visible, percent, text) {{
       if (analysisProgressBoxEl) analysisProgressBoxEl.style.display = visible ? "" : "none";
       if (analysisProgressTextEl) analysisProgressTextEl.textContent = text || ("进度: " + String(percent || 0) + "%");
@@ -895,6 +943,7 @@
           gptResultEl.textContent = data.analysis || "(empty)";
           setAiReportStatus("AI 报告：报告完成");
           setGptStatus(formatAnalysisDoneStatus(data));
+          appendAiHistoryFromResponse(data);
           lastProgress = 100;
           updateAnalysisProgress(true, 100, "进度: 100%（完成）");
           analysisRunning = false;
@@ -1646,6 +1695,7 @@
         gptResultEl.textContent = data.analysis || "(empty)";
         setAiReportStatus("AI 报告：报告完成");
         setGptStatus(formatAnalysisDoneStatus(data));
+        appendAiHistoryFromResponse(data);
         analysisRunning = false;
       }} catch (e) {{
         gptResultEl.textContent = "分析失败: " + e;

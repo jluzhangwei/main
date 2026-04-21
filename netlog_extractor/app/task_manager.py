@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -126,7 +127,13 @@ class TaskManager:
                     dev.debug_log_path = result.get("debug_log_path")
                 except Exception as exc:
                     dev.status = "failed"
-                    dev.reason = str(exc)
+                    reason = str(exc).strip()
+                    if not reason:
+                        if isinstance(exc, asyncio.TimeoutError):
+                            reason = f"Device collection timeout after {timeout}s"
+                        else:
+                            reason = exc.__class__.__name__
+                    dev.reason = reason
                 finally:
                     task.progress_done += 1
                     task.updated_at = _now_s()
@@ -161,3 +168,40 @@ class TaskManager:
 
     def list_tasks(self) -> list[TaskRecord]:
         return self.db.list_tasks()
+
+    def delete_tasks(self, task_ids: list[str]) -> dict[str, Any]:
+        ids = [str(t or "").strip() for t in (task_ids or []) if str(t or "").strip()]
+        delete_candidates: list[str] = []
+        skipped_running: list[str] = []
+        removed_files = 0
+        for tid in ids:
+            task = self.db.get_task(tid)
+            if not task:
+                continue
+            if task.status in {"running", "pending"}:
+                skipped_running.append(tid)
+                continue
+            out_dir = self.output_root / tid
+            if out_dir.exists():
+                try:
+                    count_before = sum(1 for p in out_dir.rglob("*") if p.is_file())
+                except Exception:
+                    count_before = 0
+                shutil.rmtree(out_dir, ignore_errors=True)
+                removed_files += count_before
+            self._runtime_devices.pop(tid, None)
+            self._running.pop(tid, None)
+            delete_candidates.append(tid)
+        if delete_candidates and hasattr(self.db, "delete_tasks_exact"):
+            deleted_ids = self.db.delete_tasks_exact(delete_candidates)
+        else:
+            self.db.delete_tasks(delete_candidates) if delete_candidates else 0
+            deleted_ids = [tid for tid in delete_candidates if self.db.get_task(tid) is None]
+        deleted_count = len(deleted_ids)
+        return {
+            "requested": len(ids),
+            "deleted": int(deleted_count),
+            "deleted_ids": deleted_ids,
+            "skipped_running": skipped_running,
+            "removed_files": int(removed_files),
+        }

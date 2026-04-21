@@ -65,6 +65,7 @@ class AnalysisStatusStore:
                 "prompt_source": task.get("prompt_source", ""),
                 "token_usage": task.get("token_usage", {"total_tokens": 0}),
                 "token_total": int(task.get("token_total", 0) or 0),
+                "analysis_report_name": task.get("analysis_report_name", ""),
             }
 
     def request_cancel(self, analysis_id: str) -> bool:

@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 TaskStatus = Literal["pending", "running", "success", "partial_failed", "failed"]
 DeviceStatus = Literal["pending", "running", "success", "failed"]
-JumpMode = Literal["direct", "smc"]
+JumpMode = Literal["direct", "smc", "smc_pam_nd"]
 Vendor = Literal["cisco", "arista", "huawei", "unknown"]
 
 

@@ -13,7 +13,7 @@
   <h3>Core Features</h3>
   <ul>
     <li>Single or batch device log extraction (text input)</li>
-    <li>Connection modes: Direct SSH (asyncssh) and SMC jump mode (pty + subprocess)</li>
+    <li>Connection modes: Direct SSH (asyncssh), SMC jump mode, and SMC PAM/ND direct-device mode</li>
     <li>Auto vendor/profile handling for Cisco/Arista/Huawei</li>
     <li>Server-local time window input with device clock offset conversion</li>
     <li>Hit lines with context preservation and merged overlapping ranges</li>
@@ -26,7 +26,7 @@
 <div class="card">
   <h3>Quick Start</h3>
   <ol>
-    <li>Open <code>Create Task</code>, choose <code>direct</code> or <code>smc</code>.</li>
+    <li>Open <code>Create Task</code>, choose <code>direct</code>, <code>smc</code>, or <code>smc_pam_nd</code>.</li>
     <li>Fill device credentials and time range (<code>YYYY-MM-DD HH:MM:SS</code>).</li>
     <li>Paste device list in the address box (one per line).</li>
     <li>Create task and monitor progress in task detail.</li>
@@ -42,6 +42,16 @@
     <li>Auto-handles <code>yes/no</code> and password prompts.</li>
     <li>Recognizes common device prompts before command execution.</li>
     <li>One isolated SMC sub-session per device; cleaned up at task end.</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>SMC PAM/ND Notes</h3>
+  <ul>
+    <li>Runs a direct device-access command like <code>smc pam nd ssh {device_ip}</code> from a PTY session.</li>
+    <li>Supports variables such as <code>{device_ip}</code>, <code>{device_port}</code>, and <code>{username}</code>.</li>
+    <li>If device-auth times out and the tool suggests <code>--skip-deviceauth</code>, the client retries once automatically.</li>
+    <li>Still auto-handles <code>yes/no</code>, token prompts, and password prompts if the device asks for them.</li>
   </ul>
 </div>
 
@@ -76,7 +86,7 @@
   <h3>核心功能</h3>
   <ul>
     <li>单台与批量设备日志提取（文本输入）</li>
-    <li>连接方式：Direct SSH（asyncssh）和 SMC 跳板模式（pty + subprocess）</li>
+    <li>连接方式：Direct SSH（asyncssh）、SMC 跳板模式，以及 SMC PAM/ND 直达设备模式</li>
     <li>自动识别设备厂商/系统（Cisco/Arista/Huawei）并执行对应命令</li>
     <li>按“服务器本机时间”输入时间窗，自动计算设备时钟偏移（offset）后过滤</li>
     <li>命中日志保留前后上下文行，重叠/相邻区间自动合并去重</li>
@@ -89,7 +99,7 @@
 <div class="card">
   <h3>使用流程</h3>
   <ol>
-    <li>进入 <code>Create Task</code> 页面，选择 <code>direct</code> 或 <code>smc</code>。</li>
+    <li>进入 <code>Create Task</code> 页面，选择 <code>direct</code>、<code>smc</code> 或 <code>smc_pam_nd</code>。</li>
     <li>填写设备账号和时间范围（格式：<code>YYYY-MM-DD HH:MM:SS</code>）。</li>
     <li>在设备地址文本框粘贴设备列表（每行一台）。</li>
     <li>点击创建任务后进入任务详情页，页面会自动轮询进度。</li>
@@ -105,6 +115,16 @@
     <li>再从跳板 ssh 到目标设备（自动发送密码，最多重试）</li>
     <li>识别到设备提示符后执行版本/时间/日志命令</li>
     <li>每台设备独立 SMC 子会话，并发执行，任务结束自动清理进程</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>SMC PAM/ND 模式说明</h3>
+  <ul>
+    <li>直接在 PTY 中执行设备接入命令，例如 <code>smc pam nd ssh {device_ip}</code></li>
+    <li>支持变量 <code>{device_ip}</code>、<code>{device_port}</code>、<code>{username}</code></li>
+    <li>若设备认证超时并出现 <code>--skip-deviceauth</code> 提示，系统会自动回退重试一次</li>
+    <li>如果设备仍要求确认或密码，也会继续自动处理 <code>yes/no</code>、token、password 提示</li>
   </ul>
 </div>
 

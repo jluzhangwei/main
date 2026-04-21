@@ -69,6 +69,28 @@
 <div class="card">
   <h3 style="margin:0 0 8px;">{{ 'AI Log Analysis' if is_en else 'AI 日志分析' }}</h3>
   <div class="ai-section">
+    <div class="ai-section-title">{{ 'Prompt Templates' if is_en else '提示词模板' }}</div>
+    <div class="ai-grid">
+      <div>
+        <label>{{ 'System Prompt Template' if is_en else '系统提示词模板' }}</label>
+        <select id="selected_system_prompt">
+          {% for k,v in system_prompts.items() %}
+          <option value="{{ k }}" {% if selected_system_prompt == k %}selected{% endif %}>{{ system_prompt_labels.get(k, k) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>{{ 'Task Prompt Template' if is_en else '任务提示词模板' }}</label>
+        <select id="selected_task_prompt">
+          {% for k,v in task_prompts.items() %}
+          <option value="{{ k }}" {% if selected_task_prompt == k %}selected{% endif %}>{{ task_prompt_labels.get(k, k) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="ai-section">
     <div class="ai-section-title">{{ 'Analysis Execution Options' if is_en else '分析执行选项' }}</div>
     <div class="exec-options">
       <div class="exec-card">
@@ -121,6 +143,10 @@
     </div>
   </div>
   <div id="ai-output" class="markdown-body">{{ 'Analysis result will be shown here.' if is_en else '分析结果会显示在这里。' }}</div>
+  <div class="ai-section" style="margin-top:10px;">
+    <div class="ai-section-title">{{ 'Analysis History' if is_en else '分析历史' }}</div>
+    <div id="analysis-history-list" class="muted">{{ 'No history yet.' if is_en else '暂无历史记录。' }}</div>
+  </div>
 </div>
 
 <script>
@@ -145,6 +171,9 @@
     analysisFailed: UI_LANG === 'en' ? 'analysis failed' : '分析失败',
     currentModel: UI_LANG === 'en' ? 'Current model' : '当前模型',
     notStarted: UI_LANG === 'en' ? 'not started' : '未启动',
+    noHistory: UI_LANG === 'en' ? 'No history yet.' : '暂无历史记录。',
+    loadingHistory: UI_LANG === 'en' ? 'Loading history...' : '加载历史中...',
+    latestLoaded: UI_LANG === 'en' ? 'loaded latest analysis' : '已加载最近一次分析',
   };
   let latestTask = null;
   let currentAnalysisId = null;
@@ -247,6 +276,8 @@
     outEl.innerHTML = '';
     updateAnalysisProgress(true, 0, `${T.progress}: 0% (${T.preparing})`);
     const payload = {
+      selected_system_prompt: val('selected_system_prompt', ''),
+      selected_task_prompt: val('selected_task_prompt', ''),
       batched_analysis: checked('batched_analysis'),
       fragmented_analysis: checked('fragmented_analysis'),
       analysis_parallelism: parseInt(val('analysis_parallelism', '2'), 10),
@@ -298,22 +329,110 @@
       latestAnalysisText = data.result || '';
       outEl.innerHTML = renderMarkdown(latestAnalysisText);
       updateAnalysisProgress(true, 100, `${T.progress}: 100% | ${data.progress_text || T.phaseDone}`);
+      loadAnalysisHistory();
       btn.disabled = false;
       return;
     }
     if (data.status === 'failed') {
       outEl.innerHTML = renderMarkdown(data.error || T.analysisFailed);
       updateAnalysisProgress(true, p || 1, `${T.progress}: ${p || 1}% | ${data.progress_text || T.phaseFailed}`);
+      loadAnalysisHistory();
       btn.disabled = false;
       return;
     }
     setTimeout(pollAnalysis, 2000);
   }
 
+  function renderHistoryList(items) {
+    const box = document.getElementById('analysis-history-list');
+    if (!box) return;
+    if (!items || !items.length) {
+      box.textContent = T.noHistory;
+      return;
+    }
+    const rows = items.map((x) => {
+      const aid = x.analysis_id || '-';
+      const status = x.status || '-';
+      const created = x.created_at || '-';
+      const provider = x.provider_used || '-';
+      const model = x.model_used || '-';
+      const md = x.markdown_file
+        ? `<a href="/api/tasks/{{ task.task_id }}/analysis/history/${encodeURIComponent(x.markdown_file)}?lang=${LANG_Q}" target="_blank">.md</a>`
+        : '';
+      const js = x.json_file
+        ? `<a href="/api/tasks/{{ task.task_id }}/analysis/history/${encodeURIComponent(x.json_file)}?lang=${LANG_Q}" target="_blank">.json</a>`
+        : '';
+      return `<div class="history-row"><code>${aid}</code> | ${created} | ${status} | ${provider} | ${model} ${md} ${js}</div>`;
+    }).join('');
+    box.innerHTML = rows;
+  }
+
+  async function loadAnalysisHistory() {
+    const box = document.getElementById('analysis-history-list');
+    if (box) box.textContent = T.loadingHistory;
+    try {
+      const res = await fetch('/api/tasks/{{ task.task_id }}/analysis/history?limit=12');
+      if (!res.ok) {
+        renderHistoryList([]);
+        return;
+      }
+      const data = await res.json();
+      renderHistoryList((data && data.items) ? data.items : []);
+    } catch (e) {
+      renderHistoryList([]);
+    }
+  }
+
+  async function restoreAnalysisState() {
+    const statusEl = document.getElementById('ai-status');
+    const outEl = document.getElementById('ai-output');
+    const btn = document.getElementById('ai-start-btn');
+    try {
+      const activeRes = await fetch('/api/tasks/{{ task.task_id }}/analysis/active');
+      if (activeRes.ok) {
+        const activeData = await activeRes.json();
+        if (activeData && activeData.active && activeData.analysis_id) {
+          currentAnalysisId = String(activeData.analysis_id);
+          if (statusEl) statusEl.textContent = `${T.running} (${currentAnalysisId})`;
+          if (btn) btn.disabled = true;
+          setTimeout(pollAnalysis, 600);
+          return;
+        }
+      }
+    } catch (e) {
+      // continue fallback
+    }
+    try {
+      const latestRes = await fetch('/api/tasks/{{ task.task_id }}/analysis/latest');
+      if (!latestRes.ok) return;
+      const latestData = await latestRes.json();
+      if (!latestData || !latestData.found || !latestData.status) return;
+      const data = latestData.status;
+      const p = Number(data.progress_percent || 0);
+      const stageText = data.progress_text || '';
+      if (statusEl) statusEl.textContent = `${data.status || '-'} | provider=${data.provider_used || '-'} | model=${data.model_used || '-'}`;
+      if (outEl && (data.result || data.error)) {
+        latestAnalysisText = data.result || '';
+        outEl.innerHTML = renderMarkdown(data.result || data.error || '');
+      }
+      if (stageText || p > 0) {
+        const progressLine = stageText ? `${T.progress}: ${p}% | ${stageText}` : `${T.progress}: ${p}%`;
+        updateAnalysisProgress(true, p, progressLine);
+      }
+      if (statusEl && data.status !== 'running') {
+        statusEl.textContent += ` | ${T.latestLoaded}`;
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
   async function runPrecheck() {
     const box = document.getElementById('analysis-precheck-box');
     if (box) box.textContent = T.estimateLoading;
     const payload = {
+      selected_system_prompt: val('selected_system_prompt', ''),
+      selected_task_prompt: val('selected_task_prompt', ''),
       batched_analysis: checked('batched_analysis'),
       fragmented_analysis: checked('fragmented_analysis'),
       analysis_parallelism: parseInt(val('analysis_parallelism', '2'), 10),
@@ -474,6 +593,12 @@
       if (document.getElementById('chunk_strategy')) document.getElementById('chunk_strategy').value = cfg.chunk_strategy || 'hybrid';
       if (document.getElementById('analysis_retries')) document.getElementById('analysis_retries').value = cfg.analysis_retries == null ? 1 : cfg.analysis_retries;
       if (document.getElementById('llm_call_timeout_sec')) document.getElementById('llm_call_timeout_sec').value = cfg.llm_call_timeout_sec == null ? 240 : cfg.llm_call_timeout_sec;
+      if (document.getElementById('selected_system_prompt') && cfg.selected_system_prompt) {
+        document.getElementById('selected_system_prompt').value = cfg.selected_system_prompt;
+      }
+      if (document.getElementById('selected_task_prompt') && cfg.selected_task_prompt) {
+        document.getElementById('selected_task_prompt').value = cfg.selected_task_prompt;
+      }
       const model = cfg.provider ? `${cfg.provider} | ${cfg[cfg.provider + '_model'] || '-'}` : '-';
       const aiStatus = document.getElementById('ai-status');
       if (aiStatus) aiStatus.textContent = `${T.currentModel}: ${model} | ${T.notStarted}`;
@@ -486,11 +611,14 @@
     document.getElementById('analysis-precheck-btn').addEventListener('click', runPrecheck);
   }
   loadAiDefaults();
+  restoreAnalysisState();
+  loadAnalysisHistory();
   setTimeout(poll, 1000);
 </script>
 <style>
   .ai-section { border:1px solid #d7dee7; border-radius:10px; background:#fff; padding:10px; margin-bottom:10px; }
   .ai-section-title { font-weight:700; color:#1e293b; margin-bottom:8px; }
+  .ai-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
   .exec-options { display:grid; grid-template-columns:1.2fr 1fr; gap:10px; }
   .exec-card { border:1px solid #d7dee7; border-radius:8px; background:#fff; padding:10px; }
   .check-item { display:flex; align-items:center; gap:8px; margin:6px 0 3px; font-weight:600; }
@@ -522,7 +650,12 @@
   .markdown-body blockquote { margin:8px 0; padding:6px 10px; border-left:3px solid #94a3b8; color:#334155; background:#f1f5f9; }
   .markdown-body a { color:#0b6e4f; }
   .markdown-body .md-gap { height:4px; }
-  @media (max-width: 920px) { .exec-options { grid-template-columns:1fr; } }
+  .history-row { padding:5px 0; border-bottom:1px solid #e2e8f0; font-size:13px; }
+  .history-row:last-child { border-bottom:none; }
+  @media (max-width: 920px) {
+    .ai-grid { grid-template-columns:1fr; }
+    .exec-options { grid-template-columns:1fr; }
+  }
 </style>
 {% endif %}
 {% endblock %}

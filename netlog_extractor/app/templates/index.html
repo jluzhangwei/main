@@ -41,6 +41,7 @@
         <select name="jump_mode" id="jump_mode" onchange="toggleSmc()">
           <option value="direct">{{ 'direct' if lang == 'en' else 'direct（直连）' }}</option>
           <option value="smc">{{ 'smc (CLI jump)' if lang == 'en' else 'smc（命令行接入）' }}</option>
+          <option value="smc_pam_nd">{{ 'smc pam nd ssh' if lang == 'en' else 'smc pam nd ssh（直达设备）' }}</option>
         </select>
       </div>
       <div>
@@ -55,9 +56,9 @@
     </div>
 
     <div id="smc-box" class="row" style="display:none;">
-      <label>{{ 'SMC Command Template' if lang == 'en' else 'SMC 命令模板' }}</label>
-      <input name="smc_command" placeholder="smc server toc {jump_host}" />
-      <div class="tips">{{ 'SMC mode executes this command; supported vars: {jump_host}, {jump_port}.' if lang == 'en' else 'SMC 模式会执行该命令；支持变量：`{jump_host}`、`{jump_port}`。' }}</div>
+      <label id="smc_command_label">{{ 'SMC Command Template' if lang == 'en' else 'SMC 命令模板' }}</label>
+      <input name="smc_command" id="smc_command" placeholder="smc server toc {jump_host}" />
+      <div class="tips" id="smc_command_tip">{{ 'SMC mode executes this command; supported vars: {jump_host}, {jump_port}.' if lang == 'en' else 'SMC 模式会执行该命令；支持变量：`{jump_host}`、`{jump_port}`。' }}</div>
     </div>
 
     <div class="row">
@@ -158,8 +159,20 @@
 
   function toggleSmc(){
     const mode = document.getElementById('jump_mode').value;
-    document.getElementById('smc-host-row').style.display = mode === 'smc' ? 'block' : 'none';
-    document.getElementById('smc-box').style.display = mode === 'smc' ? 'block' : 'none';
+    const hostRow = document.getElementById('smc-host-row');
+    const box = document.getElementById('smc-box');
+    const input = document.getElementById('smc_command');
+    const tip = document.getElementById('smc_command_tip');
+    hostRow.style.display = mode === 'smc' ? 'block' : 'none';
+    box.style.display = (mode === 'smc' || mode === 'smc_pam_nd') ? 'block' : 'none';
+    if (!input || !tip) return;
+    if (mode === 'smc_pam_nd') {
+      input.placeholder = 'smc pam nd ssh {device_ip}';
+      tip.textContent = {{ "'PAM/ND mode executes a direct device-access command; supported vars: {device_ip}, {device_port}, {username}.'" if lang == 'en' else "'PAM/ND 模式会直接执行设备接入命令；支持变量：{device_ip}、{device_port}、{username}。'" }};
+    } else {
+      input.placeholder = 'smc server toc {jump_host}';
+      tip.textContent = {{ "'SMC mode executes this command; supported vars: {jump_host}, {jump_port}.' " if lang == 'en' else "'SMC 模式会执行该命令；支持变量：{jump_host}、{jump_port}。'" }};
+    }
   }
 
   restoreFormState();

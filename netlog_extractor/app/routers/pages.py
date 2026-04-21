@@ -6,9 +6,12 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from ..ai.prompt_store import localized_prompt_catalog, localized_prompt_labels
+from ..ai.state_store import load_gpt_config
 from ..models import DeviceInput
 from ..services.task_service import (
     build_payload,
+    default_smc_command,
     parse_devices_from_text,
 )
 
@@ -16,9 +19,16 @@ router = APIRouter(tags=["pages"])
 templates = Jinja2Templates(directory=(Path(__file__).resolve().parent.parent / "templates").as_posix())
 
 
+def _no_cache(resp: HTMLResponse):
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
+
+
 @router.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request, "error": None})
+    return _no_cache(templates.TemplateResponse("index.html", {"request": request, "error": None}))
 
 
 @router.post("/tasks/create", response_class=HTMLResponse)
@@ -51,7 +61,7 @@ async def create_task(
             if not (device_ip.strip() and username.strip() and password.strip()):
                 raise ValueError("Single mode requires device_ip, username, password")
 
-            final_smc_cmd = smc_command.strip() or (f"smc server toc {jump_host.strip()}" if jump_mode == "smc" else None)
+            final_smc_cmd = smc_command.strip() or default_smc_command(jump_mode, jump_host.strip() or None)
             devices.append(
                 DeviceInput(
                     device_ip=device_ip.strip(),
@@ -68,7 +78,7 @@ async def create_task(
         else:
             global_user = default_username.strip() or None
             global_pass = default_password or None
-            final_smc_cmd = smc_command.strip() or (f"smc server toc {jump_host.strip()}" if jump_mode == "smc" else None)
+            final_smc_cmd = smc_command.strip() or default_smc_command(jump_mode, jump_host.strip() or None)
 
             if batch_text.strip():
                 devices.extend(
@@ -107,27 +117,66 @@ async def create_task(
         lang_norm = "en" if str(lang or "").strip().lower().startswith("en") else "zh"
         return RedirectResponse(url=f"/tasks/{task.task_id}?lang={lang_norm}", status_code=303)
     except Exception as exc:
-        return templates.TemplateResponse("index.html", {"request": request, "error": str(exc)}, status_code=400)
+            return _no_cache(templates.TemplateResponse("index.html", {"request": request, "error": str(exc)}, status_code=400))
 
 
 @router.get("/tasks", response_class=HTMLResponse)
 async def list_tasks_page(request: Request):
     tasks = request.app.state.task_manager.list_tasks()
-    return templates.TemplateResponse("tasks.html", {"request": request, "tasks": tasks})
+    return _no_cache(templates.TemplateResponse("tasks.html", {"request": request, "tasks": tasks}))
+
+
+@router.post("/tasks/delete")
+async def delete_tasks_form(
+    request: Request,
+    lang: str = Form("zh"),
+    task_ids: list[str] = Form(default=[]),
+):
+    ids = [str(x or "").strip() for x in (task_ids or []) if str(x or "").strip()]
+    dedup_ids: list[str] = []
+    seen: set[str] = set()
+    for tid in ids:
+        if tid in seen:
+            continue
+        seen.add(tid)
+        dedup_ids.append(tid)
+    if dedup_ids:
+        request.app.state.task_manager.delete_tasks(dedup_ids)
+    lang_norm = "en" if str(lang or "").strip().lower().startswith("en") else "zh"
+    return RedirectResponse(url=f"/tasks?lang={lang_norm}", status_code=303)
 
 
 @router.get("/tasks/{task_id}", response_class=HTMLResponse)
 async def task_detail(task_id: str, request: Request):
     task = request.app.state.task_manager.get_task(task_id)
     if not task:
-        return templates.TemplateResponse(
+        return _no_cache(templates.TemplateResponse(
             "task_detail.html",
             {"request": request, "task": None, "error": "Task not found"},
             status_code=404,
-        )
-    return templates.TemplateResponse("task_detail.html", {"request": request, "task": task, "error": None})
+        ))
+    lang = str(request.query_params.get("lang", "zh") or "zh")
+    cfg = load_gpt_config()
+    system_prompts = localized_prompt_catalog("system", lang)
+    task_prompts = localized_prompt_catalog("task", lang)
+    system_prompt_labels = localized_prompt_labels("system", lang)
+    task_prompt_labels = localized_prompt_labels("task", lang)
+    return _no_cache(templates.TemplateResponse(
+        "task_detail.html",
+        {
+            "request": request,
+            "task": task,
+            "error": None,
+            "system_prompts": system_prompts,
+            "task_prompts": task_prompts,
+            "system_prompt_labels": system_prompt_labels,
+            "task_prompt_labels": task_prompt_labels,
+            "selected_system_prompt": str(cfg.get("selected_system_prompt", "") or ""),
+            "selected_task_prompt": str(cfg.get("selected_task_prompt", "") or ""),
+        },
+    ))
 
 
 @router.get("/help", response_class=HTMLResponse)
 async def help_page(request: Request):
-    return templates.TemplateResponse("help.html", {"request": request})
+    return _no_cache(templates.TemplateResponse("help.html", {"request": request}))

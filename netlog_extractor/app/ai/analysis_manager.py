@@ -19,6 +19,7 @@ class AIAnalysisManager:
     def __init__(self, output_root: str = "./netlog_extractor/output") -> None:
         self.output_root = Path(output_root)
         self._tasks: dict[str, dict[str, Any]] = {}
+        self._task_latest: dict[str, str] = {}
 
     def _now(self) -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -27,6 +28,80 @@ class AIAnalysisManager:
         task["progress_percent"] = max(0, min(100, int(percent)))
         task["progress_text"] = str(text or "")
         task["updated_at"] = self._now()
+
+    def _task_analysis_dir(self, task_id: str) -> Path:
+        p = self.output_root / task_id / "ai_reports"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def _persist_analysis_snapshot(self, task: dict[str, Any]) -> None:
+        task_id = str(task.get("task_id", "") or "").strip()
+        analysis_id = str(task.get("analysis_id", "") or "").strip()
+        if not task_id or not analysis_id:
+            return
+        data = {k: v for k, v in task.items() if not str(k).startswith("_")}
+        out_dir = self._task_analysis_dir(task_id)
+        latest_json = out_dir / "latest.json"
+        latest_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        latest_id = out_dir / "latest_analysis_id.txt"
+        latest_id.write_text(analysis_id, encoding="utf-8")
+        # Per-analysis json snapshot
+        item_json = out_dir / f"analysis_{analysis_id}.json"
+        item_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _persist_analysis_history(self, task: dict[str, Any]) -> None:
+        task_id = str(task.get("task_id", "") or "").strip()
+        analysis_id = str(task.get("analysis_id", "") or "").strip()
+        if not task_id or not analysis_id:
+            return
+        out_dir = self._task_analysis_dir(task_id)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_provider = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(task.get("provider_used", "") or "-"))[:40]
+        safe_model = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(task.get("model_used", "") or "-"))[:70]
+        base = f"analysis_{ts}_{analysis_id}_{safe_provider}_{safe_model}"
+        md_path = out_dir / f"{base}.md"
+        json_path = out_dir / f"{base}.json"
+        result_text = str(task.get("result", "") or "")
+        md_body = result_text if result_text.startswith("#") else f"# AI Analysis Report\n\n{result_text}"
+        md_path.write_text(md_body, encoding="utf-8")
+        data = {k: v for k, v in task.items() if not str(k).startswith("_")}
+        data["history_markdown"] = md_path.name
+        json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def list_history(self, task_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        out_dir = self._task_analysis_dir(task_id)
+        items: list[dict[str, Any]] = []
+        for p in sorted(out_dir.glob("analysis_*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+            if p.name in {"latest.json"}:
+                continue
+            if re.fullmatch(r"analysis_[0-9a-f]{12}\.json", p.name):
+                # Skip mutable per-analysis snapshot; history should show immutable timestamped records.
+                continue
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            analysis_id = str(data.get("analysis_id", "") or "")
+            created_at = str(data.get("created_at", "") or "")
+            status = str(data.get("status", "") or "")
+            provider = str(data.get("provider_used", "") or "")
+            model = str(data.get("model_used", "") or "")
+            md_name = str(data.get("history_markdown", "") or "")
+            md_path = (out_dir / md_name) if md_name else None
+            items.append(
+                {
+                    "analysis_id": analysis_id,
+                    "created_at": created_at,
+                    "status": status,
+                    "provider_used": provider,
+                    "model_used": model,
+                    "json_file": p.name,
+                    "markdown_file": md_name if (md_path and md_path.exists()) else "",
+                }
+            )
+            if len(items) >= max(1, int(limit)):
+                break
+        return items
 
     def _format_healthcheck_style_progress(self, task: dict[str, Any], stage: str) -> str:
         started = float(task.get("_started_mono", time.monotonic()))
@@ -335,6 +410,9 @@ class AIAnalysisManager:
         raise RuntimeError(msg)
 
     def start(self, task_id: str, devices: list[dict[str, str]] | None = None) -> str:
+        active = self.get_active_by_task(task_id)
+        if active:
+            return active["analysis_id"]
         analysis_id = uuid.uuid4().hex[:12]
         device_list = list(devices or [])
         total = len(device_list) if device_list else 1
@@ -364,11 +442,13 @@ class AIAnalysisManager:
             "_chunk_total_by_ip": {},
             "_chunk_done_by_ip": {},
         }
+        self._task_latest[task_id] = analysis_id
         self._set_progress(
             self._tasks[analysis_id],
             1,
             self._format_healthcheck_style_progress(self._tasks[analysis_id], "准备中"),
         )
+        self._persist_analysis_snapshot(self._tasks[analysis_id])
         asyncio.create_task(self._run(analysis_id, task_id))
         return analysis_id
 
@@ -639,9 +719,14 @@ class AIAnalysisManager:
             task["status"] = "success"
             task["token_stats"] = tokens
             self._set_progress(task, 100, self._format_healthcheck_style_progress(task, "完成"))
+            self._persist_analysis_snapshot(task)
+            self._persist_analysis_history(task)
 
             out_path = self.output_root / task_id / "analysis.json"
-            out_path.write_text(json.dumps({k: v for k, v in task.items() if not str(k).startswith("_")}, ensure_ascii=False, indent=2), encoding="utf-8")
+            out_path.write_text(
+                json.dumps({k: v for k, v in task.items() if not str(k).startswith("_")}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
         except Exception as exc:
             task["status"] = "failed"
             reason = str(exc).strip() or repr(exc)
@@ -652,12 +737,42 @@ class AIAnalysisManager:
                 max(1, int(task.get("progress_percent", 0) or 1)),
                 self._format_healthcheck_style_progress(task, "失败"),
             )
+            self._persist_analysis_snapshot(task)
+            self._persist_analysis_history(task)
 
     def get(self, analysis_id: str) -> dict[str, Any] | None:
         data = self._tasks.get(analysis_id)
         if not data:
             return None
         return {k: v for k, v in data.items() if not str(k).startswith("_")}
+
+    def get_active_by_task(self, task_id: str) -> dict[str, Any] | None:
+        # In-memory running task first.
+        for aid, data in self._tasks.items():
+            if str(data.get("task_id", "") or "") != str(task_id):
+                continue
+            if str(data.get("status", "") or "") == "running":
+                return {"analysis_id": aid, **{k: v for k, v in data.items() if not str(k).startswith("_")}}
+        return None
+
+    def get_latest_by_task(self, task_id: str) -> dict[str, Any] | None:
+        # Prefer in-memory latest for this task.
+        latest_id = self._task_latest.get(str(task_id))
+        if latest_id and latest_id in self._tasks:
+            data = self._tasks[latest_id]
+            return {"analysis_id": latest_id, **{k: v for k, v in data.items() if not str(k).startswith("_")}}
+        # Fallback to persisted latest snapshot.
+        latest_json = self._task_analysis_dir(task_id) / "latest.json"
+        if not latest_json.exists():
+            return None
+        try:
+            data = json.loads(latest_json.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        aid = str(data.get("analysis_id", "") or "")
+        if aid:
+            self._task_latest[str(task_id)] = aid
+        return {"analysis_id": aid, **data}
     _TS_PATTERNS = [
         # 2026 Feb 18 14:01:27.855
         re.compile(r"(?P<y>\d{4})\s+(?P<m>[A-Za-z]{3})\s+(?P<d>\d{1,2})\s+(?P<h>\d{2}):(?P<mi>\d{2}):(?P<s>\d{2})"),

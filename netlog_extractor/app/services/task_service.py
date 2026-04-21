@@ -12,6 +12,15 @@ def parse_time_or_raise(value: str) -> datetime:
     return datetime.strptime(value.strip(), "%Y-%m-%d %H:%M:%S")
 
 
+def default_smc_command(mode: str, jump_host: str | None) -> str | None:
+    normalized = str(mode or "").strip().lower()
+    if normalized == "smc":
+        return f"smc server toc {str(jump_host or '').strip()}".strip()
+    if normalized == "smc_pam_nd":
+        return "smc pam nd ssh {device_ip}"
+    return None
+
+
 def parse_devices_from_text(
     raw_text: str,
     default_username: str | None,
@@ -89,8 +98,8 @@ def parse_devices_from_csv(
         local_jump_port = int(local_jump_port_str) if local_jump_port_str else jump_port
 
         local_smc_cmd = (row.get("smc_command") or "").strip() or smc_command
-        if mode == "smc" and not local_smc_cmd:
-            local_smc_cmd = f"smc server toc {local_jump_host}"
+        if mode in {"smc", "smc_pam_nd"} and not local_smc_cmd:
+            local_smc_cmd = default_smc_command(mode, local_jump_host)
 
         devices.append(
             DeviceInput(
@@ -121,7 +130,7 @@ def build_payload(form: dict[str, Any], devices: list[DeviceInput]) -> TaskCreat
         default_jump_mode=form.get("jump_mode", "direct"),
         jump_host=form.get("jump_host") or None,
         jump_port=int(form.get("jump_port") or 22),
-        smc_command=form.get("smc_command") or None,
+        smc_command=form.get("smc_command") or default_smc_command(form.get("jump_mode", "direct"), form.get("jump_host")) or None,
         debug_mode=bool(form.get("debug_mode", False)),
         devices=devices,
     )

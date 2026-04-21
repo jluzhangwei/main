@@ -100,6 +100,36 @@ SERVICES: dict[str, ServiceConfig] = {
             "exit 0",
         ),
     ),
+    "netclaw": ServiceConfig(
+        service_id="netclaw",
+        name="NetClaw",
+        subtitle="网络诊断与 AI 交互分析",
+        port=8001,
+        open_path="/",
+        internal_host="127.0.0.1",
+        start_cmd=("./run.sh",),
+        cwd=WORKSPACE_ROOT / "netdiag",
+        start_mode="daemon",
+        startup_wait_seconds=4.0,
+        restart_cmd=(
+            "bash",
+            "-lc",
+            "pids=$(lsof -tiTCP:8001 -sTCP:LISTEN 2>/dev/null || true); "
+            "if [ -n \"$pids\" ]; then kill $pids 2>/dev/null || true; sleep 1; fi; "
+            "pids2=$(lsof -tiTCP:8001 -sTCP:LISTEN 2>/dev/null || true); "
+            "if [ -n \"$pids2\" ]; then kill -9 $pids2 2>/dev/null || true; sleep 1; fi; "
+            "exec ./run.sh",
+        ),
+        stop_cmd=(
+            "bash",
+            "-lc",
+            "pids=$(lsof -tiTCP:8001 -sTCP:LISTEN 2>/dev/null || true); "
+            "if [ -n \"$pids\" ]; then kill $pids 2>/dev/null || true; sleep 1; fi; "
+            "pids2=$(lsof -tiTCP:8001 -sTCP:LISTEN 2>/dev/null || true); "
+            "if [ -n \"$pids2\" ]; then kill -9 $pids2 2>/dev/null || true; sleep 1; fi; "
+            "exit 0",
+        ),
+    ),
     "healthcheck": ServiceConfig(
         service_id="healthcheck",
         name="HealthCheck Runner",

@@ -25,7 +25,7 @@ class AnalysisService:
         add_token_usage: Callable[[str, int], Dict],
         status_store: AnalysisStatusStore,
         llm_adapter: LLMAdapter,
-        persist_callback: Optional[Callable[[Dict], None]] = None,
+        persist_callback: Optional[Callable[[Dict], str]] = None,
     ):
         self._jobs = jobs
         self._jobs_lock = jobs_lock
@@ -135,7 +135,7 @@ class AnalysisService:
                         duration_seconds=max(0.0, time.time() - start_ts_local),
                     )
                     if self._persist_callback:
-                        self._persist_callback(
+                        report_name = self._persist_callback(
                             {
                                 "analysis_id": analysis_id,
                                 "job_id": job_id,
@@ -150,6 +150,8 @@ class AnalysisService:
                                 "duration_seconds": max(0.0, time.time() - start_ts_local),
                             }
                         )
+                        if report_name:
+                            _update(analysis_report_name=report_name)
                     return
                 with self._jobs_lock:
                     job = self._jobs.get(job_id)
@@ -345,7 +347,7 @@ class AnalysisService:
                         duration_seconds=max(0.0, time.time() - start_ts_local),
                     )
                     if self._persist_callback:
-                        self._persist_callback(
+                        report_name = self._persist_callback(
                             {
                                 "analysis_id": analysis_id,
                                 "job_id": job_id,
@@ -360,6 +362,8 @@ class AnalysisService:
                                 "duration_seconds": max(0.0, time.time() - start_ts_local),
                             }
                         )
+                        if report_name:
+                            _update(analysis_report_name=report_name)
                     return
 
                 expected_devices: List[str] = []
@@ -412,18 +416,9 @@ class AnalysisService:
                 final_text = "\n".join(final_text_parts).strip()
 
                 token_stats = self._add_token_usage(llm["provider"], total_tokens_used)
-                _update(
-                    status="done",
-                    stage="done",
-                    message=f"分批分析完成（成功 {len(results) - len(failed_results)} / 总计 {len(results)}）",
-                    progress=100,
-                    duration_seconds=max(0.0, time.time() - start_ts_local),
-                    result=final_text,
-                    token_usage={"total_tokens": total_tokens_used},
-                    token_total=int(token_stats.get("total_tokens", 0)),
-                )
+                report_name_done = ""
                 if self._persist_callback:
-                    self._persist_callback(
+                    report_name_done = self._persist_callback(
                         {
                             "analysis_id": analysis_id,
                             "job_id": job_id,
@@ -437,7 +432,18 @@ class AnalysisService:
                             "token_total": int(token_stats.get("total_tokens", 0)),
                             "duration_seconds": max(0.0, time.time() - start_ts_local),
                         }
-                    )
+                    ) or ""
+                _update(
+                    status="done",
+                    stage="done",
+                    message=f"分批分析完成（成功 {len(results) - len(failed_results)} / 总计 {len(results)}）",
+                    progress=100,
+                    duration_seconds=max(0.0, time.time() - start_ts_local),
+                    result=final_text,
+                    token_usage={"total_tokens": total_tokens_used},
+                    token_total=int(token_stats.get("total_tokens", 0)),
+                    analysis_report_name=report_name_done,
+                )
             except Exception as exc:
                 _update(
                     status="error",
@@ -447,7 +453,7 @@ class AnalysisService:
                     duration_seconds=max(0.0, time.time() - start_ts_local),
                 )
                 if self._persist_callback:
-                    self._persist_callback(
+                    report_name = self._persist_callback(
                         {
                             "analysis_id": analysis_id,
                             "job_id": job_id,
@@ -462,6 +468,8 @@ class AnalysisService:
                             "duration_seconds": max(0.0, time.time() - start_ts_local),
                         }
                     )
+                    if report_name:
+                        _update(analysis_report_name=report_name)
 
         threading.Thread(target=_worker, daemon=True).start()
         return analysis_id
