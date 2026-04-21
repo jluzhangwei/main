@@ -9,7 +9,25 @@ from ..models import DeviceInput, TaskCreatePayload
 
 
 def parse_time_or_raise(value: str) -> datetime:
-    return datetime.strptime(value.strip(), "%Y-%m-%d %H:%M:%S")
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("time value is empty")
+
+    normalized = raw.replace("T", " ")
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1]
+
+    for candidate in (normalized, normalized.split(".")[0]):
+        try:
+            return datetime.fromisoformat(candidate)
+        except ValueError:
+            pass
+        try:
+            return datetime.strptime(candidate, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+
+    raise ValueError(f"Unsupported time format: {raw}")
 
 
 def default_smc_command(mode: str, jump_host: str | None) -> str | None:
@@ -26,12 +44,14 @@ def parse_devices_from_text(
     default_username: str | None,
     default_password: str | None,
     default_jump_mode: str,
+    sql_only_mode: bool,
     jump_host: str | None,
     jump_port: int,
     smc_command: str | None,
     vendor_hint: str | None,
 ) -> list[DeviceInput]:
     devices: list[DeviceInput] = []
+    require_credentials = (not sql_only_mode) and str(default_jump_mode or "").strip().lower() != "smc_pam_nd"
     for line in raw_text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -49,7 +69,7 @@ def parse_devices_from_text(
         device_name = parts[1] if len(parts) > 1 and parts[1] else None
         local_vendor = parts[2] if len(parts) > 2 and parts[2] else vendor_hint
 
-        if not default_username or not default_password:
+        if require_credentials and (not default_username or not default_password):
             raise ValueError("Batch text mode requires global username/password")
 
         devices.append(
@@ -57,8 +77,8 @@ def parse_devices_from_text(
                 device_ip=ip,
                 device_port=device_port,
                 device_name=device_name,
-                username=default_username,
-                password=default_password,
+                username=default_username or "",
+                password=default_password or "",
                 vendor_hint=local_vendor,
                 jump_mode=default_jump_mode,
                 jump_host=jump_host,
@@ -87,12 +107,13 @@ def parse_devices_from_csv(
         if not device_ip:
             continue
 
+        mode = (row.get("jump_mode") or "").strip() or default_jump_mode
+        require_credentials = str(mode or "").strip().lower() != "smc_pam_nd"
         username = (row.get("username") or "").strip() or (default_username or "")
         password = (row.get("password") or "").strip() or (default_password or "")
-        if not username or not password:
+        if require_credentials and (not username or not password):
             raise ValueError(f"CSV row for {device_ip} missing username/password")
 
-        mode = (row.get("jump_mode") or "").strip() or default_jump_mode
         local_jump_host = (row.get("jump_host") or "").strip() or jump_host
         local_jump_port_str = (row.get("jump_port") or "").strip()
         local_jump_port = int(local_jump_port_str) if local_jump_port_str else jump_port
@@ -119,6 +140,7 @@ def parse_devices_from_csv(
 
 
 def build_payload(form: dict[str, Any], devices: list[DeviceInput]) -> TaskCreatePayload:
+    sql_only_mode = bool(form.get("sql_only_mode", False))
     payload = TaskCreatePayload(
         start_time=parse_time_or_raise(form["start_time"]),
         end_time=parse_time_or_raise(form["end_time"]),
@@ -132,6 +154,13 @@ def build_payload(form: dict[str, Any], devices: list[DeviceInput]) -> TaskCreat
         jump_port=int(form.get("jump_port") or 22),
         smc_command=form.get("smc_command") or default_smc_command(form.get("jump_mode", "direct"), form.get("jump_host")) or None,
         debug_mode=bool(form.get("debug_mode", False)),
+        sql_query_mode=bool(form.get("sql_query_mode", False)) or sql_only_mode,
+        sql_only_mode=sql_only_mode,
+        db_host=form.get("db_host") or None,
+        db_port=int(form.get("db_port") or 0) or None,
+        db_user=form.get("db_user") or None,
+        db_password=form.get("db_password") or None,
+        db_name=form.get("db_name") or None,
         devices=devices,
     )
     if payload.end_time < payload.start_time:

@@ -11,7 +11,14 @@ from ..connectors.smc_shell import SmcShellClient, SmcShellConfig
 from ..connectors.ssh_direct import DirectSSHClient
 from ..models import DeviceInput
 from ..parsers.log_filter import filter_log_with_context
-from ..parsers.time_parser import extract_device_profile, parse_device_clock, parse_log_line_timestamp
+from ..parsers.time_parser import (
+    extract_device_name_from_version,
+    extract_device_profile,
+    parse_device_clock,
+    parse_device_name,
+    parse_log_line_timestamp,
+)
+from .sql_log_service import query_log_server
 
 
 def _iso(dt: datetime) -> str:
@@ -42,6 +49,25 @@ def _log_commands_for_os(vendor: str, os_family: str) -> list[str]:
     if vendor in ("cisco", "arista"):
         return ["show log", "show logging"]
     return ["show log", "show logging", "display logbuffer", "dis logbuff"]
+
+
+def _hostname_commands_for_os(vendor: str, os_family: str) -> list[str]:
+    if vendor == "huawei":
+        return [
+            "display current-configuration | include sysname",
+            "display current-configuration | in sysname",
+        ]
+    if os_family in {"cisco_nxos", "cisco_iosxr", "cisco_iosxe", "cisco_ios"} or vendor in {"cisco", "arista"}:
+        return [
+            "show running-config | include ^hostname",
+            "show run | include ^hostname",
+        ]
+    return [
+        "show running-config | include ^hostname",
+        "show run | include ^hostname",
+        "display current-configuration | include sysname",
+        "display current-configuration | in sysname",
+    ]
 
 
 def _extract_log_time_range(raw_log: str, vendor: str, reference_year: int) -> tuple[datetime | None, datetime | None]:
@@ -83,19 +109,111 @@ async def run_device_collection(
     context_lines: int,
     per_device_timeout: int,
     debug_mode: bool = False,
+    sql_query_mode: bool = False,
+    sql_only_mode: bool = False,
+    db_host: str | None = None,
+    db_port: int | None = None,
+    db_user: str | None = None,
+    db_password: str | None = None,
+    db_name: str | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     debug_path = output_dir / "debug.log" if debug_mode else None
     recorder = DebugRecorder(debug_path)
 
+    if sql_only_mode:
+        return await asyncio.wait_for(
+            _run_device_via_sql_only(
+                device=device,
+                output_dir=output_dir,
+                user_start=user_start,
+                user_end=user_end,
+                context_lines=context_lines,
+                debug=recorder,
+                db_host=db_host,
+                db_port=db_port,
+                db_user=db_user,
+                db_password=db_password,
+                db_name=db_name,
+            ),
+            timeout=per_device_timeout,
+        )
+
     if device.jump_mode in {"smc", "smc_pam_nd"}:
         return await asyncio.wait_for(
-            _run_device_via_smc(device, output_dir, user_start, user_end, context_lines, recorder),
+            _run_device_via_smc(
+                device,
+                output_dir,
+                user_start,
+                user_end,
+                context_lines,
+                recorder,
+                sql_query_mode=sql_query_mode,
+                db_host=db_host,
+                db_port=db_port,
+                db_user=db_user,
+                db_password=db_password,
+                db_name=db_name,
+            ),
             timeout=per_device_timeout,
         )
     return await asyncio.wait_for(
-        _run_device_via_direct(device, output_dir, user_start, user_end, context_lines, recorder),
+        _run_device_via_direct(
+            device,
+            output_dir,
+            user_start,
+            user_end,
+            context_lines,
+            recorder,
+            sql_query_mode=sql_query_mode,
+            db_host=db_host,
+            db_port=db_port,
+            db_user=db_user,
+            db_password=db_password,
+            db_name=db_name,
+        ),
         timeout=per_device_timeout,
+    )
+
+
+async def _run_device_via_sql_only(
+    device: DeviceInput,
+    output_dir: Path,
+    user_start: datetime,
+    user_end: datetime,
+    context_lines: int,
+    debug: DebugRecorder,
+    db_host: str | None = None,
+    db_port: int | None = None,
+    db_user: str | None = None,
+    db_password: str | None = None,
+    db_name: str | None = None,
+) -> dict[str, Any]:
+    await debug.write(f"[DEVICE] {device.device_ip}:{device.device_port} mode=sql_only")
+    await debug.write("[SQL] sql_only_mode enabled, skip device login")
+    sql_result = await asyncio.to_thread(
+        query_log_server,
+        device_ip=device.device_ip,
+        device_name=device.device_name,
+        user_start=user_start,
+        user_end=user_end,
+        context_lines=context_lines,
+        db_host=db_host,
+        db_port=db_port,
+        db_user=db_user,
+        db_password=db_password,
+        db_name=db_name,
+    )
+    return await _finalize_sql_result(
+        output_dir=output_dir,
+        device_name=device.device_name,
+        vendor_hint=device.vendor_hint,
+        user_start=user_start,
+        user_end=user_end,
+        context_lines=context_lines,
+        debug=debug,
+        sql_result=sql_result,
+        sql_only_mode=True,
     )
 
 
@@ -106,6 +224,12 @@ async def _run_device_via_direct(
     user_end: datetime,
     context_lines: int,
     debug: DebugRecorder,
+    sql_query_mode: bool = False,
+    db_host: str | None = None,
+    db_port: int | None = None,
+    db_user: str | None = None,
+    db_password: str | None = None,
+    db_name: str | None = None,
 ) -> dict[str, Any]:
     await debug.write(f"[DEVICE] {device.device_ip}:{device.device_port} mode=direct")
     cli = DirectSSHClient(
@@ -122,11 +246,19 @@ async def _run_device_via_direct(
             exec_func=lambda cmd, timeout=30: cli.exec(cmd, timeout),
             paging_func=lambda vendor: cli.try_disable_paging(vendor),
             output_dir=output_dir,
+            device_ip=device.device_ip,
             vendor_hint=device.vendor_hint,
+            input_device_name=device.device_name,
             user_start=user_start,
             user_end=user_end,
             context_lines=context_lines,
             debug=debug,
+            sql_query_mode=sql_query_mode,
+            db_host=db_host,
+            db_port=db_port,
+            db_user=db_user,
+            db_password=db_password,
+            db_name=db_name,
         )
     finally:
         await cli.close()
@@ -139,6 +271,12 @@ async def _run_device_via_smc(
     user_end: datetime,
     context_lines: int,
     debug: DebugRecorder,
+    sql_query_mode: bool = False,
+    db_host: str | None = None,
+    db_port: int | None = None,
+    db_user: str | None = None,
+    db_password: str | None = None,
+    db_name: str | None = None,
 ) -> dict[str, Any]:
     await debug.write(f"[DEVICE] {device.device_ip}:{device.device_port} mode={device.jump_mode}")
     if device.jump_mode == "smc_pam_nd":
@@ -174,11 +312,20 @@ async def _run_device_via_smc(
             exec_func=exec_func,
             paging_func=paging_func,
             output_dir=output_dir,
+            device_ip=device.device_ip,
             vendor_hint=device.vendor_hint,
+            input_device_name=device.device_name,
+            prompt_device_name=cli.get_device_name(),
             user_start=user_start,
             user_end=user_end,
             context_lines=context_lines,
             debug=debug,
+            sql_query_mode=sql_query_mode,
+            db_host=db_host,
+            db_port=db_port,
+            db_user=db_user,
+            db_password=db_password,
+            db_name=db_name,
         )
     finally:
         await asyncio.to_thread(cli.close)
@@ -188,11 +335,20 @@ async def _collect_using_exec(
     exec_func,
     paging_func,
     output_dir: Path,
+    device_ip: str,
     vendor_hint: str | None,
+    input_device_name: str | None,
+    prompt_device_name: str | None,
     user_start: datetime,
     user_end: datetime,
     context_lines: int,
     debug: DebugRecorder,
+    sql_query_mode: bool = False,
+    db_host: str | None = None,
+    db_port: int | None = None,
+    db_user: str | None = None,
+    db_password: str | None = None,
+    db_name: str | None = None,
 ) -> dict[str, Any]:
     await debug.write("[FLOW] start collecting device information")
     raw_version = ""
@@ -228,6 +384,36 @@ async def _collect_using_exec(
         f"[FLOW] vendor={vendor} os_family={os_family} model={model or '-'} version={version or '-'}"
     )
     await paging_func(vendor)
+
+    device_name = prompt_device_name or input_device_name
+    hostname_out = ""
+    for hostname_cmd in _hostname_commands_for_os(vendor, os_family):
+        try:
+            out = await exec_func(hostname_cmd, 20)
+        except Exception as exc:
+            await debug.write(f"[FLOW] hostname cmd failed: {hostname_cmd} err={exc}")
+            continue
+        await debug.write(f"[FLOW] hostname cmd tried: {hostname_cmd}")
+        if _looks_like_cli_error(out):
+            await debug.write(f"[FLOW] hostname cmd rejected: {hostname_cmd}")
+            hostname_out = out
+            continue
+        hostname_out = out
+        parsed_name = parse_device_name(out, vendor=vendor)
+        if parsed_name:
+            device_name = parsed_name
+            await debug.write(f"[FLOW] device_name={device_name}")
+            break
+
+    if not device_name:
+        device_name = extract_device_name_from_version(raw_version, vendor=vendor)
+        if device_name:
+            await debug.write(f"[FLOW] device_name from version={device_name}")
+        elif prompt_device_name:
+            device_name = prompt_device_name
+            await debug.write(f"[FLOW] device_name from prompt={device_name}")
+        elif hostname_out:
+            await debug.write("[FLOW] hostname output collected but device name not parsed")
 
     if vendor == "huawei":
         clock_cmds = ["display clock", "show clock"]
@@ -355,12 +541,78 @@ async def _collect_using_exec(
 
     raw_path = output_dir / "raw.log"
     filtered_path = output_dir / "filtered.log"
+    filtered_device_path = output_dir / "filtered_device.log"
     meta_path = output_dir / "meta.json"
 
     raw_path.write_text(raw_log, encoding="utf-8")
-    filtered_path.write_text(filter_result.text, encoding="utf-8")
+    filtered_device_path.write_text(filter_result.text, encoding="utf-8")
+
+    final_filtered_text = filter_result.text
+    final_hits_count = filter_result.hits_count
+    final_blocks_count = filter_result.blocks_count
+    final_log_time_min = log_ts_min
+    final_log_time_max = log_ts_max
+    log_source = "device"
+    sql_fallback_error = None
+    sql_raw_path = output_dir / "raw_sql.log"
+    sql_filtered_path = output_dir / "filtered_sql.log"
+
+    if sql_query_mode and filter_result.hits_count == 0:
+        await debug.write(f"[SQL] fallback enabled for {device_name or '-'} {vendor=} device_hits=0")
+        try:
+            sql_result = await asyncio.to_thread(
+                query_log_server,
+                device_ip=device_ip,
+                device_name=device_name,
+                user_start=user_start,
+                user_end=user_end,
+                context_lines=context_lines,
+                db_host=db_host,
+                db_port=db_port,
+                db_user=db_user,
+                db_password=db_password,
+                db_name=db_name,
+            )
+        except Exception as exc:
+            sql_fallback_error = str(exc)
+            await debug.write(f"[SQL] fallback failed: {sql_fallback_error}")
+        else:
+            sql_raw_text = str(sql_result.get("raw_text") or "")
+            sql_raw_path.write_text(sql_raw_text, encoding="utf-8")
+            sql_filter_result = filter_log_with_context(
+                raw_log_text=sql_raw_text,
+                device_start=user_start,
+                device_end=user_end,
+                context_lines=context_lines,
+                vendor="unknown",
+                reference_year=user_start.year,
+            )
+            sql_filtered_path.write_text(sql_filter_result.text, encoding="utf-8")
+            await debug.write(
+                f"[SQL] rows={sql_result.get('row_count', 0)} hits={sql_filter_result.hits_count} "
+                f"range=[{_iso(sql_result.get('first_ts')) if sql_result.get('first_ts') else None} ~ "
+                f"{_iso(sql_result.get('last_ts')) if sql_result.get('last_ts') else None}]"
+            )
+            if sql_filter_result.hits_count > 0:
+                device_name = sql_result.get("device_name") or device_name
+                sql_vendor = str(sql_result.get("vendor") or "").strip()
+                if sql_vendor and sql_vendor != "unknown":
+                    vendor = sql_vendor
+                    os_family = f"{vendor}_sql"
+                final_filtered_text = sql_filter_result.text
+                final_hits_count = sql_filter_result.hits_count
+                final_blocks_count = sql_filter_result.blocks_count
+                final_log_time_min = sql_result.get("first_ts")
+                final_log_time_max = sql_result.get("last_ts")
+                log_source = "sql_log_server"
+
+    filtered_path.write_text(final_filtered_text, encoding="utf-8")
 
     meta = {
+        "device_name": device_name,
+        "log_source": log_source,
+        "sql_query_mode": sql_query_mode,
+        "sql_fallback_error": sql_fallback_error,
         "vendor": vendor,
         "os_family": os_family,
         "model": model,
@@ -370,24 +622,112 @@ async def _collect_using_exec(
         "offset_seconds": offset.total_seconds(),
         "device_start": _iso(device_start),
         "device_end": _iso(device_end),
-        "log_time_min": _iso(log_ts_min) if log_ts_min else None,
-        "log_time_max": _iso(log_ts_max) if log_ts_max else None,
-        "hits_count": filter_result.hits_count,
-        "blocks_count": filter_result.blocks_count,
+        "log_time_min": _iso(final_log_time_min) if final_log_time_min else None,
+        "log_time_max": _iso(final_log_time_max) if final_log_time_max else None,
+        "hits_count": final_hits_count,
+        "blocks_count": final_blocks_count,
+        "device_filtered_log_path": str(filtered_device_path),
+        "sql_raw_log_path": str(sql_raw_path) if sql_raw_path.exists() else None,
+        "sql_filtered_log_path": str(sql_filtered_path) if sql_filtered_path.exists() else None,
     }
     meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
     await debug.write(
-        f"[FLOW] done hits={filter_result.hits_count} blocks={filter_result.blocks_count} "
+        f"[FLOW] done source={log_source} hits={final_hits_count} blocks={final_blocks_count} "
         f"device_range=[{meta['device_start']} ~ {meta['device_end']}] "
         f"log_range=[{meta['log_time_min']} ~ {meta['log_time_max']}] "
         f"raw={raw_path.name} filtered={filtered_path.name}"
     )
 
     return {
+        "device_name": device_name,
+        "log_source": log_source,
         "vendor": vendor,
         "os_family": os_family,
         "model": model,
         "version": version,
+        "reference_time": meta["reference_time"],
+        "device_time": meta["device_time"],
+        "offset_seconds": meta["offset_seconds"],
+        "hits_count": final_hits_count,
+        "blocks_count": final_blocks_count,
+        "raw_log_path": str(raw_path),
+        "filtered_log_path": str(filtered_path),
+        "meta_path": str(meta_path),
+        "debug_log_path": str(debug.path) if debug.path else None,
+    }
+
+
+async def _finalize_sql_result(
+    *,
+    output_dir: Path,
+    device_name: str | None,
+    vendor_hint: str | None,
+    user_start: datetime,
+    user_end: datetime,
+    context_lines: int,
+    debug: DebugRecorder,
+    sql_result: dict[str, Any],
+    sql_only_mode: bool,
+) -> dict[str, Any]:
+    raw_sql_text = str(sql_result.get("raw_text") or "")
+    sql_raw_path = output_dir / "raw_sql.log"
+    sql_filtered_path = output_dir / "filtered_sql.log"
+    raw_path = output_dir / "raw.log"
+    filtered_path = output_dir / "filtered.log"
+    meta_path = output_dir / "meta.json"
+
+    sql_raw_path.write_text(raw_sql_text, encoding="utf-8")
+    raw_path.write_text(raw_sql_text, encoding="utf-8")
+
+    resolved_device_name = sql_result.get("device_name") or device_name
+    vendor = str(sql_result.get("vendor") or vendor_hint or "unknown").strip() or "unknown"
+    os_family = f"{vendor}_sql" if vendor != "unknown" else "unknown"
+    filter_result = filter_log_with_context(
+        raw_log_text=raw_sql_text,
+        device_start=user_start,
+        device_end=user_end,
+        context_lines=context_lines,
+        vendor="unknown",
+        reference_year=user_start.year,
+    )
+    sql_filtered_path.write_text(filter_result.text, encoding="utf-8")
+    filtered_path.write_text(filter_result.text, encoding="utf-8")
+
+    reference_time = datetime.now()
+    meta = {
+        "device_name": resolved_device_name,
+        "log_source": "sql_log_server",
+        "sql_only_mode": sql_only_mode,
+        "sql_query_mode": True,
+        "sql_device_meta": sql_result.get("device_meta"),
+        "vendor": vendor,
+        "os_family": os_family,
+        "model": None,
+        "version": None,
+        "reference_time": _iso(reference_time),
+        "device_time": _iso(reference_time),
+        "offset_seconds": 0.0,
+        "device_start": _iso(user_start),
+        "device_end": _iso(user_end),
+        "log_time_min": _iso(sql_result.get("first_ts")) if sql_result.get("first_ts") else None,
+        "log_time_max": _iso(sql_result.get("last_ts")) if sql_result.get("last_ts") else None,
+        "hits_count": filter_result.hits_count,
+        "blocks_count": filter_result.blocks_count,
+        "sql_raw_log_path": str(sql_raw_path),
+        "sql_filtered_log_path": str(sql_filtered_path),
+    }
+    meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    await debug.write(
+        f"[SQL] sql_only done rows={sql_result.get('row_count', 0)} hits={filter_result.hits_count} "
+        f"range=[{meta['log_time_min']} ~ {meta['log_time_max']}]"
+    )
+    return {
+        "device_name": resolved_device_name,
+        "log_source": "sql_log_server",
+        "vendor": vendor,
+        "os_family": os_family,
+        "model": None,
+        "version": None,
         "reference_time": meta["reference_time"],
         "device_time": meta["device_time"],
         "offset_seconds": meta["offset_seconds"],

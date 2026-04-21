@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
+from ..parsers.time_parser import extract_device_name_from_prompt
 from .smc_patterns import (
     ANSI_PATTERN,
     FAIL_PATTERN,
@@ -40,6 +41,7 @@ class SmcShellClient:
         self.master_fd: int | None = None
         self.proc: subprocess.Popen[bytes] | None = None
         self.smc_mode_active = False
+        self.device_prompt: str | None = None
 
     def _dbg(self, message: str) -> None:
         if self.config.debug:
@@ -100,6 +102,12 @@ class SmcShellClient:
                         break
                 time.sleep(0.05)
         return "".join(chunks)
+
+    def _capture_prompt(self, text: str) -> None:
+        normalized = self._clean_ansi(text or "")
+        matches = PROMPT_PATTERN.findall(normalized)
+        if matches:
+            self.device_prompt = str(matches[-1]).strip()
 
     def _clean_shell_output(self, raw_output: str, command: str) -> str:
         normalized = self._clean_ansi(raw_output)
@@ -262,6 +270,7 @@ class SmcShellClient:
                     raise RuntimeError("SMC PAM/ND command failed before device prompt")
                 if PROMPT_PATTERN.search(tail):
                     self.smc_mode_active = True
+                    self._capture_prompt(tail)
                     self._dbg("[LOGIN] target device prompt reached via pam/nd")
                     return
             else:
@@ -318,6 +327,7 @@ class SmcShellClient:
                 tail = normalized[-4000:]
                 if PROMPT_PATTERN.search(tail):
                     self.smc_mode_active = True
+                    self._capture_prompt(tail)
                     self._dbg("[LOGIN] target device prompt reached")
                     break
 
@@ -341,6 +351,7 @@ class SmcShellClient:
             raise RuntimeError("SMC mode is not active")
         self._smc_send(cmd + "\n")
         raw_output = self._smc_read_until_prompt_via_smc(timeout=timeout)
+        self._capture_prompt(raw_output)
         return self._clean_shell_output(raw_output, cmd)
 
     def exec(self, cmd: str, timeout: int = 30) -> str:
@@ -355,6 +366,9 @@ class SmcShellClient:
                 self.exec(cmd, timeout=10)
             except Exception:
                 continue
+
+    def get_device_name(self) -> str | None:
+        return extract_device_name_from_prompt(self.device_prompt or "")
 
     def close(self) -> None:
         self.smc_mode_active = False

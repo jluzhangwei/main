@@ -31,6 +31,7 @@ class DeviceResult(BaseModel):
     device_name: str | None = None
     status: DeviceStatus = "pending"
     reason: str | None = None
+    log_source: str | None = None
     vendor: str = "unknown"
     os_family: str | None = None
     model: str | None = None
@@ -70,4 +71,11 @@ class TaskCreatePayload(BaseModel):
     jump_port: int = 22
     smc_command: str | None = None
     debug_mode: bool = False
+    sql_query_mode: bool = False
+    sql_only_mode: bool = False
+    db_host: str | None = None
+    db_port: int | None = None
+    db_user: str | None = None
+    db_password: str | None = None
+    db_name: str | None = None
     devices: list[DeviceInput]

@@ -51,15 +51,25 @@ async def create_task(
     concurrency: int = Form(10),
     per_device_timeout: int = Form(60),
     debug_mode: str = Form(""),
+    sql_query_mode: str = Form(""),
+    sql_only_mode: str = Form(""),
+    db_host: str = Form(""),
+    db_port: int = Form(0),
+    db_user: str = Form(""),
+    db_password: str = Form(""),
+    db_name: str = Form(""),
     jump_host: str = Form(""),
     jump_port: int = Form(22),
     smc_command: str = Form(""),
 ):
     try:
         devices: list[DeviceInput] = []
+        require_credentials = (sql_only_mode != "on") and str(jump_mode or "").strip().lower() != "smc_pam_nd"
         if mode == "single":
-            if not (device_ip.strip() and username.strip() and password.strip()):
+            if require_credentials and not (device_ip.strip() and username.strip() and password.strip()):
                 raise ValueError("Single mode requires device_ip, username, password")
+            if not device_ip.strip():
+                raise ValueError("Single mode requires device_ip")
 
             final_smc_cmd = smc_command.strip() or default_smc_command(jump_mode, jump_host.strip() or None)
             devices.append(
@@ -87,6 +97,7 @@ async def create_task(
                         default_username=global_user,
                         default_password=global_pass,
                         default_jump_mode=jump_mode,
+                        sql_only_mode=(sql_only_mode == "on"),
                         jump_host=jump_host.strip() or None,
                         jump_port=jump_port,
                         smc_command=final_smc_cmd,
@@ -110,6 +121,13 @@ async def create_task(
                 "jump_port": jump_port,
                 "smc_command": smc_command,
                 "debug_mode": debug_mode == "on",
+                "sql_query_mode": sql_query_mode == "on",
+                "sql_only_mode": sql_only_mode == "on",
+                "db_host": db_host,
+                "db_port": db_port,
+                "db_user": db_user,
+                "db_password": db_password,
+                "db_name": db_name,
             },
             devices,
         )
@@ -166,6 +184,7 @@ async def task_detail(task_id: str, request: Request):
         {
             "request": request,
             "task": task,
+            "task_devices_json": [d.model_dump() for d in task.devices],
             "error": None,
             "system_prompts": system_prompts,
             "task_prompts": task_prompts,

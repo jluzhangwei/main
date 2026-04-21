@@ -11,6 +11,14 @@
     .hc-form .tips { color:#51617b; font-size:12px; margin-top:4px; }
     .hc-form .actions { margin-top: 14px; }
     .hc-form .debug-row { margin-top: 10px; }
+    .hc-form .debug-box { margin-top: 8px; padding: 10px 12px; border: 1px solid #d6dde8; border-radius: 10px; background: #fbfcfe; }
+    .hc-form .debug-box .row { margin-top: 6px; }
+    .hc-form .inline-actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px; }
+    .hc-form .inline-actions button { min-width: 140px; }
+    .hc-form .row.disabled-credential { opacity: 0.7; }
+    .hc-form .row.disabled-credential input[disabled] { background: #eef2f7; color: #7b8794; cursor: not-allowed; }
+    .hc-form .section-disabled { opacity: 0.72; }
+    .hc-form .section-disabled input[disabled], .hc-form .section-disabled select[disabled] { background: #eef2f7; color: #7b8794; cursor: not-allowed; }
   </style>
 
   <div class="hc-head">
@@ -26,28 +34,29 @@
 
     <div class="row">
       <div>
-        <label>{{ 'Device SSH Username' if lang == 'en' else '设备 SSH 用户名' }}</label>
-        <input name="default_username" placeholder="{{ 'e.g. netops' if lang == 'en' else '例如 netops' }}" required />
-      </div>
-      <div>
-        <label>{{ 'Device SSH Password' if lang == 'en' else '设备 SSH 密码' }}</label>
-        <input name="default_password" type="password" required />
-      </div>
-    </div>
-
-    <div class="row">
-      <div>
         <label>{{ 'Jump Access Mode' if lang == 'en' else '跳板机接入模式' }}</label>
         <select name="jump_mode" id="jump_mode" onchange="toggleSmc()">
           <option value="direct">{{ 'direct' if lang == 'en' else 'direct（直连）' }}</option>
           <option value="smc">{{ 'smc (CLI jump)' if lang == 'en' else 'smc（命令行接入）' }}</option>
-          <option value="smc_pam_nd">{{ 'smc pam nd ssh' if lang == 'en' else 'smc pam nd ssh（直达设备）' }}</option>
+          <option value="smc_pam_nd" selected>{{ 'smc pam nd ssh' if lang == 'en' else 'smc pam nd ssh（直达设备）' }}</option>
         </select>
       </div>
       <div>
         <label>{{ 'vendor_hint (optional)' if lang == 'en' else 'vendor_hint（可选）' }}</label>
         <input name="vendor_hint" placeholder="cisco / arista / huawei" />
       </div>
+    </div>
+
+    <div id="credential-row" class="row disabled-credential">
+      <div>
+        <label>{{ 'Device SSH Username' if lang == 'en' else '设备 SSH 用户名' }}</label>
+        <input id="default_username" name="default_username" placeholder="{{ 'e.g. netops' if lang == 'en' else '例如 netops' }}" disabled />
+      </div>
+      <div>
+        <label>{{ 'Device SSH Password' if lang == 'en' else '设备 SSH 密码' }}</label>
+        <input id="default_password" name="default_password" type="password" disabled />
+      </div>
+      <div class="tips" id="credential_tip" style="grid-column:1 / -1;">{{ 'smc pam nd mode does not require device username/password input on this page.' if lang == 'en' else 'smc pam nd 模式不需要在本页面输入设备用户名和密码。' }}</div>
     </div>
 
     <div id="smc-host-row" class="row" style="display:none;">
@@ -84,9 +93,37 @@
       <div><label>concurrency</label><input name="concurrency" type="number" value="10" /></div>
       <div class="debug-row">
         <label style="margin-top:8px;display:flex;gap:8px;align-items:center;font-weight:600;">
-          <input type="checkbox" name="debug_mode" style="width:auto;max-width:none;" />
+          <input type="checkbox" id="debug_mode" name="debug_mode" style="width:auto;max-width:none;" checked />
           {{ 'Enable Debug mode (login/commands/output)' if lang == 'en' else '开启 Debug 模式（显示登录/命令/返回）' }}
         </label>
+        <div id="debug-options-box" class="debug-box">
+          <label style="margin-top:0;display:flex;gap:8px;align-items:center;font-weight:600;">
+            <input type="checkbox" id="sql_query_mode" name="sql_query_mode" style="width:auto;max-width:none;" checked />
+            {{ 'Enable SQL query mode (fallback to log server when device hits=0)' if lang == 'en' else '开启 SQL 查询模式（设备 hits=0 时回退 log server）' }}
+          </label>
+          <label style="margin-top:6px;display:flex;gap:8px;align-items:center;font-weight:600;">
+            <input type="checkbox" id="sql_only_mode" name="sql_only_mode" style="width:auto;max-width:none;" checked />
+            {{ 'SQL only mode (skip device login, query log server only)' if lang == 'en' else '仅 SQL 模式（跳过设备登录，只查 log server）' }}
+          </label>
+          <div class="tips">{{ 'Reads log server table logmessage1. If left blank, DB values fall back to .env.mysql / environment.' if lang == 'en' else '读取 log server 的 logmessage1 表。留空时会回退到 .env.mysql / 环境变量中的 DB 配置。' }}</div>
+          <div id="sql-config-box" style="display:none;">
+            <div class="row">
+              <div><label>{{ 'DB Host' if lang == 'en' else 'DB Host' }}</label><input name="db_host" placeholder="10.73.255.35" /></div>
+              <div><label>{{ 'DB Port' if lang == 'en' else 'DB Port' }}</label><input name="db_port" type="number" value="8080" /></div>
+            </div>
+            <div class="row">
+              <div><label>{{ 'DB User' if lang == 'en' else 'DB User' }}</label><input name="db_user" placeholder="readonly" /></div>
+              <div><label>{{ 'DB Name' if lang == 'en' else 'DB Name' }}</label><input name="db_name" placeholder="monitoring" /></div>
+            </div>
+            <div class="row">
+              <div><label>{{ 'DB Password' if lang == 'en' else 'DB Password' }}</label><input name="db_password" type="password" autocomplete="off" /></div>
+            </div>
+            <div class="inline-actions">
+              <button id="test_sql_btn" type="button">{{ 'Test SQL Connection' if lang == 'en' else '测试 SQL 连接' }}</button>
+            </div>
+            <div id="sql_test_result" class="tips"></div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -97,7 +134,12 @@
 </div>
 
 <script>
-  const STORAGE_KEY = 'netlog_extractor_create_form_v1';
+  const STORAGE_KEY = 'netlog_extractor_create_form_v2';
+  const DEFAULT_FORM_STATE = {
+    debug_mode: true,
+    sql_query_mode: true,
+    sql_only_mode: true,
+  };
 
   function getPersistFields() {
     return [
@@ -114,6 +156,13 @@
       'concurrency',
       'per_device_timeout',
       'debug_mode',
+      'sql_query_mode',
+      'sql_only_mode',
+      'db_host',
+      'db_port',
+      'db_user',
+      'db_password',
+      'db_name',
     ];
   }
 
@@ -135,7 +184,15 @@
 
   function restoreFormState() {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
+    if (!raw) {
+      const form = document.querySelector('form.hc-form');
+      if (!form) return;
+      for (const [name, value] of Object.entries(DEFAULT_FORM_STATE)) {
+        const el = form.querySelector(`[name="${name}"]`);
+        if (el && el.type === 'checkbox') el.checked = !!value;
+      }
+      return;
+    }
     let payload = null;
     try {
       payload = JSON.parse(raw);
@@ -146,11 +203,16 @@
     if (!form || !payload) return;
 
     for (const name of getPersistFields()) {
-      if (!(name in payload)) continue;
       const el = form.querySelector(`[name="${name}"]`);
       if (!el) continue;
       if (el.type === 'checkbox') {
-        el.checked = !!payload[name];
+        if (name in payload) {
+          el.checked = !!payload[name];
+        } else if (name in DEFAULT_FORM_STATE) {
+          el.checked = !!DEFAULT_FORM_STATE[name];
+        } else {
+          el.checked = false;
+        }
       } else if (typeof payload[name] === 'string' || typeof payload[name] === 'number') {
         el.value = String(payload[name]);
       }
@@ -159,13 +221,54 @@
 
   function toggleSmc(){
     const mode = document.getElementById('jump_mode').value;
+    const sqlOnly = !!(document.getElementById('sql_only_mode') && document.getElementById('sql_only_mode').checked);
+    const jumpMode = document.getElementById('jump_mode');
+    const credentialRow = document.getElementById('credential-row');
+    const usernameInput = document.getElementById('default_username');
+    const passwordInput = document.getElementById('default_password');
+    const credentialTip = document.getElementById('credential_tip');
     const hostRow = document.getElementById('smc-host-row');
     const box = document.getElementById('smc-box');
     const input = document.getElementById('smc_command');
     const tip = document.getElementById('smc_command_tip');
-    hostRow.style.display = mode === 'smc' ? 'block' : 'none';
-    box.style.display = (mode === 'smc' || mode === 'smc_pam_nd') ? 'block' : 'none';
+    const jumpHostInput = document.querySelector('[name="jump_host"]');
+    const jumpPortInput = document.querySelector('[name="jump_port"]');
+    const disableCredentials = sqlOnly || mode === 'smc_pam_nd';
+    if (jumpMode) jumpMode.disabled = sqlOnly;
+    if (credentialRow) credentialRow.classList.toggle('disabled-credential', disableCredentials);
+    if (usernameInput) {
+      usernameInput.required = !disableCredentials;
+      usernameInput.disabled = disableCredentials;
+    }
+    if (passwordInput) {
+      passwordInput.required = !disableCredentials;
+      passwordInput.disabled = disableCredentials;
+    }
+    if (credentialTip) {
+      credentialTip.textContent = sqlOnly
+        ? {{ "'SQL only mode skips device login, so username/password are ignored.'" if lang == 'en' else "'仅 SQL 模式会跳过设备登录，因此这里的用户名和密码不会生效。'" }}
+        : (
+          disableCredentials
+            ? {{ "'smc pam nd mode does not require device username/password input on this page.'" if lang == 'en' else "'smc pam nd 模式不需要在本页面输入设备用户名和密码。'" }}
+            : ''
+        );
+    }
+    if (hostRow) {
+      hostRow.style.display = (!sqlOnly && mode === 'smc') ? 'block' : 'none';
+      hostRow.classList.toggle('section-disabled', sqlOnly);
+    }
+    if (box) {
+      box.style.display = (!sqlOnly && (mode === 'smc' || mode === 'smc_pam_nd')) ? 'block' : 'none';
+      box.classList.toggle('section-disabled', sqlOnly);
+    }
+    if (jumpHostInput) jumpHostInput.disabled = sqlOnly || mode !== 'smc';
+    if (jumpPortInput) jumpPortInput.disabled = sqlOnly || mode !== 'smc';
+    if (input) input.disabled = sqlOnly || !(mode === 'smc' || mode === 'smc_pam_nd');
     if (!input || !tip) return;
+    if (sqlOnly) {
+      tip.textContent = {{ "'SQL only mode ignores jump/login settings and queries log server directly.'" if lang == 'en' else "'仅 SQL 模式会忽略跳板和登录配置，直接查询 log server。'" }};
+      return;
+    }
     if (mode === 'smc_pam_nd') {
       input.placeholder = 'smc pam nd ssh {device_ip}';
       tip.textContent = {{ "'PAM/ND mode executes a direct device-access command; supported vars: {device_ip}, {device_port}, {username}.'" if lang == 'en' else "'PAM/ND 模式会直接执行设备接入命令；支持变量：{device_ip}、{device_port}、{username}。'" }};
@@ -175,8 +278,62 @@
     }
   }
 
+  function toggleDebugExtras() {
+    const debug = document.getElementById('debug_mode');
+    const sqlMode = document.getElementById('sql_query_mode');
+    const sqlOnly = document.getElementById('sql_only_mode');
+    const debugBox = document.getElementById('debug-options-box');
+    const sqlBox = document.getElementById('sql-config-box');
+    const debugEnabled = !!(debug && debug.checked);
+    const sqlEnabled = !!(sqlMode && sqlMode.checked);
+    if (debugBox) debugBox.style.display = debugEnabled ? 'block' : 'none';
+    if (sqlBox) sqlBox.style.display = debugEnabled && sqlEnabled ? 'block' : 'none';
+    if (sqlMode) sqlMode.disabled = !debugEnabled;
+    if (sqlOnly) {
+      sqlOnly.disabled = !(debugEnabled && sqlEnabled);
+      if (!debugEnabled || !sqlEnabled) sqlOnly.checked = false;
+    }
+    document.querySelectorAll('[name="db_host"], [name="db_port"], [name="db_user"], [name="db_password"], [name="db_name"]').forEach((el) => {
+      el.disabled = !(debugEnabled && sqlEnabled);
+    });
+    const testBtn = document.getElementById('test_sql_btn');
+    if (testBtn) testBtn.disabled = !(debugEnabled && sqlEnabled);
+    toggleSmc();
+  }
+
+  async function testSqlConnection() {
+    const resultEl = document.getElementById('sql_test_result');
+    const btn = document.getElementById('test_sql_btn');
+    if (resultEl) resultEl.textContent = {{ "'Testing SQL connection...'" if lang == 'en' else "'正在测试 SQL 连接...'" }};
+    if (btn) btn.disabled = true;
+    try {
+      const payload = {
+        db_host: document.querySelector('[name="db_host"]')?.value || '',
+        db_port: Number(document.querySelector('[name="db_port"]')?.value || '0') || 0,
+        db_user: document.querySelector('[name="db_user"]')?.value || '',
+        db_password: document.querySelector('[name="db_password"]')?.value || '',
+        db_name: document.querySelector('[name="db_name"]')?.value || '',
+      };
+      const res = await fetch('/api/sql/log-server/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || data.message || 'SQL test failed');
+      }
+      if (resultEl) resultEl.textContent = `${data.message} | ${data.table} | columns=${data.column_count}`;
+    } catch (e) {
+      if (resultEl) resultEl.textContent = String(e && e.message ? e.message : e);
+    } finally {
+      toggleDebugExtras();
+    }
+  }
+
   restoreFormState();
   toggleSmc();
+  toggleDebugExtras();
 
   const form = document.querySelector('form.hc-form');
   if (form) {
@@ -184,5 +341,13 @@
     form.addEventListener('change', saveFormState);
     form.addEventListener('submit', saveFormState);
   }
+  const debugMode = document.getElementById('debug_mode');
+  const sqlQueryMode = document.getElementById('sql_query_mode');
+  const sqlOnlyMode = document.getElementById('sql_only_mode');
+  const testSqlBtn = document.getElementById('test_sql_btn');
+  if (debugMode) debugMode.addEventListener('change', toggleDebugExtras);
+  if (sqlQueryMode) sqlQueryMode.addEventListener('change', toggleDebugExtras);
+  if (sqlOnlyMode) sqlOnlyMode.addEventListener('change', toggleSmc);
+  if (testSqlBtn) testSqlBtn.addEventListener('click', testSqlConnection);
 </script>
 {% endblock %}

@@ -4,6 +4,20 @@
 {% set lang = 'en' if lang_raw.lower().startswith('en') else 'zh' %}
 <style>
   @import url('/shared/tasks/unified-task-list.css');
+  .device-name-cell {
+    max-width: 260px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .device-name-text {
+    display: inline-block;
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: top;
+  }
 </style>
 <div class="task-page">
 <div class="card">
@@ -25,6 +39,7 @@
       <tr>
         <th>{{ 'select' if lang == 'en' else '选择' }}</th>
         <th>task_id</th>
+        <th>device_name</th>
         <th>{{ 'created_at' if lang == 'en' else '创建时间' }}</th>
         <th>{{ 'status' if lang == 'en' else '状态' }}</th>
         <th>{{ 'progress' if lang == 'en' else '进度' }}</th>
@@ -36,6 +51,16 @@
       <tr>
         <td><input type="checkbox" class="task-select" name="task_ids" value="{{ t.task_id }}"></td>
         <td><a href="/tasks/{{ t.task_id }}?lang={{ lang }}">{{ t.task_id }}</a></td>
+        <td class="device-name-cell">
+          {% set ns = namespace(names=[]) %}
+          {% for d in t.devices %}
+            {% if d.device_name %}
+              {% set ns.names = ns.names + [d.device_name] %}
+            {% endif %}
+          {% endfor %}
+          {% set joined_names = ns.names | join(', ') %}
+          <span class="device-name-text" title="{{ joined_names }}">{{ joined_names }}</span>
+        </td>
         <td>{{ t.created_at }}</td>
         <td>{{ t.status }}</td>
         <td>{{ t.progress_done }}/{{ t.progress_total }}</td>

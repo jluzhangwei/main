@@ -24,6 +24,7 @@ class TaskManager:
         self.output_root.mkdir(parents=True, exist_ok=True)
         self._running: dict[str, asyncio.Task] = {}
         self._runtime_devices: dict[str, list[dict[str, Any]]] = {}
+        self._runtime_sql_configs: dict[str, dict[str, Any]] = {}
 
     def create_task(self, payload: TaskCreatePayload) -> TaskRecord:
         task_id = uuid.uuid4().hex[:12]
@@ -48,8 +49,21 @@ class TaskManager:
             "jump_port": payload.jump_port,
             "smc_command": payload.smc_command,
             "debug_mode": payload.debug_mode,
+            "sql_query_mode": payload.sql_query_mode,
+            "sql_only_mode": payload.sql_only_mode,
+            "db_host": payload.db_host,
+            "db_port": payload.db_port,
+            "db_user": payload.db_user,
+            "db_name": payload.db_name,
         }
         self._runtime_devices[task_id] = [d.model_dump() for d in payload.devices]
+        self._runtime_sql_configs[task_id] = {
+            "db_host": payload.db_host,
+            "db_port": payload.db_port,
+            "db_user": payload.db_user,
+            "db_password": payload.db_password,
+            "db_name": payload.db_name,
+        }
         task = TaskRecord(
             task_id=task_id,
             created_at=now,
@@ -86,6 +100,9 @@ class TaskManager:
         timeout = int(params["per_device_timeout"])
         concurrency = max(1, int(params["concurrency"]))
         debug_mode = bool(params.get("debug_mode", False))
+        sql_query_mode = bool(params.get("sql_query_mode", False))
+        sql_only_mode = bool(params.get("sql_only_mode", False))
+        sql_cfg = self._runtime_sql_configs.get(task_id, {})
 
         sem = asyncio.Semaphore(concurrency)
         out_dir = self.output_root / task_id
@@ -109,9 +126,18 @@ class TaskManager:
                         context_lines=context_lines,
                         per_device_timeout=timeout,
                         debug_mode=debug_mode,
+                        sql_query_mode=sql_query_mode,
+                        sql_only_mode=sql_only_mode,
+                        db_host=sql_cfg.get("db_host"),
+                        db_port=sql_cfg.get("db_port"),
+                        db_user=sql_cfg.get("db_user"),
+                        db_password=sql_cfg.get("db_password"),
+                        db_name=sql_cfg.get("db_name"),
                     )
                     dev.status = "success"
                     dev.reason = None
+                    dev.device_name = result.get("device_name") or dev.device_name
+                    dev.log_source = result.get("log_source")
                     dev.vendor = result["vendor"]
                     dev.os_family = result["os_family"]
                     dev.model = result.get("model")
@@ -162,6 +188,7 @@ class TaskManager:
         (out_dir / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
         self.db.upsert_task(task)
         self._runtime_devices.pop(task_id, None)
+        self._runtime_sql_configs.pop(task_id, None)
 
     def get_task(self, task_id: str) -> TaskRecord | None:
         return self.db.get_task(task_id)
@@ -190,6 +217,7 @@ class TaskManager:
                 shutil.rmtree(out_dir, ignore_errors=True)
                 removed_files += count_before
             self._runtime_devices.pop(tid, None)
+            self._runtime_sql_configs.pop(tid, None)
             self._running.pop(tid, None)
             delete_candidates.append(tid)
         if delete_candidates and hasattr(self.db, "delete_tasks_exact"):

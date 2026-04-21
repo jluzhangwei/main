@@ -21,7 +21,7 @@
   <table id="dev-table">
     <thead>
       <tr>
-        <th>device_id</th><th>ip</th><th>{{ 'status' if is_en else '状态' }}</th><th>vendor</th><th>offset(s)</th><th>hits</th><th>{{ 'reason' if is_en else '原因' }}</th><th>{{ 'download' if is_en else '下载' }}</th><th>debug</th>
+        <th>device_id</th><th>ip</th><th>device_name</th><th>{{ 'status' if is_en else '状态' }}</th><th>vendor</th><th>log_source</th><th>offset(s)</th><th>hits</th><th>{{ 'reason' if is_en else '原因' }}</th><th>{{ 'download' if is_en else '下载' }}</th><th>debug</th>
       </tr>
     </thead>
     <tbody>
@@ -29,14 +29,21 @@
       <tr>
         <td>{{ d.device_id }}</td>
         <td>{{ d.device_ip }}</td>
+        <td>{{ d.device_name or '' }}</td>
         <td>{{ d.status }}</td>
         <td>{{ d.vendor }}</td>
+        <td>{{ d.log_source or '' }}</td>
         <td>{{ d.offset_seconds if d.offset_seconds is not none else '' }}</td>
         <td>{{ d.hits_count }}</td>
         <td>{{ d.reason or '' }}</td>
         <td>
           {% if d.filtered_log_path %}
           <a href="/api/tasks/{{ task.task_id }}/devices/{{ d.device_id }}/log?lang={{ lang }}">filtered.log</a>
+          {% if d.log_source == 'sql_log_server' %}
+          | <a href="/api/tasks/{{ task.task_id }}/devices/{{ d.device_id }}/device-filtered?lang={{ lang }}">filtered_device.log</a>
+          | <a href="/api/tasks/{{ task.task_id }}/devices/{{ d.device_id }}/sql/raw?lang={{ lang }}">raw_sql.log</a>
+          | <a href="/api/tasks/{{ task.task_id }}/devices/{{ d.device_id }}/sql/filtered?lang={{ lang }}">filtered_sql.log</a>
+          {% endif %}
           {% endif %}
         </td>
         <td>
@@ -53,16 +60,50 @@
 {% if task.params.get("debug_mode") %}
 <div class="card">
   <h3 style="margin:0 0 8px;">{{ 'Debug Console' if is_en else 'Debug 控制台' }}</h3>
-  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
-    <label for="debug-device" style="margin:0;">{{ 'Device' if is_en else '设备' }}</label>
-    <select id="debug-device" style="width:220px;max-width:100%;">
-      {% for d in task.devices %}
-      <option value="{{ d.device_id }}">{{ d.device_id }} ({{ d.device_ip }})</option>
-      {% endfor %}
-    </select>
-    <a id="debug-download-link" href="#" target="_blank">{{ 'Download debug.log' if is_en else '下载 debug.log' }}</a>
+  <div class="device-log-viewer">
+    <div class="device-log-sidebar">
+      <div class="device-log-sidebar-title">{{ 'Devices' if is_en else '设备列表' }}</div>
+      <div class="device-log-search-box">
+        <input
+          id="log-search-keyword"
+          type="text"
+          placeholder="{{ 'Search keyword in filtered.log' if is_en else '在 filtered.log 中搜索关键字' }}"
+        />
+        <div id="log-search-status" class="device-log-search-status muted"></div>
+      </div>
+      <div id="log-device-list" class="device-log-list">
+        {% for d in task.devices %}
+        <button type="button" class="device-log-item{% if loop.first %} active{% endif %}" data-device-id="{{ d.device_id }}">
+          <div class="device-log-item-main">{{ d.device_name or d.device_ip }}</div>
+          <div class="device-log-item-sub">{{ d.device_id }} | {{ d.device_ip }}</div>
+        </button>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="device-log-main">
+      <div class="device-log-toolbar">
+        <div>
+          <div id="selected-log-device" class="device-log-main-title">
+            {% if task.devices %}
+            {{ task.devices[0].device_name or task.devices[0].device_ip }}
+            {% else %}
+            {{ 'No device' if is_en else '无设备' }}
+            {% endif %}
+          </div>
+          <div id="selected-log-meta" class="muted">
+            {% if task.devices %}
+            {{ task.devices[0].device_id }} | {{ task.devices[0].device_ip }}
+            {% endif %}
+          </div>
+        </div>
+        <div class="device-log-links">
+          <a id="filtered-download-link" href="#" target="_blank">{{ 'Download filtered.log' if is_en else '下载 filtered.log' }}</a>
+          <a id="debug-download-link" href="#" target="_blank">{{ 'Download debug.log' if is_en else '下载 debug.log' }}</a>
+        </div>
+      </div>
+      <pre id="debug-console" class="device-log-console">{{ 'Waiting for filtered.log...' if is_en else '等待 filtered.log ...' }}</pre>
+    </div>
   </div>
-  <pre id="debug-console" style="background:#0f172a;color:#e2e8f0;padding:10px;border-radius:8px;max-height:420px;overflow:auto;margin:0;">{{ 'Waiting for device output...' if is_en else '等待设备执行...' }}</pre>
 </div>
 {% endif %}
 
@@ -159,8 +200,10 @@
     starting: UI_LANG === 'en' ? 'starting...' : '启动中...',
     running: UI_LANG === 'en' ? 'running' : '运行中',
     queryFailed: UI_LANG === 'en' ? 'query failed' : '查询失败',
-    debugPending: UI_LANG === 'en' ? 'debug log not generated yet...' : 'debug 日志尚未生成...',
-    debugEmpty: UI_LANG === 'en' ? 'debug log is empty' : 'debug 日志为空',
+    debugPending: UI_LANG === 'en' ? 'filtered.log not generated yet...' : 'filtered.log 尚未生成...',
+    debugEmpty: UI_LANG === 'en' ? 'filtered.log is empty' : 'filtered.log 为空',
+    selectDevice: UI_LANG === 'en' ? 'Select a device on the left.' : '请先在左侧选择设备。',
+    noDevice: UI_LANG === 'en' ? 'No device' : '无设备',
     phaseDone: UI_LANG === 'en' ? 'Phase: completed' : '阶段: 完成',
     phaseFailed: UI_LANG === 'en' ? 'Phase: failed' : '阶段: 失败',
     estimateLoading: UI_LANG === 'en' ? 'Estimate: calculating...' : '分析预估：计算中...',
@@ -178,6 +221,13 @@
   let latestTask = null;
   let currentAnalysisId = null;
   let latestAnalysisText = '';
+  let selectedLogDeviceId = {% if task.devices %}"{{ task.devices[0].device_id }}"{% else %}''{% endif %};
+  let logSearchKeyword = '';
+  let logSearchTimer = null;
+  let logSearchRequestSeq = 0;
+  const logSearchCounts = {};
+  const logSearchActiveIndex = {};
+  const logTextCache = {};
   function el(id) { return document.getElementById(id); }
   function val(id, fallback) {
     const node = el(id);
@@ -198,6 +248,176 @@
     if (fill) fill.style.width = `${Math.max(0, Math.min(100, Number(percent || 0)))}%`;
   }
 
+  function getSelectedDevice(devices) {
+    const rows = Array.isArray(devices) ? devices : [];
+    if (!rows.length) return null;
+    const matched = rows.find((d) => d.device_id === selectedLogDeviceId);
+    return matched || rows[0];
+  }
+
+  function renderLogDeviceList(devices) {
+    const box = document.getElementById('log-device-list');
+    if (!box) return;
+    const rows = Array.isArray(devices) ? devices : [];
+    const selected = getSelectedDevice(rows);
+    if (selected) selectedLogDeviceId = selected.device_id;
+    box.innerHTML = rows.map((d) => {
+      const title = d.device_name || d.device_ip || d.device_id;
+      const sub = [d.device_id, d.device_ip, d.status || '-'].filter(Boolean).join(' | ');
+      const active = d.device_id === selectedLogDeviceId ? ' active' : '';
+      const hitCount = logSearchCounts[d.device_id];
+      const hitLine = logSearchKeyword && Number(hitCount) > 0
+        ? `<div class="device-log-item-hit">${UI_LANG === 'en' ? 'Hits' : '命中'}: ${hitCount}</div>`
+        : '';
+      return `<button type="button" class="device-log-item${active}" data-device-id="${d.device_id}">
+        <div class="device-log-item-main">${escapeHtml(title)}</div>
+        <div class="device-log-item-sub">${escapeHtml(sub)}</div>
+        ${hitLine}
+      </button>`;
+    }).join('');
+    box.querySelectorAll('.device-log-item').forEach((node) => {
+      node.addEventListener('click', async () => {
+        const deviceId = node.dataset.deviceId || '';
+        const hasSearch = !!logSearchKeyword.trim();
+        const hitCount = Number(logSearchCounts[deviceId] || 0);
+        if (hasSearch && deviceId === selectedLogDeviceId && hitCount > 0) {
+          logSearchActiveIndex[deviceId] = ((Number(logSearchActiveIndex[deviceId] || 0) + 1) % hitCount);
+        } else if (hasSearch && hitCount > 0) {
+          logSearchActiveIndex[deviceId] = 0;
+        }
+        selectedLogDeviceId = deviceId;
+        renderLogDeviceList(rows);
+        await pollDebug();
+      });
+    });
+  }
+
+  function countKeywordHits(text, keyword) {
+    const source = String(text || '').toLowerCase();
+    const needle = String(keyword || '').trim().toLowerCase();
+    if (!needle) return 0;
+    let count = 0;
+    let pos = 0;
+    while (true) {
+      const idx = source.indexOf(needle, pos);
+      if (idx === -1) break;
+      count += 1;
+      pos = idx + needle.length;
+    }
+    return count;
+  }
+
+  async function fetchFilteredLogText(dev) {
+    if (!dev || !dev.filtered_log_path) return '';
+    if (Object.prototype.hasOwnProperty.call(logTextCache, dev.device_id)) {
+      return logTextCache[dev.device_id];
+    }
+    const filteredUrl = `/api/tasks/{{ task.task_id }}/devices/${dev.device_id}/log?lang=${LANG_Q}`;
+    const res = await fetch(filteredUrl);
+    if (!res.ok) {
+      logTextCache[dev.device_id] = '';
+      return '';
+    }
+    const text = await res.text();
+    logTextCache[dev.device_id] = text || '';
+    return logTextCache[dev.device_id];
+  }
+
+  function buildHighlightedLogHtml(text, keyword, activeIndex) {
+    const source = String(text || '');
+    const needle = String(keyword || '').trim();
+    if (!needle) return { html: escapeHtml(source), count: 0 };
+
+    const lowerSource = source.toLowerCase();
+    const lowerNeedle = needle.toLowerCase();
+    const hits = [];
+    let pos = 0;
+    while (true) {
+      const idx = lowerSource.indexOf(lowerNeedle, pos);
+      if (idx === -1) break;
+      hits.push({ start: idx, end: idx + needle.length });
+      pos = idx + needle.length;
+    }
+    if (!hits.length) return { html: escapeHtml(source), count: 0 };
+
+    const active = Math.max(0, Math.min(Number(activeIndex || 0), hits.length - 1));
+    let cursor = 0;
+    const chunks = [];
+    hits.forEach((hit, index) => {
+      chunks.push(escapeHtml(source.slice(cursor, hit.start)));
+      const cls = index === active ? 'log-hit log-hit-active' : 'log-hit';
+      chunks.push(`<span class="${cls}" data-hit-index="${index}">${escapeHtml(source.slice(hit.start, hit.end))}</span>`);
+      cursor = hit.end;
+    });
+    chunks.push(escapeHtml(source.slice(cursor)));
+    return { html: chunks.join(''), count: hits.length };
+  }
+
+  function renderConsoleText(consoleEl, text, keyword, activeIndex) {
+    if (!consoleEl) return 0;
+    const needle = String(keyword || '').trim();
+    if (!needle) {
+      consoleEl.textContent = text || T.debugEmpty;
+      return 0;
+    }
+    const result = buildHighlightedLogHtml(text || '', needle, activeIndex);
+    consoleEl.innerHTML = result.html || escapeHtml(text || '');
+    const activeNode = consoleEl.querySelector('.log-hit-active');
+    if (activeNode) {
+      activeNode.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+    return result.count;
+  }
+
+  async function runLogSearch() {
+    const statusEl = el('log-search-status');
+    const rows = (latestTask && Array.isArray(latestTask.devices)) ? latestTask.devices : [];
+    const keyword = logSearchKeyword.trim();
+    const requestId = ++logSearchRequestSeq;
+
+    Object.keys(logSearchCounts).forEach((key) => delete logSearchCounts[key]);
+    Object.keys(logSearchActiveIndex).forEach((key) => delete logSearchActiveIndex[key]);
+    if (!keyword) {
+      if (statusEl) statusEl.textContent = '';
+      renderLogDeviceList(rows);
+      await pollDebug();
+      return;
+    }
+
+    if (statusEl) {
+      statusEl.textContent = UI_LANG === 'en' ? 'Searching...' : '搜索中...';
+    }
+
+    await Promise.all(rows.map(async (dev) => {
+      try {
+        const text = await fetchFilteredLogText(dev);
+        const hits = countKeywordHits(text, keyword);
+        if (hits > 0) logSearchCounts[dev.device_id] = hits;
+      } catch (e) {
+        // ignore individual device fetch failure
+      }
+    }));
+
+    if (requestId !== logSearchRequestSeq) return;
+
+    const matchedDevices = Object.keys(logSearchCounts).length;
+    const totalHits = Object.values(logSearchCounts).reduce((sum, value) => sum + Number(value || 0), 0);
+    if (statusEl) {
+      statusEl.textContent = matchedDevices > 0
+        ? (UI_LANG === 'en'
+            ? `Matched devices: ${matchedDevices} | Total hits: ${totalHits}`
+            : `命中设备: ${matchedDevices} | 总命中: ${totalHits}`)
+        : (UI_LANG === 'en' ? 'No matches' : '无命中');
+    }
+    renderLogDeviceList(rows);
+    await pollDebug();
+  }
+
+  function scheduleLogSearch() {
+    if (logSearchTimer) window.clearTimeout(logSearchTimer);
+    logSearchTimer = window.setTimeout(runLogSearch, 250);
+  }
+
   async function poll() {
     const res = await fetch('/api/tasks/{{ task.task_id }}');
     if (!res.ok) return;
@@ -210,13 +430,20 @@
     tbody.innerHTML = '';
     for (const d of task.devices) {
       const tr = document.createElement('tr');
-      const dl = d.filtered_log_path ? `<a href="/api/tasks/${task.task_id}/devices/${d.device_id}/log?lang=${LANG_Q}">filtered.log</a>` : '';
+      const sqlLinks = d.log_source === 'sql_log_server'
+        ? ` | <a href="/api/tasks/${task.task_id}/devices/${d.device_id}/device-filtered?lang=${LANG_Q}">filtered_device.log</a> | <a href="/api/tasks/${task.task_id}/devices/${d.device_id}/sql/raw?lang=${LANG_Q}">raw_sql.log</a> | <a href="/api/tasks/${task.task_id}/devices/${d.device_id}/sql/filtered?lang=${LANG_Q}">filtered_sql.log</a>`
+        : '';
+      const dl = d.filtered_log_path
+        ? `<a href="/api/tasks/${task.task_id}/devices/${d.device_id}/log?lang=${LANG_Q}">filtered.log</a>${sqlLinks}`
+        : '';
       const dbg = d.debug_log_path ? `<a href="/api/tasks/${task.task_id}/devices/${d.device_id}/debug?lang=${LANG_Q}">debug.log</a>` : '';
       tr.innerHTML = `
         <td>${d.device_id}</td>
         <td>${d.device_ip}</td>
+        <td>${d.device_name || ''}</td>
         <td>${d.status}</td>
         <td>${d.vendor || ''}</td>
+        <td>${d.log_source || ''}</td>
         <td>${d.offset_seconds == null ? '' : d.offset_seconds}</td>
         <td>${d.hits_count == null ? 0 : d.hits_count}</td>
         <td>${d.reason || ''}</td>
@@ -226,6 +453,7 @@
     }
 
     {% if task.params.get("debug_mode") %}
+    renderLogDeviceList(task.devices);
     pollDebug();
     {% endif %}
 
@@ -236,33 +464,64 @@
 
   {% if task.params.get("debug_mode") %}
   async function pollDebug() {
-    const sel = document.getElementById('debug-device');
     const consoleEl = document.getElementById('debug-console');
+    const titleEl = document.getElementById('selected-log-device');
+    const metaEl = document.getElementById('selected-log-meta');
+    const filteredLinkEl = document.getElementById('filtered-download-link');
     const linkEl = document.getElementById('debug-download-link');
-    if (!sel || !consoleEl || !linkEl) return;
-    const deviceId = sel.value;
+    if (!consoleEl || !linkEl || !filteredLinkEl) return;
     const devices = (latestTask && latestTask.devices) ? latestTask.devices : [];
-    const dev = devices.find(d => d.device_id === deviceId);
-    if (!dev || !dev.debug_log_path) {
+    const dev = getSelectedDevice(devices);
+    if (!dev) {
+      selectedLogDeviceId = '';
+      if (titleEl) titleEl.textContent = T.noDevice;
+      if (metaEl) metaEl.textContent = '';
+      filteredLinkEl.removeAttribute('href');
       linkEl.removeAttribute('href');
-      consoleEl.textContent = T.debugPending;
+      consoleEl.textContent = T.selectDevice;
       return;
     }
-    const url = `/api/tasks/{{ task.task_id }}/devices/${deviceId}/debug?lang=${LANG_Q}`;
-    linkEl.href = url;
+    selectedLogDeviceId = dev.device_id;
+    if (titleEl) titleEl.textContent = dev.device_name || dev.device_ip || dev.device_id;
+    if (metaEl) metaEl.textContent = [dev.device_id, dev.device_ip, dev.status || '-'].filter(Boolean).join(' | ');
+    const filteredUrl = `/api/tasks/{{ task.task_id }}/devices/${dev.device_id}/log?lang=${LANG_Q}`;
+    filteredLinkEl.href = filteredUrl;
+    if (dev.debug_log_path) {
+      linkEl.href = `/api/tasks/{{ task.task_id }}/devices/${dev.device_id}/debug?lang=${LANG_Q}`;
+    } else {
+      linkEl.removeAttribute('href');
+    }
+    if (!dev.filtered_log_path) {
+      consoleEl.textContent = dev.reason || T.debugPending;
+      return;
+    }
     try {
-      const res = await fetch(url);
-      if (res.ok) {
-        const text = await res.text();
-        consoleEl.textContent = text || T.debugEmpty;
-        consoleEl.scrollTop = consoleEl.scrollHeight;
+      const text = await fetchFilteredLogText(dev);
+      if (text) {
+        const hitCount = renderConsoleText(
+          consoleEl,
+          text || T.debugEmpty,
+          logSearchKeyword,
+          logSearchActiveIndex[dev.device_id] || 0,
+        );
+        if (logSearchKeyword.trim() && hitCount > 0 && Number(logSearchCounts[dev.device_id] || 0) !== hitCount) {
+          logSearchCounts[dev.device_id] = hitCount;
+          renderLogDeviceList(devices);
+        }
+      } else {
+        consoleEl.textContent = dev.reason || T.debugPending;
       }
     } catch (e) {
-      // keep silent in polling
+      consoleEl.textContent = dev.reason || T.debugPending;
     }
   }
-  if (document.getElementById('debug-device')) {
-    document.getElementById('debug-device').addEventListener('change', pollDebug);
+  renderLogDeviceList({{ task_devices_json | tojson }});
+  const logSearchInput = el('log-search-keyword');
+  if (logSearchInput) {
+    logSearchInput.addEventListener('input', () => {
+      logSearchKeyword = logSearchInput.value || '';
+      scheduleLogSearch();
+    });
   }
   {% endif %}
 
@@ -652,9 +911,30 @@
   .markdown-body .md-gap { height:4px; }
   .history-row { padding:5px 0; border-bottom:1px solid #e2e8f0; font-size:13px; }
   .history-row:last-child { border-bottom:none; }
+  .device-log-viewer { display:grid; grid-template-columns:280px 1fr; gap:12px; }
+  .device-log-sidebar { border:1px solid #d7dee7; border-radius:10px; background:#f8fafc; padding:10px; }
+  .device-log-sidebar-title { font-weight:700; color:#1e293b; margin-bottom:8px; }
+  .device-log-search-box { margin-bottom:10px; }
+  .device-log-search-box input { width:100%; max-width:none; }
+  .device-log-search-status { margin-top:4px; font-size:12px; min-height:18px; }
+  .device-log-list { display:flex; flex-direction:column; gap:8px; max-height:520px; overflow:auto; }
+  .device-log-item { width:100%; text-align:left; border:1px solid #d7dee7; border-radius:8px; background:#fff; padding:10px; cursor:pointer; }
+  .device-log-item:hover { border-color:#8fb3a5; background:#f5fbf8; }
+  .device-log-item.active { border-color:#0b6e4f; background:#eef8f3; box-shadow:0 0 0 1px #0b6e4f inset; }
+  .device-log-item-main { font-weight:700; color:#1e293b; word-break:break-word; }
+  .device-log-item-sub { margin-top:3px; font-size:12px; color:#64748b; word-break:break-word; }
+  .device-log-item-hit { margin-top:6px; font-size:12px; color:#0b6e4f; font-weight:700; }
+  .device-log-main { min-width:0; }
+  .device-log-toolbar { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; margin-bottom:8px; }
+  .device-log-main-title { font-weight:700; color:#1e293b; }
+  .device-log-links { display:flex; gap:10px; flex-wrap:wrap; }
+  .device-log-console { background:#0f172a; color:#e2e8f0; padding:10px; border-radius:8px; max-height:520px; overflow:auto; margin:0; white-space:pre-wrap; word-break:break-word; }
+  .device-log-console .log-hit { background:#facc15; color:#111827; border-radius:3px; padding:0 1px; }
+  .device-log-console .log-hit-active { background:#f97316; color:#fff; box-shadow:0 0 0 1px rgba(255,255,255,.2); }
   @media (max-width: 920px) {
     .ai-grid { grid-template-columns:1fr; }
     .exec-options { grid-template-columns:1fr; }
+    .device-log-viewer { grid-template-columns:1fr; }
   }
 </style>
 {% endif %}

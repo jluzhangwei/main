@@ -219,3 +219,72 @@ def extract_device_profile(version_text: str) -> tuple[str, str, str | None, str
             version = mv2.group(1).strip()
 
     return vendor, os_family, model, version
+
+
+def parse_device_name(text: str, vendor: str) -> str | None:
+    vendor_norm = (vendor or "unknown").strip().lower()
+    if not text:
+        return None
+
+    patterns: list[re.Pattern[str]] = []
+    if vendor_norm == "huawei":
+        patterns = [
+            re.compile(r"^\s*sysname\s+([A-Za-z0-9_.-]+)\s*$", re.IGNORECASE | re.MULTILINE),
+            re.compile(r"^\s*<([A-Za-z0-9_.-]+)>\s*$", re.MULTILINE),
+        ]
+    else:
+        patterns = [
+            re.compile(r"^\s*hostname\s+([A-Za-z0-9_.-]+)\s*$", re.IGNORECASE | re.MULTILINE),
+            re.compile(r"^\s*([A-Za-z0-9_.-]+)(?:\([^)]+\))?[>#]\s*$", re.MULTILINE),
+        ]
+
+    for pattern in patterns:
+        match = pattern.search(text)
+        if match:
+            return match.group(1).strip()
+
+    return extract_device_name_from_version(text, vendor)
+
+
+def extract_device_name_from_prompt(prompt_text: str) -> str | None:
+    text = (prompt_text or "").strip()
+    if not text:
+        return None
+
+    m = re.search(r"<([A-Za-z0-9_.-]+)>", text)
+    if m:
+        return m.group(1).strip()
+
+    m = re.search(r"([A-Za-z0-9_.-]+)(?:\([^)]+\))?[>#]\s*$", text)
+    if m:
+        return m.group(1).strip()
+
+    return None
+
+
+def extract_device_name_from_version(version_text: str, vendor: str | None = None) -> str | None:
+    text = version_text or ""
+    if not text:
+        return None
+
+    vendor_norm = (vendor or "unknown").strip().lower()
+    patterns: list[re.Pattern[str]] = []
+    if vendor_norm == "huawei":
+        patterns = [
+            re.compile(r"^\s*HUAWEI\s+([A-Za-z0-9_.-]+)\s+uptime is", re.IGNORECASE | re.MULTILINE),
+            re.compile(r"^\s*([A-Za-z0-9_.-]+)\s+uptime is", re.IGNORECASE | re.MULTILINE),
+        ]
+    else:
+        patterns = [
+            re.compile(r"^\s*([A-Za-z0-9_.-]+)\s+uptime is", re.IGNORECASE | re.MULTILINE),
+            re.compile(r"^\s*[A-Za-z0-9_.-]+\s+([A-Za-z0-9_.-]+)\s+uptime is", re.IGNORECASE | re.MULTILINE),
+        ]
+
+    for pattern in patterns:
+        match = pattern.search(text)
+        if match:
+            candidate = match.group(1).strip()
+            if candidate.lower() not in {"huawei", "cisco"}:
+                return candidate
+
+    return None
