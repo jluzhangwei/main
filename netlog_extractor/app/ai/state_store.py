@@ -10,6 +10,8 @@ GPT_CONFIG_PATH = STATE_DIR / "gpt_config.json"
 TOKEN_STATS_PATH = STATE_DIR / "token_stats.json"
 
 DEFAULT_GPT_MODEL = "gpt-4.1-mini"
+DEFAULT_CODEX_MODEL = "gpt-5.4"
+DEFAULT_CODEX_CLI_PATH = "codex"
 DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:1234"
 DEFAULT_LOCAL_MODEL = "qwen/qwen3-coder-30b"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
@@ -29,6 +31,8 @@ def _default_config() -> dict[str, Any]:
         "custom_prompts": {},
         "provider": "chatgpt",
         "chatgpt_model": DEFAULT_GPT_MODEL,
+        "codex_model": DEFAULT_CODEX_MODEL,
+        "codex_cli_path": DEFAULT_CODEX_CLI_PATH,
         "local_base_url": DEFAULT_LOCAL_BASE_URL,
         "local_model": DEFAULT_LOCAL_MODEL,
         "deepseek_model": DEFAULT_DEEPSEEK_MODEL,
@@ -63,7 +67,7 @@ def load_gpt_config() -> dict[str, Any]:
         cfg = _default_config()
         cfg.update(data)
         provider = str(cfg.get("provider", "chatgpt") or "chatgpt").strip().lower()
-        if provider not in {"chatgpt", "local", "deepseek", "qwen", "gemini", "nvidia"}:
+        if provider not in {"chatgpt", "codex_local", "local", "deepseek", "qwen", "gemini", "nvidia"}:
             provider = "chatgpt"
         cfg["provider"] = provider
         return cfg
@@ -75,7 +79,7 @@ def save_gpt_config(config: dict[str, Any]) -> None:
     cfg = _default_config()
     cfg.update(config or {})
     provider = str(cfg.get("provider", "chatgpt") or "chatgpt").strip().lower()
-    if provider not in {"chatgpt", "local", "deepseek", "qwen", "gemini", "nvidia"}:
+    if provider not in {"chatgpt", "codex_local", "local", "deepseek", "qwen", "gemini", "nvidia"}:
         provider = "chatgpt"
     cfg["provider"] = provider
     STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -83,7 +87,7 @@ def save_gpt_config(config: dict[str, Any]) -> None:
 
 
 def load_token_stats() -> dict[str, Any]:
-    default = {"total_tokens": 0, "providers": {"chatgpt": 0, "deepseek": 0, "qwen": 0, "gemini": 0, "nvidia": 0, "local": 0}}
+    default = {"total_tokens": 0, "providers": {"chatgpt": 0, "codex_local": 0, "deepseek": 0, "qwen": 0, "gemini": 0, "nvidia": 0, "local": 0}}
     if not TOKEN_STATS_PATH.is_file():
         return default
     try:
@@ -102,7 +106,7 @@ def save_token_stats(stats: dict[str, Any]) -> None:
 
 def add_token_usage(provider: str, used_tokens: int) -> dict[str, Any]:
     stats = load_token_stats()
-    p = provider if provider in {"chatgpt", "deepseek", "qwen", "gemini", "nvidia", "local"} else "local"
+    p = provider if provider in {"chatgpt", "codex_local", "deepseek", "qwen", "gemini", "nvidia", "local"} else "local"
     used = max(0, int(used_tokens or 0))
     stats["total_tokens"] = int(stats.get("total_tokens", 0) or 0) + used
     providers = stats.get("providers", {})

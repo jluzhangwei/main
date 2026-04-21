@@ -20,6 +20,7 @@ from ..ai.prompt_store import (
 )
 from ..ai.state_store import load_gpt_config, load_token_stats, save_gpt_config
 from ..ai.llm_client import (
+    test_codex_local_connection,
     detect_qwen_endpoint,
     test_deepseek_connection,
     test_gemini_connection,
@@ -40,6 +41,11 @@ CHATGPT_MODEL_OPTIONS = [
     "o1-mini",
     "o3",
     "o3-mini",
+]
+CODEX_MODEL_OPTIONS = [
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.2",
 ]
 DEEPSEEK_MODEL_OPTIONS = [
     "deepseek-chat",
@@ -110,6 +116,8 @@ def _merge_cfg(cfg: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
             "gemini_api_key": keep_or_update("gemini_api_key"),
             "nvidia_api_key": keep_or_update("nvidia_api_key"),
             "chatgpt_model": str(incoming.get("chatgpt_model", cfg.get("chatgpt_model", "")) or ""),
+            "codex_model": str(incoming.get("codex_model", cfg.get("codex_model", "")) or ""),
+            "codex_cli_path": str(incoming.get("codex_cli_path", cfg.get("codex_cli_path", "")) or ""),
             "local_base_url": str(incoming.get("local_base_url", cfg.get("local_base_url", "")) or ""),
             "local_model": str(incoming.get("local_model", cfg.get("local_model", "")) or ""),
             "deepseek_model": str(incoming.get("deepseek_model", cfg.get("deepseek_model", "")) or ""),
@@ -279,6 +287,7 @@ async def ai_settings_page(request: Request):
             "system_prompt_labels": system_prompt_labels,
             "task_prompt_labels": task_prompt_labels,
             "chatgpt_model_options": CHATGPT_MODEL_OPTIONS,
+            "codex_model_options": CODEX_MODEL_OPTIONS,
             "deepseek_model_options": DEEPSEEK_MODEL_OPTIONS,
             "qwen_model_options": QWEN_MODEL_OPTIONS,
             "gemini_model_options": GEMINI_MODEL_OPTIONS,
@@ -300,6 +309,8 @@ async def ai_settings_save(
     gemini_api_key: str = Form(""),
     nvidia_api_key: str = Form(""),
     chatgpt_model: str = Form(""),
+    codex_model: str = Form(""),
+    codex_cli_path: str = Form(""),
     local_base_url: str = Form(""),
     local_model: str = Form(""),
     deepseek_model: str = Form(""),
@@ -328,6 +339,8 @@ async def ai_settings_save(
             "gemini_api_key": gemini_api_key,
             "nvidia_api_key": nvidia_api_key,
             "chatgpt_model": chatgpt_model,
+            "codex_model": codex_model,
+            "codex_cli_path": codex_cli_path,
             "local_base_url": local_base_url,
             "local_model": local_model,
             "deepseek_model": deepseek_model,
@@ -364,6 +377,7 @@ async def ai_settings_save(
             "system_prompt_labels": system_prompt_labels,
             "task_prompt_labels": task_prompt_labels,
             "chatgpt_model_options": CHATGPT_MODEL_OPTIONS,
+            "codex_model_options": CODEX_MODEL_OPTIONS,
             "deepseek_model_options": DEEPSEEK_MODEL_OPTIONS,
             "qwen_model_options": QWEN_MODEL_OPTIONS,
             "gemini_model_options": GEMINI_MODEL_OPTIONS,
@@ -385,6 +399,7 @@ async def ai_settings_api():
         "stats": load_token_stats(),
         "model_options": {
             "chatgpt": CHATGPT_MODEL_OPTIONS,
+            "codex_local": CODEX_MODEL_OPTIONS,
             "deepseek": DEEPSEEK_MODEL_OPTIONS,
             "qwen": QWEN_MODEL_OPTIONS,
             "gemini": GEMINI_MODEL_OPTIONS,
@@ -489,6 +504,8 @@ async def test_connection(
     gemini_api_key: str = Form(""),
     nvidia_api_key: str = Form(""),
     chatgpt_model: str = Form(""),
+    codex_model: str = Form(""),
+    codex_cli_path: str = Form(""),
     local_base_url: str = Form(""),
     local_model: str = Form(""),
     deepseek_model: str = Form(""),
@@ -498,11 +515,15 @@ async def test_connection(
 ):
     cfg = load_gpt_config()
     provider = (provider or "").strip().lower()
-    if provider not in {"chatgpt", "local", "deepseek", "qwen", "gemini", "nvidia"}:
+    if provider not in {"chatgpt", "codex_local", "local", "deepseek", "qwen", "gemini", "nvidia"}:
         provider = str(cfg.get("provider", "chatgpt") or "chatgpt").strip().lower()
-        if provider not in {"chatgpt", "local", "deepseek", "qwen", "gemini", "nvidia"}:
+        if provider not in {"chatgpt", "codex_local", "local", "deepseek", "qwen", "gemini", "nvidia"}:
             provider = "chatgpt"
 
+    if not (codex_model or "").strip():
+        codex_model = str(cfg.get("codex_model", "") or "")
+    if not (codex_cli_path or "").strip():
+        codex_cli_path = str(cfg.get("codex_cli_path", "") or "")
     if not (local_base_url or "").strip():
         local_base_url = str(cfg.get("local_base_url", "") or "")
     if not (chatgpt_model or "").strip():
@@ -529,6 +550,15 @@ async def test_connection(
     elif provider == "nvidia" and not (nvidia_api_key or "").strip():
         nvidia_api_key = str(saved_cfg.get("nvidia_api_key", "") or "")
     try:
+        if provider == "codex_local":
+            msg = await asyncio.to_thread(test_codex_local_connection, codex_model, codex_cli_path)
+            return {
+                "ok": True,
+                "message": msg,
+                "provider_used": "codex_local",
+                "token_balance_status": "n/a",
+                "token_balance_message": "N/A（Codex Local）",
+            }
         if provider == "local":
             msg = await asyncio.to_thread(test_local_lmstudio_connection, local_base_url)
             return {

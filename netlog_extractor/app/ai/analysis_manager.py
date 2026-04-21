@@ -184,6 +184,8 @@ class AIAnalysisManager:
             "provider": provider,
             "api_key": api_key,
             "chatgpt_model": str(cfg.get("chatgpt_model") or ""),
+            "codex_model": str(cfg.get("codex_model") or ""),
+            "codex_cli_path": str(cfg.get("codex_cli_path") or ""),
             "local_base_url": str(cfg.get("local_base_url") or ""),
             "local_model": str(cfg.get("local_model") or ""),
             "deepseek_model": str(cfg.get("deepseek_model") or ""),
@@ -195,6 +197,7 @@ class AIAnalysisManager:
             "task_prompt_text": task_text,
             "system_prompt_key": system_key,
             "task_prompt_key": task_key,
+            "llm_call_timeout_sec": str(cfg.get("llm_call_timeout_sec") or ""),
         }
 
     def _collect_task_report_text(self, task_id: str) -> str:

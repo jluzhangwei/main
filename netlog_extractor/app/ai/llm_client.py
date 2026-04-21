@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import ssl
+import subprocess
+import tempfile
+from pathlib import Path
+from shutil import which
 from typing import Any
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
 from .state_store import (
+    DEFAULT_CODEX_CLI_PATH,
+    DEFAULT_CODEX_MODEL,
     DEFAULT_DEEPSEEK_MODEL,
     DEFAULT_GEMINI_MODEL,
     DEFAULT_GPT_MODEL,
@@ -178,6 +185,113 @@ def test_local_lmstudio_connection(base_url: str) -> str:
     return f"LM Studio 连接成功，models={count}"
 
 
+def _resolve_codex_cli(cli_path: str = "") -> str:
+    raw = str(cli_path or "").strip()
+    candidates: list[str] = []
+    if raw:
+        candidates.append(raw)
+    env_path = str(os.environ.get("CODEX_CLI_PATH", "") or "").strip()
+    if env_path and env_path not in candidates:
+        candidates.append(env_path)
+    auto = which("codex")
+    if auto and auto not in candidates:
+        candidates.append(auto)
+
+    vscode_root = Path.home() / ".vscode" / "extensions"
+    if vscode_root.exists():
+        for path in sorted(vscode_root.glob("openai.chatgpt-*/bin/*/codex"), reverse=True):
+            cand = str(path)
+            if cand not in candidates:
+                candidates.append(cand)
+
+    for cand in candidates:
+        if not cand:
+            continue
+        if Path(cand).exists() or cand == "codex":
+            return cand
+    raise RuntimeError("codex CLI not found. Set codex_cli_path or ensure `codex` is in PATH")
+
+
+def _extract_codex_usage(stderr_text: str) -> dict[str, int]:
+    text = str(stderr_text or "")
+    m = re.search(r"tokens used\s*([\d,]+)", text, flags=re.IGNORECASE)
+    if not m:
+        return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    total = int(m.group(1).replace(",", "") or "0")
+    return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": max(0, total)}
+
+
+def _run_codex_local(
+    cli_path: str,
+    model: str,
+    system_prompt: str,
+    task_prompt: str,
+    report_text: str,
+    timeout_sec: int = 240,
+):
+    cli = _resolve_codex_cli(cli_path)
+    prompt = (
+        "You are running in non-interactive Codex CLI mode for network log diagnosis.\n"
+        "Do not ask follow-up questions. Do not request tools. Provide the final analysis only.\n\n"
+        f"[System Prompt]\n{system_prompt or DEFAULT_SYSTEM_PROMPT}\n\n"
+        f"[Task Prompt]\n{task_prompt}\n\n"
+        f"[Inspection Data]\n{report_text}\n"
+    )
+    cmd = [
+        cli,
+        "exec",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        "-C",
+        str(Path(__file__).resolve().parent.parent.parent),
+    ]
+    if str(model or "").strip():
+        cmd.extend(["-m", str(model).strip()])
+    with tempfile.NamedTemporaryFile("w+", encoding="utf-8", delete=False) as fh:
+        out_path = fh.name
+    cmd.extend(["-o", out_path, "-"])
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=prompt,
+            text=True,
+            capture_output=True,
+            timeout=max(30, int(timeout_sec or 240)),
+            check=False,
+        )
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(f"codex exec failed (rc={proc.returncode}): {detail[:600]}")
+        text = Path(out_path).read_text(encoding="utf-8").strip()
+        if not text:
+            raise RuntimeError("empty analysis text")
+        return text, _extract_codex_usage(proc.stderr)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"codex exec timeout after {max(30, int(timeout_sec or 240))}s") from exc
+    finally:
+        try:
+            Path(out_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def test_codex_local_connection(model: str = DEFAULT_CODEX_MODEL, cli_path: str = DEFAULT_CODEX_CLI_PATH) -> str:
+    cli = _resolve_codex_cli(cli_path)
+    text, _usage = _run_codex_local(
+        cli,
+        model or DEFAULT_CODEX_MODEL,
+        "Reply exactly with the requested text.",
+        "Return exactly: CODEX_LOCAL_OK",
+        "No inspection data.",
+        timeout_sec=60,
+    )
+    if "CODEX_LOCAL_OK" not in text:
+        raise RuntimeError(f"unexpected codex response: {text[:200]}")
+    return f"Codex Local 连接成功，model={model or DEFAULT_CODEX_MODEL} cli={cli}"
+
+
 def _run_openai_compatible(base_url: str, api_key: str, model: str, system_prompt: str, task_prompt: str, report_text: str):
     system_text = system_prompt or DEFAULT_SYSTEM_PROMPT
     user_text = f"Task Requirements:\n{task_prompt}\n\nInspection Data:\n{report_text}"
@@ -207,6 +321,11 @@ def run_analysis(llm: dict[str, str], report_text: str):
         base = (llm.get("local_base_url") or "").rstrip("/") + "/v1"
         model = llm.get("local_model") or DEFAULT_LOCAL_MODEL
         return _run_openai_compatible(base, "", model, system_prompt, task_prompt, report_text)
+    if provider == "codex_local":
+        model = llm.get("codex_model") or DEFAULT_CODEX_MODEL
+        cli_path = llm.get("codex_cli_path") or DEFAULT_CODEX_CLI_PATH
+        timeout_sec = int(str(llm.get("llm_call_timeout_sec") or "240") or "240")
+        return _run_codex_local(cli_path, model, system_prompt, task_prompt, report_text, timeout_sec=timeout_sec)
     if provider == "deepseek":
         key = llm.get("api_key", "")
         if not key:
@@ -277,6 +396,8 @@ def model_used(llm: dict[str, str]) -> str:
     provider = llm.get("provider", "chatgpt")
     if provider == "local":
         return llm.get("local_model", "")
+    if provider == "codex_local":
+        return llm.get("codex_model", "")
     if provider == "deepseek":
         return llm.get("deepseek_model", "")
     if provider == "qwen":

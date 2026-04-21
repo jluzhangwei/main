@@ -18,6 +18,7 @@
         <label>{{ 'Provider' if is_en else '大模型选择' }}</label>
         <select id="provider_select">
           <option value="chatgpt" {% if cfg.provider=='chatgpt' %}selected{% endif %}>ChatGPT</option>
+          <option value="codex_local" {% if cfg.provider=='codex_local' %}selected{% endif %}>{{ 'Codex (Local Login)' if is_en else 'Codex（本机登录态）' }}</option>
           <option value="deepseek" {% if cfg.provider=='deepseek' %}selected{% endif %}>DeepSeek</option>
           <option value="qwen" {% if cfg.provider=='qwen' %}selected{% endif %}>QWEN</option>
           <option value="gemini" {% if cfg.provider=='gemini' %}selected{% endif %}>Gemini</option>
@@ -52,6 +53,27 @@
         <label>{{ 'Custom ChatGPT Model' if is_en else '自定义 ChatGPT 模型' }}</label>
         <input id="chatgpt_model_custom" value="{% if cfg.chatgpt_model in chatgpt_model_options %}{% else %}{{ cfg.chatgpt_model }}{% endif %}" placeholder="{{ 'e.g. gpt-4.1-mini' if is_en else '例如 gpt-4.1-mini' }}" />
       </div>
+    </div>
+
+    <div id="codex_local_settings" class="ai-grid ai-row" {% if cfg.provider != 'codex_local' %}style="display:none;"{% endif %}>
+      <div>
+        <label>{{ 'Codex Model' if is_en else 'Codex 模型' }}</label>
+        <select id="codex_model_select">
+          {% for m in codex_model_options %}
+          <option value="{{ m }}" {% if cfg.codex_model == m %}selected{% endif %}>{{ m }}</option>
+          {% endfor %}
+          <option value="__custom__" {% if cfg.codex_model not in codex_model_options %}selected{% endif %}>{{ 'Custom...' if is_en else '自定义...' }}</option>
+        </select>
+      </div>
+      <div id="codex_custom_wrap" {% if cfg.codex_model in codex_model_options %}style="display:none;"{% endif %}>
+        <label>{{ 'Custom Codex Model' if is_en else '自定义 Codex 模型' }}</label>
+        <input id="codex_model_custom" value="{% if cfg.codex_model in codex_model_options %}{% else %}{{ cfg.codex_model }}{% endif %}" placeholder="{{ 'e.g. gpt-5.4' if is_en else '例如 gpt-5.4' }}" />
+      </div>
+      <div>
+        <label>{{ 'Codex CLI Path (optional)' if is_en else 'Codex CLI 路径（可选）' }}</label>
+        <input id="codex_cli_path" value="{{ cfg.codex_cli_path }}" placeholder="codex" />
+      </div>
+      <div class="hint">{{ 'Uses your local Codex CLI login session. Experimental and suitable for this machine only.' if is_en else '使用本机 Codex CLI 登录态。实验性模式，仅适合当前机器。' }}</div>
     </div>
 
     <div id="deepseek_settings" class="ai-grid ai-row" {% if cfg.provider != 'deepseek' %}style="display:none;"{% endif %}>
@@ -357,6 +379,7 @@
 
   function getConfigFromUI() {
     const chatgptModel = selectedModel(id('chatgpt_model_select'), id('chatgpt_model_custom'));
+    const codexModel = selectedModel(id('codex_model_select'), id('codex_model_custom'));
     const deepseekModel = selectedModel(id('deepseek_model_select'), id('deepseek_model_custom'));
     const qwenModel = selectedModel(id('qwen_model_select'), id('qwen_model_custom'));
     const geminiModel = selectedModel(id('gemini_model_select'), id('gemini_model_custom'));
@@ -370,6 +393,8 @@
       gemini_api_key: apiKeys.gemini || '',
       nvidia_api_key: apiKeys.nvidia || '',
       chatgpt_model: chatgptModel,
+      codex_model: codexModel,
+      codex_cli_path: id('codex_cli_path').value,
       local_base_url: id('local_base_url').value,
       local_model: localModel,
       deepseek_model: deepseekModel,
@@ -386,12 +411,14 @@
   function updateProviderSection() {
     const p = id('provider_select').value;
     id('chatgpt_settings').style.display = p === 'chatgpt' ? '' : 'none';
+    id('codex_local_settings').style.display = p === 'codex_local' ? '' : 'none';
     id('deepseek_settings').style.display = p === 'deepseek' ? '' : 'none';
     id('qwen_settings').style.display = p === 'qwen' ? '' : 'none';
     id('gemini_settings').style.display = p === 'gemini' ? '' : 'none';
     id('nvidia_settings').style.display = p === 'nvidia' ? '' : 'none';
     id('local_settings').style.display = p === 'local' ? '' : 'none';
     syncCustomModelInput('chatgpt_model_select', 'chatgpt_custom_wrap', 'chatgpt_model_custom');
+    syncCustomModelInput('codex_model_select', 'codex_custom_wrap', 'codex_model_custom');
     syncCustomModelInput('deepseek_model_select', 'deepseek_custom_wrap', 'deepseek_model_custom');
     syncCustomModelInput('qwen_model_select', 'qwen_custom_wrap', 'qwen_model_custom');
     syncCustomModelInput('gemini_model_select', 'gemini_custom_wrap', 'gemini_model_custom');
@@ -459,6 +486,10 @@
       setBrandIcon(iconMap.openai, 'OpenAI', 'ChatGPT', '#10a37f', 'OA');
       return;
     }
+    if (provider === 'codex_local') {
+      setBrandIcon(iconMap.openai, 'Codex', 'Codex Local', '#111827', 'CX');
+      return;
+    }
     if (provider === 'deepseek') {
       setBrandIcon(iconMap.deepseek, 'DeepSeek', 'DeepSeek', '#2563eb', 'DS');
       return;
@@ -522,6 +553,7 @@
     const savedTxt = UI_LANG === 'en' ? 'Saved' : '已保存';
     const missTxt = UI_LANG === 'en' ? 'Not saved' : '未保存';
     const state = [
+      `Codex Local: ${UI_LANG === 'en' ? 'No API Key required' : '无需 API Key'}`,
       `ChatGPT Key: ${(savedKeyState.chatgpt || !!apiKeys.chatgpt) ? savedTxt : missTxt}`,
       `DeepSeek Key: ${(savedKeyState.deepseek || !!apiKeys.deepseek) ? savedTxt : missTxt}`,
       `QWEN Key: ${(savedKeyState.qwen || !!apiKeys.qwen) ? savedTxt : missTxt}`,
@@ -690,12 +722,14 @@
 
   on('provider_select', 'change', updateProviderSection);
   on('chatgpt_model_select', 'change', updateProviderSection);
+  on('codex_model_select', 'change', updateProviderSection);
   on('deepseek_model_select', 'change', updateProviderSection);
   on('qwen_model_select', 'change', updateProviderSection);
   on('gemini_model_select', 'change', updateProviderSection);
   on('nvidia_model_select', 'change', updateProviderSection);
   on('local_model_select', 'change', updateProviderSection);
   on('chatgpt_model_custom', 'input', updateProviderIcon);
+  on('codex_model_custom', 'input', updateProviderIcon);
   on('deepseek_model_custom', 'input', updateProviderIcon);
   on('qwen_model_custom', 'input', updateProviderIcon);
   on('gemini_model_custom', 'input', updateProviderIcon);
@@ -708,6 +742,10 @@
   on('import_prompt_btn', 'click', importPrompt);
   on('import_api_key_btn', 'click', () => {
     const provider = id('provider_select').value;
+    if (provider === 'codex_local' || provider === 'local') {
+      alert(UI_LANG === 'en' ? 'This provider does not use an API Key.' : '该 provider 不使用 API Key。');
+      return;
+    }
     const key = window.prompt(UI_LANG === 'en' ? `Enter ${provider.toUpperCase()} API Key` : `请输入 ${provider.toUpperCase()} API Key`);
     if (!key) return;
     const map = {
