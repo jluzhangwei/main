@@ -788,10 +788,22 @@ class JobEvent(BaseModel):
     created_at: datetime = Field(default_factory=now_utc)
 
 
+class JobRequestTurn(BaseModel):
+    content: str
+    created_at: datetime = Field(default_factory=now_utc)
+
+
+class JobSummaryTurn(BaseModel):
+    summary: RCAResult
+    created_at: datetime = Field(default_factory=now_utc)
+
+
 class Job(BaseModel):
     id: str = Field(default_factory=make_id)
     name: Optional[str] = None
     problem: str
+    request_history: list[JobRequestTurn] = Field(default_factory=list)
+    summary_history: list[JobSummaryTurn] = Field(default_factory=list)
     mode: JobMode = JobMode.diagnosis
     sop_enabled: bool = True
     status: JobStatus = JobStatus.queued
@@ -827,6 +839,8 @@ class JobResponse(BaseModel):
     id: str
     name: Optional[str] = None
     problem: str
+    request_history: list[JobRequestTurn] = Field(default_factory=list)
+    summary_history: list[JobSummaryTurn] = Field(default_factory=list)
     mode: JobMode
     sop_enabled: bool = True
     status: JobStatus

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import secrets
+import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -43,6 +44,8 @@ from app.models.schemas import (
     JobPhase,
     JobReportResponse,
     JobResponse,
+    JobRequestTurn,
+    JobSummaryTurn,
     JobStatus,
     JobTimelineResponse,
     JobTopologyEdge,
@@ -94,6 +97,9 @@ class JobV2Orchestrator:
         self._command_profiles: dict[str, CommandProfile] = {}
         self._idempotency_index: dict[str, str] = {}
         self._webhook_tasks: set[asyncio.Task] = set()
+        self._state_save_debounce_seconds = float(os.getenv("NETOPS_V2_STATE_SAVE_DEBOUNCE_SECONDS", "15.0"))
+        self._last_state_save_monotonic = 0.0
+        self._state_dirty = False
 
         self._state_lock = asyncio.Lock()
         self._state_path = self._resolve_state_path()
@@ -190,7 +196,14 @@ class JobV2Orchestrator:
                     continue
                 self._idempotency_index[k] = v
 
-    def _save_state(self) -> None:
+    def _save_state(self, *, force: bool = False) -> None:
+        if not force and self._state_save_debounce_seconds > 0:
+            now = time.monotonic()
+            if self._last_state_save_monotonic and (
+                now - self._last_state_save_monotonic
+            ) < self._state_save_debounce_seconds:
+                self._state_dirty = True
+                return
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
@@ -202,6 +215,8 @@ class JobV2Orchestrator:
                 "command_profiles": [item.model_dump(mode="json") for item in self._command_profiles.values()],
             }
             self._state_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            self._last_state_save_monotonic = time.monotonic()
+            self._state_dirty = False
             try:
                 os.chmod(self._state_path, 0o600)
             except Exception:
@@ -235,6 +250,14 @@ class JobV2Orchestrator:
             id=job.id,
             name=job.name,
             problem=job.problem,
+            request_history=[
+                item.model_copy(deep=True) if hasattr(item, "model_copy") else JobRequestTurn.model_validate(item)
+                for item in job.request_history
+            ],
+            summary_history=[
+                item.model_copy(deep=True) if hasattr(item, "model_copy") else JobSummaryTurn.model_validate(item)
+                for item in job.summary_history
+            ],
             mode=job.mode,
             sop_enabled=job.sop_enabled,
             status=job.status,
@@ -402,7 +425,7 @@ class JobV2Orchestrator:
                 detail_payload=payload,
                 device=current_device,
             )
-            self._save_state()
+            self._save_state(force=True)
 
     def _format_phase_label(self, phase: str) -> str:
         labels = {
@@ -685,6 +708,7 @@ class JobV2Orchestrator:
         job = Job(
             name=req.name,
             problem=req.problem,
+            request_history=[JobRequestTurn(content=req.problem)],
             mode=req.mode,
             sop_enabled=req.sop_enabled,
             status=JobStatus.queued,
@@ -741,7 +765,7 @@ class JobV2Orchestrator:
                     "topology_mode": job.topology_mode.value,
                 },
             )
-            self._save_state()
+            self._save_state(force=True)
 
         task = asyncio.create_task(self._run_job(job.id), name=f"v2-job-{job.id}")
         self._tasks[job.id] = task
@@ -765,75 +789,11 @@ class JobV2Orchestrator:
             if not self._terminal(job.status):
                 raise ValueError("job is active")
 
-            job.problem = content
-            job.mode = self._job_mode_from_problem(content, fallback=job.mode)
-            job.status = JobStatus.queued
-            job.phase = JobPhase.collect
-            job.error = None
-            job.started_at = None
-            job.completed_at = None
-            job.updated_at = now_utc()
-            job.incidents = []
-            job.clusters = []
-            job.causal_edges = []
-            job.rca_result = None
-            job.action_groups = []
-            if actor_key_id:
-                job.requester_key_id = actor_key_id
-            for device in job.devices:
-                device.status = "pending"
-                device.last_error = None
-            self._append_trace_event(
-                job,
-                "user_input",
-                "接收用户追加请求",
-                status="succeeded",
-                detail=content[:280],
-                detail_payload={
-                    "user_input": content,
-                    "continued": True,
-                    "mode": job.mode.value,
-                    "device_count": len(job.devices),
-                },
-            )
-            self._append_event_with_trace(
-                job,
-                "job_continued",
-                {"job_id": job.id, "continued": True, "mode": job.mode.value},
-                step_type="session_control",
-                title="继续多设备协同任务",
-                status="succeeded",
-                detail=f"continued=true; mode={job.mode.value}",
-                detail_payload={"job_id": job.id, "continued": True, "mode": job.mode.value},
-                completed_at=job.updated_at,
-                duration_ms=0,
-            )
-            self._save_state()
-
-        task = asyncio.create_task(self._run_job(job_id), name=f"v2-job-{job_id}-continue")
-        self._tasks[job_id] = task
-        return self._job_summary(self._jobs[job_id])
-
-    async def continue_job(
-        self,
-        job_id: str,
-        problem: str,
-        *,
-        actor_key_id: str | None = None,
-    ) -> JobResponse:
-        content = str(problem or "").strip()
-        if not content:
-            raise ValueError("problem is required")
-
-        async with self._state_lock:
-            job = self._jobs.get(job_id)
-            if job is None:
-                raise KeyError(job_id)
-            if not self._terminal(job.status):
-                raise ValueError("job is active")
-
             next_mode = self._job_mode_from_problem(content, fallback=job.mode)
+            if job.rca_result is not None:
+                job.summary_history.append(JobSummaryTurn(summary=job.rca_result.model_copy(deep=True)))
             job.problem = content
+            job.request_history.append(JobRequestTurn(content=content))
             job.mode = next_mode
             job.status = JobStatus.queued
             job.phase = JobPhase.collect
@@ -845,6 +805,7 @@ class JobV2Orchestrator:
             job.clusters = []
             job.causal_edges = []
             job.rca_result = None
+            job.action_groups = []
             if actor_key_id:
                 job.requester_key_id = actor_key_id
             for device in job.devices:
@@ -1263,7 +1224,6 @@ class JobV2Orchestrator:
                 self._save_state()
 
             await self._collect_phase(job_id)
-            await self._correlate_phase(job_id)
             async with self._state_lock:
                 job = self._jobs.get(job_id)
                 if not job:
@@ -1271,6 +1231,32 @@ class JobV2Orchestrator:
                 if job.status == JobStatus.cancelled:
                     return
                 mode = job.mode
+                followup_repair = mode == JobMode.repair and self._is_followup_request(job)
+                if followup_repair:
+                    job.phase = JobPhase.plan
+                    job.updated_at = now_utc()
+                    self._append_event_with_trace(
+                        job,
+                        "phase_changed",
+                        {"phase": "plan", "status": job.status.value, "followup_short_path": True},
+                        step_type="session_control",
+                        title="repair follow-up 进入最短计划路径",
+                        status=job.status.value,
+                        detail="skip_correlate=true",
+                        detail_payload={"phase": "plan", "status": job.status.value, "followup_short_path": True},
+                        completed_at=job.updated_at,
+                        duration_ms=0,
+                    )
+                    self._save_state(force=True)
+            if not (mode == JobMode.repair and followup_repair):
+                await self._correlate_phase(job_id)
+                async with self._state_lock:
+                    job = self._jobs.get(job_id)
+                    if not job:
+                        return
+                    if job.status == JobStatus.cancelled:
+                        return
+                    mode = job.mode
             if mode != JobMode.repair:
                 await self._complete_non_repair_job(job_id)
                 return
@@ -1321,7 +1307,7 @@ class JobV2Orchestrator:
                     completed_at=job.completed_at,
                     duration_ms=0,
                 )
-                self._save_state()
+                self._save_state(force=True)
             await self._close_job_adapters(job_id)
 
     async def _complete_non_repair_job(self, job_id: str) -> None:
@@ -1347,8 +1333,7 @@ class JobV2Orchestrator:
                 completed_at=job.completed_at,
                 duration_ms=0,
             )
-            self._save_state()
-        await self._close_job_adapters(job_id)
+            self._save_state(force=True)
 
     async def _collect_phase(self, job_id: str) -> None:
         async with self._state_lock:
@@ -1401,6 +1386,52 @@ class JobV2Orchestrator:
             )
             self._save_state()
 
+        async with self._state_lock:
+            current_job = self._jobs.get(job_id)
+            current_device = self._find_device(current_job, device_id) if current_job else None
+            skip_device_collect = bool(
+                current_job is not None
+                and current_device is not None
+                and self._can_skip_followup_device_collect(current_job, device_id)
+            )
+            if skip_device_collect and current_job is not None and current_device is not None:
+                known, missing = self._known_missing_facts(current_job, device_id=device_id)
+                current_device.status = "collected"
+                current_device.last_error = None
+                self._append_trace_event(
+                    current_job,
+                    "policy_decision",
+                    f"[{current_device.host}] follow-up 已具备采集与规划所需事实，跳过设备采集",
+                    status="succeeded",
+                    detail="decision=skip_followup_device_collect",
+                    detail_payload={
+                        "decision": "skip_followup_device_collect",
+                        "device": self._job_device_trace_record(current_device),
+                        "known_facts": known,
+                        "missing_facts": missing,
+                    },
+                    device=current_device,
+                )
+                self._append_event_with_trace(
+                    current_job,
+                    "device_collect_completed",
+                    {"device_id": device_id, "skipped": True},
+                    step_type="session_control",
+                    title=f"[{current_device.host}] 设备采集完成（follow-up 事实复用）",
+                    status="succeeded",
+                    detail="phase=collect; skipped=true",
+                    detail_payload={
+                        "device": self._job_device_trace_record(current_device),
+                        "phase": "collect",
+                        "skipped": True,
+                        "known_facts": known,
+                        "missing_facts": missing,
+                    },
+                    device=current_device,
+                )
+                self._save_state()
+                return
+
         try:
             await self._get_adapter(job_id, device_id)
             collect_commands = self._baseline_collect_commands(job.problem)
@@ -1415,6 +1446,28 @@ class JobV2Orchestrator:
                     continue
                 if self._should_skip_collect_command_by_vendor(current_vendor, normalized_cmd):
                     continue
+                reuse_reason = self._successful_followup_command_reason(current_job, device_id, command_text)
+                if reuse_reason:
+                    async with self._state_lock:
+                        current_job = self._jobs.get(job_id)
+                        current_device = self._find_device(current_job, device_id) if current_job else None
+                        if current_job is not None and current_device is not None:
+                            self._append_trace_event(
+                                current_job,
+                                "policy_decision",
+                                f"[{current_device.host}] 复用已确认事实，跳过重复采集命令",
+                                status="succeeded",
+                                detail=f"command={command_text}",
+                                detail_payload={
+                                    "decision": "reuse_successful_command",
+                                    "command": command_text,
+                                    "reason": reuse_reason,
+                                    "device": self._job_device_trace_record(current_device),
+                                },
+                                device=current_device,
+                            )
+                            self._save_state()
+                    continue
                 step_no = await self._allocate_next_step_no(job_id)
                 await self._run_device_command(
                     job_id,
@@ -1426,7 +1479,33 @@ class JobV2Orchestrator:
                     phase="collect",
                 )
 
-            await self._collect_device_with_llm(job_id, device_id)
+            async with self._state_lock:
+                current_job = self._jobs.get(job_id)
+                current_device = self._find_device(current_job, device_id) if current_job else None
+                skip_followup_llm_collect = bool(
+                    current_job is not None
+                    and current_device is not None
+                    and self._can_skip_followup_llm_collect(current_job, device_id)
+                )
+                if skip_followup_llm_collect and current_job is not None and current_device is not None:
+                    known, _missing = self._known_missing_facts(current_job, device_id=device_id)
+                    self._append_trace_event(
+                        current_job,
+                        "policy_decision",
+                        f"[{current_device.host}] follow-up 已具备规划所需事实，跳过设备侧 LLM 补采",
+                        status="succeeded",
+                        detail="decision=skip_followup_llm_collect",
+                        detail_payload={
+                            "decision": "skip_followup_llm_collect",
+                            "device": self._job_device_trace_record(current_device),
+                            "known_facts": known,
+                        },
+                        device=current_device,
+                    )
+                    self._save_state()
+
+            if not skip_followup_llm_collect:
+                await self._collect_device_with_llm(job_id, device_id)
 
             async with self._state_lock:
                 job = self._jobs[job_id]
@@ -1537,6 +1616,174 @@ class JobV2Orchestrator:
             return True
         return False
 
+    def _normalize_command_text(self, command_text: str) -> str:
+        return " ".join(str(command_text or "").strip().lower().split())
+
+    def _is_followup_request(self, job: Job) -> bool:
+        return len(job.request_history) > 1 and bool(job.command_results)
+
+    def _has_continuous_followup_context(self, job: Job) -> bool:
+        if not self._is_followup_request(job):
+            return False
+        terminal_breaks = {"job_cancelled", "job_failed"}
+        return not any(item.event_type in terminal_breaks for item in self._events.get(job.id, []))
+
+    def _successful_followup_command_reason(self, job: Job, device_id: str, command_text: str) -> str:
+        if not self._has_continuous_followup_context(job):
+            return ""
+        normalized = self._normalize_command_text(command_text)
+        if not normalized or self._is_write_like_command(command_text):
+            return ""
+        if normalized == "enable" and self._adapters.get(job.id, {}).get(device_id) is None:
+            return ""
+        for cmd in reversed(job.command_results[-80:]):
+            if cmd.device_id != device_id:
+                continue
+            if cmd.status != JobCommandStatus.succeeded:
+                continue
+            existing = self._normalize_command_text(
+                str(cmd.effective_command or cmd.original_command or cmd.command or "")
+            )
+            if existing == normalized:
+                return "existing_successful_command"
+        return ""
+
+    def _is_redundant_privilege_check(self, permission_state: str, command_text: str) -> bool:
+        normalized = self._normalize_command_text(command_text)
+        return permission_state.startswith("privileged") and normalized in {"show privilege", "display users"}
+
+    def _is_redundant_enable(self, permission_state: str, command_text: str) -> bool:
+        normalized = self._normalize_command_text(command_text)
+        return permission_state.startswith("privileged") and normalized == "enable"
+
+    def _collect_command_fact_categories(self, commands: list[CommandExecution]) -> set[str]:
+        categories: set[str] = set()
+        for cmd in commands:
+            if getattr(cmd, "status", None) not in {CommandStatus.succeeded, JobCommandStatus.succeeded}:
+                continue
+            normalized = self._normalize_command_text(
+                str(getattr(cmd, "effective_command", None) or getattr(cmd, "original_command", None) or cmd.command or "")
+            )
+            if normalized == "show version":
+                categories.add("version")
+            elif normalized in {"show privilege", "display users"}:
+                categories.add("privilege")
+            elif normalized == "show lldp neighbors":
+                categories.add("lldp_neighbors")
+            elif normalized == "show ip ospf neighbor":
+                categories.add("ospf_neighbors")
+            elif normalized == "show ip ospf interface brief":
+                categories.add("ospf_interface_brief")
+            elif normalized == "show running-config section ospf":
+                categories.add("ospf_config")
+            elif normalized == "show running-config section router bgp":
+                categories.add("bgp_config")
+            elif normalized == "show ip bgp summary":
+                categories.add("bgp_summary")
+        return categories
+
+    def _known_missing_facts(self, job: Job, device_id: str | None = None) -> tuple[list[str], list[str]]:
+        if device_id:
+            commands = self._build_llm_device_commands(job, device_id)
+        else:
+            commands = [
+                cmd
+                for device in job.devices
+                for cmd in self._build_llm_device_commands(job, device.id)
+            ]
+        categories = self._collect_command_fact_categories(commands)
+        known: list[str] = []
+        missing: list[str] = []
+        mapping = {
+            "version": "版本事实",
+            "privilege": "权限事实",
+            "lldp_neighbors": "LLDP 邻接事实",
+            "ospf_neighbors": "OSPF 邻接事实",
+            "ospf_interface_brief": "OSPF 接口摘要事实",
+            "ospf_config": "OSPF 配置片段",
+            "bgp_summary": "BGP 邻接摘要事实",
+            "bgp_config": "BGP 配置片段",
+        }
+        for key, label in mapping.items():
+            if key in categories:
+                known.append(label)
+        focus = self._infer_problem_focus(job.problem)
+        intent = self._infer_problem_intent(job.problem)
+        if intent == "repair":
+            if focus == "ospf":
+                for key in ("version", "privilege", "lldp_neighbors", "ospf_neighbors", "ospf_interface_brief", "ospf_config"):
+                    if key not in categories:
+                        missing.append(mapping[key])
+            elif focus == "bgp":
+                for key in ("version", "privilege", "bgp_summary", "bgp_config"):
+                    if key not in categories:
+                        missing.append(mapping[key])
+        return known, missing
+
+    def _render_followup_fact_context(self, job: Job, device_id: str | None = None) -> str:
+        if not self._has_continuous_followup_context(job):
+            return ""
+        known, missing = self._known_missing_facts(job, device_id=device_id)
+        if not known and not missing:
+            return ""
+        lines = ["当前已确认事实:"]
+        lines.extend([f"- {item}" for item in known] or ["- 无"])
+        lines.append("当前仍缺事实:")
+        lines.extend([f"- {item}" for item in missing] or ["- 无"])
+        return "\n".join(lines)
+
+    def _can_skip_followup_llm_collect(self, job: Job, device_id: str) -> bool:
+        if job.mode != JobMode.repair:
+            return False
+        if not self._has_continuous_followup_context(job):
+            return False
+        _known, missing = self._known_missing_facts(job, device_id=device_id)
+        if len(missing) == 0:
+            return True
+        deterministic = self._repair_followup_missing_fact_commands(job)
+        return any(device.id == device_id for device, _title, _command in deterministic)
+
+    def _can_skip_followup_device_collect(self, job: Job, device_id: str) -> bool:
+        if not self._has_continuous_followup_context(job):
+            return False
+        device = self._find_device(job, device_id)
+        if device is None:
+            return False
+        collect_commands = self._baseline_collect_commands(job.problem)
+        for _title, command_text in collect_commands:
+            normalized_cmd = self._normalize_command_text(command_text)
+            current_vendor = (device.vendor or "") or ""
+            current_version_signature = (device.version_signature or "") or ""
+            if "version" in normalized_cmd and current_version_signature:
+                continue
+            if self._should_skip_collect_command_by_vendor(current_vendor, normalized_cmd):
+                continue
+            if not self._successful_followup_command_reason(job, device_id, command_text):
+                return False
+        return self._can_skip_followup_llm_collect(job, device_id)
+
+    def _repair_followup_missing_fact_commands(self, job: Job) -> list[tuple[JobDevice, str, str]]:
+        if job.mode != JobMode.repair or not self._has_continuous_followup_context(job):
+            return []
+        focus = self._infer_problem_focus(job.problem)
+        plans: list[tuple[JobDevice, str, str]] = []
+        for device in job.devices:
+            _, missing = self._known_missing_facts(job, device_id=device.id)
+            missing_set = set(missing)
+            if focus == "ospf" and "OSPF 配置片段" in missing_set:
+                plans.append((device, "补采 OSPF 配置片段", "show running-config section ospf"))
+            elif focus == "bgp" and "BGP 配置片段" in missing_set:
+                plans.append((device, "补采 BGP 配置片段", "show running-config section router bgp"))
+        deduped: list[tuple[JobDevice, str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for device, title, command in plans:
+            key = (device.id, self._normalize_command_text(command))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append((device, title, command))
+        return deduped
+
     async def _allocate_next_step_no(self, job_id: str) -> int:
         async with self._state_lock:
             job = self._jobs.get(job_id)
@@ -1573,7 +1820,8 @@ class JobV2Orchestrator:
                         version_signature=device.version_signature,
                         run_key=sop_run_key,
                     )
-                planner_context = str(sop_context or "").strip()
+                fact_context = self._render_followup_fact_context(job, device_id=device.id)
+                planner_context = "\n\n".join([item for item in [str(sop_context or "").strip(), fact_context] if item]).strip()
                 self._append_trace_event(
                     job,
                     "context_snapshot",
@@ -1587,6 +1835,7 @@ class JobV2Orchestrator:
                             "commands": len(commands),
                             "evidences": len(evidences),
                         },
+                        "followup_facts": fact_context or None,
                         "latest_command": self._job_command_trace_record(commands[-1], include_output=True) if commands else None,
                         "latest_evidence": evidences[-1].model_dump(mode="json") if evidences else None,
                     },
@@ -1869,6 +2118,30 @@ class JobV2Orchestrator:
                             )
                             self._save_state()
                     continue
+                reuse_reason = ""
+                async with self._state_lock:
+                    current_job = self._jobs.get(job_id)
+                    current_device = self._find_device(current_job, device_id) if current_job else None
+                    if current_job is not None and current_device is not None:
+                        reuse_reason = self._successful_followup_command_reason(current_job, device_id, command_text)
+                        if reuse_reason:
+                            self._append_trace_event(
+                                current_job,
+                                "policy_decision",
+                                f"[{current_device.host}] 复用已确认事实，过滤重复规划命令",
+                                status="succeeded",
+                                detail=f"command={command_text}",
+                                detail_payload={
+                                    "decision": "reuse_successful_command",
+                                    "command": command_text,
+                                    "reason": reuse_reason,
+                                    "device": self._job_device_trace_record(current_device),
+                                },
+                                device=current_device,
+                            )
+                            self._save_state()
+                if reuse_reason:
+                    continue
                 filtered_planned.append((title, command_text))
             planned = self._dedupe_plan_commands(filtered_planned)
             if not planned:
@@ -1889,6 +2162,43 @@ class JobV2Orchestrator:
                     if current_device is not None:
                         current_commands = self._build_llm_device_commands(current_job, device_id) if current_job else []
                         permission_state, permission_hint = self._derive_permission_signal_from_commands(current_commands)
+                        normalized_next = self._normalize_command_text(command_text)
+                        if self._is_redundant_privilege_check(permission_state, command_text):
+                            permission_filter_reason = "权限事实已确认，无需重复复核当前权限级别。"
+                            self._append_trace_event(
+                                current_job,
+                                "policy_decision",
+                                f"[{current_device.host}] 复用已确认权限事实，过滤重复权限复核命令",
+                                status="succeeded",
+                                detail=f"command={command_text}",
+                                detail_payload={
+                                    "decision": "reuse_permission_fact",
+                                    "command": command_text,
+                                    "reason": "permission_already_confirmed",
+                                    "device": self._job_device_trace_record(current_device),
+                                },
+                                device=current_device,
+                            )
+                            self._save_state()
+                            continue
+                        if self._is_redundant_enable(permission_state, command_text):
+                            permission_filter_reason = "已处于特权模式，无需重复执行 enable。"
+                            self._append_trace_event(
+                                current_job,
+                                "policy_decision",
+                                f"[{current_device.host}] 复用已确认特权状态，过滤重复 enable",
+                                status="succeeded",
+                                detail=f"command={command_text}",
+                                detail_payload={
+                                    "decision": "reuse_privileged_state",
+                                    "command": command_text,
+                                    "reason": "already_privileged",
+                                    "device": self._job_device_trace_record(current_device),
+                                },
+                                device=current_device,
+                            )
+                            self._save_state()
+                            continue
                         if permission_state.startswith("insufficient") and self._command_requires_privileged_read(command_text):
                             permission_filter_reason = permission_hint or "权限不足，已过滤需要特权的只读命令。"
                             self._append_trace_event(
@@ -2326,6 +2636,12 @@ class JobV2Orchestrator:
             ),
             automation_level=AutomationLevel.assisted,
         )
+        if existing is not None:
+            if hasattr(existing, "session"):
+                existing.session = session
+            async with self._state_lock:
+                self._adapters[job_id][device_id] = existing
+            return existing
         try:
             adapter, mode = await ensure_connected_adapter(
                 existing,
@@ -2385,6 +2701,35 @@ class JobV2Orchestrator:
         action_group_id: str | None,
         phase: str = "collect",
     ) -> JobCommandResult:
+        command_wall_started = time.perf_counter()
+        adapter_ready_perf: float | None = None
+        execute_started_perf: float | None = None
+        execute_returned_perf: float | None = None
+        success_callback_started_perf: float | None = None
+        success_callback_finished_perf: float | None = None
+        failure_callback_started_perf: float | None = None
+        failure_callback_finished_perf: float | None = None
+        rejected_callback_started_perf: float | None = None
+        rejected_callback_finished_perf: float | None = None
+
+        def _runtime_segments() -> dict[str, int]:
+            now_perf = execute_returned_perf or time.perf_counter()
+            payload: dict[str, int] = {}
+            if adapter_ready_perf is not None:
+                payload["adapter_prepare_ms"] = max(0, int((adapter_ready_perf - command_wall_started) * 1000))
+            if execute_started_perf is not None:
+                payload["execute_wait_ms"] = max(0, int((execute_started_perf - (adapter_ready_perf or command_wall_started)) * 1000))
+            if execute_started_perf is not None and execute_returned_perf is not None:
+                payload["execute_total_ms"] = max(0, int((execute_returned_perf - execute_started_perf) * 1000))
+            if success_callback_started_perf is not None and success_callback_finished_perf is not None:
+                payload["success_callback_ms"] = max(0, int((success_callback_finished_perf - success_callback_started_perf) * 1000))
+            if failure_callback_started_perf is not None and failure_callback_finished_perf is not None:
+                payload["failure_callback_ms"] = max(0, int((failure_callback_finished_perf - failure_callback_started_perf) * 1000))
+            if rejected_callback_started_perf is not None and rejected_callback_finished_perf is not None:
+                payload["rejected_callback_ms"] = max(0, int((rejected_callback_finished_perf - rejected_callback_started_perf) * 1000))
+            payload["wall_total_ms"] = max(0, int((now_perf - command_wall_started) * 1000))
+            return payload
+
         async with self._state_lock:
             job = self._jobs[job_id]
             device = self._find_device(job, device_id)
@@ -2579,6 +2924,7 @@ class JobV2Orchestrator:
                     )
 
         adapter = await self._get_adapter(job_id, device_id)
+        adapter_ready_perf = time.perf_counter()
 
         async def _should_stop() -> bool:
             async with self._state_lock:
@@ -2586,6 +2932,8 @@ class JobV2Orchestrator:
                 return current_job is None or current_job.status == JobStatus.cancelled
 
         async def _handle_rejected(_message: str) -> None:
+            nonlocal rejected_callback_started_perf, rejected_callback_finished_perf
+            rejected_callback_started_perf = time.perf_counter()
             async with self._state_lock:
                 job = self._jobs.get(job_id)
                 device = self._find_device(job, device_id) if job else None
@@ -2604,7 +2952,10 @@ class JobV2Orchestrator:
                     f"设备执行命令 #{command.step_no}: {title}",
                     status="stopped",
                     detail=command.error,
-                    detail_payload={"command": self._job_command_trace_record(command, include_output=False)},
+                    detail_payload={
+                        "command": self._job_command_trace_record(command, include_output=False),
+                        "runtime": _runtime_segments(),
+                    },
                     command=command,
                     device=device,
                     started_at=command.started_at,
@@ -2612,8 +2963,11 @@ class JobV2Orchestrator:
                     duration_ms=command.duration_ms,
                 )
                 self._save_state()
+            rejected_callback_finished_perf = time.perf_counter()
 
         async def _handle_failure(message: str) -> None:
+            nonlocal failure_callback_started_perf, failure_callback_finished_perf
+            failure_callback_started_perf = time.perf_counter()
             apply_adapter_command_meta(command, adapter)
             async with self._state_lock:
                 job = self._jobs.get(job_id)
@@ -2644,7 +2998,10 @@ class JobV2Orchestrator:
                     f"设备执行命令 #{command.step_no}: {title}",
                     status="failed",
                     detail=(command.error or "")[:280],
-                    detail_payload={"command": self._job_command_trace_record(command, include_output=False)},
+                    detail_payload={
+                        "command": self._job_command_trace_record(command, include_output=False),
+                        "runtime": _runtime_segments(),
+                    },
                     command=command,
                     device=device,
                     started_at=command.started_at,
@@ -2653,8 +3010,11 @@ class JobV2Orchestrator:
                 )
                 self._touch_command_profile(device.version_signature, command_text, success=False, error=command.error)
                 self._save_state()
+            failure_callback_finished_perf = time.perf_counter()
 
         async def _handle_success(output: str) -> None:
+            nonlocal success_callback_started_perf, success_callback_finished_perf
+            success_callback_started_perf = time.perf_counter()
             apply_adapter_command_meta(command, adapter)
             if not command.effective_command:
                 command.effective_command = command_to_run
@@ -2723,7 +3083,10 @@ class JobV2Orchestrator:
                     f"设备执行命令 #{command.step_no}: {title}",
                     status="failed" if command_failed else "succeeded",
                     detail=((command.error or parsed.conclusion) if command_failed else (command.effective_command or command.command))[:280],
-                    detail_payload={"command": self._job_command_trace_record(command, include_output=True)},
+                    detail_payload={
+                        "command": self._job_command_trace_record(command, include_output=True),
+                        "runtime": _runtime_segments(),
+                    },
                     command=command,
                     device=device,
                     started_at=command.started_at,
@@ -2731,7 +3094,9 @@ class JobV2Orchestrator:
                     duration_ms=command.duration_ms,
                 )
                 self._save_state()
+            success_callback_finished_perf = time.perf_counter()
 
+        execute_started_perf = time.perf_counter()
         await execute_single_command(
             adapter,
             command_to_run,
@@ -2740,6 +3105,7 @@ class JobV2Orchestrator:
             on_success=_handle_success,
             on_failure=_handle_failure,
         )
+        execute_returned_perf = time.perf_counter()
 
         return command
 
@@ -3594,6 +3960,9 @@ class JobV2Orchestrator:
     def _has_rca_followup_attempt(self, job: Job) -> bool:
         return any(item.event_type == "rca_followup_started" for item in self._events.get(job.id, []))
 
+    def _has_repair_followup_fact_attempt(self, job: Job) -> bool:
+        return any(item.event_type == "repair_followup_fact_supplement_started" for item in self._events.get(job.id, []))
+
     def _extract_rca_followup_commands(self, job: Job, recommendation_text: str) -> list[tuple[JobDevice, str]]:
         extractor = getattr(self.deepseek_diagnoser, "_extract_actionable_commands_from_text", None)
         if extractor is None:
@@ -3995,7 +4364,7 @@ class JobV2Orchestrator:
                     "missing evidence",
                     "cannot determine",
                 )
-                if any(marker in combined_missing for marker in missing_markers):
+                if job.mode != JobMode.repair and any(marker in combined_missing for marker in missing_markers):
                     followup_commands = self._extract_rca_followup_commands(job, recommendation_text)
                     should_continue = bool(followup_commands)
             history_summary = self._history_evidence_summary(job) if self._is_history_problem(job.problem) else None
@@ -4102,6 +4471,19 @@ class JobV2Orchestrator:
                     "start": job.window_start.isoformat() if job.window_start else None,
                     "end": job.window_end.isoformat() if job.window_end else None,
                 },
+            },
+            "fact_context": {
+                "known_facts": self._known_missing_facts(job)[0],
+                "missing_facts": self._known_missing_facts(job)[1],
+                "per_device": [
+                    {
+                        "device_id": item.id,
+                        "host": item.host,
+                        "known_facts": self._known_missing_facts(job, device_id=item.id)[0],
+                        "missing_facts": self._known_missing_facts(job, device_id=item.id)[1],
+                    }
+                    for item in job.devices
+                ],
             },
             "devices": [
                 {
@@ -4219,6 +4601,62 @@ class JobV2Orchestrator:
                             status=JobActionGroupStatus.pending_approval if requires_approval else JobActionGroupStatus.approved,
                         )
                     )
+
+        if not action_groups and job.mode == JobMode.repair and self._is_followup_request(job) and not self._has_repair_followup_fact_attempt(job):
+            supplement_commands = self._repair_followup_missing_fact_commands(job)
+            if supplement_commands:
+                representative = job.devices[0] if job.devices else None
+                self._append_event_with_trace(
+                    job,
+                    "repair_followup_fact_supplement_started",
+                    {"count": len(supplement_commands)},
+                    step_type="session_control",
+                    title="repair follow-up 补采最小必要事实",
+                    status="running",
+                    detail=f"count={len(supplement_commands)}",
+                    detail_payload={
+                        "count": len(supplement_commands),
+                        "commands": [
+                            {"host": device.host, "title": title, "command": command}
+                            for device, title, command in supplement_commands
+                        ],
+                    },
+                    device=representative,
+                )
+                self._save_state()
+                for device, title, command_text in supplement_commands:
+                    step_no = await self._allocate_next_step_no(job_id)
+                    await self._run_device_command(
+                        job_id,
+                        device.id,
+                        title=title,
+                        command_text=command_text,
+                        step_no=step_no,
+                        action_group_id=None,
+                        phase="collect",
+                    )
+                async with self._state_lock:
+                    job = self._jobs[job_id]
+                    representative = job.devices[0] if job.devices else None
+                    self._append_event_with_trace(
+                        job,
+                        "repair_followup_fact_supplement_completed",
+                        {"count": len(supplement_commands)},
+                        step_type="session_control",
+                        title="repair follow-up 最小事实补采完成",
+                        status="succeeded",
+                        detail=f"count={len(supplement_commands)}",
+                        detail_payload={
+                            "count": len(supplement_commands),
+                            "commands": [
+                                {"host": device.host, "title": title, "command": command}
+                                for device, title, command in supplement_commands
+                            ],
+                        },
+                        device=representative,
+                    )
+                    self._save_state()
+                    job = self._jobs[job_id]
 
         if not action_groups and job.mode == JobMode.repair:
             action_groups = await self._generate_ai_repair_action_groups(job_id)
@@ -4503,7 +4941,7 @@ class JobV2Orchestrator:
                     completed_at=job.completed_at,
                     duration_ms=0,
                 )
-                self._save_state()
+                self._save_state(force=True)
                 await self._close_job_adapters(job_id)
                 return
 
@@ -4513,10 +4951,60 @@ class JobV2Orchestrator:
                 job.phase = JobPhase.approve
                 job.status = JobStatus.waiting_approval
                 job.updated_at = now_utc()
-                self._save_state()
+                self._save_state(force=True)
                 return
 
             if not approved and not pending:
+                needs_llm_summary = (
+                    job.mode == JobMode.repair
+                    and (
+                        job.rca_result is None
+                        or not str(job.rca_result.summary or "").strip()
+                        or not str(job.rca_result.root_cause or "").strip()
+                    )
+                )
+                if needs_llm_summary:
+                    job.phase = JobPhase.analyze
+                    job.updated_at = now_utc()
+                    self._append_event_with_trace(
+                        job,
+                        "phase_changed",
+                        {"phase": "analyze", "status": job.status.value},
+                        step_type="session_control",
+                        title=f"阶段切换：{self._format_phase_label('analyze')}",
+                        status=job.status.value,
+                        detail=f"phase=analyze; status={job.status.value}",
+                        detail_payload={"phase": "analyze", "status": job.status.value},
+                        completed_at=job.updated_at,
+                        duration_ms=0,
+                    )
+                    self._save_state(force=True)
+                else:
+                    job.phase = JobPhase.conclude
+                    job.status = JobStatus.completed
+                    job.completed_at = now_utc()
+                    job.updated_at = now_utc()
+                    self._append_event_with_trace(
+                        job,
+                        "job_completed",
+                        {"mode": job.mode.value, "message": "no approved action groups"},
+                        step_type="session_control",
+                        title="多设备协同完成",
+                        status="succeeded",
+                        detail=f"mode={job.mode.value}; message=no approved action groups",
+                        detail_payload={"mode": job.mode.value, "message": "no approved action groups"},
+                        completed_at=job.completed_at,
+                        duration_ms=0,
+                    )
+                    self._save_state(force=True)
+                    return
+
+        if not approved and not pending:
+            await self._llm_refine_rca(job_id)
+            async with self._state_lock:
+                job = self._jobs.get(job_id)
+                if not job:
+                    return
                 job.phase = JobPhase.conclude
                 job.status = JobStatus.completed
                 job.completed_at = now_utc()
@@ -4533,10 +5021,13 @@ class JobV2Orchestrator:
                     completed_at=job.completed_at,
                     duration_ms=0,
                 )
-                self._save_state()
-                await self._close_job_adapters(job_id)
-                return
+                self._save_state(force=True)
+            return
 
+        async with self._state_lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return
             job.phase = JobPhase.execute
             job.status = JobStatus.executing
             job.updated_at = now_utc()
@@ -4581,7 +5072,7 @@ class JobV2Orchestrator:
                     completed_at=job.updated_at,
                     duration_ms=0,
                 )
-                self._save_state()
+                self._save_state(force=True)
                 return
 
             job.phase = JobPhase.analyze
@@ -4598,7 +5089,7 @@ class JobV2Orchestrator:
                 completed_at=job.updated_at,
                 duration_ms=0,
             )
-            self._save_state()
+            self._save_state(force=True)
 
         await self._correlate_phase(job_id)
 
@@ -4623,8 +5114,6 @@ class JobV2Orchestrator:
                 duration_ms=0,
             )
             self._save_state()
-
-        await self._close_job_adapters(job_id)
 
     async def _execute_action_group(self, job_id: str, action_group_id: str) -> None:
         async with self._state_lock:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import time
 import asyncio
+import json
+from types import SimpleNamespace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -19,6 +21,7 @@ from app.models.schemas import (
     JobDevice,
     JobMode,
     JobPhase,
+    JobRequestTurn,
     JobStatus,
     JobEvidence,
     RCAResult,
@@ -228,6 +231,119 @@ def test_v2_dedupe_plan_commands_removes_same_round_duplicates():
     ]
 
 
+def test_v2_successful_followup_command_reason_reuses_same_read_only_command():
+    job = Job(
+        name="diag-job",
+        problem="继续排查 ospf",
+        mode=JobMode.diagnosis,
+        request_history=[
+            JobRequestTurn(content="先检查 ospf"),
+            JobRequestTurn(content="继续排查 ospf"),
+        ],
+        devices=[JobDevice(id="dev-1", host="192.0.2.10", protocol="ssh")],
+    )
+    job.command_results.append(
+        JobCommandResult(
+            job_id=job.id,
+            device_id="dev-1",
+            step_no=1,
+            title="版本探测",
+            command="show version",
+            risk_level=RiskLevel.low,
+            status=JobCommandStatus.succeeded,
+        )
+    )
+
+    reason = routes.orchestrator_v2._successful_followup_command_reason(job, "dev-1", "show version")
+    assert reason == "existing_successful_command"
+    assert routes.orchestrator_v2._successful_followup_command_reason(job, "dev-1", "configure terminal") == ""
+
+
+def test_v2_redundant_privilege_check_is_filtered_when_already_privileged():
+    assert routes.orchestrator_v2._is_redundant_privilege_check("privileged(level=15)", "show privilege") is True
+    assert routes.orchestrator_v2._is_redundant_privilege_check("privileged", "display users") is True
+    assert routes.orchestrator_v2._is_redundant_privilege_check("insufficient(level=1)", "show privilege") is False
+
+
+def test_v2_redundant_enable_is_filtered_when_already_privileged():
+    assert routes.orchestrator_v2._is_redundant_enable("privileged(level=15)", "enable") is True
+    assert routes.orchestrator_v2._is_redundant_enable("privileged", "enable") is True
+    assert routes.orchestrator_v2._is_redundant_enable("insufficient(level=1)", "enable") is False
+
+
+@pytest.mark.asyncio
+async def test_v2_get_adapter_reuses_existing_without_reconnect(monkeypatch):
+    orchestrator = JobV2Orchestrator(InMemoryStore())
+    job = Job(
+        problem="check ospf state",
+        mode=JobMode.diagnosis,
+        devices=[JobDevice(id="dev-1", host="192.0.2.10", protocol="ssh", vendor="arista")],
+    )
+    orchestrator._jobs[job.id] = job
+    existing = SimpleNamespace(session=None)
+    orchestrator._adapters[job.id]["dev-1"] = existing
+
+    called = False
+
+    async def fake_ensure(*args, **kwargs):
+        nonlocal called
+        called = True
+        return existing, "reuse"
+
+    monkeypatch.setattr("app.services.job_orchestrator_v2.ensure_connected_adapter", fake_ensure)
+
+    adapter = await orchestrator._get_adapter(job.id, "dev-1")
+
+    assert adapter is existing
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_v2_collect_device_skips_reused_followup_baseline_commands(monkeypatch):
+    orchestrator = JobV2Orchestrator(InMemoryStore())
+    job = Job(
+        problem="继续排查 ospf",
+        mode=JobMode.diagnosis,
+        request_history=[
+            JobRequestTurn(content="先检查 ospf"),
+            JobRequestTurn(content="继续排查 ospf"),
+        ],
+        devices=[JobDevice(id="dev-1", host="192.0.2.10", protocol="ssh", vendor="arista")],
+    )
+    job.command_results.append(
+        JobCommandResult(
+            job_id=job.id,
+            device_id="dev-1",
+            step_no=1,
+            title="版本探测",
+            command="show version",
+            risk_level=RiskLevel.low,
+            status=JobCommandStatus.succeeded,
+        )
+    )
+    orchestrator._jobs[job.id] = job
+
+    called: list[str] = []
+
+    async def fake_get_adapter(job_id: str, device_id: str):
+        return object()
+
+    async def fake_run_device_command(*args, **kwargs):
+        called.append(kwargs["command_text"])
+
+    async def fake_collect_device_with_llm(job_id: str, device_id: str):
+        return None
+
+    monkeypatch.setattr(orchestrator, "_get_adapter", fake_get_adapter)
+    monkeypatch.setattr(orchestrator, "_run_device_command", fake_run_device_command)
+    monkeypatch.setattr(orchestrator, "_collect_device_with_llm", fake_collect_device_with_llm)
+    monkeypatch.setattr(orchestrator, "_baseline_collect_commands", lambda problem=None: [("版本探测", "show version")])
+
+    await orchestrator._collect_device(job.id, "dev-1")
+
+    assert called == []
+
+
 def test_v2_filtered_ospf_no_match_does_not_create_missing_incident():
     job = Job(
         name="diag-job",
@@ -322,6 +438,359 @@ def test_v2_generate_interface_ip_repair_fallback_builds_pending_groups():
     assert all(item.status == JobActionGroupStatus.pending_approval for item in groups)
     assert all(item.requires_approval for item in groups)
     assert all("ip address" in " ; ".join(item.commands).lower() for item in groups)
+
+
+@pytest.mark.asyncio
+async def test_v2_llm_refine_rca_skips_followup_validation_for_repair_mode(monkeypatch):
+    orchestrator = JobV2Orchestrator(InMemoryStore())
+    job = Job(
+        problem="帮我完成配置，让OSPF up起来",
+        mode=JobMode.repair,
+        devices=[JobDevice(id="dev-1", host="192.0.2.10", protocol="ssh", vendor="arista")],
+    )
+    orchestrator._jobs[job.id] = job
+    orchestrator._events[job.id] = []
+
+    async def fake_chat_completion(*args, **kwargs):
+        return json.dumps(
+            {
+                "summary": "不确定，缺少修复后验证。",
+                "recommendation": "在设备192.0.2.10上执行'show running-config section ospf'。",
+                "root_cause": "证据不足",
+                "impact_scope": "影响 1 台设备",
+                "confidence": 0.3,
+            }
+        )
+
+    called = False
+
+    def fake_extract(job_obj, recommendation_text):
+        return [(job_obj.devices[0], "show running-config section ospf")]
+
+    async def fake_execute(job_id: str, commands):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(orchestrator.deepseek_diagnoser, "_chat_completion", fake_chat_completion)
+    monkeypatch.setattr(orchestrator, "_extract_rca_followup_commands", fake_extract)
+    monkeypatch.setattr(orchestrator, "_execute_rca_followup_commands", fake_execute)
+
+    await orchestrator._llm_refine_rca(job.id)
+
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_v2_complete_paths_do_not_close_adapters_on_completed(monkeypatch):
+    orchestrator = JobV2Orchestrator(InMemoryStore())
+    job = Job(
+        problem="检查 ospf 状态",
+        mode=JobMode.diagnosis,
+        devices=[JobDevice(id="dev-1", host="192.0.2.10", protocol="ssh", vendor="arista")],
+        status=JobStatus.running,
+        phase=JobPhase.collect,
+    )
+    orchestrator._jobs[job.id] = job
+    orchestrator._events[job.id] = []
+
+    closed = False
+
+    async def fake_close(job_id: str):
+        nonlocal closed
+        closed = True
+
+    monkeypatch.setattr(orchestrator, "_close_job_adapters", fake_close)
+
+    await orchestrator._complete_non_repair_job(job.id)
+
+    assert orchestrator._jobs[job.id].status == JobStatus.completed
+    assert closed is False
+
+
+@pytest.mark.asyncio
+async def test_v2_run_job_short_circuits_correlate_for_repair_followup(monkeypatch):
+    orchestrator = JobV2Orchestrator(InMemoryStore())
+    job = Job(
+        problem="帮我完成配置，让OSPF up起来",
+        mode=JobMode.repair,
+        request_history=[
+            JobRequestTurn(content="先检查 ospf"),
+            JobRequestTurn(content="帮我完成配置，让OSPF up起来"),
+        ],
+        devices=[JobDevice(id="dev-1", host="192.0.2.10", protocol="ssh", vendor="arista")],
+    )
+    job.command_results.append(
+        JobCommandResult(
+            job_id=job.id,
+            device_id="dev-1",
+            step_no=1,
+            title="检查 OSPF 邻居",
+            command="show ip ospf neighbor",
+            risk_level=RiskLevel.low,
+            status=JobCommandStatus.succeeded,
+        )
+    )
+    orchestrator._jobs[job.id] = job
+    orchestrator._events[job.id] = []
+
+    correlate_called = False
+    plan_called = False
+    resume_called = False
+
+    async def fake_collect(job_id: str):
+        return None
+
+    async def fake_correlate(job_id: str):
+        nonlocal correlate_called
+        correlate_called = True
+
+    async def fake_plan(job_id: str):
+        nonlocal plan_called
+        plan_called = True
+
+    async def fake_resume(job_id: str):
+        nonlocal resume_called
+        resume_called = True
+
+    monkeypatch.setattr(orchestrator, "_collect_phase", fake_collect)
+    monkeypatch.setattr(orchestrator, "_correlate_phase", fake_correlate)
+    monkeypatch.setattr(orchestrator, "_plan_phase", fake_plan)
+    monkeypatch.setattr(orchestrator, "_resume_job_execution", fake_resume)
+
+    await orchestrator._run_job(job.id)
+
+    assert correlate_called is False
+    assert plan_called is True
+    assert resume_called is True
+
+
+@pytest.mark.asyncio
+async def test_v2_plan_phase_supplements_missing_repair_facts_before_planning(monkeypatch):
+    orchestrator = JobV2Orchestrator(InMemoryStore())
+    job = Job(
+        problem="帮我完成配置，让OSPF up起来",
+        mode=JobMode.repair,
+        request_history=[
+            JobRequestTurn(content="先检查 ospf"),
+            JobRequestTurn(content="帮我完成配置，让OSPF up起来"),
+        ],
+        devices=[JobDevice(id="dev-1", host="192.0.2.10", protocol="ssh", vendor="arista")],
+    )
+    job.command_results.extend(
+        [
+            JobCommandResult(
+                job_id=job.id,
+                device_id="dev-1",
+                step_no=1,
+                title="版本探测",
+                command="show version",
+                risk_level=RiskLevel.low,
+                status=JobCommandStatus.succeeded,
+            ),
+            JobCommandResult(
+                job_id=job.id,
+                device_id="dev-1",
+                step_no=2,
+                title="权限探测",
+                command="show privilege",
+                risk_level=RiskLevel.low,
+                status=JobCommandStatus.succeeded,
+            ),
+            JobCommandResult(
+                job_id=job.id,
+                device_id="dev-1",
+                step_no=3,
+                title="OSPF邻居摘要",
+                command="show ip ospf neighbor",
+                risk_level=RiskLevel.low,
+                status=JobCommandStatus.succeeded,
+            ),
+            JobCommandResult(
+                job_id=job.id,
+                device_id="dev-1",
+                step_no=4,
+                title="OSPF接口摘要",
+                command="show ip ospf interface brief",
+                risk_level=RiskLevel.low,
+                status=JobCommandStatus.succeeded,
+            ),
+        ]
+    )
+    orchestrator._jobs[job.id] = job
+    orchestrator._events[job.id] = []
+
+    executed: list[str] = []
+
+    async def fake_run_device_command(*args, **kwargs):
+        executed.append(kwargs["command_text"])
+
+    async def fake_generate(job_id: str):
+        return []
+
+    monkeypatch.setattr(orchestrator, "_run_device_command", fake_run_device_command)
+    monkeypatch.setattr(orchestrator, "_generate_ai_repair_action_groups", fake_generate)
+
+    await orchestrator._plan_phase(job.id)
+
+    assert executed == ["show running-config section ospf"]
+
+
+def test_v2_can_skip_followup_llm_collect_when_repair_facts_are_complete():
+    job = Job(
+        problem="帮我完成配置，让OSPF up起来",
+        mode=JobMode.repair,
+        request_history=[
+            JobRequestTurn(content="先检查 ospf"),
+            JobRequestTurn(content="帮我完成配置，让OSPF up起来"),
+        ],
+        devices=[JobDevice(id="dev-1", host="192.0.2.10", protocol="ssh", vendor="arista")],
+    )
+    job.command_results.extend(
+        [
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=1, title="版本探测", command="show version", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=2, title="权限探测", command="show privilege", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=3, title="LLDP邻居", command="show lldp neighbors", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=4, title="OSPF邻居", command="show ip ospf neighbor", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=5, title="OSPF接口摘要", command="show ip ospf interface brief", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=6, title="OSPF配置片段", command="show running-config section ospf", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+        ]
+    )
+
+    assert routes.orchestrator_v2._can_skip_followup_llm_collect(job, "dev-1") is True
+
+
+def test_v2_can_skip_followup_llm_collect_when_missing_facts_have_deterministic_supplement():
+    job = Job(
+        problem="帮我完成配置，让OSPF up起来",
+        mode=JobMode.repair,
+        request_history=[
+            JobRequestTurn(content="先检查 ospf"),
+            JobRequestTurn(content="帮我完成配置，让OSPF up起来"),
+        ],
+        devices=[JobDevice(id="dev-1", host="192.0.2.10", protocol="ssh", vendor="arista")],
+    )
+    job.command_results.extend(
+        [
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=1, title="版本探测", command="show version", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=2, title="权限探测", command="show privilege", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=3, title="LLDP邻居", command="show lldp neighbors", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=4, title="OSPF邻居", command="show ip ospf neighbor", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=5, title="OSPF接口摘要", command="show ip ospf interface brief", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+        ]
+    )
+
+    assert routes.orchestrator_v2._repair_followup_missing_fact_commands(job) == [
+        (job.devices[0], "补采 OSPF 配置片段", "show running-config section ospf")
+    ]
+    assert routes.orchestrator_v2._can_skip_followup_llm_collect(job, "dev-1") is True
+
+
+def test_v2_can_skip_followup_device_collect_when_baseline_and_planning_facts_are_ready():
+    job = Job(
+        problem="帮我完成配置，让OSPF up起来",
+        mode=JobMode.repair,
+        request_history=[
+            JobRequestTurn(content="先检查 ospf"),
+            JobRequestTurn(content="帮我完成配置，让OSPF up起来"),
+        ],
+        devices=[JobDevice(id="dev-1", host="192.0.2.10", protocol="ssh", vendor="arista", version_signature="arista|veos-lab|4.32.4.1m")],
+    )
+    job.command_results.extend(
+        [
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=1, title="版本探测", command="show version", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=2, title="权限探测", command="show privilege", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=3, title="LLDP邻居", command="show lldp neighbors", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=4, title="OSPF邻居", command="show ip ospf neighbor", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=5, title="OSPF接口摘要", command="show ip ospf interface brief", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+        ]
+    )
+
+    assert routes.orchestrator_v2._can_skip_followup_device_collect(job, "dev-1") is True
+
+
+@pytest.mark.asyncio
+async def test_v2_collect_device_skips_whole_followup_collect_when_facts_are_ready(monkeypatch):
+    orchestrator = JobV2Orchestrator(InMemoryStore())
+    job = Job(
+        problem="帮我完成配置，让OSPF up起来",
+        mode=JobMode.repair,
+        request_history=[
+            JobRequestTurn(content="先检查 ospf"),
+            JobRequestTurn(content="帮我完成配置，让OSPF up起来"),
+        ],
+        devices=[JobDevice(id="dev-1", host="192.0.2.10", protocol="ssh", vendor="arista", version_signature="arista|veos-lab|4.32.4.1m")],
+    )
+    job.command_results.extend(
+        [
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=1, title="版本探测", command="show version", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=2, title="权限探测", command="show privilege", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=3, title="LLDP邻居", command="show lldp neighbors", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=4, title="OSPF邻居", command="show ip ospf neighbor", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=5, title="OSPF接口摘要", command="show ip ospf interface brief", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+        ]
+    )
+    orchestrator._jobs[job.id] = job
+    orchestrator._events[job.id] = []
+
+    called = []
+
+    async def fake_get_adapter(job_id: str, device_id: str):
+        called.append("get_adapter")
+        return object()
+
+    async def fake_collect_device_with_llm(job_id: str, device_id: str):
+        called.append("llm_collect")
+        return None
+
+    monkeypatch.setattr(orchestrator, "_get_adapter", fake_get_adapter)
+    monkeypatch.setattr(orchestrator, "_collect_device_with_llm", fake_collect_device_with_llm)
+
+    await orchestrator._collect_device(job.id, "dev-1")
+
+    assert called == []
+    assert orchestrator._jobs[job.id].devices[0].status == "collected"
+
+
+@pytest.mark.asyncio
+async def test_v2_resume_job_execution_repair_without_actions_requests_llm_summary(monkeypatch):
+    orchestrator = JobV2Orchestrator(InMemoryStore())
+    job = Job(
+        problem="帮我完成配置，让OSPF up起来",
+        mode=JobMode.repair,
+        devices=[
+            JobDevice(id="dev-a", host="192.0.2.10", protocol="ssh"),
+            JobDevice(id="dev-b", host="192.0.2.11", protocol="ssh"),
+        ],
+        status=JobStatus.executing,
+        phase=JobPhase.plan,
+    )
+    orchestrator._jobs[job.id] = job
+    orchestrator._events[job.id] = []
+
+    called = False
+
+    async def fake_refine(job_id: str):
+        nonlocal called
+        called = True
+        current = orchestrator._jobs[job_id]
+        current.rca_result = RCAResult(
+            job_id=job_id,
+            root_cause="LLM generated summary",
+            impact_scope="impact",
+            summary="summary",
+            recommendation="next",
+            confidence=0.7,
+        )
+
+    monkeypatch.setattr(orchestrator, "_llm_refine_rca", fake_refine)
+
+    await orchestrator._resume_job_execution(job.id)
+
+    updated = orchestrator._jobs[job.id]
+    assert updated.status == JobStatus.completed
+    assert called is True
+    assert updated.rca_result.root_cause == "LLM generated summary"
 
 
 def test_v2_history_evidence_summary_marks_missing_flap_logs_as_insufficient():

@@ -23,6 +23,7 @@ import {
   approveRunActions,
   configureLlm,
   createRun,
+  getRun,
   getBackendHealth,
   deleteCommandCapability,
   deleteLlmConfig,
@@ -1409,9 +1410,18 @@ function App() {
   useEffect(() => {
     if (!bootstrapped) return
     if (!initialSessionId) return
+    if (session?.id && session.id !== initialSessionId) {
+      setInitialSessionId(undefined)
+      return
+    }
     let canceled = false
+    const restoreTarget = initialSessionId
     const restore = async () => {
-      const ok = await hydrateSessionById(initialSessionId, true)
+      if (session?.id && session.id !== restoreTarget) {
+        setInitialSessionId(undefined)
+        return
+      }
+      const ok = await hydrateSessionById(restoreTarget, true)
       if (canceled) return
       if (!ok) {
         try {
@@ -1431,7 +1441,7 @@ function App() {
     return () => {
       canceled = true
     }
-  }, [bootstrapped, initialSessionId])
+  }, [bootstrapped, initialSessionId, session?.id])
 
   useEffect(() => {
     if (!session?.id) return
@@ -1558,6 +1568,9 @@ function App() {
         .map((item) => mapRunToV2JobSummary(item))
       setV3Jobs(multiJobs)
       setV3SelectedJobId((prev) => {
+        if (multiSessionActiveJobId && multiJobs.some((item) => item.id === multiSessionActiveJobId)) {
+          return multiSessionActiveJobId
+        }
         if (prev && multiJobs.some((item) => item.id === prev)) return prev
         return multiJobs[0]?.id
       })
@@ -1974,6 +1987,8 @@ function App() {
     try {
       const historyItem = sessionHistory.find((item) => item.id === sessionId)
       const data = await buildTimelineSnapshotFromRun(historyItem?.run_id || toUnifiedSingleRunId(sessionId), sessionId)
+      const isMultiHistory = historyItem?.kind === 'multi'
+      const hosts = isMultiHistory ? splitHostsFromSnapshot(data) : []
       historySnapshotCacheRef.current[sessionId] = data
       const restoredSession: SessionResponse = {
         id: data.session.id,
@@ -1984,9 +1999,18 @@ function App() {
         created_at: data.session.created_at,
       }
       setSession(restoredSession)
-      setSessionRuntimeKind(historyItem?.kind === 'multi' ? 'multi' : 'single')
-      setMultiSessionConfig(null)
-      setMultiSessionActiveJobId(historyItem?.kind === 'multi' ? historyItem.source_id : undefined)
+      setSessionRuntimeKind(isMultiHistory ? 'multi' : 'single')
+      setMultiSessionConfig(
+        isMultiHistory
+          ? {
+              hosts,
+              protocol: 'ssh',
+              operation_mode: data.session.operation_mode,
+            }
+          : null,
+      )
+      setMultiSessionActiveJobId(isMultiHistory ? historyItem?.source_id : undefined)
+      setV3SelectedJobId(isMultiHistory ? historyItem?.source_id : undefined)
       setAutomationLevel(restoredSession.automation_level)
       setOperationMode(restoredSession.operation_mode)
       setMessages(data.messages)
@@ -2026,6 +2050,7 @@ function App() {
     automation_level: AutomationLevel
   }) {
     try {
+      setInitialSessionId(undefined)
       const hosts = parseControlHostList(payload.host)
       const normalizedHosts = hosts.length > 0 ? hosts : [String(payload.host || '').trim()].filter(Boolean)
       if (normalizedHosts.length > 1) {
@@ -2064,6 +2089,7 @@ function App() {
           api_token: payload.api_token,
         })
         setMultiSessionActiveJobId(undefined)
+        setV3SelectedJobId(undefined)
         setAutomationLevel(virtualSession.automation_level)
         setOperationMode(virtualSession.operation_mode)
         setMessages([])
@@ -2076,6 +2102,7 @@ function App() {
         setSessionDeviceName(`多设备协同(${normalizedHosts.length})`)
         setSessionVersionSignature('')
         setDraftInput('')
+        setSelectedHistorySessionId(virtualSessionId)
         antMessage.success(`多设备协同会话已创建 (${normalizedHosts.length} 台)`)
         setActivePage('workbench')
         return
@@ -2121,6 +2148,7 @@ function App() {
       setSessionRuntimeKind('single')
       setMultiSessionConfig(null)
       setMultiSessionActiveJobId(undefined)
+      setV3SelectedJobId(undefined)
       setAutomationLevel(resp.automation_level)
       setOperationMode(resp.operation_mode)
       setMessages([])
@@ -2133,6 +2161,7 @@ function App() {
       setSessionDeviceName('-')
       setSessionVersionSignature('')
       setDraftInput('')
+      setSelectedHistorySessionId(resp.id)
       await refreshSessionHistory()
       antMessage.success(`会话已创建: ${resp.id}`)
       setActivePage('workbench')
@@ -2647,16 +2676,6 @@ function App() {
     return 'diagnosis'
   }
 
-  function buildMultiProblemStatement(userContent: string): string {
-    const priorUserContext = messages
-      .filter((item) => item.role === 'user')
-      .slice(-6)
-      .map((item) => `用户: ${item.content}`)
-    const contextBlock = priorUserContext.join('\n')
-    if (!contextBlock) return userContent
-    return `当前用户请求: ${userContent}\n\n历史用户上下文（不含已完成结论）:\n${contextBlock}`
-  }
-
   function buildMultiSessionDevices(config: MultiSessionConfig): Array<Record<string, unknown>> {
     return config.hosts.map((host) => ({
       host,
@@ -2721,19 +2740,6 @@ function App() {
           return 'done'
         }
         setSummary(finalSummary)
-        setMessages((prev) => {
-          const markerId = `multi-final-${jobId}`
-          if (prev.some((item) => item.id === markerId)) return prev
-          return [
-            ...prev,
-            {
-              id: markerId,
-              role: 'assistant',
-              content: renderSummaryBrief(finalSummary),
-              created_at: new Date().toISOString(),
-            },
-          ]
-        })
         setSelectedActivityKey('summary:latest')
         return 'done'
       }
@@ -2748,21 +2754,39 @@ function App() {
       antMessage.warning('请先创建多设备协同会话')
       return
     }
-    const userMessage: ChatMessage = {
-      id: `local-user-${Date.now()}`,
-      role: 'user',
-      content,
-      created_at: new Date().toISOString(),
-    }
-    setMessages((prev) => [...prev, userMessage])
-    setSelectedActivityKey(`msg:${userMessage.id}`)
-    setBusy(true)
-    setSummary(undefined)
-    setContinueExecutionState(null)
     try {
       const key = resolveV3ApiKey()
-      const baseJobId = multiSessionActiveJobId || v3SelectedJobId
+      const isTemporaryMultiSession = String(session.id || '').startsWith('multi-')
+      const baseJobId = resolveCurrentMultiJobId({
+        session,
+        sessionHistory,
+        multiSessionActiveJobId,
+      })
       let targetJobId = baseJobId
+      if (!targetJobId && !isTemporaryMultiSession) {
+        throw new Error('当前多设备会话缺少可继续的 run，请从历史记录重新打开该任务后重试')
+      }
+      if (targetJobId) {
+        const activeRun = await getRun(key, toUnifiedMultiRunId(targetJobId))
+        if (!['completed', 'failed', 'cancelled'].includes(activeRun.status)) {
+          antMessage.warning('当前多设备任务仍在执行或待审批，请先完成或停止后再追加问题。')
+          return
+        }
+      }
+      const userMessage: ChatMessage = {
+        id: `local-user-${Date.now()}`,
+        role: 'user',
+        content,
+        created_at: new Date().toISOString(),
+      }
+      setMessages((prev) => [
+        ...prev.filter((item) => !String(item.id || '').startsWith('multi-final-')),
+        userMessage,
+      ])
+      setSelectedActivityKey(`msg:${userMessage.id}`)
+      setBusy(true)
+      setSummary(undefined)
+      setContinueExecutionState(null)
       if (targetJobId) {
         await streamRunMessage(key, toUnifiedMultiRunId(targetJobId), content, (event, payload) => {
           if (event === 'message_ack' && payload.message) {
@@ -2776,7 +2800,7 @@ function App() {
           key,
           {
             name: requestId,
-            problem: buildMultiProblemStatement(content),
+            problem: content,
             automation_level: automationLevel,
             operation_mode: multiSessionConfig.operation_mode,
             sop_enabled: sopModeEnabled,
@@ -2793,13 +2817,17 @@ function App() {
       if (!targetJobId) {
         throw new Error('未找到可继续执行的多设备任务')
       }
+      const historySessionId = toV2HistorySessionId(targetJobId)
+      setSession((prev) => (prev ? {
+        ...prev,
+        id: historySessionId,
+      } : prev))
+      setSelectedHistorySessionId(historySessionId)
+      setResumedSessionId(historySessionId)
       setMultiSessionActiveJobId(targetJobId)
       setV3SelectedJobId(targetJobId)
       multiJobAbortRef.current = { aborted: false, jobId: targetJobId }
-      const state = await monitorMultiJobUntilPauseOrDone(targetJobId)
-      if (state === 'done' || state === 'stopped') {
-        setMultiSessionActiveJobId(undefined)
-      }
+      await monitorMultiJobUntilPauseOrDone(targetJobId)
       await refreshV3Jobs()
       await refreshSessionHistory()
     } catch (error) {
@@ -3041,6 +3069,7 @@ function App() {
       setSessionDeviceName(formatDeviceName(timeline.session.device?.name))
       setSessionVersionSignature(String(timeline.session.device?.version_signature || '').trim())
       setDraftInput('')
+      setSelectedHistorySessionId(historySessionId)
       setResumedSessionId(historySessionId)
       setActivePage('workbench')
       historySnapshotCacheRef.current[historySessionId] = timeline
@@ -3256,17 +3285,11 @@ function App() {
         const targetIds = actionIds.length > 0 ? actionIds : [approvalTarget.actionGroupId]
         if (approved) {
           await approveRunActions(key, approvalTarget.runId, targetIds, 'workbench-confirm')
-          const state = await monitorMultiJobUntilPauseOrDone(multiSessionActiveJobId!)
-          if (state === 'done' || state === 'stopped') {
-            setMultiSessionActiveJobId(undefined)
-          }
+          await monitorMultiJobUntilPauseOrDone(multiSessionActiveJobId!)
           antMessage.success(targetIds.length > 1 ? '已确认并执行命令组' : '已确认执行命令组')
         } else {
           await rejectRunActions(key, approvalTarget.runId, targetIds, 'workbench-reject')
-          const state = await monitorMultiJobUntilPauseOrDone(multiSessionActiveJobId!)
-          if (state === 'done' || state === 'stopped') {
-            setMultiSessionActiveJobId(undefined)
-          }
+          await monitorMultiJobUntilPauseOrDone(multiSessionActiveJobId!)
           antMessage.info(targetIds.length > 1 ? '已拒绝命令组' : '已拒绝命令组')
         }
       } catch (error) {
@@ -6023,6 +6046,8 @@ function buildActivityCards(
 ): ActivityCard[] {
   const cards: Array<ActivityCard & { sortAt: number; sortIdx: number }> = []
   const tracePlanIterations = new Set<number>()
+  const userTraceSteps = sortTraceStepsByOrder(traceSteps).filter((step) => step.step_type === 'user_input')
+  let userTraceIndex = 0
   for (const step of traceSteps) {
     if (step.step_type !== 'llm_plan') continue
     const iteration = extractTraceIteration(step.title)
@@ -6037,15 +6062,25 @@ function buildActivityCards(
         continue
       }
     }
+    let createdAt = msg.created_at
+    let sortAt = parseSortTime(msg.created_at, index)
+    if (msg.role === 'user') {
+      const matchedTrace = userTraceSteps[userTraceIndex]
+      if (matchedTrace) {
+        userTraceIndex += 1
+        createdAt = matchedTrace.started_at || matchedTrace.completed_at || msg.created_at
+        sortAt = parseSortTime(createdAt, messages.length + commands.length + matchedTrace.seq_no + index)
+      }
+    }
     cards.push({
       key: `msg:${msg.id}`,
       kind: 'message',
-      createdAt: msg.created_at,
+      createdAt,
       label: messageRoleLabel(msg.role),
       title: messageTitle(msg),
       preview: truncateText(msg.content, 170),
       message: msg,
-      sortAt: parseSortTime(msg.created_at, index),
+      sortAt,
       sortIdx: index,
     })
   }
@@ -6352,6 +6387,22 @@ function buildLlmStatusTooltip(status: LLMStatus | null): string {
     lines.push(`不可用原因: ${status.unavailable_reason}`)
   }
   return lines.join('\n')
+}
+
+function resolveCurrentMultiJobId(options: {
+  session: SessionResponse | null
+  sessionHistory: HistorySessionItem[]
+  multiSessionActiveJobId?: string
+}): string | undefined {
+  const direct = String(options.multiSessionActiveJobId || '').trim()
+  if (direct) return direct
+  const sid = String(options.session?.id || '').trim()
+  if (!sid) return undefined
+  const historyItem = options.sessionHistory.find((item) => item.id === sid && item.kind === 'multi')
+  if (historyItem?.source_id) {
+    return String(historyItem.source_id).trim()
+  }
+  return parseV2HistoryJobId(sid)
 }
 
 function getMaxTraceSeqNo(traceSteps: ServiceTraceStep[]): number {

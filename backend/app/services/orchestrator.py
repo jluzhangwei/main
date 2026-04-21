@@ -751,6 +751,57 @@ class ConversationOrchestrator:
                         ),
                     )
                     continue
+                permission_state, _permission_hint = self._derive_permission_signal_from_commands(existing_commands)
+                normalized_next = self._normalize_command_text(next_command)
+                if self._is_redundant_privilege_check(permission_state, next_command):
+                    self._trace_decision(
+                        session_id=session_id,
+                        step_type="policy_decision",
+                        title="AI 规划命令因权限事实已确认被过滤",
+                        detail=f"command={next_command}",
+                        status="succeeded",
+                        detail_payload=self._compact_trace_payload(
+                            {
+                                "command": next_command,
+                                "reason": "permission_already_confirmed",
+                                "decision": "reuse_permission_fact",
+                            }
+                        ),
+                    )
+                    continue
+                if self._is_redundant_enable(permission_state, next_command):
+                    self._trace_decision(
+                        session_id=session_id,
+                        step_type="policy_decision",
+                        title="AI 规划命令因已处于特权模式被过滤",
+                        detail=f"command={next_command}",
+                        status="succeeded",
+                        detail_payload=self._compact_trace_payload(
+                            {
+                                "command": next_command,
+                                "reason": "already_privileged",
+                                "decision": "reuse_privileged_state",
+                            }
+                        ),
+                    )
+                    continue
+                reuse_reason = self._successful_followup_command_reason(session_id, next_command)
+                if reuse_reason:
+                    self._trace_decision(
+                        session_id=session_id,
+                        step_type="policy_decision",
+                        title="AI 规划命令因已确认事实被过滤",
+                        detail=f"command={next_command}",
+                        status="succeeded",
+                        detail_payload=self._compact_trace_payload(
+                            {
+                                "command": next_command,
+                                "reason": reuse_reason,
+                                "decision": "reuse_successful_command",
+                            }
+                        ),
+                    )
+                    continue
                 filtered_plan_commands.append((title, next_command))
             plan_commands = self._dedupe_plan_commands(filtered_plan_commands)
             if not plan_commands:
@@ -2026,6 +2077,50 @@ class ConversationOrchestrator:
             return reason[:240]
         return ""
 
+    def _normalize_command_text(self, command_text: str) -> str:
+        return " ".join(str(command_text or "").strip().lower().split())
+
+    def _has_continuous_followup_context(self, session_id: str) -> bool:
+        if not self.store.list_commands(session_id):
+            return False
+        if not self.store.list_ai_context(session_id):
+            return False
+        for message in self.store.list_messages(session_id):
+            text = str(getattr(message, "content", "") or "").strip()
+            if getattr(message, "role", "") == "system" and "会话已手动停止" in text:
+                return False
+        return True
+
+    def _successful_followup_command_reason(self, session_id: str, command_text: str) -> str:
+        if not self._has_continuous_followup_context(session_id):
+            return ""
+        normalized = self._normalize_command_text(command_text)
+        if not normalized:
+            return ""
+        if self._is_mutating_command(normalized):
+            return ""
+        if normalized == "enable" and session_id not in self._session_adapters:
+            return ""
+        commands = self.store.list_commands(session_id)
+        for cmd in reversed(commands[-80:]):
+            status = str(getattr(cmd.status, "value", cmd.status) or "").strip().lower()
+            if status != "succeeded":
+                continue
+            existing = self._normalize_command_text(
+                str(getattr(cmd, "effective_command", None) or getattr(cmd, "original_command", None) or cmd.command or "")
+            )
+            if existing == normalized:
+                return "existing_successful_command"
+        return ""
+
+    def _is_redundant_privilege_check(self, permission_state: str, command_text: str) -> bool:
+        normalized = self._normalize_command_text(command_text)
+        return permission_state.startswith("privileged") and normalized in {"show privilege", "display users"}
+
+    def _is_redundant_enable(self, permission_state: str, command_text: str) -> bool:
+        normalized = self._normalize_command_text(command_text)
+        return permission_state.startswith("privileged") and normalized == "enable"
+
     def _dedupe_plan_commands(self, commands: list[tuple[str, str]]) -> list[tuple[str, str]]:
         seen: set[str] = set()
         deduped: list[tuple[str, str]] = []
@@ -3102,6 +3197,11 @@ class ConversationOrchestrator:
 
     async def _get_session_adapter(self, session):
         adapter = self._session_adapters.get(session.id)
+        if adapter is not None:
+            if hasattr(adapter, "session"):
+                adapter.session = session
+            self._session_adapters[session.id] = adapter
+            return adapter
         try:
             adapter, _ = await ensure_connected_adapter(
                 adapter,

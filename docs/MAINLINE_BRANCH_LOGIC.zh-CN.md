@@ -523,7 +523,7 @@ AI 返回的命令可能是：
 
 ### AI 规划与提示词
 
-- [/Users/zhangwei/Documents/Python/netops-ai-v1/backend/app/services/deepseek_diagnoser.py](/Users/zhangwei/Documents/Python/netops-ai-v1/backend/app/services/deepseek_diagnoser.py)
+- [/Users/zhangwei/Documents/Python/netops-ai-v1/backend/app/services/llm_diagnoser.py](/Users/zhangwei/Documents/Python/netops-ai-v1/backend/app/services/llm_diagnoser.py)
 
 ### 运行时信号
 

@@ -18,7 +18,7 @@ from app.models.schemas import (  # noqa: E402
     RiskLevel,
     Session,
 )
-from app.services.deepseek_diagnoser import DeepSeekDiagnoser  # noqa: E402
+from app.services.llm_diagnoser import DeepSeekDiagnoser  # noqa: E402
 
 
 async def main() -> int:

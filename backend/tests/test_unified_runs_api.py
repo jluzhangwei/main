@@ -474,6 +474,10 @@ def test_api_runs_multi_message_stream_continues_same_run():
     assert followup.status_code == 200, followup.text
     assert followup.json()["kind"] == "multi"
     assert followup.json()["problem"] == "继续排查邻接与路由发布关系"
+    timeline = client.get(f"/api/runs/{source_run_id}/timeline", headers=_internal())
+    assert timeline.status_code == 200, timeline.text
+    user_messages = [item["content"] for item in timeline.json()["timeline"]["messages"] if item["role"] == "user"]
+    assert user_messages == ["检查两台设备 OSPF 状态", "继续排查邻接与路由发布关系"]
 
 
 def test_api_runs_multi_followup_problem_does_not_embed_previous_summary():
@@ -520,7 +524,49 @@ def test_api_runs_multi_followup_problem_does_not_embed_previous_summary():
     assert timeline.status_code == 200, timeline.text
     messages = timeline.json()["timeline"]["messages"]
     user_messages = [item["content"] for item in messages if item["role"] == "user"]
-    assert user_messages
+    assert user_messages == ["先检查 ospf 状态", "现在改查 lldp 邻居"]
+
+
+def test_api_runs_multi_followup_timeline_keeps_previous_summary_as_history():
+    created = client.post(
+        "/api/runs",
+        json={
+            "problem": "先检查 ospf 状态",
+            "automation_level": "assisted",
+            "operation_mode": "diagnosis",
+            "devices": [
+                {
+                    "host": "192.168.0.83",
+                    "protocol": "ssh",
+                    "vendor": "huawei",
+                },
+                {
+                    "host": "192.168.0.84",
+                    "protocol": "ssh",
+                    "vendor": "huawei",
+                },
+            ],
+        },
+        headers=_internal(),
+    )
+    assert created.status_code == 200, created.text
+    run_id = created.json()["id"]
+    completed = _wait_run_status(run_id, {"completed", "failed", "cancelled"})
+    assert completed.get("status") in {"completed", "failed", "cancelled"}
+
+    body = _stream_run_message(run_id, "现在改查 lldp 邻居")
+    run_match = re.search(r'event: run_resumed\s+data: (\{.*\})', body)
+    assert run_match, body
+
+    timeline = client.get(f"/api/runs/{run_id}/timeline", headers=_internal())
+    assert timeline.status_code == 200, timeline.text
+    payload = timeline.json()
+    assistant_messages = [item["content"] for item in payload["timeline"]["messages"] if item["role"] == "assistant"]
+    assert len(assistant_messages) >= 2
+    messages = timeline.json()["timeline"]["messages"]
+    user_messages = [item["content"] for item in messages if item["role"] == "user"]
+    assert len(user_messages) >= 2
+    assert user_messages[0] == "先检查 ospf 状态"
     assert user_messages[-1] == "现在改查 lldp 邻居"
 
 
@@ -569,6 +615,10 @@ async def test_api_runs_multi_followup_config_intent_updates_same_run_mode_and_w
     assert waiting["operation_mode"] == "config"
     assert waiting["status"] == "waiting_approval"
     assert waiting["pending_actions"] >= 1
+    timeline = client.get(f"/api/runs/{run_id}/timeline", headers=_internal())
+    assert timeline.status_code == 200, timeline.text
+    user_messages = [item["content"] for item in timeline.json()["timeline"]["messages"] if item["role"] == "user"]
+    assert user_messages[-1] == "帮我在这两个设备邻居地址配置上IP，让OSPF能起来，你自己选择192.168.x.x网段"
 
 
 def test_api_runs_single_patch_automation_and_credentials():

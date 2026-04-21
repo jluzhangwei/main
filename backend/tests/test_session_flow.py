@@ -166,6 +166,51 @@ class FollowupSummaryDiagnoser(ScriptedDiagnoser):
         }
 
 
+class DuplicateFollowupCommandDiagnoser(ScriptedDiagnoser):
+    async def propose_next_step(
+        self,
+        *,
+        session,
+        user_problem: str,
+        commands,
+        evidences,
+        iteration: int,
+        max_iterations: int,
+        conversation_history=None,
+    ):
+        if "第二次" in user_problem:
+            if iteration == 1:
+                return {
+                    "decision": "run_command",
+                    "title": "重复接口检查",
+                    "command": "show ip interface brief",
+                    "reason": "测试 follow-up 重复命令过滤",
+                }
+            return {
+                "decision": "final",
+                "root_cause": f"summary for {user_problem}",
+                "impact_scope": "impact",
+                "recommendation": "next",
+                "confidence": 0.6,
+                "evidence_refs": [],
+            }
+        if iteration == 1:
+            return {
+                "decision": "run_command",
+                "title": "接口基础检查",
+                "command": "show ip interface brief",
+                "reason": "收集接口状态",
+            }
+        return {
+            "decision": "final",
+            "root_cause": f"summary for {user_problem}",
+            "impact_scope": "impact",
+            "recommendation": "next",
+            "confidence": 0.6,
+            "evidence_refs": [],
+        }
+
+
 @pytest.fixture(autouse=True)
 def use_scripted_diagnoser():
     original = routes.orchestrator.deepseek_diagnoser
@@ -292,6 +337,88 @@ def test_followup_question_replaces_previous_assistant_final_message():
         assert "先看 ospf 状态" not in latest_assistant
     finally:
         routes.orchestrator.deepseek_diagnoser = original
+
+
+def test_followup_question_skips_duplicate_successful_read_only_command_when_context_continues():
+    session_id = _create_session("assisted", "diagnosis")
+    original = routes.orchestrator.deepseek_diagnoser
+    routes.orchestrator.deepseek_diagnoser = DuplicateFollowupCommandDiagnoser()
+    try:
+        _stream_message(session_id, "第一次先看看接口情况")
+        first_timeline = client.get(f"/v1/sessions/{session_id}/timeline")
+        assert first_timeline.status_code == 200
+        first_commands = first_timeline.json()["commands"]
+        assert [item["command"] for item in first_commands].count("show ip interface brief") == 1
+
+        _stream_message(session_id, "第二次继续，但不要重复检查已成功命令")
+
+        second_timeline = client.get(f"/v1/sessions/{session_id}/timeline")
+        assert second_timeline.status_code == 200
+        second_commands = second_timeline.json()["commands"]
+        assert [item["command"] for item in second_commands].count("show ip interface brief") == 1
+
+        trace = client.get(f"/v1/sessions/{session_id}/trace")
+        assert trace.status_code == 200
+        assert any(
+            step["step_type"] == "policy_decision" and (step.get("detail_payload") or {}).get("decision") == "reuse_successful_command"
+            for step in trace.json()["steps"]
+        )
+    finally:
+        routes.orchestrator.deepseek_diagnoser = original
+
+
+def test_followup_question_allows_repeat_after_manual_stop():
+    session_id = _create_session("assisted", "diagnosis")
+    original = routes.orchestrator.deepseek_diagnoser
+    routes.orchestrator.deepseek_diagnoser = DuplicateFollowupCommandDiagnoser()
+    try:
+        _stream_message(session_id, "第一次先看看接口情况")
+        stop_resp = client.post(f"/v1/sessions/{session_id}/stop")
+        assert stop_resp.status_code == 200
+
+        _stream_message(session_id, "第二次继续，但现在会话中断过")
+
+        timeline = client.get(f"/v1/sessions/{session_id}/timeline")
+        assert timeline.status_code == 200
+        commands = timeline.json()["commands"]
+        assert [item["command"] for item in commands].count("show ip interface brief") == 2
+    finally:
+        routes.orchestrator.deepseek_diagnoser = original
+
+
+def test_single_redundant_privilege_check_is_filtered_when_already_privileged():
+    assert routes.orchestrator._is_redundant_privilege_check("privileged(level=15)", "show privilege") is True
+    assert routes.orchestrator._is_redundant_privilege_check("privileged", "display users") is True
+    assert routes.orchestrator._is_redundant_privilege_check("insufficient(level=1)", "show privilege") is False
+
+
+def test_single_redundant_enable_is_filtered_when_already_privileged():
+    assert routes.orchestrator._is_redundant_enable("privileged(level=15)", "enable") is True
+    assert routes.orchestrator._is_redundant_enable("privileged", "enable") is True
+    assert routes.orchestrator._is_redundant_enable("insufficient(level=1)", "enable") is False
+
+
+@pytest.mark.asyncio
+async def test_single_get_session_adapter_reuses_existing_without_reconnect(monkeypatch):
+    session_id = _create_session("assisted", "diagnosis")
+    session = routes.orchestrator.store.get_session(session_id)
+    existing = type("ExistingAdapter", (), {})()
+    existing.session = None
+    routes.orchestrator._session_adapters[session_id] = existing
+
+    called = False
+
+    async def fake_ensure(*args, **kwargs):
+        nonlocal called
+        called = True
+        return existing, "reuse"
+
+    monkeypatch.setattr("app.services.orchestrator.ensure_connected_adapter", fake_ensure)
+
+    adapter = await routes.orchestrator._get_session_adapter(session)
+
+    assert adapter is existing
+    assert called is False
 
 
 def test_full_auto_session_executes_without_confirmation():

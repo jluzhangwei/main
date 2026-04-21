@@ -377,8 +377,25 @@ export async function streamRunMessage(
     signal,
   })
 
-  if (!res.ok || !res.body) {
-    throw new Error('Failed to stream run message')
+  if (!res.ok) {
+    const body = await res.text()
+    let parsed: unknown = null
+    if (body.trim()) {
+      try {
+        parsed = JSON.parse(body)
+      } catch {
+        parsed = null
+      }
+    }
+    const detail =
+      parsed && typeof parsed === 'object' && 'detail' in parsed
+        ? String((parsed as { detail?: unknown }).detail ?? '')
+        : body.trim().slice(0, 200).replace(/\s+/g, ' ')
+    throw new Error(detail ? `Failed to stream run message: ${detail}` : 'Failed to stream run message')
+  }
+
+  if (!res.body) {
+    throw new Error('Failed to stream run message: response body missing')
   }
 
   const reader = res.body.getReader()
@@ -405,6 +422,13 @@ export async function streamRunMessage(
       onEvent(event, payload)
     }
   }
+}
+
+export async function getRun(apiKey: string, runId: string): Promise<RunSummary> {
+  const res = await fetch(apiUrl(`/api/runs/${runId}`), {
+    headers: v2Headers(apiKey),
+  })
+  return parseJsonResponse<RunSummary>(res, 'Failed to get run')
 }
 
 export async function listRuns(

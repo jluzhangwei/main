@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 from typing import Dict, List, Optional
 
 from app.models.schemas import (
@@ -65,6 +66,9 @@ class InMemoryStore:
         self.persist_session_credentials = (
             os.getenv("NETOPS_PERSIST_SESSION_CREDENTIALS", "1").strip().lower() in {"1", "true", "yes"}
         )
+        self._session_store_save_debounce_seconds = float(os.getenv("NETOPS_SESSION_STORE_SAVE_DEBOUNCE_SECONDS", "10.0"))
+        self._last_session_store_save_monotonic = 0.0
+        self._session_store_dirty = False
         self._load_session_store()
 
     def create_session(self, req: SessionCreateRequest) -> Session:
@@ -80,7 +84,7 @@ class InMemoryStore:
         self.sessions[session.id] = session
         self.ai_context[session.id] = []
         self.trace_steps[session.id] = []
-        self._save_session_store()
+        self._save_session_store(force=True)
         return session
 
     def get_session(self, session_id: str) -> Session:
@@ -113,14 +117,14 @@ class InMemoryStore:
         session = self.sessions[session_id]
         session.automation_level = automation_level
         self.sessions[session_id] = session
-        self._save_session_store()
+        self._save_session_store(force=True)
         return session
 
     def update_session_sop_enabled(self, session_id: str, sop_enabled: bool) -> Session:
         session = self.sessions[session_id]
         session.sop_enabled = bool(sop_enabled)
         self.sessions[session_id] = session
-        self._save_session_store()
+        self._save_session_store(force=True)
         return session
 
     def update_session_credentials(self, session_id: str, req: SessionCredentialUpdateRequest) -> Session:
@@ -140,14 +144,14 @@ class InMemoryStore:
         if req.api_token is not None:
             session.device.api_token = str(req.api_token).strip() or None
         self.sessions[session_id] = session
-        self._save_session_store()
+        self._save_session_store(force=True)
         return session
 
     def update_session_device_name(self, session_id: str, device_name: str) -> Session:
         session = self.sessions[session_id]
         session.device.name = (device_name or "").strip() or None
         self.sessions[session_id] = session
-        self._save_session_store()
+        self._save_session_store(force=True)
         return session
 
     def update_session_device_profile(
@@ -172,12 +176,12 @@ class InMemoryStore:
         if version_signature is not None:
             session.device.version_signature = str(version_signature).strip() or None
         self.sessions[session_id] = session
-        self._save_session_store()
+        self._save_session_store(force=True)
         return session
 
     def add_message(self, message: Message) -> None:
         self.messages[message.session_id].append(message)
-        self._save_session_store()
+        self._save_session_store(force=True)
 
     def list_messages(self, session_id: str) -> list[Message]:
         return self.messages[session_id]
@@ -212,7 +216,7 @@ class InMemoryStore:
 
     def set_summary(self, summary: IncidentSummary) -> None:
         self.summary[summary.session_id] = summary
-        self._save_session_store()
+        self._save_session_store(force=True)
 
     def get_summary(self, session_id: str) -> Optional[IncidentSummary]:
         return self.summary.get(session_id)
@@ -239,7 +243,7 @@ class InMemoryStore:
 
     def reset_ai_context(self, session_id: str) -> None:
         self.ai_context[session_id] = []
-        self._save_session_store()
+        self._save_session_store(force=True)
 
     def next_trace_seq(self, session_id: str) -> int:
         return len(self.trace_steps[session_id]) + 1
@@ -608,7 +612,14 @@ class InMemoryStore:
         except Exception:
             return
 
-    def _save_session_store(self) -> None:
+    def _save_session_store(self, *, force: bool = False) -> None:
+        if not force and self._session_store_save_debounce_seconds > 0:
+            now = time.monotonic()
+            if self._last_session_store_save_monotonic and (
+                now - self._last_session_store_save_monotonic
+            ) < self._session_store_save_debounce_seconds:
+                self._session_store_dirty = True
+                return
         path = self.session_store_path
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -622,6 +633,8 @@ class InMemoryStore:
                 "trace_steps": {sid: [step.model_dump(mode="json") for step in rows] for sid, rows in self.trace_steps.items()},
             }
             path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            self._last_session_store_save_monotonic = time.monotonic()
+            self._session_store_dirty = False
             try:
                 os.chmod(path, 0o600)
             except Exception:

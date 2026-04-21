@@ -16,6 +16,7 @@ from app.models.schemas import (
     JobCommandStatus,
     JobEvent,
     JobMode,
+    JobSummaryTurn,
     JobTimelineResponse,
     Message,
     OperationMode,
@@ -29,6 +30,7 @@ from app.models.schemas import (
     Session,
     SessionStatus,
     TimelineResponse,
+    now_utc,
 )
 from app.services.exporter import export_timeline_markdown
 
@@ -408,25 +410,45 @@ class UnifiedRunService:
 
     def _build_multi_messages(self, raw: JobTimelineResponse, session_id: str) -> list[Message]:
         messages: list[Message] = []
-        user_steps = [
-            event for event in sorted(list(raw.events or []), key=lambda item: int(item.seq_no or 0))
-            if str((event.payload or {}).get("trace_step_type") or event.event_type or "").strip() == "user_input"
-        ]
-        if user_steps:
-            for index, event in enumerate(user_steps, start=1):
-                payload = event.payload if isinstance(event.payload, dict) else {}
-                content = str(payload.get("user_input") or "").strip()
-                if not content:
-                    continue
-                messages.append(
-                    Message(
-                        id=f"runmsg:user:{raw.job.id}:{index}",
-                        session_id=session_id,
-                        role="user",
-                        content=content,
-                        created_at=event.created_at,
-                    )
+        request_history = list(getattr(raw.job, "request_history", []) or [])
+        summary_history = list(getattr(raw.job, "summary_history", []) or [])
+        for index, item in enumerate(request_history, start=1):
+            if isinstance(item, dict):
+                content = str(item.get("content") or "").strip()
+                created_at = item.get("created_at") or raw.job.created_at
+            else:
+                content = str(getattr(item, "content", "") or "").strip()
+                created_at = getattr(item, "created_at", None) or raw.job.created_at
+            if not content:
+                continue
+            messages.append(
+                Message(
+                    id=f"runmsg:user:{raw.job.id}:{index}",
+                    session_id=session_id,
+                    role="user",
+                    content=content,
+                    created_at=created_at,
                 )
+            )
+            if index <= len(summary_history):
+                summary_turn = summary_history[index - 1]
+                if isinstance(summary_turn, dict):
+                    summary_payload = summary_turn.get("summary") or {}
+                    summary_created_at = summary_turn.get("created_at") or raw.job.updated_at or raw.job.created_at
+                else:
+                    summary_payload = getattr(summary_turn, "summary", None)
+                    summary_created_at = getattr(summary_turn, "created_at", None) or raw.job.updated_at or raw.job.created_at
+                rendered = self._render_summary_brief(self._multi_summary_from_payload(raw.job.id, summary_payload, session_id))
+                if rendered:
+                    messages.append(
+                        Message(
+                            id=f"runmsg:assistant:{raw.job.id}:{index}",
+                            session_id=session_id,
+                            role="assistant",
+                            content=rendered,
+                            created_at=summary_created_at,
+                        )
+                    )
         problem = str(raw.job.problem or "").strip()
         if problem and (not messages or messages[-1].content != problem):
             messages.append(
@@ -450,6 +472,24 @@ class UnifiedRunService:
                 )
             )
         return messages
+
+    def _multi_summary_from_payload(self, job_id: str, payload: Any, session_id: str) -> IncidentSummary:
+        if isinstance(payload, IncidentSummary):
+            return payload
+        if isinstance(payload, dict):
+            normalized = dict(payload)
+        else:
+            normalized = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else {}
+        return IncidentSummary(
+            session_id=session_id,
+            mode="config" if str(normalized.get("query_result") or "").strip() else "diagnosis",
+            root_cause=str(normalized.get("root_cause") or normalized.get("summary") or "").strip() or "历史总结",
+            impact_scope=str(normalized.get("impact_scope") or "-").strip() or "-",
+            recommendation=str(normalized.get("recommendation") or "-").strip() or "-",
+            query_result=str(normalized.get("query_result") or "").strip() or None,
+            confidence=float(normalized.get("confidence") or 0.0) if normalized.get("confidence") is not None else None,
+            created_at=normalized.get("created_at") or now_utc(),
+        )
 
     def _map_multi_evidences(self, raw: JobTimelineResponse, session_id: str) -> list[Evidence]:
         rows: list[Evidence] = []

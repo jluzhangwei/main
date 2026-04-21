@@ -5,9 +5,10 @@ type Props = {
   value: AutomationLevel
   onChange: (next: AutomationLevel) => void
   className?: string
+  disabled?: boolean
 }
 
-export function AutomationLevelSelector({ value, onChange, className }: Props) {
+export function AutomationLevelSelector({ value, onChange, className, disabled = false }: Props) {
   const levelDetail: Record<
     AutomationLevel,
     {
@@ -54,6 +55,7 @@ export function AutomationLevelSelector({ value, onChange, className }: Props) {
       <Radio.Group
         className="mode-selector"
         value={value}
+        disabled={disabled}
         onChange={(e) => onChange(e.target.value as AutomationLevel)}
         optionType="button"
         buttonStyle="solid"
@@ -75,6 +77,11 @@ export function AutomationLevelSelector({ value, onChange, className }: Props) {
       <p className="muted mode-hint">
         规则速记：极低风险=仅只读；中风险可执行=低/中自动+高风险确认；高风险可执行=非阻断均自动。
       </p>
+      {disabled && (
+        <p className="muted mode-hint">
+          当前会话已创建，命令执行控制等级按创建时设置生效；如需修改，请在新建会话/任务前重新选择。
+        </p>
+      )}
     </div>
   )
 }
