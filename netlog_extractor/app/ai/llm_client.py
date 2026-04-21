@@ -207,8 +207,14 @@ def _resolve_codex_cli(cli_path: str = "") -> str:
     for cand in candidates:
         if not cand:
             continue
-        if Path(cand).exists() or cand == "codex":
+        p = Path(cand)
+        if p.exists():
             return cand
+        # Bare command names like "codex" should only be accepted if actually resolvable in PATH.
+        if p.name == cand and "/" not in cand:
+            resolved = which(cand)
+            if resolved:
+                return resolved
     raise RuntimeError("codex CLI not found. Set codex_cli_path or ensure `codex` is in PATH")
 
 
