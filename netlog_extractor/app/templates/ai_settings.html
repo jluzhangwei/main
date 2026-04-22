@@ -5,7 +5,7 @@
 <div class="card ai-card">
   <div class="ai-head">
     <span id="provider_brand_inline" class="ai-brand"></span>
-    <h2>{{ 'AI Analysis Settings' if is_en else 'AI 分析设置' }}</h2>
+    <h2>{{ 'AI Log Analysis' if is_en else 'AI 日志分析' }}</h2>
   </div>
 
   {% if saved %}<div class="ok-msg">{{ 'Saved' if is_en else '已保存' }}</div>{% endif %}
@@ -241,6 +241,144 @@
     </div>
   </div>
 
+  {% if ai_task %}
+  <div class="ai-section">
+    <div class="ai-section-title">{{ 'Task AI Analysis' if is_en else '任务 AI 分析' }}</div>
+    <div class="hint" style="margin-bottom:8px;">
+      {{ 'Task ID' if is_en else '任务 ID' }}: <code>{{ ai_task.task_id }}</code> |
+      <a href="/tasks/{{ ai_task.task_id }}?lang={{ 'en' if is_en else 'zh' }}">{{ 'Back to Task Detail' if is_en else '返回任务详情' }}</a>
+    </div>
+    <table id="ai-dev-table">
+      <thead>
+        <tr>
+          <th><input type="checkbox" id="ai-select-all" checked></th><th>device_id</th><th>ip</th><th><div class="table-filter-head"><span>device_name</span><input id="ai-device-filter" type="text" placeholder="{{ 'press Enter to filter' if is_en else '输入后回车过滤' }}"></div></th><th>{{ 'status' if is_en else '状态' }}</th><th>vendor</th><th>hits</th><th>log_source</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in ai_task_devices_view %}
+        <tr class="ai-device-row{% if loop.first %} is-current{% endif %}" data-device-id="{{ d.device_id }}">
+          <td><input type="checkbox" class="ai-device-select" data-device-id="{{ d.device_id }}" checked></td>
+          <td>{{ d.device_id }}</td>
+          <td>{{ d.device_ip }}</td>
+          <td>{{ d.device_name or '' }}</td>
+          <td>{{ d.status }}</td>
+          <td>{{ d.vendor or '' }}</td>
+          <td>{{ d.hits_count if d.hits_count is not none else 0 }}</td>
+          <td>{{ d.log_source or '' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <div class="ai-row">
+      <div class="exec-options">
+        <div class="exec-card">
+          <label class="check-item"><input type="checkbox" id="batched_analysis" {% if cfg.batched_analysis %}checked{% endif %}>{{ 'Batched mode (submit each device separately to AI)' if is_en else '分批模式（每台设备单独提交给 AI）' }}</label>
+          <div class="hint">{{ 'Suitable for multi-device analysis and per-device summary.' if is_en else '适合多设备逐台分析和设备级汇总。' }}</div>
+          <label class="check-item"><input type="checkbox" id="fragmented_analysis" {% if cfg.fragmented_analysis %}checked{% endif %}>{{ 'Chunk mode (device chunks + summary)' if is_en else '分片模式（设备分片分析 + 汇总）' }}</label>
+          <div class="hint">{{ 'Use only for very large logs; small logs should avoid unnecessary chunking.' if is_en else '仅在超大日志下开启；小日志不要平白分片。' }}</div>
+          <div class="exec-field" style="align-items:flex-start;gap:12px;">
+            <label style="padding-top:8px;">{{ 'Text compression strategy' if is_en else '文本压缩策略' }}</label>
+            <div style="flex:1;min-width:0;">
+              <select id="text_compression_strategy" style="width:220px;max-width:100%;">
+                <option value="off" {% if cfg.text_compression_strategy == 'off' %}selected{% endif %}>{{ 'off' if is_en else '关闭' }}</option>
+                <option value="group_repeats" {% if cfg.text_compression_strategy == 'group_repeats' %}selected{% endif %}>{{ 'group_repeats' if is_en else '重复归并' }}</option>
+                <option value="factor_time" {% if cfg.text_compression_strategy == 'factor_time' %}selected{% endif %}>{{ 'factor_time (recommended)' if is_en else 'factor_time（推荐）' }}</option>
+              </select>
+              <div class="hint" style="margin-top:6px;">{{ 'group_repeats folds repeat events. factor_time separates occurrences from stable message template.' if is_en else 'group_repeats 折叠重复事件。factor_time 将发生时间和稳定正文模板拆开。' }}</div>
+            </div>
+          </div>
+          <div class="exec-field" style="align-items:flex-start;gap:12px;">
+            <label style="padding-top:8px;">{{ 'SQL log inclusion' if is_en else 'SQL 日志附加' }}</label>
+            <div style="flex:1;min-width:0;">
+              <select id="sql_log_inclusion_mode" style="width:320px;max-width:100%;">
+                <option value="final_only" {% if cfg.sql_log_inclusion_mode == 'final_only' %}selected{% endif %}>{{ 'final filtered.log only' if is_en else '仅最终 filtered.log' }}</option>
+                <option value="with_sql_filtered" {% if cfg.sql_log_inclusion_mode == 'with_sql_filtered' %}selected{% endif %}>{{ 'final filtered.log + filtered_sql.log' if is_en else '最终 filtered.log + filtered_sql.log' }}</option>
+                <option value="with_sql_filtered_force" {% if cfg.sql_log_inclusion_mode == 'with_sql_filtered_force' %}selected{% endif %}>{{ 'force append filtered_sql.log (even if same)' if is_en else '强制附加 filtered_sql.log（即使相同）' }}</option>
+                <option value="with_sql_raw_and_filtered" {% if cfg.sql_log_inclusion_mode == 'with_sql_raw_and_filtered' %}selected{% endif %}>{{ 'final filtered.log + filtered_sql.log + raw_sql.log' if is_en else '最终 filtered.log + filtered_sql.log + raw_sql.log' }}</option>
+              </select>
+              <div class="hint" style="margin-top:6px;">{{ 'Controls whether SQL log bodies are appended after final filtered.log.' if is_en else '控制是否在最终 filtered.log 之后追加 SQL 日志正文。' }}</div>
+            </div>
+          </div>
+        </div>
+        <div class="exec-card">
+          <div class="exec-field"><label>{{ 'AI parallelism' if is_en else 'AI 并发数' }}</label><input id="analysis_parallelism" type="number" min="1" max="8" value="{{ cfg.analysis_parallelism or 2 }}"></div>
+          <div class="exec-field"><label>{{ 'Chunk parallelism' if is_en else '分片并行数' }}</label><input id="chunk_parallelism" type="number" min="1" max="8" value="{{ cfg.chunk_parallelism or 1 }}"></div>
+          <div class="exec-field"><label>{{ 'Token budget per chunk' if is_en else '每分片 Token 预算' }}</label><input id="max_tokens_per_chunk" type="number" min="800" max="12000" value="{{ cfg.max_tokens_per_chunk or 4500 }}"></div>
+          <div class="exec-field"><label>{{ 'Max chunks per device' if is_en else '每设备最大分片' }}</label><input id="max_chunks_per_device" type="number" min="1" max="60" value="{{ cfg.max_chunks_per_device or 12 }}"></div>
+          <div class="exec-field"><label>{{ 'Retries per device' if is_en else '每设备失败重试' }}</label><input id="analysis_retries" type="number" min="0" max="3" value="{{ cfg.analysis_retries or 1 }}"></div>
+          <div class="exec-field"><label>{{ 'LLM timeout (seconds)' if is_en else 'AI 调用超时秒数' }}</label><input id="llm_call_timeout_sec" type="number" min="60" max="600" value="{{ cfg.llm_call_timeout_sec or 240 }}"></div>
+          <div class="exec-field">
+            <label>{{ 'Chunk strategy' if is_en else '分片策略' }}</label>
+            <select id="chunk_strategy" class="narrow-select">
+              <option value="hybrid" {% if cfg.chunk_strategy == 'hybrid' %}selected{% endif %}>hybrid</option>
+              <option value="time" {% if cfg.chunk_strategy == 'time' %}selected{% endif %}>time</option>
+              <option value="event" {% if cfg.chunk_strategy == 'event' %}selected{% endif %}>event</option>
+            </select>
+          </div>
+          <div class="hint">{{ 'Recommended parallelism: 1-4.' if is_en else '建议并发 1-4。' }}</div>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="analysis-precheck-btn" class="btn" type="button">{{ 'Estimate' if is_en else '分析预估' }}</button>
+        <button id="analysis-preview-btn" class="btn" type="button">{{ 'Content Preview' if is_en else '内容分析' }}</button>
+        <button id="ai-start-btn" class="btn btn-primary" type="button">{{ 'AI Analyze' if is_en else 'AI 分析' }}</button>
+        <button id="ai-stop-btn" class="btn" type="button" disabled>{{ 'Stop' if is_en else '停止' }}</button>
+        <button id="save-analysis-btn" class="btn" type="button">{{ 'Save Report' if is_en else '保存分析报告' }}</button>
+      </div>
+      <div id="analysis-precheck-box" class="hint">{{ 'Estimate: not calculated' if is_en else '分析预估：未计算' }}</div>
+      <p id="ai-status" class="hint">{{ 'Current model' if is_en else '当前模型' }}: {{ cfg.provider or '-' }} | {{ (cfg.chatgpt_model if cfg.provider == 'chatgpt' else cfg.codex_model if cfg.provider == 'codex_local' else cfg.deepseek_model if cfg.provider == 'deepseek' else cfg.qwen_model if cfg.provider == 'qwen' else cfg.gemini_model if cfg.provider == 'gemini' else cfg.nvidia_model if cfg.provider == 'nvidia' else cfg.local_model) or '-' }} | {{ 'not started' if is_en else '未启动' }}</p>
+      <div id="analysis-progress-box" class="analysis-progress" style="display:none;">
+        <div id="analysis-progress-text" class="hint">{{ 'Progress: 0%' if is_en else '进度: 0%' }}</div>
+        <div class="analysis-progress-bar"><div id="analysis-progress-fill" class="analysis-progress-fill"></div></div>
+      </div>
+      <div id="ai-output" class="markdown-body">{{ 'Analysis result will be shown here.' if is_en else '分析结果会显示在这里。' }}</div>
+      <div class="ai-section" style="margin-top:10px;">
+        <div class="ai-section-title">{{ 'Analysis History' if is_en else '分析历史' }}</div>
+        <div id="analysis-history-list" class="hint">{{ 'No history yet.' if is_en else '暂无历史记录。' }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="analysis-preview-modal" class="modal-mask">
+    <div class="modal-box preview-modal-box">
+      <div class="modal-head">
+        <div id="analysis-preview-title" class="modal-title">{{ 'AI Content Preview' if is_en else 'AI 内容预览' }}</div>
+        <button id="analysis-preview-close" class="modal-close" type="button">{{ 'Close' if is_en else '关闭' }}</button>
+      </div>
+      <div id="analysis-preview-meta" class="hint" style="margin-bottom:8px;"></div>
+      <div class="preview-toolbar">
+        <label style="margin:0;display:flex;align-items:center;gap:8px;">
+          <span>{{ 'Preview compression' if is_en else '预览压缩策略' }}</span>
+          <select id="analysis-preview-strategy" class="narrow-select">
+            <option value="use_current">{{ 'use current setting' if is_en else '使用当前设置' }}</option>
+            <option value="off">off</option>
+            <option value="group_repeats">group_repeats</option>
+            <option value="factor_time">factor_time</option>
+          </select>
+        </label>
+        <button id="analysis-preview-refresh" class="btn" type="button">{{ 'Rebuild Preview' if is_en else '重新生成预览' }}</button>
+        <button id="analysis-preview-prev" class="btn" type="button">{{ 'Prev Unit' if is_en else '上一单元' }}</button>
+        <button id="analysis-preview-next" class="btn" type="button">{{ 'Next Unit' if is_en else '下一单元' }}</button>
+      </div>
+      <div class="preview-grid">
+        <div>
+          <label>{{ 'System Prompt' if is_en else '系统提示词' }}</label>
+          <textarea id="analysis-preview-system" readonly></textarea>
+        </div>
+        <div>
+          <label>{{ 'Task Prompt' if is_en else '任务提示词' }}</label>
+          <textarea id="analysis-preview-task" readonly></textarea>
+        </div>
+      </div>
+      <div style="margin-top:8px;">
+        <label>{{ 'Actual Submitted Content' if is_en else '实际提交内容' }}</label>
+        <textarea id="analysis-preview-content" readonly></textarea>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
   <details class="ai-details" style="margin-top:10px;">
     <summary>{{ 'Token Statistics' if is_en else 'Token 统计' }}</summary>
     <pre style="white-space:pre-wrap;">{{ stats | tojson(indent=2) }}</pre>
@@ -300,9 +438,47 @@
   .modal-title { font-weight:700; }
   .modal-close { border:1px solid #cbd5e1; border-radius:8px; background:#fff; padding:4px 8px; cursor:pointer; font-weight:700; }
   .modal-body textarea { width:100%; min-height:260px; border:1px solid #cbd5e1; border-radius:8px; padding:10px; font-family:Menlo,Consolas,monospace; box-sizing:border-box; }
+  .exec-options { display:grid; grid-template-columns:1.2fr 1fr; gap:10px; }
+  .exec-card { border:1px solid #d7dee7; border-radius:8px; background:#fff; padding:10px; }
+  .check-item { display:flex; align-items:center; gap:8px; margin:6px 0 3px; font-weight:600; }
+  .check-item input { width:auto; }
+  .ai-device-select { width:auto !important; }
+  .ai-device-row.is-current { background:#eef7ff; }
+  .ai-device-row.is-hidden-by-filter { display:none; }
+  .table-filter-head { display:flex; align-items:center; gap:8px; }
+  .table-filter-head input { width:180px; max-width:180px; min-height:30px; font-size:12px; }
+  .exec-field { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
+  .exec-field > label { margin:0; font-weight:700; }
+  .exec-field > input { width:84px !important; max-width:84px !important; }
+  .exec-field > .narrow-select { width:180px !important; max-width:180px !important; }
+  .btn-primary { background:#0b6e4f; color:#fff; border-color:#0b6e4f; }
+  .analysis-progress { margin:8px 0 10px; border:1px solid #cbd5e1; border-radius:10px; background:#f8fafc; padding:10px; }
+  .analysis-progress-bar { height:14px; border-radius:999px; background:#e2e8f0; overflow:hidden; margin-top:4px; }
+  .analysis-progress-fill { height:100%; width:0%; background:#0b7a57; transition:width .25s ease; }
+  .markdown-body { max-height:520px; overflow:auto; background:#f8fafc; border:1px solid #d6dde8; border-radius:8px; padding:12px; line-height:1.55; }
+  .markdown-body h1,.markdown-body h2,.markdown-body h3,.markdown-body h4 { margin:10px 0 6px; }
+  .markdown-body p { margin:6px 0; }
+  .markdown-body ul,.markdown-body ol { margin:6px 0 6px 20px; padding:0; }
+  .markdown-body code { background:#eef2f7; border:1px solid #d7dee7; border-radius:4px; padding:1px 4px; font-family:Menlo,Consolas,monospace; font-size:12px; }
+  .markdown-body pre { margin:8px 0; background:#0f172a; color:#e2e8f0; padding:10px; border-radius:8px; overflow:auto; }
+  .markdown-body pre code { background:transparent; border:none; padding:0; color:inherit; }
+  .markdown-body blockquote { margin:8px 0; padding:6px 10px; border-left:3px solid #94a3b8; color:#334155; background:#f1f5f9; }
+  .markdown-body a { color:#0b6e4f; }
+  .markdown-body .md-gap { height:4px; }
+  .history-row { padding:5px 0; border-bottom:1px solid #e2e8f0; font-size:13px; }
+  .history-row:last-child { border-bottom:none; }
+  .preview-toolbar { display:flex; gap:8px; flex-wrap:wrap; }
+  .preview-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .preview-grid > div { display:flex; flex-direction:column; min-height:200px; }
+  .preview-modal-box { resize:both; min-width:760px; min-height:520px; display:flex; flex-direction:column; gap:8px; overflow:auto; max-height:calc(100vh - 32px); }
+  .preview-modal-box textarea { width:100%; min-height:180px; height:100%; border:1px solid #cbd5e1; border-radius:8px; padding:10px; box-sizing:border-box; font-family:Menlo,Consolas,monospace; resize:none; }
+  #analysis-preview-content { min-height:320px; }
 
   @media (max-width: 920px) {
     .ai-grid { grid-template-columns:1fr; }
+    .exec-options { grid-template-columns:1fr; }
+    .preview-grid { grid-template-columns:1fr; }
+    .preview-modal-box { min-width:0; min-height:0; resize:none; }
   }
 </style>
 
@@ -787,6 +963,518 @@
     const f = fileEl && fileEl.files ? fileEl.files[0] : null;
     if (fileNameEl) fileNameEl.textContent = f ? f.name : (UI_LANG === 'en' ? 'No file selected' : '未选择文件');
   });
+
+  {% if ai_task %}
+  const AI_TASK_ID = {{ ('"' ~ ai_task.task_id ~ '"') | safe }};
+  let currentAnalysisId = null;
+  let latestAnalysisText = '';
+  let analysisPreviewData = null;
+  let analysisPreviewIndex = 0;
+  let currentPreviewDeviceId = ({% if ai_task_devices_view %}{{ ('"' ~ ai_task_devices_view[0].device_id ~ '"') | safe }}{% else %}''{% endif %}) || '';
+  let currentDeviceFilter = '';
+  const selectedAiDeviceIds = new Set(({% if ai_task_devices_view %}{{ ai_task_devices_view | map(attribute='device_id') | list | tojson }}{% else %}[]{% endif %}) || []);
+
+  function escapeHtml(text) {
+    return String(text || '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
+  function renderInline(text) {
+    let s = escapeHtml(text);
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    return s;
+  }
+
+  function renderMarkdown(mdText) {
+    const text = String(mdText || '').replace(/\r\n/g, '\n');
+    const lines = text.split('\n');
+    const out = [];
+    let inCode = false;
+    let inUl = false;
+    let inOl = false;
+    const closeLists = () => {
+      if (inUl) { out.push('</ul>'); inUl = false; }
+      if (inOl) { out.push('</ol>'); inOl = false; }
+    };
+    for (const raw of lines) {
+      const line = raw || '';
+      if (line.trim().startsWith('```')) {
+        closeLists();
+        if (!inCode) { inCode = true; out.push('<pre><code>'); }
+        else { inCode = false; out.push('</code></pre>'); }
+        continue;
+      }
+      if (inCode) {
+        out.push(escapeHtml(line) + '\n');
+        continue;
+      }
+      if (!line.trim()) {
+        closeLists();
+        out.push('<div class="md-gap"></div>');
+        continue;
+      }
+      const h = line.match(/^(#{1,6})\s+(.*)$/);
+      if (h) {
+        closeLists();
+        const lv = h[1].length;
+        out.push(`<h${lv}>${renderInline(h[2])}</h${lv}>`);
+        continue;
+      }
+      const ul = line.match(/^\s*[-*+]\s+(.*)$/);
+      if (ul) {
+        if (!inUl) {
+          if (inOl) { out.push('</ol>'); inOl = false; }
+          out.push('<ul>');
+          inUl = true;
+        }
+        out.push(`<li>${renderInline(ul[1])}</li>`);
+        continue;
+      }
+      const ol = line.match(/^\s*\d+\.\s+(.*)$/);
+      if (ol) {
+        if (!inOl) {
+          if (inUl) { out.push('</ul>'); inUl = false; }
+          out.push('<ol>');
+          inOl = true;
+        }
+        out.push(`<li>${renderInline(ol[1])}</li>`);
+        continue;
+      }
+      const quote = line.match(/^\s*>\s?(.*)$/);
+      if (quote) {
+        closeLists();
+        out.push(`<blockquote>${renderInline(quote[1])}</blockquote>`);
+        continue;
+      }
+      closeLists();
+      out.push(`<p>${renderInline(line)}</p>`);
+    }
+    closeLists();
+    if (inCode) out.push('</code></pre>');
+    return out.join('');
+  }
+
+  function getSelectedAiDeviceIds() {
+    return Array.from(selectedAiDeviceIds);
+  }
+
+  function getVisibleAiRows() {
+    return Array.from(document.querySelectorAll('.ai-device-row')).filter((row) => !row.classList.contains('is-hidden-by-filter'));
+  }
+
+  function applyAiDeviceFilter() {
+    const keyword = String(currentDeviceFilter || '').trim().toLowerCase();
+    const rows = Array.from(document.querySelectorAll('.ai-device-row'));
+    rows.forEach((row) => {
+      const cells = row.querySelectorAll('td');
+      const deviceName = (cells[3]?.textContent || '').trim().toLowerCase();
+      const matched = !keyword || deviceName.includes(keyword);
+      row.classList.toggle('is-hidden-by-filter', !matched);
+    });
+    const visibleRows = getVisibleAiRows();
+    if (visibleRows.length && (!currentPreviewDeviceId || !visibleRows.some((row) => row.dataset.deviceId === currentPreviewDeviceId))) {
+      currentPreviewDeviceId = visibleRows[0].dataset.deviceId || '';
+    }
+    document.querySelectorAll('.ai-device-row').forEach((row) => {
+      row.classList.toggle('is-current', row.dataset.deviceId === currentPreviewDeviceId && !row.classList.contains('is-hidden-by-filter'));
+    });
+  }
+
+  function syncAiDeviceSelectionUi() {
+    const allBox = id('ai-select-all');
+    document.querySelectorAll('.ai-device-select').forEach((node) => {
+      const deviceId = node.dataset.deviceId || '';
+      node.checked = selectedAiDeviceIds.has(deviceId);
+      node.addEventListener('change', () => {
+        if (node.checked) selectedAiDeviceIds.add(deviceId);
+        else selectedAiDeviceIds.delete(deviceId);
+        if (allBox) {
+          const allItems = Array.from(document.querySelectorAll('.ai-device-select'));
+          allBox.checked = allItems.length > 0 && allItems.every((item) => item.checked);
+          allBox.indeterminate = allItems.some((item) => item.checked) && !allBox.checked;
+        }
+      });
+    });
+    if (allBox) {
+      const allItems = Array.from(document.querySelectorAll('.ai-device-select'));
+      allBox.checked = allItems.length > 0 && allItems.every((item) => item.checked);
+      allBox.indeterminate = allItems.some((item) => item.checked) && !allBox.checked;
+      allBox.addEventListener('change', () => {
+        if (allBox.checked) {
+          allItems.forEach((item) => {
+            item.checked = true;
+            selectedAiDeviceIds.add(item.dataset.deviceId || '');
+          });
+        } else {
+          allItems.forEach((item) => {
+            item.checked = false;
+            selectedAiDeviceIds.delete(item.dataset.deviceId || '');
+          });
+        }
+        allBox.indeterminate = false;
+      });
+    }
+    document.querySelectorAll('.ai-device-row').forEach((row) => {
+      row.addEventListener('click', (event) => {
+        if (event.target && event.target.closest('.ai-device-select')) return;
+        if (row.classList.contains('is-hidden-by-filter')) return;
+        currentPreviewDeviceId = row.dataset.deviceId || '';
+        document.querySelectorAll('.ai-device-row').forEach((r) => r.classList.toggle('is-current', r === row));
+      });
+    });
+    applyAiDeviceFilter();
+  }
+
+  function updateAnalysisProgress(visible, percent, text) {
+    const box = id('analysis-progress-box');
+    const txt = id('analysis-progress-text');
+    const fill = id('analysis-progress-fill');
+    if (box) box.style.display = visible ? '' : 'none';
+    if (txt) txt.textContent = text || `${UI_LANG === 'en' ? 'Progress' : '进度'}: ${percent || 0}%`;
+    if (fill) fill.style.width = `${Math.max(0, Math.min(100, Number(percent || 0)))}%`;
+  }
+
+  function refreshAiStatusModelLine(suffix) {
+    const cfg = getConfigFromUI();
+    const provider = cfg.provider || '-';
+    const modelMap = {
+      chatgpt: cfg.chatgpt_model,
+      codex_local: cfg.codex_model,
+      deepseek: cfg.deepseek_model,
+      qwen: cfg.qwen_model,
+      gemini: cfg.gemini_model,
+      nvidia: cfg.nvidia_model,
+      local: cfg.local_model,
+    };
+    const text = `${UI_LANG === 'en' ? 'Current model' : '当前模型'}: ${provider} | ${modelMap[provider] || '-'}${suffix ? ` | ${suffix}` : ''}`;
+    const statusEl = id('ai-status');
+    if (statusEl) statusEl.textContent = text;
+  }
+
+  function setAnalysisRunState(running) {
+    const startBtn = id('ai-start-btn');
+    const stopBtn = id('ai-stop-btn');
+    if (startBtn) startBtn.disabled = !!running;
+    if (stopBtn) stopBtn.disabled = !running;
+  }
+
+  async function startTaskAnalysis() {
+    const btn = id('ai-start-btn');
+    const outEl = id('ai-output');
+    setAnalysisRunState(true);
+    if (outEl) outEl.innerHTML = '';
+    const selectedDeviceIds = getSelectedAiDeviceIds();
+    if (!selectedDeviceIds.length) {
+      alert(UI_LANG === 'en' ? 'Select at least one device for AI analysis' : '请至少勾选一台设备用于 AI 分析');
+      setAnalysisRunState(false);
+      return;
+    }
+    refreshAiStatusModelLine(UI_LANG === 'en' ? 'starting...' : '启动中...');
+    updateAnalysisProgress(true, 0, `${UI_LANG === 'en' ? 'Progress' : '进度'}: 0%`);
+    const payload = {
+      ...getConfigFromUI(),
+      selected_device_ids: selectedDeviceIds,
+      batched_analysis: !!id('batched_analysis')?.checked,
+      fragmented_analysis: !!id('fragmented_analysis')?.checked,
+      text_compression_strategy: id('text_compression_strategy')?.value || 'off',
+      sql_log_inclusion_mode: id('sql_log_inclusion_mode')?.value || 'final_only',
+      analysis_parallelism: parseInt(id('analysis_parallelism')?.value || '2', 10),
+      chunk_parallelism: parseInt(id('chunk_parallelism')?.value || '1', 10),
+      max_tokens_per_chunk: parseInt(id('max_tokens_per_chunk')?.value || '4500', 10),
+      max_chunks_per_device: parseInt(id('max_chunks_per_device')?.value || '12', 10),
+      chunk_strategy: id('chunk_strategy')?.value || 'hybrid',
+      analysis_retries: parseInt(id('analysis_retries')?.value || '1', 10),
+      llm_call_timeout_sec: parseInt(id('llm_call_timeout_sec')?.value || '240', 10),
+    };
+    const res = await fetch(`/api/tasks/${AI_TASK_ID}/analysis/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      refreshAiStatusModelLine(UI_LANG === 'en' ? 'start failed' : '启动失败');
+      setAnalysisRunState(false);
+      return;
+    }
+    currentAnalysisId = data.analysis_id;
+    refreshAiStatusModelLine(`${UI_LANG === 'en' ? 'running' : '运行中'} (${currentAnalysisId})`);
+    setTimeout(pollAnalysis, 1000);
+  }
+
+  async function pollAnalysis() {
+    if (!currentAnalysisId) return;
+    const res = await fetch(`/api/analysis/${currentAnalysisId}`);
+    if (!res.ok) {
+      refreshAiStatusModelLine(UI_LANG === 'en' ? 'query failed' : '查询失败');
+      setAnalysisRunState(false);
+      return;
+    }
+    const data = await res.json();
+    const p = Number(data.progress_percent || 0);
+    const progressLine = data.progress_text
+      ? `${UI_LANG === 'en' ? 'Progress' : '进度'}: ${p}% | ${data.progress_text}`
+      : `${UI_LANG === 'en' ? 'Progress' : '进度'}: ${p}%`;
+    refreshAiStatusModelLine(`${data.status || '-'} | provider=${data.provider_used || '-'} | model=${data.model_used || '-'}`);
+    updateAnalysisProgress(true, p, progressLine);
+    if (data.status === 'success' || data.status === 'failed') {
+      latestAnalysisText = data.result || '';
+      id('ai-output').innerHTML = renderMarkdown(data.result || data.error || '');
+      setAnalysisRunState(false);
+      loadAnalysisHistory();
+      return;
+    }
+    setTimeout(pollAnalysis, 2000);
+  }
+
+  async function stopTaskAnalysis() {
+    const stopBtn = id('ai-stop-btn');
+    if (stopBtn) stopBtn.disabled = true;
+    try {
+      const res = await fetch(`/api/tasks/${AI_TASK_ID}/analysis/stop`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        refreshAiStatusModelLine(UI_LANG === 'en' ? 'stop failed' : '停止失败');
+        setAnalysisRunState(!!currentAnalysisId);
+        return;
+      }
+      refreshAiStatusModelLine(UI_LANG === 'en' ? 'stopped' : '已停止');
+      updateAnalysisProgress(true, Number((data.status || {}).progress_percent || 1), (data.status || {}).progress_text || (UI_LANG === 'en' ? 'Stopped' : '已停止'));
+      currentAnalysisId = String(data.analysis_id || currentAnalysisId || '');
+      setAnalysisRunState(false);
+      loadAnalysisHistory();
+    } catch (e) {
+      refreshAiStatusModelLine(`${UI_LANG === 'en' ? 'stop failed' : '停止失败'}: ${e}`);
+      setAnalysisRunState(!!currentAnalysisId);
+    }
+  }
+
+  async function runPrecheck() {
+    const box = id('analysis-precheck-box');
+    if (box) box.textContent = UI_LANG === 'en' ? 'Estimate: calculating...' : '分析预估：计算中...';
+    const selectedDeviceIds = getSelectedAiDeviceIds();
+    if (!selectedDeviceIds.length) {
+      if (box) box.textContent = UI_LANG === 'en' ? 'Select at least one device for AI analysis' : '请至少勾选一台设备用于 AI 分析';
+      return;
+    }
+    const payload = {
+      ...getConfigFromUI(),
+      selected_device_ids: selectedDeviceIds,
+      batched_analysis: !!id('batched_analysis')?.checked,
+      fragmented_analysis: !!id('fragmented_analysis')?.checked,
+      text_compression_strategy: id('text_compression_strategy')?.value || 'off',
+      sql_log_inclusion_mode: id('sql_log_inclusion_mode')?.value || 'final_only',
+      analysis_parallelism: parseInt(id('analysis_parallelism')?.value || '2', 10),
+      chunk_parallelism: parseInt(id('chunk_parallelism')?.value || '1', 10),
+      max_tokens_per_chunk: parseInt(id('max_tokens_per_chunk')?.value || '4500', 10),
+      max_chunks_per_device: parseInt(id('max_chunks_per_device')?.value || '12', 10),
+      chunk_strategy: id('chunk_strategy')?.value || 'hybrid',
+      analysis_retries: parseInt(id('analysis_retries')?.value || '1', 10),
+      llm_call_timeout_sec: parseInt(id('llm_call_timeout_sec')?.value || '240', 10),
+    };
+    const res = await fetch(`/api/tasks/${AI_TASK_ID}/analysis/precheck`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      if (box) box.textContent = `${UI_LANG === 'en' ? 'Estimate failed' : '分析预估失败'}: ${data.error || data.detail || '-'}`;
+      return;
+    }
+    if (box) box.textContent = data.line || '';
+  }
+
+  function renderPreviewUnit() {
+    const data = analysisPreviewData || {};
+    const units = Array.isArray(data.units) ? data.units : [];
+    const unit = units[analysisPreviewIndex] || null;
+    if (!unit) return;
+    const sqlParts = Array.isArray(unit.attached_sql_sections) && unit.attached_sql_sections.length ? unit.attached_sql_sections.join(',') : 'none';
+    id('analysis-preview-meta').textContent = [
+      `${data.provider || '-'} | ${data.model_used || '-'}`,
+      `strategy=${data.compression_strategy || 'off'}`,
+      `sql=${data.sql_log_inclusion_mode || 'final_only'}`,
+      `sql_sections=${sqlParts}`,
+      `scope=${unit.scope || '-'}`,
+      `unit=${analysisPreviewIndex + 1}/${units.length}`,
+      `tokens≈${unit.estimated_tokens || 0}`,
+    ].join(' | ');
+    id('analysis-preview-system').value = data.system_prompt_text || '';
+    id('analysis-preview-task').value = unit.task_prompt_text || '';
+    id('analysis-preview-content').value = unit.report_text || '';
+  }
+
+  function openPreviewModal() {
+    const modal = id('analysis-preview-modal');
+    if (modal) {
+      modal.style.display = 'flex';
+      document.body.style.overflow = 'hidden';
+    }
+  }
+
+  function closePreviewModal() {
+    const modal = id('analysis-preview-modal');
+    if (modal) modal.style.display = 'none';
+    document.body.style.overflow = '';
+  }
+
+  async function runAnalysisPreview() {
+    const selectedDeviceIds = getSelectedAiDeviceIds();
+    if (!selectedDeviceIds.length) {
+      alert(UI_LANG === 'en' ? 'Select at least one device for AI analysis' : '请至少勾选一台设备用于 AI 分析');
+      return;
+    }
+    const payload = {
+      ...getConfigFromUI(),
+      selected_device_ids: selectedDeviceIds,
+      preview_device_id: currentPreviewDeviceId || selectedDeviceIds[0],
+      batched_analysis: !!id('batched_analysis')?.checked,
+      fragmented_analysis: !!id('fragmented_analysis')?.checked,
+      text_compression_strategy: (id('analysis-preview-strategy')?.value && id('analysis-preview-strategy').value !== 'use_current')
+        ? id('analysis-preview-strategy').value
+        : (id('text_compression_strategy')?.value || 'off'),
+      sql_log_inclusion_mode: id('sql_log_inclusion_mode')?.value || 'final_only',
+      analysis_parallelism: parseInt(id('analysis_parallelism')?.value || '2', 10),
+      chunk_parallelism: parseInt(id('chunk_parallelism')?.value || '1', 10),
+      max_tokens_per_chunk: parseInt(id('max_tokens_per_chunk')?.value || '4500', 10),
+      max_chunks_per_device: parseInt(id('max_chunks_per_device')?.value || '12', 10),
+      chunk_strategy: id('chunk_strategy')?.value || 'hybrid',
+      analysis_retries: parseInt(id('analysis_retries')?.value || '1', 10),
+      llm_call_timeout_sec: parseInt(id('llm_call_timeout_sec')?.value || '240', 10),
+    };
+    id('analysis-preview-meta').textContent = UI_LANG === 'en' ? 'Loading preview...' : '预览加载中...';
+    openPreviewModal();
+    const res = await fetch(`/api/tasks/${AI_TASK_ID}/analysis/preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      id('analysis-preview-meta').textContent = `${UI_LANG === 'en' ? 'Preview failed' : '预览失败'}: ${data.error || data.detail || '-'}`;
+      return;
+    }
+    analysisPreviewData = data;
+    analysisPreviewIndex = 0;
+    renderPreviewUnit();
+  }
+
+  function saveAnalysis() {
+    const text = latestAnalysisText || (id('ai-output')?.innerText || '');
+    if (!text.trim()) {
+      alert(UI_LANG === 'en' ? 'No analysis result to save' : '暂无可保存的分析结果');
+      return;
+    }
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `analysis_${AI_TASK_ID}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  }
+
+  function renderHistoryList(items) {
+    const box = id('analysis-history-list');
+    if (!box) return;
+    if (!items || !items.length) {
+      box.textContent = UI_LANG === 'en' ? 'No history yet.' : '暂无历史记录。';
+      return;
+    }
+    box.innerHTML = items.map((x) => {
+      const md = x.markdown_file ? `<a href="/api/tasks/${AI_TASK_ID}/analysis/history/${encodeURIComponent(x.markdown_file)}" target="_blank">.md</a>` : '';
+      const js = x.json_file ? `<a href="/api/tasks/${AI_TASK_ID}/analysis/history/${encodeURIComponent(x.json_file)}" target="_blank">.json</a>` : '';
+      return `<div class="history-row"><code>${x.analysis_id || '-'}</code> | ${x.created_at || '-'} | ${x.status || '-'} | ${x.provider_used || '-'} | ${x.model_used || '-'} ${md} ${js}</div>`;
+    }).join('');
+  }
+
+  async function loadAnalysisHistory() {
+    const box = id('analysis-history-list');
+    if (box) box.textContent = UI_LANG === 'en' ? 'Loading history...' : '加载历史中...';
+    const res = await fetch(`/api/tasks/${AI_TASK_ID}/analysis/history?limit=12`);
+    const data = await res.json();
+    renderHistoryList((data && data.items) ? data.items : []);
+  }
+
+  async function restoreAnalysisState() {
+    const activeRes = await fetch(`/api/tasks/${AI_TASK_ID}/analysis/active`);
+    if (activeRes.ok) {
+      const activeData = await activeRes.json();
+      if (activeData && activeData.active && activeData.analysis_id) {
+        currentAnalysisId = String(activeData.analysis_id);
+        id('ai-start-btn').disabled = true;
+        setTimeout(pollAnalysis, 600);
+        return;
+      }
+    }
+    const latestRes = await fetch(`/api/tasks/${AI_TASK_ID}/analysis/latest`);
+    if (!latestRes.ok) return;
+    const latestData = await latestRes.json();
+    if (!latestData || !latestData.found || !latestData.status) return;
+    const data = latestData.status;
+    latestAnalysisText = data.result || '';
+    if (data.result || data.error) {
+      id('ai-output').innerHTML = renderMarkdown(data.result || data.error || '');
+    }
+    const p = Number(data.progress_percent || 0);
+    if (data.progress_text || p > 0) {
+      const progressLine = data.progress_text ? `${UI_LANG === 'en' ? 'Progress' : '进度'}: ${p}% | ${data.progress_text}` : `${UI_LANG === 'en' ? 'Progress' : '进度'}: ${p}%`;
+      updateAnalysisProgress(true, p, progressLine);
+    }
+    refreshAiStatusModelLine(`${data.status || '-'} | provider=${data.provider_used || '-'} | model=${data.model_used || '-'}`);
+    setAnalysisRunState(String(data.status || '') === 'running');
+  }
+
+  on('analysis-precheck-btn', 'click', runPrecheck);
+  on('analysis-preview-btn', 'click', runAnalysisPreview);
+  on('ai-start-btn', 'click', startTaskAnalysis);
+  on('ai-stop-btn', 'click', stopTaskAnalysis);
+  on('save-analysis-btn', 'click', saveAnalysis);
+  on('analysis-preview-refresh', 'click', runAnalysisPreview);
+  on('analysis-preview-close', 'click', closePreviewModal);
+  on('analysis-preview-modal', 'click', (e) => {
+    const modal = id('analysis-preview-modal');
+    if (modal && e.target === modal) closePreviewModal();
+  });
+  on('analysis-preview-prev', 'click', () => {
+    const units = (analysisPreviewData && analysisPreviewData.units) || [];
+    if (!units.length) return;
+    analysisPreviewIndex = (analysisPreviewIndex - 1 + units.length) % units.length;
+    renderPreviewUnit();
+  });
+  on('analysis-preview-next', 'click', () => {
+    const units = (analysisPreviewData && analysisPreviewData.units) || [];
+    if (!units.length) return;
+    analysisPreviewIndex = (analysisPreviewIndex + 1) % units.length;
+    renderPreviewUnit();
+  });
+  ['provider_select','chatgpt_model_select','codex_model_select','deepseek_model_select','qwen_model_select','gemini_model_select','nvidia_model_select','local_model_select'].forEach((name) => {
+    on(name, 'change', () => refreshAiStatusModelLine(UI_LANG === 'en' ? 'not started' : '未启动'));
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closePreviewModal();
+  });
+  on('ai-device-filter', 'keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    currentDeviceFilter = id('ai-device-filter')?.value || '';
+    applyAiDeviceFilter();
+  });
+  syncAiDeviceSelectionUi();
+  loadAnalysisHistory();
+  restoreAnalysisState();
+  setAnalysisRunState(false);
+  refreshAiStatusModelLine(UI_LANG === 'en' ? 'not started' : '未启动');
+  {% endif %}
 
   updateProviderSection();
   updateProviderIcon();

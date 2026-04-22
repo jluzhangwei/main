@@ -19,6 +19,18 @@ router = APIRouter(tags=["pages"])
 templates = Jinja2Templates(directory=(Path(__file__).resolve().parent.parent / "templates").as_posix())
 
 
+def _device_view_dict(device) -> dict:
+    data = device.model_dump() if hasattr(device, "model_dump") else dict(device or {})
+    target_dir = None
+    for candidate in (data.get("filtered_log_path"), data.get("raw_log_path"), data.get("meta_path"), data.get("debug_log_path")):
+        if candidate:
+            target_dir = Path(candidate).parent
+            break
+    data["semantic_compact_exists"] = bool(target_dir and (target_dir / "semantic_compact.md").exists())
+    data["semantic_index_exists"] = bool(target_dir and (target_dir / "semantic_index.json").exists())
+    return data
+
+
 def _no_cache(resp: HTMLResponse):
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
@@ -184,7 +196,8 @@ async def task_detail(task_id: str, request: Request):
         {
             "request": request,
             "task": task,
-            "task_devices_json": [d.model_dump() for d in task.devices],
+            "task_devices_view": [_device_view_dict(d) for d in task.devices],
+            "task_devices_json": [_device_view_dict(d) for d in task.devices],
             "error": None,
             "system_prompts": system_prompts,
             "task_prompts": task_prompts,

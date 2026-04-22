@@ -1,0 +1,25 @@
+{
+  "id": "iosxr_routing",
+  "name": "IOS-XR routing",
+  "description": "Cisco IOS-XR routing/BGP preset tuned for RP/RSP CPU logs, NSR, MAXPFX and routing recursion events.",
+  "format_version": 1,
+  "extends": "default",
+  "colors": {
+    "red": [
+      "\\b(?:NBR_NSR_DISABLED|DISABLED|ADJCHANGE_DETAIL|SERVER_ROUTING_DEPTH|hold time expired|Retransmission threshold exceeded)\\b"
+    ],
+    "green": [
+      "\\b(?:Established|Up|recovered|restored|clear)\\b"
+    ],
+    "yellow": [
+      "\\b(?:MAXPFX|NSR disabled|standby RP|warning condition|Recursion loop)\\b"
+    ],
+    "magenta": [
+      "\\bRP\\/\\d+\\/RSP\\d+\\/CPU\\d+:",
+      "%[A-Z][A-Z0-9_-]+(?:-[A-Z0-9_]+){2,}"
+    ],
+    "cyan": [
+      "\\b(?:VRF|Vrf|AS|AFI\\/SAFI|neighbor|prefix|Tbl|Safi):?\\s*[^;,)]+"
+    ]
+  }
+}

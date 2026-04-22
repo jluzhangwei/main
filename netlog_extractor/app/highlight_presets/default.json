@@ -1,0 +1,36 @@
+{
+  "id": "default",
+  "name": "Default network",
+  "description": "General network/syslog highlighting preset. Keeps color groups close to MobaXterm-style reading.",
+  "format_version": 1,
+  "colors": {
+    "underline": [
+      "\\bhttps?:\\/\\/[^\\s'\"`<>]+"
+    ],
+    "red": [
+      "\\b(?:failed|failure|critical|fatal|disconnect(?:ed)?|down|timeout|timed out|denied|reset|lost|unreachable|inactive|shutdown|hold time expired|nsr disabled|link is down)\\b"
+    ],
+    "green": [
+      "\\b(?:success|succeeded|established|synchronized|clear(?:ed)?|resume(?:d)?|recovered|reachable|enabled|learning|login|logout|up)\\b"
+    ],
+    "yellow": [
+      "\\b(?:warning|changed?|change|unsynchronized|suppressed?|deleted|dropped|aged|threshold|exceed(?:ed|s)?|notice|stratum)\\b"
+    ],
+    "blue": [
+      "\\b\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})?\\b",
+      "\\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\\s+\\d{1,2}\\s+\\d{4}\\s+\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:[+-]\\d{2}:\\d{2})?\\b",
+      "\\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\\s+\\d{1,2}\\s+\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:\\s+[A-Z]{2,5})?\\b",
+      "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b",
+      "<\\d{3}>",
+      "\\[(?:RECV|SEND|sql|stdout|stderr|DEBUG|INFO|WARN|ERROR)\\]"
+    ],
+    "magenta": [
+      "%%\\d{2}[A-Za-z0-9_\\/-]+(?:\\([a-z]\\))?",
+      "%[A-Z][A-Z0-9_-]+(?:-[A-Z0-9_]+){2,}"
+    ],
+    "cyan": [
+      "\\b(?:Eth-Trunk\\d+|Port-channel\\d+|Po\\d+|Ethernet[\\d\\/.]+|GE[\\d\\/.]+|XGE[\\d\\/.]+|25GE[\\d\\/.]+|40GE[\\d\\/.]+|100GE[\\d\\/.]+|GigabitEthernet[\\d\\/.]+|Ten-GigabitEthernet[\\d\\/.]+|XGigabitEthernet[\\d\\/.]+|FortyGigE[\\d\\/.]+|HundredGigE[\\d\\/.]+|Loopback\\d+|LoopBack\\d+|Vlanif\\d+|Vlan\\d+)\\b",
+      "\\b(?:CID|alarmID|IfName|ifName|LocalIfName|Peer|BgpPeerRemoteAddr|RemoteDeviceManageAddress|RemoteInterfaceName|AdminStatus|OperStatus|PrevState|CurrState|InputEvent|VpnInstance|Reason|Interface|Action|UserName|Result|SessionId|Operation|ServiceType)=[^,;()]+"
+    ]
+  }
+}

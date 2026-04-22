@@ -14,7 +14,7 @@
     |
     <a href="/api/tasks/{{ task.task_id }}/download.zip?lang={{ lang }}">download.zip</a>
   </p>
-  <p><a href="/ai/settings?lang={{ lang }}">{{ 'AI Settings' if is_en else 'AI 设置' }}</a></p>
+  <p><a href="/ai/settings?lang={{ lang }}&task_id={{ task.task_id }}">{{ 'AI Log Analysis' if is_en else 'AI 日志分析' }}</a></p>
 </div>
 
 <div class="card">
@@ -25,7 +25,7 @@
       </tr>
     </thead>
     <tbody>
-    {% for d in task.devices %}
+    {% for d in task_devices_view %}
       <tr>
         <td>{{ d.device_id }}</td>
         <td>{{ d.device_ip }}</td>
@@ -39,6 +39,14 @@
         <td>
           {% if d.filtered_log_path %}
           <a href="/api/tasks/{{ task.task_id }}/devices/{{ d.device_id }}/log?lang={{ lang }}">filtered.log</a>
+          {% endif %}
+          {% if d.semantic_compact_exists %}
+          {% if d.filtered_log_path %}|{% endif %} <a href="/api/tasks/{{ task.task_id }}/devices/{{ d.device_id }}/semantic/compact?lang={{ lang }}">semantic_compact.md</a>
+          {% endif %}
+          {% if d.semantic_index_exists %}
+          | <a href="/api/tasks/{{ task.task_id }}/devices/{{ d.device_id }}/semantic/index?lang={{ lang }}">semantic_index.json</a>
+          {% endif %}
+          {% if d.filtered_log_path %}
           {% if d.log_source == 'sql_log_server' %}
           | <a href="/api/tasks/{{ task.task_id }}/devices/{{ d.device_id }}/device-filtered?lang={{ lang }}">filtered_device.log</a>
           | <a href="/api/tasks/{{ task.task_id }}/devices/{{ d.device_id }}/sql/raw?lang={{ lang }}">raw_sql.log</a>
@@ -72,7 +80,7 @@
         <div id="log-search-status" class="device-log-search-status muted"></div>
       </div>
       <div id="log-device-list" class="device-log-list">
-        {% for d in task.devices %}
+        {% for d in task_devices_view %}
         <button type="button" class="device-log-item{% if loop.first %} active{% endif %}" data-device-id="{{ d.device_id }}">
           <div class="device-log-item-main">{{ d.device_name or d.device_ip }}</div>
           <div class="device-log-item-sub">{{ d.device_id }} | {{ d.device_ip }}</div>
@@ -101,6 +109,31 @@
           <a id="debug-download-link" href="#" target="_blank">{{ 'Download debug.log' if is_en else '下载 debug.log' }}</a>
         </div>
       </div>
+      <div class="device-log-preset-bar">
+        <div class="device-log-preset-controls">
+          <label for="log-highlight-preset">{{ 'Highlight preset' if is_en else '高亮预设' }}</label>
+          <select id="log-highlight-preset">
+            <option value="auto">{{ 'Auto by vendor' if is_en else '按厂商自动匹配' }}</option>
+          </select>
+          <button id="log-highlight-import-btn" type="button">{{ 'Import preset' if is_en else '导入预设' }}</button>
+          <select id="log-highlight-export-format" class="tiny-select">
+            <option value="json">JSON</option>
+            <option value="ini">INI</option>
+          </select>
+          <button id="log-highlight-export-btn" type="button">{{ 'Export preset' if is_en else '导出预设' }}</button>
+          <input id="log-highlight-import-file" type="file" accept=".json,.ini,.cfg" hidden />
+        </div>
+        <div id="log-highlight-preset-meta" class="muted"></div>
+      </div>
+      <div class="device-log-syntax-legend muted">
+        <span class="legend-chip underline">{{ 'link' if is_en else '链接' }}</span>
+        <span class="legend-chip red">{{ 'fault' if is_en else '故障' }}</span>
+        <span class="legend-chip green">{{ 'recover' if is_en else '恢复' }}</span>
+        <span class="legend-chip yellow">{{ 'warning' if is_en else '告警' }}</span>
+        <span class="legend-chip blue">{{ 'time / IP' if is_en else '时间 / IP' }}</span>
+        <span class="legend-chip magenta">{{ 'event' if is_en else '事件' }}</span>
+        <span class="legend-chip cyan">{{ 'interface / key field' if is_en else '接口 / 关键字段' }}</span>
+      </div>
       <pre id="debug-console" class="device-log-console">{{ 'Waiting for filtered.log...' if is_en else '等待 filtered.log ...' }}</pre>
     </div>
   </div>
@@ -109,85 +142,12 @@
 
 <div class="card">
   <h3 style="margin:0 0 8px;">{{ 'AI Log Analysis' if is_en else 'AI 日志分析' }}</h3>
-  <div class="ai-section">
-    <div class="ai-section-title">{{ 'Prompt Templates' if is_en else '提示词模板' }}</div>
-    <div class="ai-grid">
-      <div>
-        <label>{{ 'System Prompt Template' if is_en else '系统提示词模板' }}</label>
-        <select id="selected_system_prompt">
-          {% for k,v in system_prompts.items() %}
-          <option value="{{ k }}" {% if selected_system_prompt == k %}selected{% endif %}>{{ system_prompt_labels.get(k, k) }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div>
-        <label>{{ 'Task Prompt Template' if is_en else '任务提示词模板' }}</label>
-        <select id="selected_task_prompt">
-          {% for k,v in task_prompts.items() %}
-          <option value="{{ k }}" {% if selected_task_prompt == k %}selected{% endif %}>{{ task_prompt_labels.get(k, k) }}</option>
-          {% endfor %}
-        </select>
-      </div>
-    </div>
-  </div>
-
-  <div class="ai-section">
-    <div class="ai-section-title">{{ 'Analysis Execution Options' if is_en else '分析执行选项' }}</div>
-    <div class="exec-options">
-      <div class="exec-card">
-        <label class="check-item"><input type="checkbox" id="batched_analysis">{{ 'Batched mode (submit each device JSON separately to AI)' if is_en else '分批模式（每台设备单独提交 JSON 给 AI）' }}</label>
-        <div class="muted">{{ 'Best for current-task JSON and historical JSON reports; unstructured files still run once.' if is_en else '适用于本次巡检 JSON 和历史 JSON 报告；非结构化历史文件仍为单次分析。' }}</div>
-        <label class="check-item"><input type="checkbox" id="fragmented_analysis">{{ 'Chunk mode (device chunks + summary)' if is_en else '分片模式（设备分片分析 + 汇总）' }}</label>
-        <div class="muted">{{ 'Each device is analyzed by chunks first, then summarized; suitable for very large logs.' if is_en else '单设备先按日志分片提交，再生成设备汇总，适合超大报告。' }}</div>
-      </div>
-      <div class="exec-card">
-        <div class="exec-field"><label>{{ 'AI parallelism (device-level)' if is_en else 'AI 并发数（设备级）' }}</label><input id="analysis_parallelism" type="number" min="1" max="8" value="2"></div>
-        <div class="exec-field"><label>{{ 'Chunk parallelism' if is_en else '分片并行数' }}</label><input id="chunk_parallelism" type="number" min="1" max="8" value="1"></div>
-        <div class="exec-field"><label>{{ 'Token budget per chunk' if is_en else '每分片 Token 预算' }}</label><input id="max_tokens_per_chunk" type="number" min="800" max="12000" value="4500"></div>
-        <div class="exec-field"><label>{{ 'Max chunks per device' if is_en else '每设备最大分片' }}</label><input id="max_chunks_per_device" type="number" min="1" max="60" value="12"></div>
-        <div class="exec-field"><label>{{ 'Retries per device' if is_en else '每设备失败重试' }}</label><input id="analysis_retries" type="number" min="0" max="3" value="1"></div>
-        <div class="exec-field"><label>{{ 'LLM timeout (seconds)' if is_en else 'AI 调用超时秒数' }}</label><input id="llm_call_timeout_sec" type="number" min="60" max="600" value="240"></div>
-        <div class="exec-field">
-          <label>{{ 'Chunk strategy' if is_en else '分片策略' }}</label>
-          <select id="chunk_strategy" class="narrow-select">
-            <option value="hybrid" selected>hybrid</option>
-            <option value="time">time</option>
-            <option value="event">event</option>
-          </select>
-        </div>
-        <div class="muted">{{ 'hybrid: time + event (recommended) | time: split by time windows | event: split by event classes' if is_en else 'hybrid：综合时间与事件（推荐） | time：按时间窗口切分 | event：按事件类型聚合切分' }}</div>
-        <div class="muted">{{ 'Recommended parallelism: 1-4. Too high may hit API rate limits.' if is_en else '建议并发 1-4，过高可能触发 API 限流。' }}</div>
-      </div>
-    </div>
-    <div style="margin-top:8px;">
-      <button id="analysis-precheck-btn" type="button">{{ 'Estimate' if is_en else '分析预估' }}</button>
-    </div>
-    <div id="analysis-precheck-box" class="muted">{{ 'Estimate: not calculated' if is_en else '分析预估：未计算' }}</div>
-  </div>
-
-  <div class="ai-section">
-    <div class="ai-section-title">{{ 'Log File Analysis' if is_en else '日志文件分析' }}</div>
-    <label>{{ 'Import Log File' if is_en else '导入日志文件' }}</label>
-    <input id="history-report-file" type="file" />
-    <div class="muted">{{ 'Upload historical JSON/CSV/TXT/LOG as reference. Not merged automatically in current version.' if is_en else '可上传历史 JSON/CSV/TXT/LOG 作为参考，当前版本暂不参与自动拼接。' }}</div>
-  </div>
-
-  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
-    <button id="ai-start-btn" class="primary-btn" type="button" onclick="startAnalysis()">{{ 'AI Analyze' if is_en else 'AI 分析' }}</button>
-    <button id="save-analysis-btn" type="button" onclick="saveAnalysis()">{{ 'Save Report' if is_en else '保存分析报告' }}</button>
-  </div>
-  <p id="ai-status" class="muted">{{ 'Current model: - | not started' if is_en else '当前模型: - | 未启动' }}</p>
-  <div id="analysis-progress-box" class="analysis-progress" style="display:none;">
-    <div id="analysis-progress-text" class="muted">{{ 'Progress: 0%' if is_en else '进度: 0%' }}</div>
-    <div class="analysis-progress-bar">
-      <div id="analysis-progress-fill" class="analysis-progress-fill"></div>
-    </div>
-  </div>
-  <div id="ai-output" class="markdown-body">{{ 'Analysis result will be shown here.' if is_en else '分析结果会显示在这里。' }}</div>
-  <div class="ai-section" style="margin-top:10px;">
-    <div class="ai-section-title">{{ 'Analysis History' if is_en else '分析历史' }}</div>
-    <div id="analysis-history-list" class="muted">{{ 'No history yet.' if is_en else '暂无历史记录。' }}</div>
-  </div>
+  <p class="muted" style="font-size:13px;margin:0 0 10px;">
+    {{ 'Task-level AI analysis has been moved to the AI Log Analysis page.' if is_en else '任务级 AI 分析已迁移到 AI 日志分析页面。' }}
+  </p>
+  <a href="/ai/settings?lang={{ lang }}&task_id={{ task.task_id }}" style="display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:0 14px;border:1px solid #cbd5e1;border-radius:8px;background:#0b6e4f;color:#fff;font-weight:700;text-decoration:none;">
+    {{ 'Open AI Log Analysis' if is_en else '打开 AI 日志分析' }}
+  </a>
 </div>
 
 <script>
@@ -217,17 +177,35 @@
     noHistory: UI_LANG === 'en' ? 'No history yet.' : '暂无历史记录。',
     loadingHistory: UI_LANG === 'en' ? 'Loading history...' : '加载历史中...',
     latestLoaded: UI_LANG === 'en' ? 'loaded latest analysis' : '已加载最近一次分析',
+    noSelectedDevices: UI_LANG === 'en' ? 'Select at least one device for AI analysis' : '请至少勾选一台设备用于 AI 分析',
+    previewLoading: UI_LANG === 'en' ? 'Loading preview...' : '预览加载中...',
+    previewFailed: UI_LANG === 'en' ? 'Preview failed' : '预览失败',
+    previewNoUnits: UI_LANG === 'en' ? 'No preview units' : '没有可预览的单元',
+    presetLoadFailed: UI_LANG === 'en' ? 'Failed to load highlight presets' : '加载高亮预设失败',
+    presetImportFailed: UI_LANG === 'en' ? 'Failed to import preset' : '导入预设失败',
+    presetImportOk: UI_LANG === 'en' ? 'Preset imported' : '预设已导入',
+    presetExportFailed: UI_LANG === 'en' ? 'Failed to export preset' : '导出预设失败',
   };
-  let latestTask = null;
+  let latestTask = { devices: ({{ task_devices_json | tojson }} || []) };
   let currentAnalysisId = null;
   let latestAnalysisText = '';
   let selectedLogDeviceId = {% if task.devices %}"{{ task.devices[0].device_id }}"{% else %}''{% endif %};
+  let analysisPreviewData = null;
+  let analysisPreviewIndex = 0;
   let logSearchKeyword = '';
   let logSearchTimer = null;
   let logSearchRequestSeq = 0;
   const logSearchCounts = {};
   const logSearchActiveIndex = {};
   const logTextCache = {};
+  const LOG_COLOR_ORDER = ['underline', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan'];
+  const HIGHLIGHT_PRESET_STORAGE_KEY = 'netlog_highlight_preset_v1';
+  let highlightPresetItems = [];
+  const highlightPresetMap = {};
+  let selectedHighlightPresetId = 'auto';
+  const initialAiDeviceIds = ({% if task_devices_view %}{{ task_devices_view | map(attribute='device_id') | list | tojson }}{% else %}[]{% endif %}) || [];
+  const selectedAiDeviceIds = new Set(initialAiDeviceIds);
+  const knownAiDeviceIds = new Set(initialAiDeviceIds);
   function el(id) { return document.getElementById(id); }
   function val(id, fallback) {
     const node = el(id);
@@ -237,6 +215,29 @@
   function checked(id) {
     const node = el(id);
     return !!(node && node.checked);
+  }
+
+  function getSelectedAiDeviceIds() {
+    const rows = (latestTask && Array.isArray(latestTask.devices)) ? latestTask.devices : ({{ task_devices_json | tojson }} || []);
+    const known = rows.map((d) => d.device_id);
+    known.forEach((id) => {
+      if (!knownAiDeviceIds.has(id)) {
+        knownAiDeviceIds.add(id);
+        selectedAiDeviceIds.add(id);
+      }
+    });
+    return known.filter((id) => selectedAiDeviceIds.has(id));
+  }
+
+  function syncAiDeviceSelectionUi() {
+    document.querySelectorAll('.ai-device-select').forEach((node) => {
+      const deviceId = node.dataset.deviceId || '';
+      node.checked = selectedAiDeviceIds.has(deviceId);
+      node.addEventListener('change', () => {
+        if (node.checked) selectedAiDeviceIds.add(deviceId);
+        else selectedAiDeviceIds.delete(deviceId);
+      });
+    });
   }
 
   function updateAnalysisProgress(visible, percent, text) {
@@ -323,10 +324,103 @@
     return logTextCache[dev.device_id];
   }
 
-  function buildHighlightedLogHtml(text, keyword, activeIndex) {
+  function getCurrentLogDevice() {
+    const devices = (latestTask && latestTask.devices) ? latestTask.devices : ({{ task_devices_json | tojson }} || []);
+    return getSelectedDevice(devices);
+  }
+
+  function getAutoHighlightPresetId(device) {
+    const raw = String((device && [device.vendor, device.os_family, device.log_source].filter(Boolean).join(' ')) || '').toLowerCase();
+    if (raw.includes('huawei')) return 'huawei_alarm';
+    if (raw.includes('nxos')) return 'nxos_syslog';
+    if (raw.includes('iosxr') || raw.includes('xr')) return 'iosxr_routing';
+    return 'default';
+  }
+
+  function getEffectiveHighlightPresetId(device) {
+    const chosen = String(selectedHighlightPresetId || 'auto');
+    return chosen === 'auto' ? getAutoHighlightPresetId(device) : chosen;
+  }
+
+  function renderHighlightPresetOptions() {
+    const select = el('log-highlight-preset');
+    if (!select) return;
+    const current = selectedHighlightPresetId || 'auto';
+    const items = [`<option value="auto">${UI_LANG === 'en' ? 'Auto by vendor' : '按厂商自动匹配'}</option>`];
+    highlightPresetItems.forEach((item) => {
+      const sourceLabel = item.source === 'custom'
+        ? (UI_LANG === 'en' ? 'custom' : '自定义')
+        : (UI_LANG === 'en' ? 'builtin' : '内置');
+      items.push(`<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}${item.source === 'custom' ? ` (${sourceLabel})` : ''}</option>`);
+    });
+    select.innerHTML = items.join('');
+    select.value = current;
+  }
+
+  function updateHighlightPresetMeta(device) {
+    const meta = el('log-highlight-preset-meta');
+    if (!meta) return;
+    const effectiveId = getEffectiveHighlightPresetId(device);
+    const item = highlightPresetMap[effectiveId] || null;
+    if (!item) {
+      meta.textContent = '';
+      return;
+    }
+    const modeLabel = String(selectedHighlightPresetId || 'auto') === 'auto'
+      ? (UI_LANG === 'en' ? `Auto => ${item.name}` : `自动 => ${item.name}`)
+      : item.name;
+    const desc = item.description || '';
+    meta.textContent = desc ? `${modeLabel} | ${desc}` : modeLabel;
+  }
+
+  async function ensureHighlightPresetDetail(presetId) {
+    const normalized = String(presetId || '').trim();
+    if (!normalized || normalized === 'auto') return null;
+    const existing = highlightPresetMap[normalized];
+    if (existing && existing.colors) return existing;
+    const res = await fetch(`/api/log-highlight/presets/${encodeURIComponent(normalized)}`);
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    if (!data || !data.ok || !data.preset) throw new Error('preset load failed');
+    highlightPresetMap[normalized] = data.preset;
+    return highlightPresetMap[normalized];
+  }
+
+  async function loadHighlightPresets() {
+    const saved = window.localStorage.getItem(HIGHLIGHT_PRESET_STORAGE_KEY);
+    if (saved) selectedHighlightPresetId = saved;
+    const res = await fetch('/api/log-highlight/presets');
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    highlightPresetItems = Array.isArray(data.items) ? data.items : [];
+    highlightPresetItems.forEach((item) => {
+      highlightPresetMap[item.id] = { ...(highlightPresetMap[item.id] || {}), ...item };
+    });
+    if (selectedHighlightPresetId !== 'auto' && !highlightPresetMap[selectedHighlightPresetId]) {
+      selectedHighlightPresetId = 'auto';
+    }
+    renderHighlightPresetOptions();
+    const currentDevice = getCurrentLogDevice();
+    await ensureHighlightPresetDetail(getEffectiveHighlightPresetId(currentDevice));
+    updateHighlightPresetMeta(currentDevice);
+  }
+
+  function getSyntaxRulesForDevice(device) {
+    const presetId = getEffectiveHighlightPresetId(device);
+    const preset = highlightPresetMap[presetId];
+    if (!preset || !preset.colors) return [];
+    const merged = [];
+    for (const color of LOG_COLOR_ORDER) {
+      const rules = Array.isArray(preset.colors[color]) ? preset.colors[color] : [];
+      rules.forEach((pattern) => merged.push({ cls: `log-color-${color}`, pattern }));
+    }
+    return merged;
+  }
+
+  function buildHighlightedLogHtml(text, keyword, activeIndex, device) {
     const source = String(text || '');
     const needle = String(keyword || '').trim();
-    if (!needle) return { html: escapeHtml(source), count: 0 };
+    if (!needle) return { html: applySyntaxHighlighting(source, device), count: 0 };
 
     const lowerSource = source.toLowerCase();
     const lowerNeedle = needle.toLowerCase();
@@ -338,29 +432,73 @@
       hits.push({ start: idx, end: idx + needle.length });
       pos = idx + needle.length;
     }
-    if (!hits.length) return { html: escapeHtml(source), count: 0 };
+    if (!hits.length) return { html: applySyntaxHighlighting(source, device), count: 0 };
 
     const active = Math.max(0, Math.min(Number(activeIndex || 0), hits.length - 1));
     let cursor = 0;
     const chunks = [];
     hits.forEach((hit, index) => {
-      chunks.push(escapeHtml(source.slice(cursor, hit.start)));
+      chunks.push(applySyntaxHighlighting(source.slice(cursor, hit.start), device));
       const cls = index === active ? 'log-hit log-hit-active' : 'log-hit';
-      chunks.push(`<span class="${cls}" data-hit-index="${index}">${escapeHtml(source.slice(hit.start, hit.end))}</span>`);
+      chunks.push(`<span class="${cls}" data-hit-index="${index}">${applySyntaxHighlighting(source.slice(hit.start, hit.end), device)}</span>`);
       cursor = hit.end;
     });
-    chunks.push(escapeHtml(source.slice(cursor)));
+    chunks.push(applySyntaxHighlighting(source.slice(cursor), device));
     return { html: chunks.join(''), count: hits.length };
   }
 
-  function renderConsoleText(consoleEl, text, keyword, activeIndex) {
-    if (!consoleEl) return 0;
-    const needle = String(keyword || '').trim();
-    if (!needle) {
-      consoleEl.textContent = text || T.debugEmpty;
-      return 0;
+  function rangesOverlap(startA, endA, startB, endB) {
+    return startA < endB && startB < endA;
+  }
+
+  function collectSyntaxRanges(line, device) {
+    const ranges = [];
+    for (const rule of getSyntaxRulesForDevice(device)) {
+      const regex = new RegExp(rule.pattern, 'gi');
+      let match;
+      while ((match = regex.exec(line)) !== null) {
+        const raw = match[0] || '';
+        if (!raw) {
+          regex.lastIndex += 1;
+          continue;
+        }
+        const start = match.index;
+        const end = start + raw.length;
+        const overlapped = ranges.some((item) => rangesOverlap(start, end, item.start, item.end));
+        if (!overlapped) {
+          ranges.push({ start, end, cls: rule.cls });
+        }
+      }
     }
-    const result = buildHighlightedLogHtml(text || '', needle, activeIndex);
+    ranges.sort((a, b) => a.start - b.start || a.end - b.end);
+    return ranges;
+  }
+
+  function highlightSyntaxLine(line, device) {
+    const source = String(line || '');
+    const ranges = collectSyntaxRanges(source, device);
+    if (!ranges.length) return escapeHtml(source);
+    let cursor = 0;
+    const chunks = [];
+    for (const item of ranges) {
+      chunks.push(escapeHtml(source.slice(cursor, item.start)));
+      chunks.push(`<span class="${item.cls}">${escapeHtml(source.slice(item.start, item.end))}</span>`);
+      cursor = item.end;
+    }
+    chunks.push(escapeHtml(source.slice(cursor)));
+    return chunks.join('');
+  }
+
+  function applySyntaxHighlighting(text, device) {
+    return String(text || '')
+      .split('\n')
+      .map((line) => highlightSyntaxLine(line, device))
+      .join('\n');
+  }
+
+  function renderConsoleText(consoleEl, text, keyword, activeIndex, device) {
+    if (!consoleEl) return 0;
+    const result = buildHighlightedLogHtml(text || T.debugEmpty, keyword || '', activeIndex, device);
     consoleEl.innerHTML = result.html || escapeHtml(text || '');
     const activeNode = consoleEl.querySelector('.log-hit-active');
     if (activeNode) {
@@ -430,12 +568,14 @@
     tbody.innerHTML = '';
     for (const d of task.devices) {
       const tr = document.createElement('tr');
-      const sqlLinks = d.log_source === 'sql_log_server'
+      const sqlLinks = d.filtered_log_path && d.log_source === 'sql_log_server'
         ? ` | <a href="/api/tasks/${task.task_id}/devices/${d.device_id}/device-filtered?lang=${LANG_Q}">filtered_device.log</a> | <a href="/api/tasks/${task.task_id}/devices/${d.device_id}/sql/raw?lang=${LANG_Q}">raw_sql.log</a> | <a href="/api/tasks/${task.task_id}/devices/${d.device_id}/sql/filtered?lang=${LANG_Q}">filtered_sql.log</a>`
         : '';
-      const dl = d.filtered_log_path
-        ? `<a href="/api/tasks/${task.task_id}/devices/${d.device_id}/log?lang=${LANG_Q}">filtered.log</a>${sqlLinks}`
-        : '';
+      const semanticLinks = d.semantic_compact_exists
+        ? `${d.filtered_log_path ? ' | ' : ''}<a href="/api/tasks/${task.task_id}/devices/${d.device_id}/semantic/compact?lang=${LANG_Q}">semantic_compact.md</a>${d.semantic_index_exists ? ` | <a href="/api/tasks/${task.task_id}/devices/${d.device_id}/semantic/index?lang=${LANG_Q}">semantic_index.json</a>` : ''}`
+        : (d.semantic_index_exists ? `${d.filtered_log_path ? ' | ' : ''}<a href="/api/tasks/${task.task_id}/devices/${d.device_id}/semantic/index?lang=${LANG_Q}">semantic_index.json</a>` : '');
+      const baseFiltered = d.filtered_log_path ? `<a href="/api/tasks/${task.task_id}/devices/${d.device_id}/log?lang=${LANG_Q}">filtered.log</a>` : '';
+      const dl = `${baseFiltered}${semanticLinks}${sqlLinks}`;
       const dbg = d.debug_log_path ? `<a href="/api/tasks/${task.task_id}/devices/${d.device_id}/debug?lang=${LANG_Q}">debug.log</a>` : '';
       tr.innerHTML = `
         <td>${d.device_id}</td>
@@ -451,7 +591,6 @@
         <td>${dbg}</td>`;
       tbody.appendChild(tr);
     }
-
     {% if task.params.get("debug_mode") %}
     renderLogDeviceList(task.devices);
     pollDebug();
@@ -470,7 +609,7 @@
     const filteredLinkEl = document.getElementById('filtered-download-link');
     const linkEl = document.getElementById('debug-download-link');
     if (!consoleEl || !linkEl || !filteredLinkEl) return;
-    const devices = (latestTask && latestTask.devices) ? latestTask.devices : [];
+    const devices = (latestTask && latestTask.devices) ? latestTask.devices : ({{ task_devices_json | tojson }} || []);
     const dev = getSelectedDevice(devices);
     if (!dev) {
       selectedLogDeviceId = '';
@@ -482,6 +621,8 @@
       return;
     }
     selectedLogDeviceId = dev.device_id;
+    await ensureHighlightPresetDetail(getEffectiveHighlightPresetId(dev));
+    updateHighlightPresetMeta(dev);
     if (titleEl) titleEl.textContent = dev.device_name || dev.device_ip || dev.device_id;
     if (metaEl) metaEl.textContent = [dev.device_id, dev.device_ip, dev.status || '-'].filter(Boolean).join(' | ');
     const filteredUrl = `/api/tasks/{{ task.task_id }}/devices/${dev.device_id}/log?lang=${LANG_Q}`;
@@ -503,6 +644,7 @@
           text || T.debugEmpty,
           logSearchKeyword,
           logSearchActiveIndex[dev.device_id] || 0,
+          dev,
         );
         if (logSearchKeyword.trim() && hitCount > 0 && Number(logSearchCounts[dev.device_id] || 0) !== hitCount) {
           logSearchCounts[dev.device_id] = hitCount;
@@ -523,6 +665,66 @@
       scheduleLogSearch();
     });
   }
+  const presetSelect = el('log-highlight-preset');
+  if (presetSelect) {
+    presetSelect.addEventListener('change', async () => {
+      selectedHighlightPresetId = presetSelect.value || 'auto';
+      window.localStorage.setItem(HIGHLIGHT_PRESET_STORAGE_KEY, selectedHighlightPresetId);
+      try {
+        const currentDevice = getCurrentLogDevice();
+        await ensureHighlightPresetDetail(getEffectiveHighlightPresetId(currentDevice));
+        updateHighlightPresetMeta(currentDevice);
+        await pollDebug();
+      } catch (e) {
+        alert(`${T.presetLoadFailed}: ${e}`);
+      }
+    });
+  }
+  const presetImportBtn = el('log-highlight-import-btn');
+  const presetImportFile = el('log-highlight-import-file');
+  if (presetImportBtn && presetImportFile) {
+    presetImportBtn.addEventListener('click', () => presetImportFile.click());
+    presetImportFile.addEventListener('change', async () => {
+      const file = presetImportFile.files && presetImportFile.files[0];
+      if (!file) return;
+      const form = new FormData();
+      form.append('file', file);
+      try {
+        const res = await fetch('/api/log-highlight/presets/import', { method: 'POST', body: form });
+        const data = await res.json();
+        if (!res.ok || !data.ok || !data.preset) {
+          throw new Error(data.detail || data.error || T.presetImportFailed);
+        }
+        highlightPresetMap[data.preset.id] = { ...(highlightPresetMap[data.preset.id] || {}), ...data.preset };
+        await loadHighlightPresets();
+        selectedHighlightPresetId = data.preset.id;
+        window.localStorage.setItem(HIGHLIGHT_PRESET_STORAGE_KEY, selectedHighlightPresetId);
+        renderHighlightPresetOptions();
+        await ensureHighlightPresetDetail(selectedHighlightPresetId);
+        updateHighlightPresetMeta(getCurrentLogDevice());
+        await pollDebug();
+      } catch (e) {
+        alert(`${T.presetImportFailed}: ${e}`);
+      } finally {
+        presetImportFile.value = '';
+      }
+    });
+  }
+  const presetExportBtn = el('log-highlight-export-btn');
+  const presetExportFormat = el('log-highlight-export-format');
+  if (presetExportBtn && presetExportFormat) {
+    presetExportBtn.addEventListener('click', async () => {
+      try {
+        const currentDevice = getCurrentLogDevice();
+        const effectivePresetId = getEffectiveHighlightPresetId(currentDevice);
+        await ensureHighlightPresetDetail(effectivePresetId);
+        const fmt = presetExportFormat.value || 'json';
+        window.open(`/api/log-highlight/presets/${encodeURIComponent(effectivePresetId)}/export?format=${encodeURIComponent(fmt)}`, '_blank');
+      } catch (e) {
+        alert(`${T.presetExportFailed}: ${e}`);
+      }
+    });
+  }
   {% endif %}
 
   async function startAnalysis() {
@@ -534,11 +736,20 @@
     statusEl.textContent = T.starting;
     outEl.innerHTML = '';
     updateAnalysisProgress(true, 0, `${T.progress}: 0% (${T.preparing})`);
+    const selectedDeviceIds = getSelectedAiDeviceIds();
+    if (!selectedDeviceIds.length) {
+      btn.disabled = false;
+      statusEl.textContent = T.noSelectedDevices;
+      return;
+    }
     const payload = {
+      selected_device_ids: selectedDeviceIds,
       selected_system_prompt: val('selected_system_prompt', ''),
       selected_task_prompt: val('selected_task_prompt', ''),
       batched_analysis: checked('batched_analysis'),
       fragmented_analysis: checked('fragmented_analysis'),
+      text_compression_strategy: val('text_compression_strategy', 'off'),
+      sql_log_inclusion_mode: val('sql_log_inclusion_mode', 'final_only'),
       analysis_parallelism: parseInt(val('analysis_parallelism', '2'), 10),
       chunk_parallelism: parseInt(val('chunk_parallelism', '1'), 10),
       max_tokens_per_chunk: parseInt(val('max_tokens_per_chunk', '4500'), 10),
@@ -689,11 +900,19 @@
   async function runPrecheck() {
     const box = document.getElementById('analysis-precheck-box');
     if (box) box.textContent = T.estimateLoading;
+    const selectedDeviceIds = getSelectedAiDeviceIds();
+    if (!selectedDeviceIds.length) {
+      if (box) box.textContent = T.noSelectedDevices;
+      return;
+    }
     const payload = {
+      selected_device_ids: selectedDeviceIds,
       selected_system_prompt: val('selected_system_prompt', ''),
       selected_task_prompt: val('selected_task_prompt', ''),
       batched_analysis: checked('batched_analysis'),
       fragmented_analysis: checked('fragmented_analysis'),
+      text_compression_strategy: val('text_compression_strategy', 'off'),
+      sql_log_inclusion_mode: val('sql_log_inclusion_mode', 'final_only'),
       analysis_parallelism: parseInt(val('analysis_parallelism', '2'), 10),
       chunk_parallelism: parseInt(val('chunk_parallelism', '1'), 10),
       max_tokens_per_chunk: parseInt(val('max_tokens_per_chunk', '4500'), 10),
@@ -715,6 +934,106 @@
       if (box) box.textContent = data.line || T.estimateNotCalculated;
     } catch (e) {
       if (box) box.textContent = `${T.estimateFailurePrefix} (${e})`;
+    }
+  }
+
+  function renderPreviewUnit() {
+    const data = analysisPreviewData || {};
+    const units = Array.isArray(data.units) ? data.units : [];
+    const unit = units[analysisPreviewIndex] || null;
+    const metaEl = el('analysis-preview-meta');
+    const sysEl = el('analysis-preview-system');
+    const taskEl = el('analysis-preview-task');
+    const contentEl = el('analysis-preview-content');
+    if (!unit) {
+      if (metaEl) metaEl.textContent = T.previewNoUnits;
+      if (sysEl) sysEl.value = data.system_prompt_text || '';
+      if (taskEl) taskEl.value = '';
+      if (contentEl) contentEl.value = '';
+      return;
+    }
+    if (metaEl) {
+      const sqlParts = Array.isArray(unit.attached_sql_sections) && unit.attached_sql_sections.length
+        ? unit.attached_sql_sections.join(',')
+        : 'none';
+      metaEl.textContent = [
+        `${data.provider || '-'} | ${data.model_used || '-'}`,
+        `strategy=${data.compression_strategy || 'off'}`,
+        `sql=${data.sql_log_inclusion_mode || 'final_only'}`,
+        `sql_sections=${sqlParts}`,
+        `scope=${unit.scope || '-'}`,
+        `unit=${analysisPreviewIndex + 1}/${units.length}`,
+        `tokens≈${unit.estimated_tokens || 0}`,
+      ].join(' | ');
+    }
+    if (sysEl) sysEl.value = data.system_prompt_text || '';
+    if (taskEl) taskEl.value = unit.task_prompt_text || '';
+    if (contentEl) contentEl.value = unit.report_text || '';
+  }
+
+  function openPreviewModal() {
+    const modal = el('analysis-preview-modal');
+    if (modal) {
+      modal.style.display = 'flex';
+      document.body.style.overflow = 'hidden';
+    }
+  }
+
+  function closePreviewModal() {
+    const modal = el('analysis-preview-modal');
+    if (modal) modal.style.display = 'none';
+    document.body.style.overflow = '';
+  }
+
+  async function runAnalysisPreview() {
+    const btn = el('analysis-preview-btn');
+    const selectedDeviceIds = getSelectedAiDeviceIds();
+    if (!selectedDeviceIds.length) {
+      alert(T.noSelectedDevices);
+      return;
+    }
+    if (btn) btn.disabled = true;
+    const payload = {
+      selected_device_ids: selectedDeviceIds,
+      preview_device_id: selectedLogDeviceId || selectedDeviceIds[0],
+      selected_system_prompt: val('selected_system_prompt', ''),
+      selected_task_prompt: val('selected_task_prompt', ''),
+      batched_analysis: checked('batched_analysis'),
+      fragmented_analysis: checked('fragmented_analysis'),
+      text_compression_strategy: val('text_compression_strategy', 'off'),
+      sql_log_inclusion_mode: val('sql_log_inclusion_mode', 'final_only'),
+      analysis_parallelism: parseInt(val('analysis_parallelism', '2'), 10),
+      chunk_parallelism: parseInt(val('chunk_parallelism', '1'), 10),
+      max_tokens_per_chunk: parseInt(val('max_tokens_per_chunk', '4500'), 10),
+      max_chunks_per_device: parseInt(val('max_chunks_per_device', '12'), 10),
+      chunk_strategy: val('chunk_strategy', 'hybrid'),
+      analysis_retries: parseInt(val('analysis_retries', '1'), 10),
+      llm_call_timeout_sec: parseInt(val('llm_call_timeout_sec', '240'), 10),
+    };
+    try {
+      const metaEl = el('analysis-preview-meta');
+      if (metaEl) metaEl.textContent = T.previewLoading;
+      openPreviewModal();
+      const res = await fetch('/api/tasks/{{ task.task_id }}/analysis/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.detail || data.error || T.previewFailed);
+      }
+      analysisPreviewData = data;
+      analysisPreviewIndex = 0;
+      renderPreviewUnit();
+    } catch (e) {
+      const metaEl = el('analysis-preview-meta');
+      if (metaEl) metaEl.textContent = `${T.previewFailed}: ${e}`;
+      if (el('analysis-preview-system')) el('analysis-preview-system').value = '';
+      if (el('analysis-preview-task')) el('analysis-preview-task').value = '';
+      if (el('analysis-preview-content')) el('analysis-preview-content').value = '';
+    } finally {
+      if (btn) btn.disabled = false;
     }
   }
 
@@ -843,6 +1162,12 @@
       const cfg = data.cfg || {};
       if (document.getElementById('batched_analysis')) document.getElementById('batched_analysis').checked = !!cfg.batched_analysis;
       if (document.getElementById('fragmented_analysis')) document.getElementById('fragmented_analysis').checked = !!cfg.fragmented_analysis;
+      if (document.getElementById('text_compression_strategy')) {
+        document.getElementById('text_compression_strategy').value = cfg.text_compression_strategy || (cfg.text_compression_enabled ? 'group_repeats' : 'off');
+      }
+      if (document.getElementById('sql_log_inclusion_mode')) {
+        document.getElementById('sql_log_inclusion_mode').value = cfg.sql_log_inclusion_mode || 'final_only';
+      }
       if (document.getElementById('analysis_parallelism')) document.getElementById('analysis_parallelism').value = cfg.analysis_parallelism == null ? 2 : cfg.analysis_parallelism;
       if (document.getElementById('chunk_parallelism')) document.getElementById('chunk_parallelism').value = cfg.chunk_parallelism == null ? 1 : cfg.chunk_parallelism;
       if (document.getElementById('max_tokens_per_chunk')) document.getElementById('max_tokens_per_chunk').value = cfg.max_tokens_per_chunk == null ? 4500 : cfg.max_tokens_per_chunk;
@@ -866,12 +1191,12 @@
     }
   }
 
-  if (document.getElementById('analysis-precheck-btn')) {
-    document.getElementById('analysis-precheck-btn').addEventListener('click', runPrecheck);
-  }
-  loadAiDefaults();
-  restoreAnalysisState();
-  loadAnalysisHistory();
+  loadHighlightPresets().catch((e) => {
+    const meta = el('log-highlight-preset-meta');
+    if (meta) meta.textContent = `${T.presetLoadFailed}: ${e}`;
+  }).finally(() => {
+    if (typeof pollDebug === 'function') pollDebug();
+  });
   setTimeout(poll, 1000);
 </script>
 <style>
@@ -882,6 +1207,7 @@
   .exec-card { border:1px solid #d7dee7; border-radius:8px; background:#fff; padding:10px; }
   .check-item { display:flex; align-items:center; gap:8px; margin:6px 0 3px; font-weight:600; }
   .check-item input { width:auto; }
+  .ai-device-select { width:auto; }
   .exec-field { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
   .exec-field > label { margin:0; font-weight:700; }
   .exec-field > input { width:68px; max-width:68px; }
@@ -928,13 +1254,51 @@
   .device-log-toolbar { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; margin-bottom:8px; }
   .device-log-main-title { font-weight:700; color:#1e293b; }
   .device-log-links { display:flex; gap:10px; flex-wrap:wrap; }
+  .device-log-preset-bar { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; margin:0 0 8px; flex-wrap:wrap; }
+  .device-log-preset-controls { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .device-log-preset-controls label { margin:0; font-size:12px; font-weight:700; }
+  .device-log-preset-controls select,
+  .device-log-preset-controls button { min-width:auto; width:auto; }
+  .device-log-preset-controls #log-highlight-preset { min-width:220px; }
+  .device-log-preset-controls .tiny-select { min-width:74px; }
+  .device-log-syntax-legend { display:flex; gap:8px; flex-wrap:wrap; margin:0 0 8px; font-size:12px; }
+  .legend-chip { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:999px; border:1px solid rgba(255,255,255,.08); background:#111827; color:#e5e7eb; }
+  .legend-chip.underline { color:#cbd5e1; text-decoration:underline; text-decoration-color:#cbd5e1; }
+  .legend-chip.red { color:#fca5a5; }
+  .legend-chip.green { color:#86efac; }
+  .legend-chip.yellow { color:#fde68a; }
+  .legend-chip.blue { color:#93c5fd; }
+  .legend-chip.magenta { color:#f0abfc; }
+  .legend-chip.cyan { color:#67e8f9; }
   .device-log-console { background:#0f172a; color:#e2e8f0; padding:10px; border-radius:8px; max-height:520px; overflow:auto; margin:0; white-space:pre-wrap; word-break:break-word; }
   .device-log-console .log-hit { background:#facc15; color:#111827; border-radius:3px; padding:0 1px; }
   .device-log-console .log-hit-active { background:#f97316; color:#fff; box-shadow:0 0 0 1px rgba(255,255,255,.2); }
+  .device-log-console .log-hit span,
+  .device-log-console .log-hit-active span { color:inherit !important; }
+  .device-log-console .log-color-underline { color:#e2e8f0; text-decoration:underline; text-decoration-color:#93c5fd; }
+  .device-log-console .log-color-red { color:#fca5a5; font-weight:700; }
+  .device-log-console .log-color-green { color:#86efac; font-weight:700; }
+  .device-log-console .log-color-yellow { color:#fde68a; }
+  .device-log-console .log-color-blue { color:#93c5fd; }
+  .device-log-console .log-color-magenta { color:#f0abfc; font-weight:700; }
+  .device-log-console .log-color-cyan { color:#67e8f9; }
+  .modal-mask { position:fixed; inset:0; background:rgba(15,23,42,.45); display:none; align-items:center; justify-content:center; z-index:9999; padding:16px; overflow:auto; }
+  .modal-box { width:min(1100px,100%); max-width:100%; max-height:calc(100vh - 32px); overflow:auto; background:#fff; border:1px solid #cbd5e1; border-radius:12px; padding:12px; box-shadow:0 20px 35px rgba(15,23,42,.25); }
+  .modal-head { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; }
+  .modal-title { font-weight:700; }
+  .modal-close { border:1px solid #cbd5e1; border-radius:8px; background:#fff; padding:4px 8px; cursor:pointer; font-weight:700; }
+  .preview-modal-box { resize:both; min-width:760px; min-height:520px; display:flex; flex-direction:column; gap:8px; }
+  .preview-modal-box textarea { width:100%; min-height:180px; height:100%; border:1px solid #cbd5e1; border-radius:8px; padding:10px; box-sizing:border-box; font-family:Menlo,Consolas,monospace; resize:none; }
+  .preview-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; align-items:stretch; }
+  .preview-grid > div { display:flex; flex-direction:column; min-height:200px; }
+  #analysis-preview-content { min-height:320px; }
+  .preview-toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
   @media (max-width: 920px) {
     .ai-grid { grid-template-columns:1fr; }
     .exec-options { grid-template-columns:1fr; }
     .device-log-viewer { grid-template-columns:1fr; }
+    .preview-grid { grid-template-columns:1fr; }
+    .preview-modal-box { min-width:0; min-height:0; resize:none; }
   }
 </style>
 {% endif %}

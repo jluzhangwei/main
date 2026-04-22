@@ -52,6 +52,8 @@ def _default_config() -> dict[str, Any]:
         "max_chunks_per_device": 12,
         "chunk_strategy": "hybrid",
         "chunk_parallelism": 1,
+        "text_compression_strategy": "off",
+        "sql_log_inclusion_mode": "final_only",
         "llm_call_timeout_sec": 240,
         "analysis_retries": 1,
     }
@@ -66,10 +68,22 @@ def load_gpt_config() -> dict[str, Any]:
             return _default_config()
         cfg = _default_config()
         cfg.update(data)
+        if "text_compression_strategy" not in data:
+            legacy_enabled = data.get("text_compression_enabled", 0)
+            cfg["text_compression_strategy"] = "group_repeats" if str(legacy_enabled).strip().lower() in {"1", "true", "yes", "on", "checked"} else "off"
         provider = str(cfg.get("provider", "chatgpt") or "chatgpt").strip().lower()
         if provider not in {"chatgpt", "codex_local", "local", "deepseek", "qwen", "gemini", "nvidia"}:
             provider = "chatgpt"
         cfg["provider"] = provider
+        if str(cfg.get("text_compression_strategy", "off") or "off").strip().lower() not in {"off", "group_repeats", "factor_time"}:
+            cfg["text_compression_strategy"] = "off"
+        if str(cfg.get("sql_log_inclusion_mode", "final_only") or "final_only").strip().lower() not in {
+            "final_only",
+            "with_sql_filtered",
+            "with_sql_filtered_force",
+            "with_sql_raw_and_filtered",
+        }:
+            cfg["sql_log_inclusion_mode"] = "final_only"
         return cfg
     except Exception:
         return _default_config()

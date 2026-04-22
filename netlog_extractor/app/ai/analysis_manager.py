@@ -12,6 +12,7 @@ from typing import Any
 
 from .llm_client import model_used, run_analysis
 from .prompt_store import merged_system_prompt_catalog, merged_task_prompt_catalog
+from .semantic_compression import build_semantic_package, normalize_strategy
 from .state_store import add_token_usage, load_gpt_config
 
 
@@ -20,6 +21,7 @@ class AIAnalysisManager:
         self.output_root = Path(output_root)
         self._tasks: dict[str, dict[str, Any]] = {}
         self._task_latest: dict[str, str] = {}
+        self._async_tasks: dict[str, asyncio.Task[Any]] = {}
 
     def _now(self) -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -29,10 +31,34 @@ class AIAnalysisManager:
         task["progress_text"] = str(text or "")
         task["updated_at"] = self._now()
 
+    def _check_cancelled(self, task: dict[str, Any], stage: str = "已停止") -> None:
+        if bool(task.get("_cancel_requested")):
+            raise asyncio.CancelledError(str(stage or "已停止"))
+
     def _task_analysis_dir(self, task_id: str) -> Path:
         p = self.output_root / task_id / "ai_reports"
         p.mkdir(parents=True, exist_ok=True)
         return p
+
+    def _normalize_device_ids(self, task_id: str, device_ids: list[str] | None = None) -> list[str]:
+        task_dir = self.output_root / task_id
+        if not task_dir.exists():
+            return []
+        existing = [p.name for p in sorted([x for x in task_dir.iterdir() if x.is_dir()])]
+        if not device_ids:
+            return existing
+        wanted = {str(x or "").strip() for x in device_ids if str(x or "").strip()}
+        return [name for name in existing if name in wanted]
+
+    def _read_device_meta(self, task_id: str, device_id: str) -> dict[str, Any]:
+        meta_path = self.output_root / task_id / device_id / "meta.json"
+        if not meta_path.exists():
+            return {}
+        try:
+            data = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
 
     def _persist_analysis_snapshot(self, task: dict[str, Any]) -> None:
         task_id = str(task.get("task_id", "") or "").strip()
@@ -198,44 +224,207 @@ class AIAnalysisManager:
             "system_prompt_key": system_key,
             "task_prompt_key": task_key,
             "llm_call_timeout_sec": str(cfg.get("llm_call_timeout_sec") or ""),
+            "text_compression_strategy": str(cfg.get("text_compression_strategy") or ""),
         }
 
-    def _collect_task_report_text(self, task_id: str) -> str:
+    def _compression_strategy(self, cfg: dict[str, Any] | None = None) -> str:
+        raw = (cfg or {}).get("text_compression_strategy", "")
+        if not raw and "text_compression_enabled" in (cfg or {}):
+            raw = "group_repeats" if str((cfg or {}).get("text_compression_enabled", 0)).strip().lower() in {"1", "true", "yes", "on", "checked"} else "off"
+        return normalize_strategy(raw)
+
+    def _sql_log_inclusion_mode(self, cfg: dict[str, Any] | None = None) -> str:
+        raw = str((cfg or {}).get("sql_log_inclusion_mode", "final_only") or "final_only").strip().lower()
+        if raw not in {"final_only", "with_sql_filtered", "with_sql_filtered_force", "with_sql_raw_and_filtered"}:
+            return "final_only"
+        return raw
+
+    def _sql_sections(
+        self,
+        *,
+        log_text: str,
+        sql_filtered_path: Path,
+        sql_raw_path: Path,
+        sql_log_inclusion_mode: str,
+    ) -> tuple[list[str], list[str]]:
+        sections: list[str] = []
+        attached: list[str] = []
+        include_filtered = sql_log_inclusion_mode in {
+            "with_sql_filtered",
+            "with_sql_filtered_force",
+            "with_sql_raw_and_filtered",
+        }
+        force_filtered = sql_log_inclusion_mode in {"with_sql_filtered_force", "with_sql_raw_and_filtered"}
+        if include_filtered and sql_filtered_path.exists():
+            sql_filtered_text = sql_filtered_path.read_text(encoding="utf-8")
+            if sql_filtered_text and (force_filtered or sql_filtered_text != log_text):
+                sections.append(f"## {sql_filtered_path.name}\n" + sql_filtered_text)
+                attached.append(sql_filtered_path.name)
+        if sql_log_inclusion_mode == "with_sql_raw_and_filtered" and sql_raw_path.exists():
+            sql_raw_text = sql_raw_path.read_text(encoding="utf-8")
+            if sql_raw_text:
+                sections.append(f"## {sql_raw_path.name}\n" + sql_raw_text)
+                attached.append(sql_raw_path.name)
+        return sections, attached
+
+    def _build_device_report_text(
+        self,
+        task_id: str,
+        device_id: str,
+        compression_strategy: str = "off",
+        sql_log_inclusion_mode: str = "final_only",
+        persist_artifacts: bool = True,
+        return_details: bool = False,
+    ) -> str:
+        dev_dir = self.output_root / task_id / device_id
+        sections = [f"# Device {device_id}"]
+        attached_sql_sections: list[str] = []
+        meta_path = dev_dir / "meta.json"
+        filtered_path = dev_dir / "filtered.log"
+        raw_path = dev_dir / "raw.log"
+        source_path = filtered_path if filtered_path.exists() else raw_path
+        meta_data = self._read_device_meta(task_id, device_id)
+        sql_filtered_path = dev_dir / "filtered_sql.log"
+        sql_raw_path = dev_dir / "raw_sql.log"
+        if meta_path.exists():
+            sections.append("## meta.json\n" + meta_path.read_text(encoding="utf-8"))
+        if source_path.exists():
+            log_text = source_path.read_text(encoding="utf-8")
+            if compression_strategy != "off":
+                package = build_semantic_package(
+                    log_text,
+                    source_name=source_path.name,
+                    device_id=device_id,
+                    strategy=compression_strategy,
+                    vendor=str(meta_data.get("vendor") or ""),
+                    os_family=str(meta_data.get("os_family") or ""),
+                )
+                if package.get("used"):
+                    if persist_artifacts:
+                        (dev_dir / "semantic_index.json").write_text(
+                            json.dumps(package.get("index", {}), ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+                        (dev_dir / "semantic_compact.md").write_text(
+                            str(package.get("markdown", "") or ""),
+                            encoding="utf-8",
+                        )
+                    sections.append("## semantic_compact.md\n" + str(package.get("markdown", "") or ""))
+                    sections.append(
+                        "## compression_stats\n" + json.dumps(package.get("stats", {}), ensure_ascii=False, indent=2)
+                    )
+                    sql_sections, attached_sql_sections = self._sql_sections(
+                        log_text=log_text,
+                        sql_filtered_path=sql_filtered_path,
+                        sql_raw_path=sql_raw_path,
+                        sql_log_inclusion_mode=sql_log_inclusion_mode,
+                    )
+                    if attached_sql_sections:
+                        sections.append(
+                            "## sql_attachment_notice\n"
+                            + json.dumps({"attached_sql_sections": attached_sql_sections}, ensure_ascii=False, indent=2)
+                        )
+                    sections.extend(sql_sections)
+                    sections.append(
+                        f"## evidence_notice\nOriginal evidence remains unchanged in `{source_path.name}` on disk."
+                    )
+                    text = "\n\n".join(sections)
+                    if return_details:
+                        return {
+                            "text": text,
+                            "source_name": source_path.name,
+                            "compression_used": True,
+                            "attached_sql_sections": attached_sql_sections,
+                        }
+                    return text
+            sections.append(f"## {source_path.name}\n" + log_text)
+            sql_sections, attached_sql_sections = self._sql_sections(
+                log_text=log_text,
+                sql_filtered_path=sql_filtered_path,
+                sql_raw_path=sql_raw_path,
+                sql_log_inclusion_mode=sql_log_inclusion_mode,
+            )
+            if attached_sql_sections:
+                sections.append(
+                    "## sql_attachment_notice\n"
+                    + json.dumps({"attached_sql_sections": attached_sql_sections}, ensure_ascii=False, indent=2)
+                )
+            sections.extend(sql_sections)
+        else:
+            sections.append("## notice\nno log file found")
+        text = "\n\n".join(sections)
+        if return_details:
+            return {
+                "text": text,
+                "source_name": source_path.name if source_path.exists() else "",
+                "compression_used": False,
+                "attached_sql_sections": attached_sql_sections,
+            }
+        return text
+
+    def _collect_task_report_text(
+        self,
+        task_id: str,
+        compression_strategy: str = "off",
+        sql_log_inclusion_mode: str = "final_only",
+        persist_artifacts: bool = True,
+        device_ids: list[str] | None = None,
+    ) -> str:
         task_dir = self.output_root / task_id
         summary_path = task_dir / "summary.json"
         if not summary_path.exists():
             raise RuntimeError("summary.json not found")
-        summary = summary_path.read_text(encoding="utf-8")
+        summary_text = summary_path.read_text(encoding="utf-8")
+        selected = self._normalize_device_ids(task_id, device_ids)
+        summary = summary_text
+        if selected:
+            try:
+                summary_data = json.loads(summary_text)
+                if isinstance(summary_data, dict) and isinstance(summary_data.get("devices"), list):
+                    selected_set = set(selected)
+                    summary_data["devices"] = [
+                        item
+                        for item in summary_data.get("devices", [])
+                        if str((item or {}).get("device_id", "") or "") in selected_set
+                    ]
+                    summary_data["progress_total"] = len(summary_data["devices"])
+                    summary_data["progress_done"] = len(summary_data["devices"])
+                    summary = json.dumps(summary_data, ensure_ascii=False, indent=2)
+            except Exception:
+                summary = summary_text
 
         sections = [f"# Task Summary\n{summary}\n"]
+        selected = set(selected)
         for dev_dir in sorted([p for p in task_dir.iterdir() if p.is_dir()]):
-            filtered_path = dev_dir / "filtered.log"
-            raw_path = dev_dir / "raw.log"
-            meta_path = dev_dir / "meta.json"
-            sections.append(f"\n## Device {dev_dir.name}\n")
-            if meta_path.exists():
-                sections.append("### meta.json\n" + meta_path.read_text(encoding="utf-8") + "\n")
-            if filtered_path.exists():
-                sections.append("### filtered.log\n" + filtered_path.read_text(encoding="utf-8") + "\n")
-            elif raw_path.exists():
-                sections.append("### raw.log\n" + raw_path.read_text(encoding="utf-8") + "\n")
+            if selected and dev_dir.name not in selected:
+                continue
+            sections.append(
+                "\n"
+                + self._build_device_report_text(
+                    task_id,
+                    dev_dir.name,
+                    compression_strategy=compression_strategy,
+                    sql_log_inclusion_mode=sql_log_inclusion_mode,
+                    persist_artifacts=persist_artifacts,
+                )
+                + "\n"
+            )
         return "\n".join(sections)
 
-    def _device_text(self, task_id: str, device_id: str) -> str:
-        dev_dir = self.output_root / task_id / device_id
-        sections = [f"# Device {device_id}"]
-        meta = dev_dir / "meta.json"
-        filtered_path = dev_dir / "filtered.log"
-        raw_path = dev_dir / "raw.log"
-        if meta.exists():
-            sections.append("## meta.json\n" + meta.read_text(encoding="utf-8"))
-        if filtered_path.exists():
-            sections.append("## filtered.log\n" + filtered_path.read_text(encoding="utf-8"))
-        elif raw_path.exists():
-            sections.append("## raw.log\n" + raw_path.read_text(encoding="utf-8"))
-        else:
-            sections.append("## notice\nno log file found")
-        text = "\n\n".join(sections)
+    def _device_text(
+        self,
+        task_id: str,
+        device_id: str,
+        compression_strategy: str = "off",
+        sql_log_inclusion_mode: str = "final_only",
+    ) -> str:
+        text = self._build_device_report_text(
+            task_id,
+            device_id,
+            compression_strategy=compression_strategy,
+            sql_log_inclusion_mode=sql_log_inclusion_mode,
+            persist_artifacts=True,
+        )
         return self._shrink_text(text)
 
     def _shrink_text(self, text: str, max_chars: int = 24000) -> str:
@@ -390,6 +579,143 @@ class AIAnalysisManager:
         est = int(18 + tokens / 220)
         return max(floor, min(ceiling, est))
 
+    def _effective_fragmentation(
+        self,
+        *,
+        requested_fragmented: bool,
+        report_text: str,
+        provider: str,
+        compression_strategy: str,
+        max_tokens_per_chunk: int,
+    ) -> bool:
+        if not requested_fragmented:
+            return False
+        est_tokens = max(1, int(len(report_text) / 4))
+        soft_limit = max_tokens_per_chunk
+        if provider in {"codex_local", "local"} and compression_strategy == "factor_time":
+            soft_limit = max(soft_limit, 7000)
+        return est_tokens > soft_limit
+
+    def build_preview(
+        self,
+        task_id: str,
+        cfg: dict[str, Any],
+        *,
+        selected_device_ids: list[str] | None = None,
+        preview_device_id: str | None = None,
+    ) -> dict[str, Any]:
+        llm_base = self._build_llm_input(cfg)
+        batched = bool(int(cfg.get("batched_analysis", 0) or 0))
+        fragmented = bool(int(cfg.get("fragmented_analysis", 0) or 0))
+        compression_strategy = self._compression_strategy(cfg)
+        sql_log_inclusion_mode = self._sql_log_inclusion_mode(cfg)
+        max_tokens_per_chunk = max(800, int(cfg.get("max_tokens_per_chunk", 4500) or 4500))
+        max_chunks_per_device = max(
+            1,
+            int(cfg.get("max_chunks_per_device", cfg.get("large_report_chunk_items", 12)) or 12),
+        )
+        chunk_strategy = str(cfg.get("chunk_strategy", "hybrid") or "hybrid").strip().lower()
+        if chunk_strategy not in {"hybrid", "time", "event"}:
+            chunk_strategy = "hybrid"
+        selected_ids = self._normalize_device_ids(task_id, selected_device_ids)
+        if not selected_ids:
+            raise RuntimeError("no selected devices")
+        preview_id = str(preview_device_id or "").strip()
+        if not preview_id or preview_id not in selected_ids:
+            preview_id = selected_ids[0]
+
+        units: list[dict[str, Any]] = []
+        if not batched:
+            report_text = self._collect_task_report_text(
+                task_id,
+                compression_strategy=compression_strategy,
+                sql_log_inclusion_mode=sql_log_inclusion_mode,
+                persist_artifacts=False,
+                device_ids=selected_ids,
+            )
+            units.append(
+                {
+                    "scope": "task_combined",
+                    "title": f"Task combined payload ({len(selected_ids)} devices)",
+                    "task_prompt_text": llm_base.get("task_prompt_text", ""),
+                    "report_text": report_text,
+                    "estimated_tokens": max(1, int(len(report_text) / 4)),
+                }
+            )
+        else:
+            device_details = self._build_device_report_text(
+                task_id,
+                preview_id,
+                compression_strategy=compression_strategy,
+                sql_log_inclusion_mode=sql_log_inclusion_mode,
+                persist_artifacts=False,
+                return_details=True,
+            )
+            device_text = self._shrink_text(str(device_details.get("text", "") or ""))
+            attached_sql_sections = list(device_details.get("attached_sql_sections", []) or [])
+            effective_fragmented = self._effective_fragmentation(
+                requested_fragmented=fragmented,
+                report_text=device_text,
+                provider=llm_base.get("provider", ""),
+                compression_strategy=compression_strategy,
+                max_tokens_per_chunk=max_tokens_per_chunk,
+            )
+            if effective_fragmented:
+                chunks = self._split_chunks(
+                    device_text,
+                    max_tokens_per_chunk=max_tokens_per_chunk,
+                    max_chunks_per_device=max_chunks_per_device,
+                    chunk_strategy=chunk_strategy,
+                )
+                for idx, chunk in enumerate(chunks):
+                    units.append(
+                        {
+                            "scope": "device_chunk",
+                            "title": f"{preview_id} chunk {idx+1}/{len(chunks)}",
+                            "task_prompt_text": llm_base.get("task_prompt_text", "")
+                            + f"\n\n[分片任务] 设备 {preview_id} 分片 {idx+1}/{len(chunks)}，请给出该分片结论。",
+                            "report_text": chunk,
+                            "estimated_tokens": max(1, int(len(chunk) / 4)),
+                            "attached_sql_sections": attached_sql_sections,
+                        }
+                    )
+                if len(chunks) > 1:
+                    merged_text = "\n\n".join([f"### 分片{i+1}\n{chunk}" for i, chunk in enumerate(chunks)])
+                    units.append(
+                        {
+                            "scope": "device_summary",
+                            "title": f"{preview_id} summary merge payload",
+                            "task_prompt_text": llm_base.get("task_prompt_text", "")
+                            + f"\n\n[设备汇总] 请汇总设备 {preview_id} 各分片结论。",
+                            "report_text": merged_text,
+                            "estimated_tokens": max(1, int(len(merged_text) / 4)),
+                            "attached_sql_sections": attached_sql_sections,
+                        }
+                    )
+            else:
+                units.append(
+                    {
+                        "scope": "device_single",
+                        "title": f"{preview_id} device payload",
+                        "task_prompt_text": llm_base.get("task_prompt_text", ""),
+                        "report_text": device_text,
+                        "estimated_tokens": max(1, int(len(device_text) / 4)),
+                        "attached_sql_sections": attached_sql_sections,
+                    }
+                )
+        return {
+            "provider": llm_base.get("provider", ""),
+            "model_used": model_used(llm_base),
+            "system_prompt_text": llm_base.get("system_prompt_text", ""),
+            "selected_device_ids": selected_ids,
+            "preview_device_id": preview_id,
+            "batched_analysis": batched,
+            "fragmented_analysis": fragmented,
+            "compression_strategy": compression_strategy,
+            "sql_log_inclusion_mode": sql_log_inclusion_mode,
+            "units": units,
+        }
+
     async def _call_llm_with_retry(
         self,
         llm: dict[str, str],
@@ -452,8 +778,34 @@ class AIAnalysisManager:
             self._format_healthcheck_style_progress(self._tasks[analysis_id], "准备中"),
         )
         self._persist_analysis_snapshot(self._tasks[analysis_id])
-        asyncio.create_task(self._run(analysis_id, task_id))
+        runner = asyncio.create_task(self._run(analysis_id, task_id))
+        self._async_tasks[analysis_id] = runner
         return analysis_id
+
+    def stop_task(self, task_id: str) -> dict[str, Any] | None:
+        active = self.get_active_by_task(task_id)
+        if not active:
+            return None
+        analysis_id = str(active.get("analysis_id", "") or "")
+        if not analysis_id:
+            return None
+        task = self._tasks.get(analysis_id)
+        if not task:
+            return None
+        task["_cancel_requested"] = True
+        task["status"] = "failed"
+        task["error"] = "analysis stopped by user"
+        task["device_running"] = 0
+        self._set_progress(
+            task,
+            max(1, int(task.get("progress_percent", 0) or 1)),
+            self._format_healthcheck_style_progress(task, "已停止"),
+        )
+        runner = self._async_tasks.get(analysis_id)
+        if runner and not runner.done():
+            runner.cancel()
+        self._persist_analysis_snapshot(task)
+        return {"analysis_id": analysis_id, **{k: v for k, v in task.items() if not str(k).startswith("_")}}
 
     async def _run(self, analysis_id: str, task_id: str) -> None:
         task = self._tasks[analysis_id]
@@ -467,6 +819,8 @@ class AIAnalysisManager:
 
             batched = bool(int(cfg.get("batched_analysis", 0) or 0))
             fragmented = bool(int(cfg.get("fragmented_analysis", 0) or 0))
+            compression_strategy = self._compression_strategy(cfg)
+            sql_log_inclusion_mode = self._sql_log_inclusion_mode(cfg)
             parallelism = max(1, int(cfg.get("analysis_parallelism", 2) or 2))
             retries = max(0, int(cfg.get("analysis_retries", 1) or 1))
             max_tokens_per_chunk = max(800, int(cfg.get("max_tokens_per_chunk", 4500) or 4500))
@@ -503,7 +857,20 @@ class AIAnalysisManager:
             total_units = 0
             if batched and devices:
                 for d in devices:
-                    dtext = self._device_text(task_id, str(d.get("device_id") or ""))
+                    self._check_cancelled(task)
+                    dtext = self._device_text(
+                        task_id,
+                        str(d.get("device_id") or ""),
+                        compression_strategy=compression_strategy,
+                        sql_log_inclusion_mode=sql_log_inclusion_mode,
+                    )
+                    effective_fragmented = self._effective_fragmentation(
+                        requested_fragmented=fragmented,
+                        report_text=dtext,
+                        provider=provider,
+                        compression_strategy=compression_strategy,
+                        max_tokens_per_chunk=max_tokens_per_chunk,
+                    )
                     chunks = (
                         self._split_chunks(
                             dtext,
@@ -511,12 +878,12 @@ class AIAnalysisManager:
                             max_chunks_per_device=max_chunks_per_device,
                             chunk_strategy=chunk_strategy,
                         )
-                        if fragmented
+                        if effective_fragmented
                         else [dtext]
                     )
-                    plan = {"device": d, "text": dtext, "chunks": chunks}
+                    plan = {"device": d, "text": dtext, "chunks": chunks, "fragmented": effective_fragmented}
                     device_plans.append(plan)
-                    if fragmented:
+                    if effective_fragmented:
                         # Only do an extra per-device summary call when there are multiple chunks.
                         total_units += len(chunks) + (1 if len(chunks) > 1 else 0)
                     else:
@@ -534,6 +901,7 @@ class AIAnalysisManager:
 
             async def update_progress(stage: str) -> None:
                 nonlocal running_ips
+                self._check_cancelled(task, stage)
                 unit_done = int(task.get("_unit_done", 0) or 0)
                 unit_total = int(task.get("_unit_total", 1) or 1)
                 active_boost = 0.0
@@ -557,8 +925,13 @@ class AIAnalysisManager:
                 self._set_progress(task, percent, self._format_healthcheck_style_progress(task, stage))
 
             if not batched or not device_plans:
+                self._check_cancelled(task)
                 self._set_progress(task, 20, self._format_healthcheck_style_progress(task, "汇总任务日志"))
-                report_text = self._collect_task_report_text(task_id)
+                report_text = self._collect_task_report_text(
+                    task_id,
+                    compression_strategy=compression_strategy,
+                    sql_log_inclusion_mode=sql_log_inclusion_mode,
+                )
                 self._set_progress(task, 55, self._format_healthcheck_style_progress(task, "设备分析中"))
                 timeout_sec = self._estimate_timeout_sec(report_text, floor=60, ceiling=max_call_timeout)
                 task["_active_call_started"] = time.monotonic()
@@ -585,11 +958,13 @@ class AIAnalysisManager:
 
                 async def run_device(plan: dict[str, Any]) -> None:
                     nonlocal total_token_used
+                    self._check_cancelled(task)
                     d = plan["device"]
                     d_id = str(d.get("device_id") or "")
                     d_ip = str(d.get("ip") or "-")
                     d_idx = int(d.get("index") or 1)
                     chunks: list[str] = plan["chunks"]
+                    plan_fragmented = bool(plan.get("fragmented"))
                     async with sem:
                         stop_evt = asyncio.Event()
                         tick_task = asyncio.create_task(ticker(stop_evt, "设备分析中"))
@@ -601,6 +976,7 @@ class AIAnalysisManager:
                             task["_chunk_done_by_ip"][d_ip] = 0
                             await update_progress("设备分析中")
                         try:
+                            self._check_cancelled(task)
                             chunk_results: list[str] = [""] * max(1, len(chunks))
 
                             async def analyze_one_chunk(i: int, chunk: str) -> tuple[int, str, int]:
@@ -609,6 +985,7 @@ class AIAnalysisManager:
                                     llm_base.get("task_prompt_text", "")
                                     + f"\n\n[分片任务] 设备 {d_ip} ({d_id}) 分片 {i+1}/{len(chunks)}，请给出该分片结论。"
                                 )
+                                self._check_cancelled(task)
                                 timeout_sec = self._estimate_timeout_sec(chunk, floor=60, ceiling=max_call_timeout)
                                 task["_active_call_started"] = time.monotonic()
                                 task["_active_call_timeout_sec"] = float(timeout_sec)
@@ -618,7 +995,7 @@ class AIAnalysisManager:
                                 token_used = int((usage or {}).get("total_tokens", 0) or 0)
                                 return i, text, token_used
 
-                            if fragmented and len(chunks) > 1 and chunk_parallelism > 1:
+                            if plan_fragmented and len(chunks) > 1 and chunk_parallelism > 1:
                                 inner_sem = asyncio.Semaphore(min(chunk_parallelism, len(chunks)))
 
                                 async def run_with_sem(i: int, chunk: str) -> tuple[int, str, int]:
@@ -639,6 +1016,7 @@ class AIAnalysisManager:
                                         await update_progress("设备分析中")
                             else:
                                 for i, chunk in enumerate(chunks):
+                                    self._check_cancelled(task)
                                     i2, text, token_used = await analyze_one_chunk(i, chunk)
                                     task["_active_call_started"] = 0.0
                                     task["_active_call_timeout_sec"] = 0.0
@@ -649,7 +1027,8 @@ class AIAnalysisManager:
                                         task["_chunk_done_by_ip"][d_ip] = int(task["_chunk_done_by_ip"].get(d_ip, 0) or 0) + 1
                                         await update_progress("设备分析中")
 
-                            if fragmented and len(chunks) > 1:
+                            if plan_fragmented and len(chunks) > 1:
+                                self._check_cancelled(task)
                                 # summarize chunk results per device
                                 llm = dict(llm_base)
                                 llm["task_prompt_text"] = (
@@ -699,6 +1078,7 @@ class AIAnalysisManager:
                 await asyncio.gather(*(run_device(p) for p in device_plans))
 
                 # final global summary
+                self._check_cancelled(task)
                 self._set_progress(task, min(99, int((task["_unit_done"] / task["_unit_total"]) * 100)), self._format_healthcheck_style_progress(task, "全局汇总中"))
                 global_report = "\n\n".join(device_summaries)
                 llm = dict(llm_base)
@@ -730,6 +1110,17 @@ class AIAnalysisManager:
                 json.dumps({k: v for k, v in task.items() if not str(k).startswith("_")}, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+        except asyncio.CancelledError as exc:
+            task["status"] = "failed"
+            task["error"] = str(exc).strip() or "analysis stopped by user"
+            task["device_running"] = 0
+            self._set_progress(
+                task,
+                max(1, int(task.get("progress_percent", 0) or 1)),
+                self._format_healthcheck_style_progress(task, "已停止"),
+            )
+            self._persist_analysis_snapshot(task)
+            self._persist_analysis_history(task)
         except Exception as exc:
             task["status"] = "failed"
             reason = str(exc).strip() or repr(exc)
@@ -742,6 +1133,8 @@ class AIAnalysisManager:
             )
             self._persist_analysis_snapshot(task)
             self._persist_analysis_history(task)
+        finally:
+            self._async_tasks.pop(analysis_id, None)
 
     def get(self, analysis_id: str) -> dict[str, Any] | None:
         data = self._tasks.get(analysis_id)

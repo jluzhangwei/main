@@ -19,6 +19,7 @@ from ..ai.prompt_store import (
     save_custom_prompt,
 )
 from ..ai.state_store import load_gpt_config, load_token_stats, save_gpt_config
+from ..ai.semantic_compression import normalize_strategy
 from ..ai.llm_client import (
     test_codex_local_connection,
     detect_qwen_endpoint,
@@ -31,6 +32,18 @@ from ..ai.llm_client import (
 
 router = APIRouter(tags=["ai"])
 templates = Jinja2Templates(directory=(Path(__file__).resolve().parent.parent / "templates").as_posix())
+
+
+def _device_view_dict(device: Any) -> dict[str, Any]:
+    data = device.model_dump() if hasattr(device, "model_dump") else dict(device or {})
+    target_dir = None
+    for candidate in (data.get("filtered_log_path"), data.get("raw_log_path"), data.get("meta_path"), data.get("debug_log_path")):
+        if candidate:
+            target_dir = Path(candidate).parent
+            break
+    data["semantic_compact_exists"] = bool(target_dir and (target_dir / "semantic_compact.md").exists())
+    data["semantic_index_exists"] = bool(target_dir and (target_dir / "semantic_index.json").exists())
+    return data
 
 CHATGPT_MODEL_OPTIONS = [
     "gpt-4.1",
@@ -98,6 +111,12 @@ def _to_int(value: Any, default: int, low: int, high: int) -> int:
 
 
 def _merge_cfg(cfg: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    def normalize_sql_log_inclusion_mode(value: Any) -> str:
+        mode = str(value or "final_only").strip().lower()
+        if mode not in {"final_only", "with_sql_filtered", "with_sql_filtered_force", "with_sql_raw_and_filtered"}:
+            return "final_only"
+        return mode
+
     def keep_or_update(key: str) -> str:
         if key not in incoming:
             return str(cfg.get(key, "") or "")
@@ -170,6 +189,15 @@ def _merge_cfg(cfg: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
                 low=1,
                 high=8,
             ),
+            "text_compression_strategy": normalize_strategy(
+                incoming.get(
+                    "text_compression_strategy",
+                    cfg.get("text_compression_strategy", incoming.get("text_compression_enabled", "off")),
+                )
+            ),
+            "sql_log_inclusion_mode": normalize_sql_log_inclusion_mode(
+                incoming.get("sql_log_inclusion_mode", cfg.get("sql_log_inclusion_mode", "final_only"))
+            ),
             "llm_call_timeout_sec": _to_int(
                 incoming.get("llm_call_timeout_sec", cfg.get("llm_call_timeout_sec", 240)),
                 default=240,
@@ -205,10 +233,21 @@ def _has_keys(cfg: dict[str, Any]) -> dict[str, bool]:
     }
 
 
+def _build_device_items(task: Any, selected_ids: list[str] | None = None) -> list[dict[str, str]]:
+    selected = {str(x or "").strip() for x in (selected_ids or []) if str(x or "").strip()}
+    items: list[dict[str, str]] = []
+    for i, d in enumerate(getattr(task, "devices", []) or []):
+        ip = str(getattr(d, "device_ip", "") or "").strip()
+        device_id = str(getattr(d, "device_id", "") or "").strip() or f"dev-{i+1}"
+        if selected and device_id not in selected:
+            continue
+        items.append({"device_id": device_id, "ip": ip or device_id, "index": i + 1})
+    return items
+
+
 def _estimate_precheck(task: Any, task_id: str, request: Request, payload: dict[str, Any]) -> dict[str, Any]:
-    device_count = len(getattr(task, "devices", []) or [])
-    if device_count <= 0:
-        device_count = 1
+    selected_ids = [str(x or "").strip() for x in ((payload or {}).get("selected_device_ids") or []) if str(x or "").strip()]
+    device_count = len(_build_device_items(task, selected_ids)) or 1
     batched = bool(_to_bool((payload or {}).get("batched_analysis", 0)))
     fragmented = bool(_to_bool((payload or {}).get("fragmented_analysis", 0)))
     analysis_parallelism = _to_int((payload or {}).get("analysis_parallelism", 2), default=2, low=1, high=8)
@@ -221,9 +260,20 @@ def _estimate_precheck(task: Any, task_id: str, request: Request, payload: dict[
         low=1,
         high=60,
     )
+    cfg = _merge_cfg(load_gpt_config(), payload or {})
+    provider = str(cfg.get("provider", "chatgpt") or "chatgpt").strip().lower()
+    compression_strategy = normalize_strategy(
+        cfg.get("text_compression_strategy", payload.get("text_compression_enabled", "off") if isinstance(payload, dict) else "off")
+    )
     report_text = ""
     try:
-        report_text = request.app.state.ai_manager._collect_task_report_text(task_id)
+        report_text = request.app.state.ai_manager._collect_task_report_text(
+            task_id,
+            compression_strategy=compression_strategy,
+            sql_log_inclusion_mode=str(cfg.get("sql_log_inclusion_mode", "final_only") or "final_only"),
+            persist_artifacts=False,
+            device_ids=selected_ids,
+        )
     except Exception:
         # Fallback for unfinished tasks.
         report_text = f"task_id={task_id}, device_count={device_count}"
@@ -233,7 +283,10 @@ def _estimate_precheck(task: Any, task_id: str, request: Request, payload: dict[
         estimated_calls = 1
     elif fragmented:
         avg_tokens_per_device = max(1200, int(estimated_tokens / max(1, device_count)))
-        est_chunks = max(1, min(max_chunks_per_device, math.ceil(avg_tokens_per_device / max_tokens_per_chunk)))
+        soft_limit = max_tokens_per_chunk
+        if provider in {"codex_local", "local"} and compression_strategy == "factor_time":
+            soft_limit = max(soft_limit, 7000)
+        est_chunks = max(1, min(max_chunks_per_device, math.ceil(avg_tokens_per_device / soft_limit)))
         per_device_calls = est_chunks + (1 if est_chunks > 1 else 0)
         estimated_calls = device_count * per_device_calls + 1
     else:
@@ -262,12 +315,16 @@ def _estimate_precheck(task: Any, task_id: str, request: Request, payload: dict[
         "estimated_calls": estimated_calls,
         "estimated_total_tokens": estimated_tokens,
         "estimated_seconds": estimated_seconds,
+        "text_compression_strategy": compression_strategy,
+        "sql_log_inclusion_mode": str(cfg.get("sql_log_inclusion_mode", "final_only") or "final_only"),
+        "selected_device_ids": selected_ids,
     }
 
 
 @router.get("/ai/settings", response_class=HTMLResponse)
 async def ai_settings_page(request: Request):
     lang = str(request.query_params.get("lang", "zh") or "zh")
+    task_id = str(request.query_params.get("task_id", "") or "").strip()
     cfg = load_gpt_config()
     stats = load_token_stats()
     has_keys = _has_keys(cfg)
@@ -275,6 +332,7 @@ async def ai_settings_page(request: Request):
     task_prompts = localized_prompt_catalog("task", lang)
     system_prompt_labels = localized_prompt_labels("system", lang)
     task_prompt_labels = localized_prompt_labels("task", lang)
+    ai_task = request.app.state.task_manager.get_task(task_id) if task_id else None
     return templates.TemplateResponse(
         "ai_settings.html",
         {
@@ -293,6 +351,10 @@ async def ai_settings_page(request: Request):
             "gemini_model_options": GEMINI_MODEL_OPTIONS,
             "nvidia_model_options": NVIDIA_MODEL_OPTIONS,
             "local_model_options": LOCAL_MODEL_OPTIONS,
+            "ai_task": ai_task,
+            "ai_task_id": task_id,
+            "ai_task_devices_view": [_device_view_dict(d) for d in (getattr(ai_task, "devices", []) or [])] if ai_task else [],
+            "ai_task_devices_json": [_device_view_dict(d) for d in (getattr(ai_task, "devices", []) or [])] if ai_task else [],
             "error": None,
             "saved": False,
         },
@@ -328,6 +390,7 @@ async def ai_settings_save(
     analysis_retries: int = Form(1),
 ):
     lang = str(request.query_params.get("lang", "zh") or "zh")
+    task_id = str(request.query_params.get("task_id", "") or "").strip()
     cfg = load_gpt_config()
     cfg = _merge_cfg(
         cfg,
@@ -364,6 +427,7 @@ async def ai_settings_save(
     task_prompts = localized_prompt_catalog("task", lang)
     system_prompt_labels = localized_prompt_labels("system", lang)
     task_prompt_labels = localized_prompt_labels("task", lang)
+    ai_task = request.app.state.task_manager.get_task(task_id) if task_id else None
 
     return templates.TemplateResponse(
         "ai_settings.html",
@@ -383,6 +447,10 @@ async def ai_settings_save(
             "gemini_model_options": GEMINI_MODEL_OPTIONS,
             "nvidia_model_options": NVIDIA_MODEL_OPTIONS,
             "local_model_options": LOCAL_MODEL_OPTIONS,
+            "ai_task": ai_task,
+            "ai_task_id": task_id,
+            "ai_task_devices_view": [_device_view_dict(d) for d in (getattr(ai_task, "devices", []) or [])] if ai_task else [],
+            "ai_task_devices_json": [_device_view_dict(d) for d in (getattr(ai_task, "devices", []) or [])] if ai_task else [],
             "error": None,
             "saved": True,
         },
@@ -426,15 +494,23 @@ async def start_analysis(task_id: str, request: Request, payload: dict[str, Any]
     if isinstance(payload, dict) and payload:
         cfg = _merge_cfg(load_gpt_config(), payload)
         save_gpt_config(cfg)
-    device_items: list[dict[str, str]] = []
-    for i, d in enumerate(getattr(task, "devices", []) or []):
-        ip = str(getattr(d, "device_ip", "") or "").strip()
-        device_id = str(getattr(d, "device_id", "") or "").strip()
-        if not device_id:
-            device_id = f"dev-{i+1}"
-        device_items.append({"device_id": device_id, "ip": ip or device_id, "index": i + 1})
+    selected_ids = [str(x or "").strip() for x in ((payload or {}).get("selected_device_ids") or []) if str(x or "").strip()]
+    device_items = _build_device_items(task, selected_ids)
+    if not device_items:
+        raise HTTPException(status_code=400, detail="no devices selected")
     analysis_id = request.app.state.ai_manager.start(task_id, devices=device_items)
     return {"ok": True, "analysis_id": analysis_id}
+
+
+@router.post("/api/tasks/{task_id}/analysis/stop")
+async def stop_analysis(task_id: str, request: Request):
+    task = request.app.state.task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    stopped = request.app.state.ai_manager.stop_task(task_id)
+    if not stopped:
+        return {"ok": False, "stopped": False, "message": "no active analysis"}
+    return {"ok": True, "stopped": True, "analysis_id": stopped.get("analysis_id", ""), "status": stopped}
 
 
 @router.post("/api/tasks/{task_id}/analysis/precheck")
@@ -448,7 +524,31 @@ async def analysis_precheck(task_id: str, request: Request, payload: dict[str, A
             f"设备 {estimation['device_count']} 台 | 预计调用 {estimation['estimated_calls']} 次 | "
             f"预计 Token {estimation['estimated_total_tokens']} | 预计耗时 {estimation['estimated_seconds']}s"
         )
+        if str(estimation.get("text_compression_strategy", "off") or "off") != "off":
+            line += f" | 压缩策略: {estimation['text_compression_strategy']}"
+        if str(estimation.get("sql_log_inclusion_mode", "final_only") or "final_only") != "final_only":
+            line += f" | SQL附加: {estimation['sql_log_inclusion_mode']}"
         return {"ok": True, "estimation": estimation, "line": line}
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+
+
+@router.post("/api/tasks/{task_id}/analysis/preview")
+async def analysis_preview(task_id: str, request: Request, payload: dict[str, Any] = Body(default={})):
+    task = request.app.state.task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    cfg = _merge_cfg(load_gpt_config(), payload or {})
+    selected_ids = [str(x or "").strip() for x in ((payload or {}).get("selected_device_ids") or []) if str(x or "").strip()]
+    preview_device_id = str((payload or {}).get("preview_device_id") or "").strip()
+    try:
+        data = request.app.state.ai_manager.build_preview(
+            task_id,
+            cfg,
+            selected_device_ids=selected_ids,
+            preview_device_id=preview_device_id,
+        )
+        return {"ok": True, **data}
     except Exception as exc:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
 

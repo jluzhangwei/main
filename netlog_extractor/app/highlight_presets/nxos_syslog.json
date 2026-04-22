@@ -1,0 +1,24 @@
+{
+  "id": "nxos_syslog",
+  "name": "NXOS syslog",
+  "description": "Cisco NX-OS syslog preset tuned for netstack, vPC, ETHPORT, NVE and repeated-message style output.",
+  "format_version": 1,
+  "extends": "default",
+  "colors": {
+    "red": [
+      "\\b(?:vPC|Routing adjacency over vPC detected|link down|Down - BGP Notification received|error disabled|suspend|peer not reachable)\\b"
+    ],
+    "green": [
+      "\\b(?:link up|adjacency established|peer restored|cleared)\\b"
+    ],
+    "yellow": [
+      "\\b(?:message repeated \\d+ times?|rate-limit|suppress|warning)\\b"
+    ],
+    "magenta": [
+      "\\b(?:netstack|ETHPORT|BGP|VPC|NVE|LACP|PLATFORM|ICAM):"
+    ],
+    "cyan": [
+      "\\b(?:vrf|VRF|peer|neighbor|interface|port-channel|vlan)=[^,;()]+"
+    ]
+  }
+}
