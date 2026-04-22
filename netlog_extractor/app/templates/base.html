@@ -49,7 +49,7 @@
     <div class="menu">
       <a href="/?lang={{ lang }}" class="{{ 'active' if path == '/' else '' }}">{{ 'Create Task' if lang == 'en' else '创建任务' }}</a>
       <a href="/tasks?lang={{ lang }}" class="{{ 'active' if path.startswith('/tasks') else '' }}">{{ 'Tasks' if lang == 'en' else '任务页面' }}</a>
-      <a href="/ai/settings?lang={{ lang }}" class="{{ 'active' if path.startswith('/ai/settings') else '' }}">{{ 'AI Log Analysis' if lang == 'en' else 'AI 日志分析' }}</a>
+      <a id="ai_log_analysis_nav" href="/ai/settings?lang={{ lang }}" class="{{ 'active' if path.startswith('/ai/settings') else '' }}">{{ 'AI Log Analysis' if lang == 'en' else 'AI 日志分析' }}</a>
     </div>
   </div>
 </div>
@@ -67,6 +67,32 @@
       try { localStorage.setItem('netlog_ui_lang', target); } catch (e) {}
       url.searchParams.set('lang', target);
       window.location.href = url.toString();
+    });
+  })();
+
+  (function () {
+    const aiNav = document.getElementById('ai_log_analysis_nav');
+    if (!aiNav) return;
+    const storageKey = 'netlog.ai.last_task_id';
+    const buildAiUrl = () => {
+      const url = new URL(aiNav.href, window.location.origin);
+      const currentUrl = new URL(window.location.href);
+      const explicitTaskId = (currentUrl.searchParams.get('task_id') || '').trim();
+      let taskId = explicitTaskId;
+      if (!taskId) {
+        try {
+          taskId = (window.localStorage.getItem(storageKey) || '').trim();
+        } catch (e) {
+          taskId = '';
+        }
+      }
+      if (taskId) url.searchParams.set('task_id', taskId);
+      else url.searchParams.delete('task_id');
+      return url.toString();
+    };
+    aiNav.href = buildAiUrl();
+    aiNav.addEventListener('click', (event) => {
+      aiNav.href = buildAiUrl();
     });
   })();
 </script>

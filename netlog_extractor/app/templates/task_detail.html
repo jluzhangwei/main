@@ -67,7 +67,13 @@
 
 {% if task.params.get("debug_mode") %}
 <div class="card">
-  <h3 style="margin:0 0 8px;">{{ 'Debug Console' if is_en else 'Debug 控制台' }}</h3>
+  <div class="debug-console-head">
+    <h3 style="margin:0;">{{ 'Debug Console' if is_en else 'Debug 控制台' }}</h3>
+    <button id="debug-fullscreen-btn" type="button" class="device-log-fullscreen-icon" title="{{ 'Fullscreen' if is_en else '全屏' }}" aria-label="{{ 'Fullscreen' if is_en else '全屏' }}">
+      <span class="fullscreen-icon-enter" aria-hidden="true">↗</span>
+      <span class="fullscreen-icon-exit" aria-hidden="true">↙</span>
+    </button>
+  </div>
   <div class="device-log-viewer">
     <div class="device-log-sidebar">
       <div class="device-log-sidebar-title">{{ 'Devices' if is_en else '设备列表' }}</div>
@@ -117,7 +123,22 @@
         />
         <div id="log-search-status" class="device-log-search-status muted"></div>
       </div>
-      <div class="device-log-preset-bar">
+      <div class="device-log-time-filter">
+        <div class="device-log-time-field">
+          <label for="log-time-start">{{ 'Start Time' if is_en else '开始时间' }}</label>
+          <input id="log-time-start" type="text" placeholder="YYYY-MM-DD HH:MM:SS" />
+        </div>
+        <div class="device-log-time-field">
+          <label for="log-time-end">{{ 'End Time' if is_en else '结束时间' }}</label>
+          <input id="log-time-end" type="text" placeholder="YYYY-MM-DD HH:MM:SS" />
+        </div>
+        <div class="device-log-time-actions">
+          <button id="log-time-apply-btn" type="button">{{ 'Apply' if is_en else '应用' }}</button>
+          <button id="log-time-reset-btn" type="button" class="ghost-btn">{{ 'Reset' if is_en else '重置' }}</button>
+        </div>
+      </div>
+      <div id="log-time-status" class="device-log-search-status muted"></div>
+      <div class="device-log-preset-bar" style="display:none;">
         <div class="device-log-preset-controls">
           <label for="log-highlight-preset">{{ 'Highlight preset' if is_en else '高亮预设' }}</label>
           <select id="log-highlight-preset">
@@ -134,13 +155,13 @@
         <div id="log-highlight-preset-meta" class="muted"></div>
       </div>
       <div class="device-log-syntax-legend muted">
-        <span class="legend-chip underline">{{ 'link' if is_en else '链接' }}</span>
-        <span class="legend-chip red">{{ 'fault' if is_en else '故障' }}</span>
-        <span class="legend-chip green">{{ 'recover' if is_en else '恢复' }}</span>
-        <span class="legend-chip yellow">{{ 'warning' if is_en else '告警' }}</span>
-        <span class="legend-chip blue">{{ 'time / IP' if is_en else '时间 / IP' }}</span>
-        <span class="legend-chip magenta">{{ 'event' if is_en else '事件' }}</span>
-        <span class="legend-chip cyan">{{ 'interface / key field' if is_en else '接口 / 关键字段' }}</span>
+        <button type="button" class="legend-chip underline" data-legend-kind="underline"><span class="legend-label">{{ 'link' if is_en else '链接' }}</span><span class="legend-count">0</span></button>
+        <button type="button" class="legend-chip red" data-legend-kind="red"><span class="legend-label">{{ 'fault' if is_en else '故障' }}</span><span class="legend-count">0</span></button>
+        <button type="button" class="legend-chip green" data-legend-kind="green"><span class="legend-label">{{ 'recover' if is_en else '恢复' }}</span><span class="legend-count">0</span></button>
+        <button type="button" class="legend-chip yellow" data-legend-kind="yellow"><span class="legend-label">{{ 'warning' if is_en else '告警' }}</span><span class="legend-count">0</span></button>
+        <button type="button" class="legend-chip blue" data-legend-kind="blue"><span class="legend-label">{{ 'time / IP' if is_en else '时间 / IP' }}</span><span class="legend-count">0</span></button>
+        <button type="button" class="legend-chip magenta" data-legend-kind="magenta"><span class="legend-label">{{ 'event' if is_en else '事件' }}</span><span class="legend-count">0</span></button>
+        <button type="button" class="legend-chip cyan" data-legend-kind="cyan"><span class="legend-label">{{ 'interface / key field' if is_en else '接口 / 关键字段' }}</span><span class="legend-count">0</span></button>
       </div>
       <pre id="debug-console" class="device-log-console">{{ 'Waiting for filtered.log...' if is_en else '等待 filtered.log ...' }}</pre>
     </div>
@@ -191,6 +212,13 @@
     previewNoUnits: UI_LANG === 'en' ? 'No preview units' : '没有可预览的单元',
     deviceFilterHint: UI_LANG === 'en' ? 'Press Enter to filter device list' : '输入后回车过滤设备列表',
     deviceFilterEmpty: UI_LANG === 'en' ? 'No matched devices' : '没有匹配的设备',
+    timeRangeAll: UI_LANG === 'en' ? 'Showing full time range' : '显示完整时间范围',
+    timeRangeApplied: UI_LANG === 'en' ? 'Time filter applied' : '时间过滤已应用',
+    timeRangeInvalid: UI_LANG === 'en' ? 'Invalid time format. Use YYYY-MM-DD HH:MM:SS' : '时间格式无效，请使用 YYYY-MM-DD HH:MM:SS',
+    timeRangeNoTimestamp: UI_LANG === 'en' ? 'No parsable timestamps in current log' : '当前日志中没有可解析的时间戳',
+    timeRangeNoMatch: UI_LANG === 'en' ? 'No log entries in selected time range' : '当前时间范围内没有日志',
+    fullscreen: UI_LANG === 'en' ? 'Fullscreen' : '全屏',
+    exitFullscreen: UI_LANG === 'en' ? 'Exit Fullscreen' : '退出全屏',
     presetLoadFailed: UI_LANG === 'en' ? 'Failed to load highlight presets' : '加载高亮预设失败',
     presetImportFailed: UI_LANG === 'en' ? 'Failed to import preset' : '导入预设失败',
     presetImportOk: UI_LANG === 'en' ? 'Preset imported' : '预设已导入',
@@ -205,10 +233,14 @@
   let deviceFilterKeyword = '';
   let logSearchKeyword = '';
   let logSearchTimer = null;
+  let debugConsolePseudoFullscreen = false;
   let logSearchRequestSeq = 0;
+  const legendActiveIndex = {};
   const logSearchCounts = {};
   const logSearchActiveIndex = {};
   const logTextCache = {};
+  const logEntryCache = {};
+  const logTimeRangeState = {};
   const LOG_COLOR_ORDER = ['underline', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan'];
   const HIGHLIGHT_PRESET_STORAGE_KEY = 'netlog_highlight_preset_v1';
   let highlightPresetItems = [];
@@ -352,9 +384,212 @@
     return logTextCache[dev.device_id];
   }
 
+  function pad2(v) {
+    return String(v).padStart(2, '0');
+  }
+
+  function formatTimestampMs(ms) {
+    if (!Number.isFinite(ms)) return '';
+    const d = new Date(ms);
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  }
+
+  function parseUiTimeValue(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return null;
+    const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/);
+    if (!m) return NaN;
+    const [, y, mo, d, h, mi, s] = m;
+    return new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)).getTime();
+  }
+
+  function parseLogLineTimestamp(line) {
+    const text = String(line || '');
+    let m = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?/);
+    if (m) {
+      return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6])).getTime();
+    }
+    m = text.match(/^(\d{4})\s+([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?/);
+    if (m) {
+      const mon = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11}[m[2]];
+      if (mon != null) return new Date(Number(m[1]), mon, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6])).getTime();
+    }
+    m = text.match(/(?:^|[\s>])([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{4})\s+(\d{2}):(\d{2}):(\d{2})(?:[.+-]\d{2}:\d{2})?/);
+    if (m) {
+      const mon = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11}[m[1]];
+      if (mon != null) return new Date(Number(m[3]), mon, Number(m[2]), Number(m[4]), Number(m[5]), Number(m[6])).getTime();
+    }
+    m = text.match(/^[^:]+:([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?/);
+    if (m) {
+      const mon = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11}[m[1]];
+      if (mon != null) return new Date(new Date().getFullYear(), mon, Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5])).getTime();
+    }
+    return null;
+  }
+
+  function parseLogEntriesForDevice(dev, text) {
+    const cacheKey = String(dev && dev.device_id || '');
+    const cached = logEntryCache[cacheKey];
+    const sourceText = String(text || '');
+    if (cached && cached.text === sourceText) {
+      return cached.payload;
+    }
+    const lines = sourceText.split('\n');
+    const entries = [];
+    let current = null;
+    for (const line of lines) {
+      const ts = parseLogLineTimestamp(line);
+      if (ts != null) {
+        if (current) entries.push(current);
+        current = { timestampMs: ts, lines: [line] };
+      } else if (current) {
+        current.lines.push(line);
+      } else {
+        current = { timestampMs: null, lines: [line] };
+      }
+    }
+    if (current) entries.push(current);
+    const dated = entries.filter((x) => Number.isFinite(x.timestampMs));
+    const minTs = dated.length ? Math.min(...dated.map((x) => x.timestampMs)) : null;
+    const maxTs = dated.length ? Math.max(...dated.map((x) => x.timestampMs)) : null;
+    const payload = { entries, minTs, maxTs };
+    logEntryCache[cacheKey] = { text: sourceText, payload };
+    return payload;
+  }
+
+  async function ensureGlobalTimeRangeState(force = false) {
+    const rows = (latestTask && Array.isArray(latestTask.devices)) ? latestTask.devices : ({{ task_devices_json | tojson }} || []);
+    const scopedRows = rows.filter((d) => d && d.filtered_log_path);
+    const scopeKey = scopedRows.map((d) => `${d.device_id}:1`).join('|');
+    if (!force && logTimeRangeState.initialized && logTimeRangeState.scopeKey === scopeKey) {
+      return logTimeRangeState;
+    }
+    let minTs = null;
+    let maxTs = null;
+    await Promise.all(scopedRows.map(async (dev) => {
+      try {
+        const text = await fetchFilteredLogText(dev);
+        const parsed = parseLogEntriesForDevice(dev, text);
+        if (Number.isFinite(parsed.minTs)) minTs = minTs == null ? parsed.minTs : Math.min(minTs, parsed.minTs);
+        if (Number.isFinite(parsed.maxTs)) maxTs = maxTs == null ? parsed.maxTs : Math.max(maxTs, parsed.maxTs);
+      } catch (e) {
+        // ignore per-device failure when computing global time bounds
+      }
+    }));
+    const defaultStart = minTs != null ? formatTimestampMs(minTs) : '';
+    const defaultEnd = maxTs != null ? formatTimestampMs(maxTs) : '';
+    const hadCustom = logTimeRangeState.initialized
+      && ((logTimeRangeState.start && logTimeRangeState.start !== logTimeRangeState.defaultStart)
+        || (logTimeRangeState.end && logTimeRangeState.end !== logTimeRangeState.defaultEnd));
+    logTimeRangeState.defaultStart = defaultStart;
+    logTimeRangeState.defaultEnd = defaultEnd;
+    logTimeRangeState.scopeKey = scopeKey;
+    logTimeRangeState.initialized = true;
+    if (force || !hadCustom) {
+      logTimeRangeState.start = defaultStart;
+      logTimeRangeState.end = defaultEnd;
+    } else {
+      if (!String(logTimeRangeState.start || '').trim()) logTimeRangeState.start = defaultStart;
+      if (!String(logTimeRangeState.end || '').trim()) logTimeRangeState.end = defaultEnd;
+    }
+    return logTimeRangeState;
+  }
+
+  function syncTimeRangeInputs() {
+    const startEl = el('log-time-start');
+    const endEl = el('log-time-end');
+    const statusEl = el('log-time-status');
+    if (!startEl || !endEl) return;
+    startEl.value = logTimeRangeState.start || logTimeRangeState.defaultStart || '';
+    endEl.value = logTimeRangeState.end || logTimeRangeState.defaultEnd || '';
+    if (statusEl) {
+      if (!logTimeRangeState.defaultStart || !logTimeRangeState.defaultEnd) {
+        statusEl.textContent = T.timeRangeNoTimestamp;
+      } else if ((logTimeRangeState.start || '') === logTimeRangeState.defaultStart && (logTimeRangeState.end || '') === logTimeRangeState.defaultEnd) {
+        statusEl.textContent = `${T.timeRangeAll}: ${logTimeRangeState.defaultStart} ~ ${logTimeRangeState.defaultEnd}`;
+      } else {
+        statusEl.textContent = `${T.timeRangeApplied}: ${logTimeRangeState.start || logTimeRangeState.defaultStart} ~ ${logTimeRangeState.end || logTimeRangeState.defaultEnd} | ${T.timeRangeAll}: ${logTimeRangeState.defaultStart} ~ ${logTimeRangeState.defaultEnd}`;
+      }
+    }
+  }
+
+  function buildFilteredLogText(dev, text) {
+    const parsed = parseLogEntriesForDevice(dev, text);
+    const startValue = logTimeRangeState.start || logTimeRangeState.defaultStart || '';
+    const endValue = logTimeRangeState.end || logTimeRangeState.defaultEnd || '';
+    const startMs = parseUiTimeValue(startValue);
+    const endMs = parseUiTimeValue(endValue);
+    if ((startValue && Number.isNaN(startMs)) || (endValue && Number.isNaN(endMs))) {
+      return { text: '', parsed, invalid: true, empty: false };
+    }
+    const entries = parsed.entries || [];
+    if ((!startValue && !endValue) || (parsed.minTs == null || parsed.maxTs == null)) {
+      return { text: entries.map((x) => x.lines.join('\n')).join('\n'), parsed, invalid: false, empty: !entries.length };
+    }
+    const filtered = entries.filter((entry) => {
+      if (!Number.isFinite(entry.timestampMs)) return true;
+      if (startMs != null && Number.isFinite(startMs) && entry.timestampMs < startMs) return false;
+      if (endMs != null && Number.isFinite(endMs) && entry.timestampMs > endMs) return false;
+      return true;
+    });
+    return {
+      text: filtered.map((x) => x.lines.join('\n')).join('\n'),
+      parsed,
+      invalid: false,
+      empty: !filtered.length,
+    };
+  }
+
+  async function applyLogTimeRange(reset = false) {
+    await ensureGlobalTimeRangeState();
+    if (reset) {
+      logTimeRangeState.start = logTimeRangeState.defaultStart || '';
+      logTimeRangeState.end = logTimeRangeState.defaultEnd || '';
+    } else {
+      const startInput = String(el('log-time-start')?.value || '').trim();
+      const endInput = String(el('log-time-end')?.value || '').trim();
+      logTimeRangeState.start = startInput || logTimeRangeState.defaultStart || '';
+      logTimeRangeState.end = endInput || logTimeRangeState.defaultEnd || '';
+    }
+    syncTimeRangeInputs();
+    await runLogSearch();
+  }
+
   function getCurrentLogDevice() {
     const devices = (latestTask && latestTask.devices) ? latestTask.devices : ({{ task_devices_json | tojson }} || []);
     return getSelectedDevice(getVisibleLogDevices(devices));
+  }
+
+  function updateDebugFullscreenButton() {
+    const btn = el('debug-fullscreen-btn');
+    const viewer = document.querySelector('.device-log-viewer');
+    if (!btn || !viewer) return;
+    const active = document.fullscreenElement === viewer || viewer.classList.contains('debug-fullscreen-fallback');
+    btn.classList.toggle('is-active', active);
+    btn.title = active ? T.exitFullscreen : T.fullscreen;
+    btn.setAttribute('aria-label', active ? T.exitFullscreen : T.fullscreen);
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
+
+  async function toggleDebugFullscreen() {
+    const viewer = document.querySelector('.device-log-viewer');
+    if (!viewer) return;
+    try {
+      if (document.fullscreenElement === viewer) {
+        await document.exitFullscreen();
+      } else if (document.fullscreenEnabled && typeof viewer.requestFullscreen === 'function') {
+        await viewer.requestFullscreen();
+      } else {
+        debugConsolePseudoFullscreen = !viewer.classList.contains('debug-fullscreen-fallback');
+        viewer.classList.toggle('debug-fullscreen-fallback', debugConsolePseudoFullscreen);
+        document.body.classList.toggle('debug-fullscreen-body-lock', debugConsolePseudoFullscreen);
+      }
+    } catch (e) {
+      debugConsolePseudoFullscreen = !viewer.classList.contains('debug-fullscreen-fallback');
+      viewer.classList.toggle('debug-fullscreen-fallback', debugConsolePseudoFullscreen);
+      document.body.classList.toggle('debug-fullscreen-body-lock', debugConsolePseudoFullscreen);
+    }
+    updateDebugFullscreenButton();
   }
 
   function getAutoHighlightPresetId(device) {
@@ -524,15 +759,43 @@
       .join('\n');
   }
 
+  function updateLegendCounts(consoleEl) {
+    const root = consoleEl || el('debug-console');
+    document.querySelectorAll('.legend-chip[data-legend-kind]').forEach((node) => {
+      const kind = String(node.dataset.legendKind || '').trim();
+      const countNode = node.querySelector('.legend-count');
+      if (!countNode) return;
+      if (!root || !kind) {
+        countNode.textContent = '0';
+        return;
+      }
+      countNode.textContent = String(root.querySelectorAll(`.log-color-${kind}`).length || 0);
+    });
+  }
+
   function renderConsoleText(consoleEl, text, keyword, activeIndex, device) {
     if (!consoleEl) return 0;
     const result = buildHighlightedLogHtml(text || T.debugEmpty, keyword || '', activeIndex, device);
     consoleEl.innerHTML = result.html || escapeHtml(text || '');
+    updateLegendCounts(consoleEl);
     const activeNode = consoleEl.querySelector('.log-hit-active');
     if (activeNode) {
       activeNode.scrollIntoView({ block: 'center', behavior: 'smooth' });
     }
     return result.count;
+  }
+
+  function navigateLegendKind(kind) {
+    const consoleEl = el('debug-console');
+    if (!consoleEl) return;
+    const nodes = Array.from(consoleEl.querySelectorAll(`.log-color-${String(kind || '').trim()}`));
+    if (!nodes.length) return;
+    const nextIndex = Number.isFinite(Number(legendActiveIndex[kind])) ? ((Number(legendActiveIndex[kind]) + 1) % nodes.length) : 0;
+    legendActiveIndex[kind] = nextIndex;
+    consoleEl.querySelectorAll('.legend-hit-active').forEach((node) => node.classList.remove('legend-hit-active'));
+    const node = nodes[nextIndex];
+    node.classList.add('legend-hit-active');
+    node.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }
 
   async function runLogSearch() {
@@ -555,10 +818,12 @@
       statusEl.textContent = UI_LANG === 'en' ? 'Searching...' : '搜索中...';
     }
 
+    await ensureGlobalTimeRangeState();
     await Promise.all(visibleRows.map(async (dev) => {
       try {
         const text = await fetchFilteredLogText(dev);
-        const hits = countKeywordHits(text, keyword);
+        const filteredPayload = buildFilteredLogText(dev, text);
+        const hits = countKeywordHits(filteredPayload.text, keyword);
         if (hits > 0) logSearchCounts[dev.device_id] = hits;
       } catch (e) {
         // ignore individual device fetch failure
@@ -667,11 +932,22 @@
       return;
     }
     try {
+      await ensureGlobalTimeRangeState();
       const text = await fetchFilteredLogText(dev);
       if (text) {
+        const filteredPayload = buildFilteredLogText(dev, text);
+        syncTimeRangeInputs();
+        if (filteredPayload.invalid) {
+          consoleEl.textContent = T.timeRangeInvalid;
+          return;
+        }
+        if (!filteredPayload.text.trim()) {
+          consoleEl.textContent = T.timeRangeNoMatch;
+          return;
+        }
         const hitCount = renderConsoleText(
           consoleEl,
-          text || T.debugEmpty,
+          filteredPayload.text || T.debugEmpty,
           logSearchKeyword,
           logSearchActiveIndex[dev.device_id] || 0,
           dev,
@@ -687,6 +963,7 @@
       consoleEl.textContent = dev.reason || T.debugPending;
     }
   }
+  ensureGlobalTimeRangeState().then(() => syncTimeRangeInputs()).catch(() => {});
   renderLogDeviceList({{ task_devices_json | tojson }});
   const deviceFilterInput = el('device-filter-keyword');
   if (deviceFilterInput) {
@@ -706,6 +983,48 @@
     logSearchInput.addEventListener('input', () => {
       logSearchKeyword = logSearchInput.value || '';
       scheduleLogSearch();
+    });
+  }
+  const logTimeStartInput = el('log-time-start');
+  const logTimeEndInput = el('log-time-end');
+  if (logTimeStartInput) {
+    logTimeStartInput.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      await applyLogTimeRange(false);
+    });
+    logTimeStartInput.addEventListener('blur', async () => {
+      if (String(logTimeStartInput.value || '').trim()) return;
+      await ensureGlobalTimeRangeState();
+      logTimeRangeState.start = logTimeRangeState.defaultStart || '';
+      logTimeStartInput.value = logTimeRangeState.start;
+      syncTimeRangeInputs();
+    });
+  }
+  if (logTimeEndInput) {
+    logTimeEndInput.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      await applyLogTimeRange(false);
+    });
+    logTimeEndInput.addEventListener('blur', async () => {
+      if (String(logTimeEndInput.value || '').trim()) return;
+      await ensureGlobalTimeRangeState();
+      logTimeRangeState.end = logTimeRangeState.defaultEnd || '';
+      logTimeEndInput.value = logTimeRangeState.end;
+      syncTimeRangeInputs();
+    });
+  }
+  const logTimeApplyBtn = el('log-time-apply-btn');
+  if (logTimeApplyBtn) {
+    logTimeApplyBtn.addEventListener('click', async () => {
+      await applyLogTimeRange(false);
+    });
+  }
+  const logTimeResetBtn = el('log-time-reset-btn');
+  if (logTimeResetBtn) {
+    logTimeResetBtn.addEventListener('click', async () => {
+      await applyLogTimeRange(true);
     });
   }
   const presetSelect = el('log-highlight-preset');
@@ -768,6 +1087,15 @@
       }
     });
   }
+  const debugFullscreenBtn = el('debug-fullscreen-btn');
+  if (debugFullscreenBtn) {
+    debugFullscreenBtn.addEventListener('click', toggleDebugFullscreen);
+  }
+  document.querySelectorAll('.legend-chip[data-legend-kind]').forEach((node) => {
+    node.addEventListener('click', () => navigateLegendKind(node.dataset.legendKind || ''));
+  });
+  document.addEventListener('fullscreenchange', updateDebugFullscreenButton);
+  updateDebugFullscreenButton();
   {% endif %}
 
   async function startAnalysis() {
@@ -1280,12 +1608,20 @@
   .markdown-body .md-gap { height:4px; }
   .history-row { padding:5px 0; border-bottom:1px solid #e2e8f0; font-size:13px; }
   .history-row:last-child { border-bottom:none; }
+  .debug-console-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:0 0 8px; }
   .device-log-viewer { display:grid; grid-template-columns:280px 1fr; gap:12px; }
   .device-log-sidebar { border:1px solid #d7dee7; border-radius:10px; background:#f8fafc; padding:10px; }
   .device-log-sidebar-title { font-weight:700; color:#1e293b; margin-bottom:8px; }
   .device-log-search-box { margin-bottom:10px; }
   .device-log-search-box input { width:100%; max-width:none; }
   .device-log-search-status { margin-top:4px; font-size:12px; min-height:18px; }
+  .device-log-time-filter { display:grid; grid-template-columns:1fr 1fr auto; gap:8px; align-items:end; margin:0 0 10px; }
+  .device-log-time-field label { display:block; margin:0 0 4px; font-size:12px; font-weight:700; color:#334155; }
+  .device-log-time-field input { width:100%; max-width:none; }
+  .device-log-time-actions { display:flex; gap:8px; align-items:center; }
+  .device-log-time-actions button { min-width:auto; width:auto; }
+  .ghost-btn { background:#fff; color:#334155; border:1px solid #cbd5e1; }
+  .ghost-btn:hover { background:#f8fafc; }
   .device-log-list { display:flex; flex-direction:column; gap:8px; max-height:520px; overflow:auto; }
   .device-log-item { width:100%; text-align:left; border:1px solid #d7dee7; border-radius:8px; background:#fff; padding:10px; cursor:pointer; }
   .device-log-item:hover { border-color:#8fb3a5; background:#f5fbf8; }
@@ -1297,6 +1633,26 @@
   .device-log-toolbar { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; margin-bottom:8px; }
   .device-log-main-title { font-weight:700; color:#1e293b; }
   .device-log-links { display:flex; gap:10px; flex-wrap:wrap; }
+  .device-log-fullscreen-icon {
+    min-width:16px;
+    width:16px;
+    height:16px;
+    padding:0;
+    border-radius:999px;
+    background:#34c759;
+    color:#0f172a;
+    border:1px solid #22a447;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    font-size:10px;
+    line-height:1;
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.18);
+  }
+  .device-log-fullscreen-icon:hover { filter:brightness(1.06); }
+  .device-log-fullscreen-icon .fullscreen-icon-exit { display:none; }
+  .device-log-fullscreen-icon.is-active .fullscreen-icon-enter { display:none; }
+  .device-log-fullscreen-icon.is-active .fullscreen-icon-exit { display:inline; }
   .device-log-preset-bar { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; margin:0 0 8px; flex-wrap:wrap; }
   .device-log-preset-controls { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
   .device-log-preset-controls label { margin:0; font-size:12px; font-weight:700; }
@@ -1305,7 +1661,10 @@
   .device-log-preset-controls #log-highlight-preset { min-width:220px; }
   .device-log-preset-controls .tiny-select { min-width:74px; }
   .device-log-syntax-legend { display:flex; gap:8px; flex-wrap:wrap; margin:0 0 8px; font-size:12px; }
-  .legend-chip { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:999px; border:1px solid rgba(255,255,255,.08); background:#111827; color:#e5e7eb; }
+  .legend-chip { display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:999px; border:1px solid rgba(255,255,255,.08); background:#111827; color:#e5e7eb; min-width:auto; width:auto; cursor:pointer; }
+  .legend-chip:hover { filter:brightness(1.08); }
+  .legend-chip .legend-label { display:inline-flex; align-items:center; }
+  .legend-chip .legend-count { display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:18px; padding:0 6px; border-radius:999px; background:rgba(255,255,255,.12); color:inherit; font-size:11px; line-height:1; }
   .legend-chip.underline { color:#cbd5e1; text-decoration:underline; text-decoration-color:#cbd5e1; }
   .legend-chip.red { color:#fca5a5; }
   .legend-chip.green { color:#86efac; }
@@ -1325,6 +1684,87 @@
   .device-log-console .log-color-blue { color:#93c5fd; }
   .device-log-console .log-color-magenta { color:#f0abfc; font-weight:700; }
   .device-log-console .log-color-cyan { color:#67e8f9; }
+  .device-log-console .legend-hit-active { background:#ffffff22; outline:1px solid #e2e8f0; border-radius:3px; }
+  body.debug-fullscreen-body-lock { overflow:hidden; }
+  .device-log-viewer:fullscreen {
+    display:grid;
+    grid-template-columns:300px 1fr;
+    gap:14px;
+    width:100vw;
+    height:100vh;
+    padding:16px;
+    box-sizing:border-box;
+    background:#0b1220;
+  }
+  .device-log-viewer.debug-fullscreen-fallback {
+    position:fixed;
+    inset:0;
+    z-index:9998;
+    display:grid;
+    grid-template-columns:300px 1fr;
+    gap:14px;
+    padding:16px;
+    box-sizing:border-box;
+    background:#0b1220;
+  }
+  .device-log-viewer:fullscreen .device-log-sidebar,
+  .device-log-viewer.debug-fullscreen-fallback .device-log-sidebar {
+    background:#0f172a;
+    border-color:#334155;
+  }
+  .device-log-viewer:fullscreen .device-log-sidebar-title,
+  .device-log-viewer.debug-fullscreen-fallback .device-log-sidebar-title,
+  .device-log-viewer:fullscreen .device-log-main-title,
+  .device-log-viewer.debug-fullscreen-fallback .device-log-main-title {
+    color:#e2e8f0;
+  }
+  .device-log-viewer:fullscreen .device-log-item,
+  .device-log-viewer.debug-fullscreen-fallback .device-log-item {
+    background:#111827;
+    border-color:#334155;
+    color:#e2e8f0;
+  }
+  .device-log-viewer:fullscreen .device-log-item:hover,
+  .device-log-viewer.debug-fullscreen-fallback .device-log-item:hover {
+    background:#162133;
+    border-color:#4b647a;
+  }
+  .device-log-viewer:fullscreen .device-log-item.active,
+  .device-log-viewer.debug-fullscreen-fallback .device-log-item.active {
+    background:#123126;
+    border-color:#1f8f67;
+    box-shadow:0 0 0 1px #1f8f67 inset;
+  }
+  .device-log-viewer:fullscreen .device-log-item-main,
+  .device-log-viewer.debug-fullscreen-fallback .device-log-item-main {
+    color:#f8fafc;
+  }
+  .device-log-viewer:fullscreen .device-log-item-sub,
+  .device-log-viewer.debug-fullscreen-fallback .device-log-item-sub,
+  .device-log-viewer:fullscreen .muted,
+  .device-log-viewer.debug-fullscreen-fallback .muted {
+    color:#94a3b8;
+  }
+  .device-log-viewer:fullscreen .device-log-main,
+  .device-log-viewer.debug-fullscreen-fallback .device-log-main {
+    display:flex;
+    flex-direction:column;
+    min-height:0;
+  }
+  .device-log-viewer:fullscreen .device-log-list,
+  .device-log-viewer.debug-fullscreen-fallback .device-log-list {
+    max-height:none;
+    height:calc(100vh - 210px);
+  }
+  .device-log-viewer:fullscreen .device-log-console,
+  .device-log-viewer.debug-fullscreen-fallback .device-log-console {
+    flex:1 1 auto;
+    min-height:0;
+    max-height:none;
+    height:calc(100vh - 220px);
+    font-size:13px;
+    line-height:1.45;
+  }
   .modal-mask { position:fixed; inset:0; background:rgba(15,23,42,.45); display:none; align-items:center; justify-content:center; z-index:9999; padding:16px; overflow:auto; }
   .modal-box { width:min(1100px,100%); max-width:100%; max-height:calc(100vh - 32px); overflow:auto; background:#fff; border:1px solid #cbd5e1; border-radius:12px; padding:12px; box-shadow:0 20px 35px rgba(15,23,42,.25); }
   .modal-head { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; }
@@ -1340,6 +1780,7 @@
     .ai-grid { grid-template-columns:1fr; }
     .exec-options { grid-template-columns:1fr; }
     .device-log-viewer { grid-template-columns:1fr; }
+    .device-log-time-filter { grid-template-columns:1fr; }
     .preview-grid { grid-template-columns:1fr; }
     .preview-modal-box { min-width:0; min-height:0; resize:none; }
   }

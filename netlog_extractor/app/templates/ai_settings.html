@@ -406,6 +406,7 @@
 <script id="task_prompt_map_json" type="application/json">{{ task_prompts | tojson }}</script>
 <script id="system_prompt_labels_json" type="application/json">{{ system_prompt_labels | tojson }}</script>
 <script id="task_prompt_labels_json" type="application/json">{{ task_prompt_labels | tojson }}</script>
+{% if ai_task_devices_view %}<script id="ai_device_info_json" type="application/json">{{ ai_task_devices_view | tojson }}</script>{% else %}<script id="ai_device_info_json" type="application/json">[]</script>{% endif %}
 
 <style>
   .ai-card { background: #f8fafc; }
@@ -467,6 +468,25 @@
   .markdown-body blockquote { margin:8px 0; padding:6px 10px; border-left:3px solid #94a3b8; color:#334155; background:#f1f5f9; }
   .markdown-body a { color:#0b6e4f; }
   .markdown-body .md-gap { height:4px; }
+  .device-ref-chip {
+    display:inline;
+    padding:0;
+    border:none;
+    border-radius:0;
+    background:transparent;
+    color:#0f766e;
+    font-weight:500;
+    font-size:.95em;
+    text-decoration:underline;
+    text-decoration-style:dotted;
+    text-decoration-color:#8fbfb5;
+    text-underline-offset:2px;
+    cursor:help;
+  }
+  .device-ref-chip:hover {
+    color:#115e59;
+    background:rgba(15,118,110,.06);
+  }
   .history-row { padding:5px 0; border-bottom:1px solid #e2e8f0; font-size:13px; }
   .history-row:last-child { border-bottom:none; }
   .preview-toolbar { display:flex; gap:8px; flex-wrap:wrap; }
@@ -518,6 +538,19 @@
   let taskPromptMap = parseJsonFromScript('task_prompt_map_json');
   let systemPromptLabels = parseJsonFromScript('system_prompt_labels_json');
   let taskPromptLabels = parseJsonFromScript('task_prompt_labels_json');
+  const aiDeviceInfoRows = parseJsonFromScript('ai_device_info_json');
+  const aiDeviceInfoMap = Object.fromEntries((Array.isArray(aiDeviceInfoRows) ? aiDeviceInfoRows : []).map((item) => {
+    const deviceId = String((item || {}).device_id || '').trim();
+    return [deviceId, {
+      device_id: deviceId,
+      device_name: String((item || {}).device_name || '').trim(),
+      device_ip: String((item || {}).device_ip || (item || {}).ip || '').trim(),
+      vendor: String((item || {}).vendor || '').trim(),
+      status: String((item || {}).status || '').trim(),
+      log_source: String((item || {}).log_source || '').trim(),
+      hits: String((item || {}).hits_count || (item || {}).hits || '').trim(),
+    }];
+  }));
 
   function selectedModel(selectEl, customEl) {
     if (!selectEl) return '';
@@ -969,6 +1002,7 @@
   {% if ai_task %}
   const AI_TASK_ID = {{ ('"' ~ ai_task.task_id ~ '"') | safe }};
   const AI_WORKSPACE_STORAGE_KEY = `netlog.ai.workspace.v2.${AI_TASK_ID}`;
+  const AI_LAST_TASK_STORAGE_KEY = 'netlog.ai.last_task_id';
   let currentAnalysisId = null;
   let latestAnalysisText = '';
   let analysisPreviewData = null;
@@ -986,6 +1020,14 @@
       return data && typeof data === 'object' ? data : null;
     } catch (e) {
       return null;
+    }
+  }
+
+  function rememberLastAiTaskId() {
+    try {
+      if (AI_TASK_ID) window.localStorage.setItem(AI_LAST_TASK_STORAGE_KEY, AI_TASK_ID);
+    } catch (e) {
+      // ignore localStorage failures
     }
   }
 
@@ -1118,6 +1160,54 @@
     s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
     s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
     return s;
+  }
+
+  function enhanceDeviceRefs(root) {
+    if (!root) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const parent = node.parentElement;
+        if (!parent) return NodeFilter.FILTER_REJECT;
+        const tag = parent.tagName;
+        if (['A', 'CODE', 'PRE', 'SCRIPT', 'STYLE', 'TEXTAREA'].includes(tag)) return NodeFilter.FILTER_REJECT;
+        if (!String(node.nodeValue || '').match(/\bdev-\d+\b/)) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    const re = /\b(dev-\d+)\b/g;
+    nodes.forEach((node) => {
+      const source = String(node.nodeValue || '');
+      let match;
+      let last = 0;
+      let changed = false;
+      const frag = document.createDocumentFragment();
+      while ((match = re.exec(source)) !== null) {
+        const deviceId = match[1];
+        const info = aiDeviceInfoMap[deviceId];
+        if (!info) continue;
+        changed = true;
+        if (match.index > last) frag.appendChild(document.createTextNode(source.slice(last, match.index)));
+        const chip = document.createElement('span');
+        chip.className = 'device-ref-chip';
+        chip.textContent = info.device_name || deviceId;
+        chip.title = [
+          `device_id: ${info.device_id || deviceId}`,
+          `device_name: ${info.device_name || '-'}`,
+          `ip: ${info.device_ip || '-'}`,
+          `vendor: ${info.vendor || '-'}`,
+          `status: ${info.status || '-'}`,
+          `log_source: ${info.log_source || '-'}`,
+          `hits: ${info.hits || '-'}`,
+        ].join('\n');
+        frag.appendChild(chip);
+        last = match.index + deviceId.length;
+      }
+      if (!changed) return;
+      if (last < source.length) frag.appendChild(document.createTextNode(source.slice(last)));
+      node.parentNode.replaceChild(frag, node);
+    });
   }
 
   function renderMarkdown(mdText) {
@@ -1359,6 +1449,7 @@
     if (data.status === 'success' || data.status === 'failed') {
       latestAnalysisText = data.result || '';
       id('ai-output').innerHTML = renderMarkdown(data.result || data.error || '');
+      enhanceDeviceRefs(id('ai-output'));
       setAnalysisRunState(false);
       loadAnalysisHistory();
       writeAiWorkspaceState();
@@ -1563,6 +1654,7 @@
     latestAnalysisText = data.result || '';
     if (data.result || data.error) {
       id('ai-output').innerHTML = renderMarkdown(data.result || data.error || '');
+      enhanceDeviceRefs(id('ai-output'));
     }
     const p = Number(data.progress_percent || 0);
     if (data.progress_text || p > 0) {
@@ -1624,6 +1716,7 @@
     const eventName = (node.tagName === 'SELECT' || node.type === 'checkbox' || node.type === 'number') ? 'change' : 'input';
     on(fieldId, eventName, writeAiWorkspaceState);
   });
+  rememberLastAiTaskId();
   restoreAiWorkspaceState();
   syncAiDeviceSelectionUi();
   loadAnalysisHistory();

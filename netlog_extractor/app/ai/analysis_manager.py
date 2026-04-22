@@ -22,6 +22,7 @@ class AIAnalysisManager:
         self._tasks: dict[str, dict[str, Any]] = {}
         self._task_latest: dict[str, str] = {}
         self._async_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._summary_device_cache: dict[str, dict[str, dict[str, Any]]] = {}
 
     def _now(self) -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -66,6 +67,64 @@ class AIAnalysisManager:
         except Exception:
             return {}
         return data if isinstance(data, dict) else {}
+
+    def _read_task_summary_devices(self, task_id: str) -> dict[str, dict[str, Any]]:
+        if task_id in self._summary_device_cache:
+            return self._summary_device_cache[task_id]
+        summary_path = self.output_root / task_id / "summary.json"
+        mapping: dict[str, dict[str, Any]] = {}
+        if summary_path.exists():
+            try:
+                data = json.loads(summary_path.read_text(encoding="utf-8"))
+                for item in list((data or {}).get("devices") or []):
+                    if not isinstance(item, dict):
+                        continue
+                    device_id = str(item.get("device_id") or "").strip()
+                    if device_id:
+                        mapping[device_id] = item
+            except Exception:
+                mapping = {}
+        self._summary_device_cache[task_id] = mapping
+        return mapping
+
+    def _device_identity(self, task_id: str, device_id: str, fallback_ip: str = "") -> dict[str, str]:
+        summary_item = self._read_task_summary_devices(task_id).get(device_id, {})
+        meta_data = self._read_device_meta(task_id, device_id)
+        device_name = str(
+            summary_item.get("device_name")
+            or meta_data.get("device_name")
+            or (((meta_data.get("sql_device_meta") or {}) if isinstance(meta_data.get("sql_device_meta"), dict) else {}).get("device_name"))
+            or ""
+        ).strip()
+        device_ip = str(
+            summary_item.get("device_ip")
+            or meta_data.get("device_ip")
+            or meta_data.get("ip")
+            or fallback_ip
+            or ""
+        ).strip()
+        vendor = str(
+            summary_item.get("vendor")
+            or meta_data.get("vendor")
+            or (((meta_data.get("sql_device_meta") or {}) if isinstance(meta_data.get("sql_device_meta"), dict) else {}).get("vendor"))
+            or ""
+        ).strip()
+        parts = []
+        if device_name:
+            parts.append(device_name)
+        if device_ip:
+            parts.append(device_ip)
+        parts.append(device_id)
+        display = " | ".join([x for x in parts if x])
+        short_display = device_name or device_ip or device_id
+        return {
+            "device_id": device_id,
+            "device_name": device_name,
+            "device_ip": device_ip,
+            "vendor": vendor,
+            "display": display or device_id,
+            "short_display": short_display or device_id,
+        }
 
     def _persist_analysis_snapshot(self, task: dict[str, Any]) -> None:
         task_id = str(task.get("task_id", "") or "").strip()
@@ -246,11 +305,11 @@ class AIAnalysisManager:
             return "final_only"
         return raw
 
-    def _compact_runtime_prompt(self, base_task_prompt: str, *, scope: str, device_ip: str, device_id: str, chunk_index: int | None = None, chunk_total: int | None = None) -> str:
+    def _compact_runtime_prompt(self, base_task_prompt: str, *, scope: str, device_label: str, device_ip: str, device_id: str, chunk_index: int | None = None, chunk_total: int | None = None) -> str:
         suffix_lines = [
             "[Runtime mode]",
             f"- Scope: {scope}",
-            f"- Device: {device_ip} ({device_id})",
+            f"- Device: {device_label}",
         ]
         if chunk_index is not None and chunk_total is not None:
             suffix_lines.append(f"- Chunk: {chunk_index}/{chunk_total}")
@@ -300,7 +359,9 @@ class AIAnalysisManager:
             compact_devices.append(
                 {
                     "device_id": item.get("device_id", ""),
+                    "device_name": item.get("device_name", ""),
                     "device_ip": item.get("device_ip", ""),
+                    "device_label": item.get("device_label", ""),
                     "verdict": item.get("verdict", ""),
                     "anomalies": list(item.get("anomalies", []) or [])[:4],
                     "evidence": list(item.get("evidence", []) or [])[:5],
@@ -313,7 +374,8 @@ class AIAnalysisManager:
         lines: list[str] = ["# Device Summaries"]
         for item in device_summaries:
             lines.append("")
-            lines.append(f"## {item.get('device_ip', '-') } ({item.get('device_id', '-')})")
+            label = str(item.get('device_label') or item.get('device_name') or item.get('device_ip') or item.get('device_id') or '-')
+            lines.append(f"## {label}")
             verdict = str(item.get("verdict", "") or "").strip()
             if verdict:
                 lines.append(f"- Verdict: {verdict}")
@@ -417,7 +479,8 @@ class AIAnalysisManager:
         return_details: bool = False,
     ) -> str:
         dev_dir = self.output_root / task_id / device_id
-        sections = [f"# Device {device_id}"]
+        identity = self._device_identity(task_id, device_id)
+        sections = [f"# Device {identity.get('display', device_id)}"]
         attached_sql_sections: list[str] = []
         meta_path = dev_dir / "meta.json"
         filtered_path = dev_dir / "filtered.log"
@@ -810,6 +873,7 @@ class AIAnalysisManager:
                 compression_strategy=compression_strategy,
                 max_tokens_per_chunk=max_tokens_per_chunk,
             )
+            preview_identity = self._device_identity(task_id, preview_id)
             device_details = self._build_device_report_text(
                 task_id,
                 preview_id,
@@ -841,11 +905,12 @@ class AIAnalysisManager:
                     units.append(
                         {
                             "scope": "device_chunk",
-                            "title": f"{preview_id} chunk {idx+1}/{len(chunks)}",
+                            "title": f"{preview_identity.get('short_display', preview_id)} chunk {idx+1}/{len(chunks)}",
                             "task_prompt_text": self._compact_runtime_prompt(
                                 llm_base.get("task_prompt_text", ""),
                                 scope="device_chunk",
-                                device_ip=preview_id,
+                                device_label=preview_identity.get("display", preview_id),
+                                device_ip=preview_identity.get("device_ip", preview_id),
                                 device_id=preview_id,
                                 chunk_index=idx + 1,
                                 chunk_total=len(chunks),
@@ -860,11 +925,12 @@ class AIAnalysisManager:
                     units.append(
                         {
                             "scope": "device_summary",
-                            "title": f"{preview_id} summary merge payload",
+                            "title": f"{preview_identity.get('short_display', preview_id)} summary merge payload",
                             "task_prompt_text": self._compact_runtime_prompt(
                                 llm_base.get("task_prompt_text", ""),
                                 scope="device_summary",
-                                device_ip=preview_id,
+                                device_label=preview_identity.get("display", preview_id),
+                                device_ip=preview_identity.get("device_ip", preview_id),
                                 device_id=preview_id,
                             ),
                             "report_text": merged_text,
@@ -876,11 +942,12 @@ class AIAnalysisManager:
                 units.append(
                     {
                         "scope": "device_single",
-                        "title": f"{preview_id} device payload",
+                        "title": f"{preview_identity.get('short_display', preview_id)} device payload",
                         "task_prompt_text": self._compact_runtime_prompt(
                             llm_base.get("task_prompt_text", ""),
                             scope="device_single",
-                            device_ip=preview_id,
+                            device_label=preview_identity.get("display", preview_id),
+                            device_ip=preview_identity.get("device_ip", preview_id),
                             device_id=preview_id,
                         ),
                         "report_text": device_text,
@@ -1153,6 +1220,7 @@ class AIAnalysisManager:
                     d = plan["device"]
                     d_id = str(d.get("device_id") or "")
                     d_ip = str(d.get("ip") or "-")
+                    d_identity = self._device_identity(task_id, d_id, fallback_ip=d_ip)
                     d_idx = int(d.get("index") or 1)
                     chunks: list[str] = plan["chunks"]
                     plan_fragmented = bool(plan.get("fragmented"))
@@ -1175,7 +1243,8 @@ class AIAnalysisManager:
                                 llm["task_prompt_text"] = self._compact_runtime_prompt(
                                     llm_base.get("task_prompt_text", ""),
                                     scope="device_chunk",
-                                    device_ip=d_ip,
+                                    device_label=d_identity.get("display", d_ip),
+                                    device_ip=d_identity.get("device_ip", d_ip),
                                     device_id=d_id,
                                     chunk_index=i + 1,
                                     chunk_total=len(chunks),
@@ -1229,7 +1298,8 @@ class AIAnalysisManager:
                                 llm["task_prompt_text"] = self._compact_runtime_prompt(
                                     llm_base.get("task_prompt_text", ""),
                                     scope="device_summary",
-                                    device_ip=d_ip,
+                                    device_label=d_identity.get("display", d_ip),
+                                    device_ip=d_identity.get("device_ip", d_ip),
                                     device_id=d_id,
                                 )
                                 merged_text = "\n\n".join(
@@ -1252,7 +1322,9 @@ class AIAnalysisManager:
                                 device_summaries.append(
                                     {
                                         "device_id": d_id,
-                                        "device_ip": d_ip,
+                                        "device_name": d_identity.get("device_name", ""),
+                                        "device_ip": d_identity.get("device_ip", d_ip),
+                                        "device_label": d_identity.get("display", d_ip),
                                         "verdict": (parsed or {}).get("verdict", ""),
                                         "anomalies": list((parsed or {}).get("anomalies", []) or []),
                                         "evidence": list((parsed or {}).get("evidence", []) or []),
@@ -1270,7 +1342,9 @@ class AIAnalysisManager:
                                 device_summaries.append(
                                     {
                                         "device_id": d_id,
-                                        "device_ip": d_ip,
+                                        "device_name": d_identity.get("device_name", ""),
+                                        "device_ip": d_identity.get("device_ip", d_ip),
+                                        "device_label": d_identity.get("display", d_ip),
                                         "verdict": (parsed or {}).get("verdict", ""),
                                         "anomalies": list((parsed or {}).get("anomalies", []) or []),
                                         "evidence": list((parsed or {}).get("evidence", []) or []),
