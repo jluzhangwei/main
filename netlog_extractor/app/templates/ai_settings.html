@@ -968,6 +968,7 @@
 
   {% if ai_task %}
   const AI_TASK_ID = {{ ('"' ~ ai_task.task_id ~ '"') | safe }};
+  const AI_WORKSPACE_STORAGE_KEY = `netlog.ai.workspace.v2.${AI_TASK_ID}`;
   let currentAnalysisId = null;
   let latestAnalysisText = '';
   let analysisPreviewData = null;
@@ -975,6 +976,131 @@
   let currentPreviewDeviceId = ({% if ai_task_devices_view %}{{ ('"' ~ ai_task_devices_view[0].device_id ~ '"') | safe }}{% else %}''{% endif %}) || '';
   let currentDeviceFilter = '';
   const selectedAiDeviceIds = new Set(({% if ai_task_devices_view %}{{ ai_task_devices_view | map(attribute='device_id') | list | tojson }}{% else %}[]{% endif %}) || []);
+  let workspaceRestoreDone = false;
+
+  function readAiWorkspaceState() {
+    try {
+      const raw = window.localStorage.getItem(AI_WORKSPACE_STORAGE_KEY);
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      return data && typeof data === 'object' ? data : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function writeAiWorkspaceState() {
+    try {
+      const state = {
+        task_id: AI_TASK_ID,
+        provider: id('provider_select')?.value || '',
+        chatgpt_model_select: id('chatgpt_model_select')?.value || '',
+        chatgpt_model_custom: id('chatgpt_model_custom')?.value || '',
+        codex_model_select: id('codex_model_select')?.value || '',
+        codex_model_custom: id('codex_model_custom')?.value || '',
+        codex_cli_path: id('codex_cli_path')?.value || '',
+        deepseek_model_select: id('deepseek_model_select')?.value || '',
+        deepseek_model_custom: id('deepseek_model_custom')?.value || '',
+        qwen_model_select: id('qwen_model_select')?.value || '',
+        qwen_model_custom: id('qwen_model_custom')?.value || '',
+        gemini_model_select: id('gemini_model_select')?.value || '',
+        gemini_model_custom: id('gemini_model_custom')?.value || '',
+        nvidia_model_select: id('nvidia_model_select')?.value || '',
+        nvidia_model_custom: id('nvidia_model_custom')?.value || '',
+        local_base_url: id('local_base_url')?.value || '',
+        local_model_select: id('local_model_select')?.value || '',
+        local_model_custom: id('local_model_custom')?.value || '',
+        selected_system_prompt: id('selected_system_prompt')?.value || '',
+        selected_task_prompt: id('selected_task_prompt')?.value || '',
+        system_prompt_extra: id('system_prompt_extra')?.value || '',
+        task_prompt_extra: id('task_prompt_extra')?.value || '',
+        batched_analysis: !!id('batched_analysis')?.checked,
+        fragmented_analysis: !!id('fragmented_analysis')?.checked,
+        text_compression_strategy: id('text_compression_strategy')?.value || 'template_vars',
+        sql_log_inclusion_mode: id('sql_log_inclusion_mode')?.value || 'final_only',
+        analysis_parallelism: id('analysis_parallelism')?.value || '2',
+        chunk_parallelism: id('chunk_parallelism')?.value || '1',
+        max_tokens_per_chunk: id('max_tokens_per_chunk')?.value || '4500',
+        max_chunks_per_device: id('max_chunks_per_device')?.value || '12',
+        chunk_strategy: id('chunk_strategy')?.value || 'hybrid',
+        analysis_retries: id('analysis_retries')?.value || '1',
+        llm_call_timeout_sec: id('llm_call_timeout_sec')?.value || '240',
+        analysis_preview_strategy: id('analysis-preview-strategy')?.value || 'use_current',
+        selected_device_ids: Array.from(selectedAiDeviceIds),
+        current_preview_device_id: currentPreviewDeviceId || '',
+        current_device_filter: currentDeviceFilter || '',
+        analysis_precheck_text: id('analysis-precheck-box')?.textContent || '',
+      };
+      window.localStorage.setItem(AI_WORKSPACE_STORAGE_KEY, JSON.stringify(state));
+    } catch (e) {
+      // ignore localStorage failures
+    }
+  }
+
+  function restoreAiWorkspaceState() {
+    const state = readAiWorkspaceState();
+    if (!state || state.task_id !== AI_TASK_ID) return;
+    const setValue = (key, fallback = '') => {
+      const node = id(key);
+      if (node && Object.prototype.hasOwnProperty.call(state, key)) {
+        node.value = state[key] == null ? fallback : String(state[key]);
+      }
+    };
+    const setChecked = (key) => {
+      const node = id(key);
+      if (node && Object.prototype.hasOwnProperty.call(state, key)) {
+        node.checked = !!state[key];
+      }
+    };
+    setValue('provider_select');
+    setValue('chatgpt_model_select');
+    setValue('chatgpt_model_custom');
+    setValue('codex_model_select');
+    setValue('codex_model_custom');
+    setValue('codex_cli_path');
+    setValue('deepseek_model_select');
+    setValue('deepseek_model_custom');
+    setValue('qwen_model_select');
+    setValue('qwen_model_custom');
+    setValue('gemini_model_select');
+    setValue('gemini_model_custom');
+    setValue('nvidia_model_select');
+    setValue('nvidia_model_custom');
+    setValue('local_base_url');
+    setValue('local_model_select');
+    setValue('local_model_custom');
+    setValue('selected_system_prompt');
+    setValue('selected_task_prompt');
+    setValue('system_prompt_extra');
+    setValue('task_prompt_extra');
+    setChecked('batched_analysis');
+    setChecked('fragmented_analysis');
+    setValue('text_compression_strategy', 'template_vars');
+    setValue('sql_log_inclusion_mode', 'final_only');
+    setValue('analysis_parallelism', '2');
+    setValue('chunk_parallelism', '1');
+    setValue('max_tokens_per_chunk', '4500');
+    setValue('max_chunks_per_device', '12');
+    setValue('chunk_strategy', 'hybrid');
+    setValue('analysis_retries', '1');
+    setValue('llm_call_timeout_sec', '240');
+    setValue('analysis-preview-strategy', 'use_current');
+
+    const savedIds = Array.isArray(state.selected_device_ids) ? state.selected_device_ids.map((x) => String(x || '').trim()).filter(Boolean) : [];
+    if (savedIds.length) {
+      selectedAiDeviceIds.clear();
+      savedIds.forEach((x) => selectedAiDeviceIds.add(x));
+    }
+    currentPreviewDeviceId = String(state.current_preview_device_id || currentPreviewDeviceId || '');
+    currentDeviceFilter = String(state.current_device_filter || '');
+    if (id('ai-device-filter')) id('ai-device-filter').value = currentDeviceFilter;
+    const precheck = String(state.analysis_precheck_text || '').trim();
+    if (precheck && id('analysis-precheck-box')) {
+      id('analysis-precheck-box').textContent = precheck;
+    }
+    updateProviderSection();
+    updateProviderIcon();
+  }
 
   function escapeHtml(text) {
     return String(text || '')
@@ -1102,6 +1228,7 @@
           allBox.checked = allItems.length > 0 && allItems.every((item) => item.checked);
           allBox.indeterminate = allItems.some((item) => item.checked) && !allBox.checked;
         }
+        writeAiWorkspaceState();
       });
     });
     if (allBox) {
@@ -1121,6 +1248,7 @@
           });
         }
         allBox.indeterminate = false;
+        writeAiWorkspaceState();
       });
     }
     document.querySelectorAll('.ai-device-row').forEach((row) => {
@@ -1129,6 +1257,7 @@
         if (row.classList.contains('is-hidden-by-filter')) return;
         currentPreviewDeviceId = row.dataset.deviceId || '';
         document.querySelectorAll('.ai-device-row').forEach((r) => r.classList.toggle('is-current', r === row));
+        writeAiWorkspaceState();
       });
     });
     applyAiDeviceFilter();
@@ -1208,6 +1337,7 @@
     }
     currentAnalysisId = data.analysis_id;
     refreshAiStatusModelLine(`${UI_LANG === 'en' ? 'running' : '运行中'} (${currentAnalysisId})`);
+    writeAiWorkspaceState();
     setTimeout(pollAnalysis, 1000);
   }
 
@@ -1231,8 +1361,10 @@
       id('ai-output').innerHTML = renderMarkdown(data.result || data.error || '');
       setAnalysisRunState(false);
       loadAnalysisHistory();
+      writeAiWorkspaceState();
       return;
     }
+    writeAiWorkspaceState();
     setTimeout(pollAnalysis, 2000);
   }
 
@@ -1252,6 +1384,7 @@
       currentAnalysisId = String(data.analysis_id || currentAnalysisId || '');
       setAnalysisRunState(false);
       loadAnalysisHistory();
+      writeAiWorkspaceState();
     } catch (e) {
       refreshAiStatusModelLine(`${UI_LANG === 'en' ? 'stop failed' : '停止失败'}: ${e}`);
       setAnalysisRunState(!!currentAnalysisId);
@@ -1289,9 +1422,11 @@
     const data = await res.json();
     if (!res.ok || !data.ok) {
       if (box) box.textContent = `${UI_LANG === 'en' ? 'Estimate failed' : '分析预估失败'}: ${data.error || data.detail || '-'}`;
+      writeAiWorkspaceState();
       return;
     }
     if (box) box.textContent = data.line || '';
+    writeAiWorkspaceState();
   }
 
   function renderPreviewUnit() {
@@ -1367,6 +1502,7 @@
     analysisPreviewData = data;
     analysisPreviewIndex = 0;
     renderPreviewUnit();
+    writeAiWorkspaceState();
   }
 
   function saveAnalysis() {
@@ -1414,6 +1550,7 @@
       if (activeData && activeData.active && activeData.analysis_id) {
         currentAnalysisId = String(activeData.analysis_id);
         id('ai-start-btn').disabled = true;
+        writeAiWorkspaceState();
         setTimeout(pollAnalysis, 600);
         return;
       }
@@ -1434,6 +1571,7 @@
     }
     refreshAiStatusModelLine(`${data.status || '-'} | provider=${data.provider_used || '-'} | model=${data.model_used || '-'}`);
     setAnalysisRunState(String(data.status || '') === 'running');
+    writeAiWorkspaceState();
   }
 
   on('analysis-precheck-btn', 'click', runPrecheck);
@@ -1470,12 +1608,30 @@
     event.preventDefault();
     currentDeviceFilter = id('ai-device-filter')?.value || '';
     applyAiDeviceFilter();
+    writeAiWorkspaceState();
   });
+  [
+    'provider_select','chatgpt_model_select','chatgpt_model_custom','codex_model_select','codex_model_custom',
+    'codex_cli_path','deepseek_model_select','deepseek_model_custom','qwen_model_select','qwen_model_custom',
+    'gemini_model_select','gemini_model_custom','nvidia_model_select','nvidia_model_custom','local_base_url',
+    'local_model_select','local_model_custom','selected_system_prompt','selected_task_prompt','system_prompt_extra',
+    'task_prompt_extra','batched_analysis','fragmented_analysis','text_compression_strategy','sql_log_inclusion_mode',
+    'analysis_parallelism','chunk_parallelism','max_tokens_per_chunk','max_chunks_per_device','chunk_strategy',
+    'analysis_retries','llm_call_timeout_sec','analysis-preview-strategy'
+  ].forEach((fieldId) => {
+    const node = id(fieldId);
+    if (!node) return;
+    const eventName = (node.tagName === 'SELECT' || node.type === 'checkbox' || node.type === 'number') ? 'change' : 'input';
+    on(fieldId, eventName, writeAiWorkspaceState);
+  });
+  restoreAiWorkspaceState();
   syncAiDeviceSelectionUi();
   loadAnalysisHistory();
   restoreAnalysisState();
   setAnalysisRunState(false);
   refreshAiStatusModelLine(UI_LANG === 'en' ? 'not started' : '未启动');
+  workspaceRestoreDone = true;
+  window.addEventListener('beforeunload', writeAiWorkspaceState);
   {% endif %}
 
   updateProviderSection();
