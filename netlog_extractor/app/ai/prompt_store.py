@@ -14,6 +14,19 @@ TASK_DEFAULT_PROMPTS_DIR = PROMPTS_DIR / "task_default"
 TASK_CUSTOM_PROMPTS_DIR = PROMPTS_DIR / "task_custom"
 
 DEFAULT_SYSTEM_PROMPTS: dict[str, str] = {
+    "网络日志诊断专家-平衡模式": (
+        "你是资深网络故障分析工程师。目标是从输入的网络设备日志与元数据中发现异常、"
+        "识别事件之间的关联，并给出有证据支撑的判断。\n"
+        "优先基于日志事实，不要被固定检查项限制；如果发现未预设但重要的异常，也应指出。\n"
+        "可以给出根因判断、影响面和处置建议，但要区分“已证实”与“合理推断”。\n"
+        "输出应简洁、专业、可执行，避免泛泛而谈。"
+    ),
+    "网络日志诊断专家-问题发现": (
+        "你是网络问题发现与排障助手。请从日志中主动识别值得关注的网络问题，"
+        "包括但不限于物理链路、路由协议、邻居会话、控制平面、转发表容量、"
+        "资源耗尽、时钟异常、告警恢复不一致等。\n"
+        "不要只围绕已知关键词复述，要找出真正影响稳定性的异常模式与时间关联。"
+    ),
     "网络日志诊断专家-严格模式": (
         "你是资深网络设备日志诊断专家。仅基于输入日志与元数据给出结论，不得臆测。\n"
         "必须输出：\n"
@@ -31,6 +44,29 @@ DEFAULT_SYSTEM_PROMPTS: dict[str, str] = {
 }
 
 DEFAULT_TASK_PROMPTS: dict[str, str] = {
+    "网络问题发现-通用分析": (
+        "请阅读任务 summary、各设备日志和时间线，主动发现网络问题。\n"
+        "重点回答：\n"
+        "- 哪些异常最值得关注\n"
+        "- 哪些设备或事件存在关联\n"
+        "- 哪些现象是结果，哪些更像触发点\n"
+        "- 当前最应优先处理的风险是什么\n"
+        "不要被固定类别限制，如果日志里出现其他重要问题，也应纳入结论。"
+    ),
+    "控制平面与路由异常": (
+        "重点关注控制平面与路由相关异常，例如 BGP/OSPF/ISIS 邻居波动、"
+        "路由超限、FIB 下发失败、收敛异常、邻居状态反复切换、控制平面资源告警。\n"
+        "请识别是否存在上游触发点、扩散影响和恢复迹象。"
+    ),
+    "链路与物理层稳定性": (
+        "重点关注物理链路、接口、聚合口、光模块、局端/远端 fault、"
+        "up/down 抖动、错误累计与恢复过程。\n"
+        "请分析异常是否集中在特定接口、设备、时间窗口或上下游链路。"
+    ),
+    "资源与容量风险分析": (
+        "重点关注 CPU、内存、FIB、路由表、前缀数量、队列、会话规模等资源与容量风险。\n"
+        "请判断这些告警是短时波动还是持续性风险，并指出最可能影响业务稳定性的部分。"
+    ),
     "日志异常诊断-标准版": (
         "请基于任务 summary 与各设备 filtered/raw 日志，输出：\n"
         "- Top 风险事件\n"
@@ -49,17 +85,37 @@ DEFAULT_TASK_PROMPTS: dict[str, str] = {
 }
 
 EN_SYSTEM_PROMPT_NAMES: dict[str, str] = {
+    "网络日志诊断专家-平衡模式": "Network Log Diagnosis Expert - Balanced",
+    "网络日志诊断专家-问题发现": "Network Log Diagnosis Expert - Problem Discovery",
     "网络日志诊断专家-严格模式": "Network Log Diagnosis Expert - Strict",
     "网络日志诊断专家-变更评审": "Network Log Diagnosis Expert - Change Review",
 }
 
 EN_TASK_PROMPT_NAMES: dict[str, str] = {
+    "网络问题发现-通用分析": "Network Issue Discovery - General",
+    "控制平面与路由异常": "Control Plane & Routing Issues",
+    "链路与物理层稳定性": "Link & Physical Layer Stability",
+    "资源与容量风险分析": "Resource & Capacity Risk Analysis",
     "日志异常诊断-标准版": "Log Anomaly Diagnosis - Standard",
     "BGP会话波动专项": "BGP Session Flap Analysis",
     "链路抖动与接口告警专项": "Link Flap & Interface Alarm Analysis",
 }
 
 EN_SYSTEM_PROMPTS: dict[str, str] = {
+    "网络日志诊断专家-平衡模式": (
+        "You are a senior network fault analysis engineer. Your goal is to discover anomalies, "
+        "connect related events, and provide evidence-backed conclusions from network logs and metadata.\n"
+        "Prioritize observable facts, but do not be constrained by a fixed checklist; if you find an important "
+        "issue outside the expected categories, call it out.\n"
+        "You may provide likely cause, impact, and actions, but clearly separate confirmed facts from reasonable inference.\n"
+        "Keep the output concise, technical, and actionable."
+    ),
+    "网络日志诊断专家-问题发现": (
+        "You are a network issue discovery and troubleshooting assistant. Proactively identify meaningful problems "
+        "from the logs, including but not limited to physical links, routing protocols, neighbor sessions, control plane, "
+        "forwarding/resource exhaustion, timing anomalies, and inconsistent clear/recovery events.\n"
+        "Do not simply repeat known keywords. Find the patterns and time relationships that actually affect stability."
+    ),
     "网络日志诊断专家-严格模式": (
         "You are a senior network device log diagnosis expert. "
         "Only draw conclusions from provided logs and metadata; no speculation.\n"
@@ -79,6 +135,30 @@ EN_SYSTEM_PROMPTS: dict[str, str] = {
 }
 
 EN_TASK_PROMPTS: dict[str, str] = {
+    "网络问题发现-通用分析": (
+        "Read the task summary, device logs, and timelines, then proactively identify network issues.\n"
+        "Focus on:\n"
+        "- which anomalies matter most\n"
+        "- which devices/events are related\n"
+        "- which symptoms look downstream versus likely triggers\n"
+        "- which risks should be handled first\n"
+        "Do not constrain yourself to fixed categories; include any other important issue visible in the logs."
+    ),
+    "控制平面与路由异常": (
+        "Focus on control-plane and routing-related issues such as BGP/OSPF/ISIS neighbor instability, "
+        "route limits, FIB programming failures, convergence issues, repeated adjacency transitions, "
+        "and control-plane resource alarms.\n"
+        "Identify likely triggers, blast radius, and recovery signals."
+    ),
+    "链路与物理层稳定性": (
+        "Focus on physical links, interfaces, bundles, optics, local/remote fault, up/down flaps, "
+        "error accumulation, and recovery behavior.\n"
+        "Determine whether anomalies cluster by interface, device, time window, or upstream/downstream path."
+    ),
+    "资源与容量风险分析": (
+        "Focus on CPU, memory, FIB, routing table, prefix count, queues, session scale, and other resource/capacity risks.\n"
+        "Determine whether the alarms are short-lived noise or sustained risk, and identify what is most likely to impact stability."
+    ),
     "日志异常诊断-标准版": (
         "Based on task summary and each device filtered/raw logs, output:\n"
         "- Top risk events\n"
@@ -95,6 +175,23 @@ EN_TASK_PROMPTS: dict[str, str] = {
         "Provide troubleshooting path and validation steps for link stability."
     ),
 }
+
+SYSTEM_PROMPT_ORDER = [
+    "网络日志诊断专家-平衡模式",
+    "网络日志诊断专家-问题发现",
+    "网络日志诊断专家-严格模式",
+    "网络日志诊断专家-变更评审",
+]
+
+TASK_PROMPT_ORDER = [
+    "网络问题发现-通用分析",
+    "控制平面与路由异常",
+    "链路与物理层稳定性",
+    "资源与容量风险分析",
+    "BGP会话波动专项",
+    "链路抖动与接口告警专项",
+    "日志异常诊断-标准版",
+]
 
 
 def sanitize_prompt_name(name: str) -> str:
@@ -180,9 +277,12 @@ def _is_en(lang: str | None) -> bool:
 def localized_prompt_catalog(kind: str, lang: str | None = None) -> dict[str, str]:
     kind = (kind or "").strip().lower()
     catalog = merged_system_prompt_catalog() if kind == "system" else merged_task_prompt_catalog()
+    order = SYSTEM_PROMPT_ORDER if kind == "system" else TASK_PROMPT_ORDER
+    ordered_keys = [k for k in order if k in catalog] + [k for k in catalog.keys() if k not in order]
+    ordered_catalog = {k: catalog[k] for k in ordered_keys}
     if not _is_en(lang):
-        return catalog
-    translated = dict(catalog)
+        return ordered_catalog
+    translated = dict(ordered_catalog)
     overrides = EN_SYSTEM_PROMPTS if kind == "system" else EN_TASK_PROMPTS
     for k, v in overrides.items():
         if k in translated:
@@ -193,11 +293,13 @@ def localized_prompt_catalog(kind: str, lang: str | None = None) -> dict[str, st
 def localized_prompt_labels(kind: str, lang: str | None = None) -> dict[str, str]:
     kind = (kind or "").strip().lower()
     catalog = merged_system_prompt_catalog() if kind == "system" else merged_task_prompt_catalog()
+    order = SYSTEM_PROMPT_ORDER if kind == "system" else TASK_PROMPT_ORDER
+    ordered_keys = [k for k in order if k in catalog] + [k for k in catalog.keys() if k not in order]
     if not _is_en(lang):
-        return {k: k for k in catalog.keys()}
+        return {k: k for k in ordered_keys}
     name_map = EN_SYSTEM_PROMPT_NAMES if kind == "system" else EN_TASK_PROMPT_NAMES
     out: dict[str, str] = {}
-    for k in catalog.keys():
+    for k in ordered_keys:
         out[k] = name_map.get(k, k)
     return out
 

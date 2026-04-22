@@ -148,6 +148,7 @@ def _merge_cfg(cfg: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
                 incoming.get("selected_system_prompt", cfg.get("selected_system_prompt", "")) or ""
             ),
             "selected_task_prompt": str(incoming.get("selected_task_prompt", cfg.get("selected_task_prompt", "")) or ""),
+            "analysis_language": ("en" if str(incoming.get("analysis_language", cfg.get("analysis_language", "zh")) or "zh").strip().lower().startswith("en") else "zh"),
             "system_prompt_extra": str(incoming.get("system_prompt_extra", cfg.get("system_prompt_extra", "")) or ""),
             "task_prompt_extra": str(incoming.get("task_prompt_extra", cfg.get("task_prompt_extra", "")) or ""),
             "batched_analysis": _to_bool(incoming.get("batched_analysis", cfg.get("batched_analysis", 0))),

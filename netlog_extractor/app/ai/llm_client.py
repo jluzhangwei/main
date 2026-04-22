@@ -29,6 +29,16 @@ QWEN_CN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 QWEN_INTL_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 
 
+def _normalize_analysis_language(lang: str | None) -> str:
+    return "en" if str(lang or "").strip().lower().startswith("en") else "zh"
+
+
+def _localized_prompt_wrapper(lang: str) -> tuple[str, str, str]:
+    if _normalize_analysis_language(lang) == "en":
+        return "System Prompt", "Task Prompt", "Inspection Data"
+    return "系统提示词", "任务提示词", "巡检数据"
+
+
 def _normalize_api_key(api_key: str) -> str:
     key = str(api_key or "").strip()
     if key.lower().startswith("bearer "):
@@ -233,15 +243,27 @@ def _run_codex_local(
     system_prompt: str,
     task_prompt: str,
     report_text: str,
+    analysis_language: str = "en",
     timeout_sec: int = 240,
 ):
     cli = _resolve_codex_cli(cli_path)
+    lang = _normalize_analysis_language(analysis_language)
+    system_header, task_header, data_header = _localized_prompt_wrapper(lang)
+    if lang == "en":
+        preamble = (
+            "You are running in non-interactive Codex CLI mode for network log diagnosis.\n"
+            "Do not ask follow-up questions. Do not request tools. Provide the final analysis only.\n\n"
+        )
+    else:
+        preamble = (
+            "你正在以非交互模式运行 Codex CLI，用于网络日志诊断。\n"
+            "不要追问，不要请求工具，只输出最终分析结果。\n\n"
+        )
     prompt = (
-        "You are running in non-interactive Codex CLI mode for network log diagnosis.\n"
-        "Do not ask follow-up questions. Do not request tools. Provide the final analysis only.\n\n"
-        f"[System Prompt]\n{system_prompt or DEFAULT_SYSTEM_PROMPT}\n\n"
-        f"[Task Prompt]\n{task_prompt}\n\n"
-        f"[Inspection Data]\n{report_text}\n"
+        preamble
+        + f"[{system_header}]\n{system_prompt or DEFAULT_SYSTEM_PROMPT}\n\n"
+        + f"[{task_header}]\n{task_prompt}\n\n"
+        + f"[{data_header}]\n{report_text}\n"
     )
     cmd = [
         cli,
@@ -298,9 +320,21 @@ def test_codex_local_connection(model: str = DEFAULT_CODEX_MODEL, cli_path: str 
     return f"Codex Local 连接成功，model={model or DEFAULT_CODEX_MODEL} cli={cli}"
 
 
-def _run_openai_compatible(base_url: str, api_key: str, model: str, system_prompt: str, task_prompt: str, report_text: str):
+def _run_openai_compatible(
+    base_url: str,
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    task_prompt: str,
+    report_text: str,
+    analysis_language: str = "en",
+):
     system_text = system_prompt or DEFAULT_SYSTEM_PROMPT
-    user_text = f"Task Requirements:\n{task_prompt}\n\nInspection Data:\n{report_text}"
+    lang = _normalize_analysis_language(analysis_language)
+    if lang == "en":
+        user_text = f"Task Requirements:\n{task_prompt}\n\nInspection Data:\n{report_text}"
+    else:
+        user_text = f"任务要求：\n{task_prompt}\n\n巡检数据：\n{report_text}"
     body = {
         "model": model,
         "temperature": 0.2,
@@ -322,22 +356,33 @@ def run_analysis(llm: dict[str, str], report_text: str):
     provider = llm.get("provider", "chatgpt")
     system_prompt = llm.get("system_prompt_text", "")
     task_prompt = llm.get("task_prompt_text", "")
+    analysis_language = _normalize_analysis_language(llm.get("analysis_language", "zh"))
 
     if provider == "local":
         base = (llm.get("local_base_url") or "").rstrip("/") + "/v1"
         model = llm.get("local_model") or DEFAULT_LOCAL_MODEL
-        return _run_openai_compatible(base, "", model, system_prompt, task_prompt, report_text)
+        return _run_openai_compatible(base, "", model, system_prompt, task_prompt, report_text, analysis_language)
     if provider == "codex_local":
         model = llm.get("codex_model") or DEFAULT_CODEX_MODEL
         cli_path = llm.get("codex_cli_path") or DEFAULT_CODEX_CLI_PATH
         timeout_sec = int(str(llm.get("llm_call_timeout_sec") or "240") or "240")
-        return _run_codex_local(cli_path, model, system_prompt, task_prompt, report_text, timeout_sec=timeout_sec)
+        return _run_codex_local(
+            cli_path,
+            model,
+            system_prompt,
+            task_prompt,
+            report_text,
+            analysis_language=analysis_language,
+            timeout_sec=timeout_sec,
+        )
     if provider == "deepseek":
         key = llm.get("api_key", "")
         if not key:
             raise RuntimeError("DeepSeek API Key not set")
         model = llm.get("deepseek_model") or DEFAULT_DEEPSEEK_MODEL
-        return _run_openai_compatible("https://api.deepseek.com/v1", key, model, system_prompt, task_prompt, report_text)
+        return _run_openai_compatible(
+            "https://api.deepseek.com/v1", key, model, system_prompt, task_prompt, report_text, analysis_language
+        )
     if provider == "qwen":
         key = _normalize_api_key(llm.get("api_key", ""))
         if not key:
@@ -358,6 +403,7 @@ def run_analysis(llm: dict[str, str], report_text: str):
                     system_prompt,
                     task_prompt,
                     report_text,
+                    analysis_language,
                 )
             except Exception as exc:
                 last_exc = exc
@@ -367,7 +413,9 @@ def run_analysis(llm: dict[str, str], report_text: str):
         if not key:
             raise RuntimeError("NVIDIA API Key not set")
         model = llm.get("nvidia_model") or DEFAULT_NVIDIA_MODEL
-        return _run_openai_compatible("https://integrate.api.nvidia.com/v1", key, model, system_prompt, task_prompt, report_text)
+        return _run_openai_compatible(
+            "https://integrate.api.nvidia.com/v1", key, model, system_prompt, task_prompt, report_text, analysis_language
+        )
     if provider == "gemini":
         key = llm.get("api_key", "")
         if not key:
@@ -375,7 +423,10 @@ def run_analysis(llm: dict[str, str], report_text: str):
         model = llm.get("gemini_model") or DEFAULT_GEMINI_MODEL
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
         system_text = system_prompt or DEFAULT_SYSTEM_PROMPT
-        user_text = f"Task Requirements:\n{task_prompt}\n\nInspection Data:\n{report_text}"
+        if analysis_language == "en":
+            user_text = f"Task Requirements:\n{task_prompt}\n\nInspection Data:\n{report_text}"
+        else:
+            user_text = f"任务要求：\n{task_prompt}\n\n巡检数据：\n{report_text}"
         body = {
             "contents": [{"parts": [{"text": user_text}]}],
             "systemInstruction": {"parts": [{"text": system_text}]},
@@ -395,7 +446,9 @@ def run_analysis(llm: dict[str, str], report_text: str):
     if not key:
         raise RuntimeError("ChatGPT API Key not set")
     model = llm.get("chatgpt_model") or DEFAULT_GPT_MODEL
-    return _run_openai_compatible("https://api.openai.com/v1", key, model, system_prompt, task_prompt, report_text)
+    return _run_openai_compatible(
+        "https://api.openai.com/v1", key, model, system_prompt, task_prompt, report_text, analysis_language
+    )
 
 
 def model_used(llm: dict[str, str]) -> str:

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .llm_client import model_used, run_analysis
-from .prompt_store import merged_system_prompt_catalog, merged_task_prompt_catalog
+from .prompt_store import localized_prompt_catalog
 from .semantic_compression import build_semantic_package, normalize_strategy
 from .state_store import add_token_usage, load_gpt_config
 
@@ -26,6 +26,12 @@ class AIAnalysisManager:
 
     def _now(self) -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _lang(self, cfg: dict[str, Any] | None = None) -> str:
+        return "en" if str((cfg or {}).get("analysis_language", "zh") or "zh").strip().lower().startswith("en") else "zh"
+
+    def _lang_text(self, lang: str, zh: str, en: str) -> str:
+        return en if str(lang).lower().startswith("en") else zh
 
     def _set_progress(self, task: dict[str, Any], percent: int, text: str) -> None:
         task["progress_percent"] = max(0, min(100, int(percent)))
@@ -154,7 +160,9 @@ class AIAnalysisManager:
         md_path = out_dir / f"{base}.md"
         json_path = out_dir / f"{base}.json"
         result_text = str(task.get("result", "") or "")
-        md_body = result_text if result_text.startswith("#") else f"# AI Analysis Report\n\n{result_text}"
+        lang = self._lang(task)
+        default_title = "# AI Analysis Report" if str(lang).lower().startswith("en") else "# AI 分析报告"
+        md_body = result_text if result_text.startswith("#") else f"{default_title}\n\n{result_text}"
         md_path.write_text(md_body, encoding="utf-8")
         data = {k: v for k, v in task.items() if not str(k).startswith("_")}
         data["history_markdown"] = md_path.name
@@ -246,19 +254,29 @@ class AIAnalysisManager:
 
     def _build_llm_input(self, cfg: dict[str, Any]) -> dict[str, str]:
         provider = str(cfg.get("provider", "chatgpt") or "chatgpt").strip().lower()
-        system_prompts = merged_system_prompt_catalog()
-        task_prompts = merged_task_prompt_catalog()
+        lang = self._lang(cfg)
+        system_prompts = localized_prompt_catalog("system", lang)
+        task_prompts = localized_prompt_catalog("task", lang)
 
-        system_key = str(cfg.get("selected_system_prompt") or "网络日志诊断专家-严格模式")
-        task_key = str(cfg.get("selected_task_prompt") or "日志异常诊断-标准版")
+        system_key = str(cfg.get("selected_system_prompt") or "网络日志诊断专家-平衡模式")
+        task_key = str(cfg.get("selected_task_prompt") or "网络问题发现-通用分析")
         system_base = system_prompts.get(system_key, next(iter(system_prompts.values()), ""))
         task_base = task_prompts.get(task_key, next(iter(task_prompts.values()), ""))
 
         system_extra = str(cfg.get("system_prompt_extra") or "").strip()
         task_extra = str(cfg.get("task_prompt_extra") or "").strip()
 
-        system_text = system_base + ("\n\n[Extra System Constraints]\n" + system_extra if system_extra else "")
-        task_text = task_base + ("\n\n[Extra Task Requirements]\n" + task_extra if task_extra else "")
+        extra_system_header = self._lang_text(lang, "[补充系统约束]", "[Extra System Constraints]")
+        extra_task_header = self._lang_text(lang, "[补充任务要求]", "[Extra Task Requirements]")
+        language_requirement = self._lang_text(
+            lang,
+            "输出语言必须为中文。除原始日志、命令、协议字段、设备名称、英文事件码和必要引用外，不要切换到英文。",
+            "Output language must be English. Do not switch to Chinese except when quoting raw log lines, commands, protocol fields, device names, event codes, or necessary evidence.",
+        )
+
+        system_text = system_base + (f"\n\n{extra_system_header}\n" + system_extra if system_extra else "")
+        task_text = task_base + (f"\n\n{extra_task_header}\n" + task_extra if task_extra else "")
+        system_text = system_text.rstrip() + "\n\n" + language_requirement
 
         api_key = ""
         if provider == "chatgpt":
@@ -289,6 +307,7 @@ class AIAnalysisManager:
             "task_prompt_text": task_text,
             "system_prompt_key": system_key,
             "task_prompt_key": task_key,
+            "analysis_language": lang,
             "llm_call_timeout_sec": str(cfg.get("llm_call_timeout_sec") or ""),
             "text_compression_strategy": str(cfg.get("text_compression_strategy") or ""),
         }
@@ -305,35 +324,68 @@ class AIAnalysisManager:
             return "final_only"
         return raw
 
-    def _compact_runtime_prompt(self, base_task_prompt: str, *, scope: str, device_label: str, device_ip: str, device_id: str, chunk_index: int | None = None, chunk_total: int | None = None) -> str:
+    def _compact_runtime_prompt(
+        self,
+        base_task_prompt: str,
+        *,
+        lang: str,
+        scope: str,
+        device_label: str,
+        device_ip: str,
+        device_id: str,
+        chunk_index: int | None = None,
+        chunk_total: int | None = None,
+    ) -> str:
+        is_en = str(lang).lower().startswith("en")
         suffix_lines = [
-            "[Runtime mode]",
-            f"- Scope: {scope}",
-            f"- Device: {device_label}",
+            "[Runtime mode]" if is_en else "[运行模式]",
+            (f"- Scope: {scope}" if is_en else f"- 范围: {scope}"),
+            (f"- Device: {device_label}" if is_en else f"- 设备: {device_label}"),
         ]
         if chunk_index is not None and chunk_total is not None:
-            suffix_lines.append(f"- Chunk: {chunk_index}/{chunk_total}")
+            suffix_lines.append(f"- Chunk: {chunk_index}/{chunk_total}" if is_en else f"- 分片: {chunk_index}/{chunk_total}")
         suffix_lines.extend(
             [
-                "- Output must be compact, evidence-first, and machine-friendly.",
-                "- Return JSON only. No markdown fences.",
+                "- Output language must be English." if is_en else "- 输出语言必须为中文。",
+                "- Output must be compact, evidence-first, and machine-friendly."
+                if is_en
+                else "- 输出要紧凑、证据优先、便于后续机器汇总。",
+                "- Return JSON only. No markdown fences."
+                if is_en
+                else "- 仅返回 JSON，不要输出 markdown 代码块。",
                 "- JSON schema: {\"verdict\":\"...\",\"anomalies\":[{\"severity\":\"...\",\"event\":\"...\",\"object\":\"...\",\"time_range\":\"...\",\"reason\":\"...\"}],\"evidence\":[\"...\"],\"actions\":[\"...\"]}",
-                "- Max anomalies: 4; max evidence: 5; max actions: 3.",
-                "- Each string should be short; do not restate benign or repetitive details.",
-                "- Include exact event code/object/time-range evidence when available.",
+                "- Max anomalies: 4; max evidence: 5; max actions: 3."
+                if is_en
+                else "- anomalies 最多 4 条，evidence 最多 5 条，actions 最多 3 条。",
+                "- Each string should be short; do not restate benign or repetitive details."
+                if is_en
+                else "- 每个字符串都要尽量短，不要重复描述无害或重复性细节。",
+                "- Include exact event code/object/time-range evidence when available."
+                if is_en
+                else "- 有条件时必须写出准确的事件码、对象和时间范围证据。",
             ]
         )
         return (base_task_prompt or "").rstrip() + "\n\n" + "\n".join(suffix_lines)
 
-    def _final_runtime_prompt(self, base_task_prompt: str) -> str:
+    def _final_runtime_prompt(self, base_task_prompt: str, *, lang: str) -> str:
+        is_en = str(lang).lower().startswith("en")
         suffix_lines = [
-            "[Runtime mode]",
-            "- Scope: global_summary",
-            "- Produce the final user-facing report.",
-            "- Keep the report concise and evidence-first.",
-            "- Use exactly these markdown sections: Overall Conclusion, Key Anomalies, Evidence Chain, Impact, Actions.",
-            "- Keep anomalies max 8 bullets, evidence max 8 bullets, actions max 5 bullets.",
-            "- Avoid long prose and avoid repeating the same symptom multiple times.",
+            "[Runtime mode]" if is_en else "[运行模式]",
+            "- Scope: global_summary" if is_en else "- 范围: global_summary",
+            "- Output language must be English." if is_en else "- 输出语言必须为中文。",
+            "- Produce the final user-facing report." if is_en else "- 生成最终面向用户的报告。",
+            "- Keep the report concise and evidence-first." if is_en else "- 报告保持简洁，证据优先。",
+            (
+                "- Use exactly these markdown sections: Overall Conclusion, Key Anomalies, Evidence Chain, Impact, Actions."
+                if is_en
+                else "- 必须严格使用这些 markdown 标题：总体结论、关键异常、证据链、影响判断、处置建议。"
+            ),
+            "- Keep anomalies max 8 bullets, evidence max 8 bullets, actions max 5 bullets."
+            if is_en
+            else "- 关键异常最多 8 条，证据链最多 8 条，处置建议最多 5 条。",
+            "- Avoid long prose and avoid repeating the same symptom multiple times."
+            if is_en
+            else "- 不要写成长篇大论，也不要多次重复同一症状。",
         ]
         return (base_task_prompt or "").rstrip() + "\n\n" + "\n".join(suffix_lines)
 
@@ -370,18 +422,19 @@ class AIAnalysisManager:
             )
         return json.dumps({"devices": compact_devices}, ensure_ascii=False, indent=2)
 
-    def _render_device_summary_appendix(self, device_summaries: list[dict[str, Any]]) -> str:
-        lines: list[str] = ["# Device Summaries"]
+    def _render_device_summary_appendix(self, device_summaries: list[dict[str, Any]], *, lang: str) -> str:
+        is_en = str(lang).lower().startswith("en")
+        lines: list[str] = ["# Device Summaries" if is_en else "# 设备摘要"]
         for item in device_summaries:
             lines.append("")
             label = str(item.get('device_label') or item.get('device_name') or item.get('device_ip') or item.get('device_id') or '-')
             lines.append(f"## {label}")
             verdict = str(item.get("verdict", "") or "").strip()
             if verdict:
-                lines.append(f"- Verdict: {verdict}")
+                lines.append(f"- {'Verdict' if is_en else '结论'}: {verdict}")
             anomalies = list(item.get("anomalies", []) or [])
             if anomalies:
-                lines.append("- Anomalies:")
+                lines.append(f"- {'Anomalies' if is_en else '异常'}:")
                 for anomaly in anomalies[:6]:
                     if isinstance(anomaly, dict):
                         severity = anomaly.get("severity", "")
@@ -395,12 +448,12 @@ class AIAnalysisManager:
                         lines.append(f"  - {anomaly}")
             evidence = list(item.get("evidence", []) or [])
             if evidence:
-                lines.append("- Evidence:")
+                lines.append(f"- {'Evidence' if is_en else '证据'}:")
                 for entry in evidence[:6]:
                     lines.append(f"  - {entry}")
             actions = list(item.get("actions", []) or [])
             if actions:
-                lines.append("- Actions:")
+                lines.append(f"- {'Actions' if is_en else '建议'}:")
                 for entry in actions[:5]:
                     lines.append(f"  - {entry}")
             fallback = str(item.get("raw_summary", "") or "").strip()
@@ -830,6 +883,7 @@ class AIAnalysisManager:
         preview_device_id: str | None = None,
     ) -> dict[str, Any]:
         llm_base = self._build_llm_input(cfg)
+        analysis_language = llm_base.get("analysis_language", "zh")
         batched = bool(int(cfg.get("batched_analysis", 0) or 0))
         fragmented = bool(int(cfg.get("fragmented_analysis", 0) or 0))
         compression_strategy = self._compression_strategy(cfg)
@@ -908,6 +962,7 @@ class AIAnalysisManager:
                             "title": f"{preview_identity.get('short_display', preview_id)} chunk {idx+1}/{len(chunks)}",
                             "task_prompt_text": self._compact_runtime_prompt(
                                 llm_base.get("task_prompt_text", ""),
+                                lang=analysis_language,
                                 scope="device_chunk",
                                 device_label=preview_identity.get("display", preview_id),
                                 device_ip=preview_identity.get("device_ip", preview_id),
@@ -928,6 +983,7 @@ class AIAnalysisManager:
                             "title": f"{preview_identity.get('short_display', preview_id)} summary merge payload",
                             "task_prompt_text": self._compact_runtime_prompt(
                                 llm_base.get("task_prompt_text", ""),
+                                lang=analysis_language,
                                 scope="device_summary",
                                 device_label=preview_identity.get("display", preview_id),
                                 device_ip=preview_identity.get("device_ip", preview_id),
@@ -945,6 +1001,7 @@ class AIAnalysisManager:
                         "title": f"{preview_identity.get('short_display', preview_id)} device payload",
                         "task_prompt_text": self._compact_runtime_prompt(
                             llm_base.get("task_prompt_text", ""),
+                            lang=analysis_language,
                             scope="device_single",
                             device_label=preview_identity.get("display", preview_id),
                             device_ip=preview_identity.get("device_ip", preview_id),
@@ -1065,8 +1122,10 @@ class AIAnalysisManager:
             cfg = load_gpt_config()
             llm_base = self._build_llm_input(cfg)
             provider = llm_base["provider"]
+            analysis_language = llm_base.get("analysis_language", "zh")
             task["provider_used"] = provider
             task["model_used"] = model_used(llm_base)
+            task["analysis_language"] = analysis_language
             task["updated_at"] = self._now()
 
             batched = bool(int(cfg.get("batched_analysis", 0) or 0))
@@ -1242,6 +1301,7 @@ class AIAnalysisManager:
                                 llm = dict(llm_base)
                                 llm["task_prompt_text"] = self._compact_runtime_prompt(
                                     llm_base.get("task_prompt_text", ""),
+                                    lang=analysis_language,
                                     scope="device_chunk",
                                     device_label=d_identity.get("display", d_ip),
                                     device_ip=d_identity.get("device_ip", d_ip),
@@ -1297,6 +1357,7 @@ class AIAnalysisManager:
                                 llm = dict(llm_base)
                                 llm["task_prompt_text"] = self._compact_runtime_prompt(
                                     llm_base.get("task_prompt_text", ""),
+                                    lang=analysis_language,
                                     scope="device_summary",
                                     device_label=d_identity.get("display", d_ip),
                                     device_ip=d_identity.get("device_ip", d_ip),
@@ -1375,7 +1436,7 @@ class AIAnalysisManager:
                 self._set_progress(task, min(99, int((task["_unit_done"] / task["_unit_total"]) * 100)), self._format_healthcheck_style_progress(task, "全局汇总中"))
                 global_report = self._compact_global_summary_input(device_summaries)
                 llm = dict(llm_base)
-                llm["task_prompt_text"] = self._final_runtime_prompt(llm_base.get("task_prompt_text", ""))
+                llm["task_prompt_text"] = self._final_runtime_prompt(llm_base.get("task_prompt_text", ""), lang=analysis_language)
                 timeout_sec = self._estimate_timeout_sec(global_report, floor=60, ceiling=max_call_timeout)
                 task["_active_call_started"] = time.monotonic()
                 task["_active_call_timeout_sec"] = float(timeout_sec)
@@ -1389,7 +1450,8 @@ class AIAnalysisManager:
                 task["device_done"] = task["device_total"]
                 task["device_running"] = 0
                 task["rounds_done"] = task["rounds_total"]
-                task["result"] = "# 全局汇总\n" + global_summary + "\n\n" + self._render_device_summary_appendix(device_summaries)
+                summary_title = "# Global Summary" if str(analysis_language).lower().startswith("en") else "# 全局汇总"
+                task["result"] = summary_title + "\n" + global_summary + "\n\n" + self._render_device_summary_appendix(device_summaries, lang=analysis_language)
 
             tokens = add_token_usage(provider, int(total_token_used))
             task["status"] = "success"

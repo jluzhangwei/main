@@ -165,13 +165,14 @@
     <div class="ai-section-title">{{ 'Prompt Settings' if is_en else '提示词设置' }}</div>
     <div class="ai-grid">
       <div>
-        <label>{{ 'System Prompt Template (strict)' if is_en else '系统提示词模板（严格约束）' }}</label>
+        <label>{{ 'System Prompt Template' if is_en else '系统提示词模板' }}</label>
         <select id="selected_system_prompt">
           {% for k,v in system_prompts.items() %}
           <option value="{{ k }}" {% if cfg.selected_system_prompt==k %}selected{% endif %}>{{ system_prompt_labels.get(k, k) }}</option>
           {% endfor %}
         </select>
-        <div class="hint">{{ 'System prompt constrains AI behavior/output. Recommended: "Network Log Diagnosis Expert - Strict".' if is_en else '系统提示词用于约束 AI 行为与输出规范，建议固定使用“网络日志诊断专家-严格模式”。' }}</div>
+        <div class="hint">{{ 'System prompt shapes analysis style and output discipline. Recommended default: "Network Log Diagnosis Expert - Balanced".' if is_en else '系统提示词用于约束分析风格与输出规范，默认建议使用“网络日志诊断专家-平衡模式”。' }}</div>
+        <div id="system_prompt_usage" class="hint"></div>
       </div>
       <div>
         <label>{{ 'System Template Preview' if is_en else '系统模板查看' }}</label>
@@ -191,6 +192,7 @@
           {% endfor %}
         </select>
         <div class="hint">{{ 'Task prompt describes analysis goals; you can choose not to use a template.' if is_en else '任务提示词描述本次分析目标；可选择不使用模板。' }}</div>
+        <div id="task_prompt_usage" class="hint"></div>
       </div>
       <div>
         <label>{{ 'Template Preview' if is_en else '模板查看' }}</label>
@@ -551,6 +553,45 @@
       hits: String((item || {}).hits_count || (item || {}).hits || '').trim(),
     }];
   }));
+  const PROMPT_USAGE = {
+    system: {
+      "网络日志诊断专家-平衡模式": UI_LANG === 'en'
+        ? 'Balanced default. Suitable for most troubleshooting tasks: evidence-first, but not overly restrictive.'
+        : '平衡默认模板。适合大多数排障场景：强调证据，但不过度限制分析空间。',
+      "网络日志诊断专家-问题发现": UI_LANG === 'en'
+        ? 'Best for broad issue discovery and batch screening. Encourages finding meaningful patterns beyond preset categories.'
+        : '适合批量筛查和主动发现问题。鼓励识别预设类别之外的重要异常模式。',
+      "网络日志诊断专家-严格模式": UI_LANG === 'en'
+        ? 'Use when you need stricter evidence boundaries and standardized output structure.'
+        : '适合需要更严格证据边界、固定输出结构的场景。',
+      "网络日志诊断专家-变更评审": UI_LANG === 'en'
+        ? 'Use when the main question is whether current anomalies are related to recent changes.'
+        : '适合判断当前异常是否与近期变更相关。'
+    },
+    task: {
+      "网络问题发现-通用分析": UI_LANG === 'en'
+        ? 'General-purpose discovery template. Good first choice for most mixed network logs.'
+        : '通用问题发现模板。适合作为大多数混合网络日志的首选分析模板。',
+      "控制平面与路由异常": UI_LANG === 'en'
+        ? 'Focus on routing, adjacency, FIB, convergence, and control-plane instability.'
+        : '聚焦路由、邻接、FIB、收敛与控制平面不稳定问题。',
+      "链路与物理层稳定性": UI_LANG === 'en'
+        ? 'Focus on interface flaps, local/remote fault, optics, bundle states, and physical stability.'
+        : '聚焦接口抖动、局端/远端 fault、光模块、聚合口状态和物理层稳定性。',
+      "资源与容量风险分析": UI_LANG === 'en'
+        ? 'Focus on CPU, memory, FIB, prefix scale, queues, and sustained resource pressure.'
+        : '聚焦 CPU、内存、FIB、前缀规模、队列和持续性资源压力。',
+      "日志异常诊断-标准版": UI_LANG === 'en'
+        ? 'Legacy standard template. Broad but more report-oriented than discovery-oriented.'
+        : '旧版标准模板。范围较广，但更偏汇总报告，而不是主动发现问题。',
+      "BGP会话波动专项": UI_LANG === 'en'
+        ? 'Use for BGP flap, holdtime expiry, max-prefix, and session instability analysis.'
+        : '适合分析 BGP flap、holdtime expired、max-prefix 和会话波动。',
+      "链路抖动与接口告警专项": UI_LANG === 'en'
+        ? 'Use for link up/down, CRC/error, and interface alarm investigation.'
+        : '适合分析链路 up/down、CRC/error 和接口告警问题。'
+    }
+  };
 
   function selectedModel(selectEl, customEl) {
     if (!selectEl) return '';
@@ -577,6 +618,15 @@
     }
   }
 
+  function updatePromptUsageHints() {
+    const systemName = id('selected_system_prompt')?.value || '';
+    const taskName = id('selected_task_prompt')?.value || '';
+    const systemHint = id('system_prompt_usage');
+    const taskHint = id('task_prompt_usage');
+    if (systemHint) systemHint.textContent = (PROMPT_USAGE.system && PROMPT_USAGE.system[systemName]) || '';
+    if (taskHint) taskHint.textContent = (PROMPT_USAGE.task && PROMPT_USAGE.task[taskName]) || '';
+  }
+
   function syncCustomModelInput(selectId, wrapId, inputId) {
     const sel = id(selectId);
     const wrap = id(wrapId);
@@ -598,6 +648,7 @@
     const localModel = selectedModel(id('local_model_select'), id('local_model_custom'));
     return {
       provider: id('provider_select').value,
+      analysis_language: UI_LANG,
       chatgpt_api_key: apiKeys.chatgpt || '',
       deepseek_api_key: apiKeys.deepseek || '',
       qwen_api_key: apiKeys.qwen || '',
@@ -877,6 +928,7 @@
       taskPromptMap = data.prompts || {};
     }
     refreshPromptSelect(kind, kind === 'system' ? systemPromptMap : taskPromptMap, data.name || name);
+    updatePromptUsageHints();
     modal.dataset.name = data.name || name;
     alert(UI_LANG === 'en' ? 'Prompt saved' : '提示词已保存');
   }
@@ -908,6 +960,7 @@
       taskPromptMap = data.prompts || {};
     }
     refreshPromptSelect(kind, kind === 'system' ? systemPromptMap : taskPromptMap, '');
+    updatePromptUsageHints();
     modal.style.display = 'none';
     alert(UI_LANG === 'en' ? 'Custom prompt deleted' : '自定义模板已删除');
   }
@@ -950,6 +1003,8 @@
   on('test_llm_btn', 'click', testConnection);
   on('review_system_template_btn', 'click', () => reviewPrompt('system'));
   on('review_task_template_btn', 'click', () => reviewPrompt('task'));
+  on('selected_system_prompt', 'change', updatePromptUsageHints);
+  on('selected_task_prompt', 'change', updatePromptUsageHints);
   on('import_prompt_btn', 'click', importPrompt);
   on('import_api_key_btn', 'click', () => {
     const provider = id('provider_select').value;
@@ -1719,6 +1774,7 @@
   rememberLastAiTaskId();
   restoreAiWorkspaceState();
   syncAiDeviceSelectionUi();
+  updatePromptUsageHints();
   loadAnalysisHistory();
   restoreAnalysisState();
   setAnalysisRunState(false);
@@ -1730,5 +1786,6 @@
   updateProviderSection();
   updateProviderIcon();
   updateApiKeyState();
+  updatePromptUsageHints();
 </script>
 {% endblock %}
