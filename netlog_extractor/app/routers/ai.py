@@ -192,7 +192,7 @@ def _merge_cfg(cfg: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
             "text_compression_strategy": normalize_strategy(
                 incoming.get(
                     "text_compression_strategy",
-                    cfg.get("text_compression_strategy", incoming.get("text_compression_enabled", "off")),
+                    cfg.get("text_compression_strategy", incoming.get("text_compression_enabled", "template_vars")),
                 )
             ),
             "sql_log_inclusion_mode": normalize_sql_log_inclusion_mode(
@@ -263,7 +263,7 @@ def _estimate_precheck(task: Any, task_id: str, request: Request, payload: dict[
     cfg = _merge_cfg(load_gpt_config(), payload or {})
     provider = str(cfg.get("provider", "chatgpt") or "chatgpt").strip().lower()
     compression_strategy = normalize_strategy(
-        cfg.get("text_compression_strategy", payload.get("text_compression_enabled", "off") if isinstance(payload, dict) else "off")
+        cfg.get("text_compression_strategy", payload.get("text_compression_enabled", "template_vars") if isinstance(payload, dict) else "template_vars")
     )
     report_text = ""
     try:
@@ -283,9 +283,11 @@ def _estimate_precheck(task: Any, task_id: str, request: Request, payload: dict[
         estimated_calls = 1
     elif fragmented:
         avg_tokens_per_device = max(1200, int(estimated_tokens / max(1, device_count)))
-        soft_limit = max_tokens_per_chunk
-        if provider in {"codex_local", "local"} and compression_strategy == "factor_time":
-            soft_limit = max(soft_limit, 7000)
+        soft_limit = request.app.state.ai_manager._soft_chunk_limit(
+            provider=provider,
+            compression_strategy=compression_strategy,
+            max_tokens_per_chunk=max_tokens_per_chunk,
+        )
         est_chunks = max(1, min(max_chunks_per_device, math.ceil(avg_tokens_per_device / soft_limit)))
         per_device_calls = est_chunks + (1 if est_chunks > 1 else 0)
         estimated_calls = device_count * per_device_calls + 1
@@ -293,19 +295,28 @@ def _estimate_precheck(task: Any, task_id: str, request: Request, payload: dict[
         # Per-device analysis + global summary.
         estimated_calls = device_count + 1
 
+    avg_tokens_per_call = max(800, int(estimated_tokens / max(1, estimated_calls)))
+    if provider in {"deepseek", "chatgpt", "qwen", "gemini", "nvidia"}:
+        base_call_seconds = 28.0
+    elif provider in {"codex_local", "local"}:
+        base_call_seconds = 18.0
+    else:
+        base_call_seconds = 22.0
+    size_penalty = min(18.0, avg_tokens_per_call / 1800.0)
+    seconds_per_call = base_call_seconds + size_penalty
+
     # Time estimate should reflect device-level parallelism.
     # Device work can run in parallel; global summary is serial.
     if not batched:
-        base_seconds = 8
+        base_seconds = seconds_per_call
     else:
         device_calls_total = max(0, estimated_calls - 1)  # minus global summary call
-        avg_calls_per_device = device_calls_total / max(1, device_count)
-        seconds_per_call = 8.0
-        rounds = math.ceil(device_count / max(1, analysis_parallelism))
-        effective_parallel = max(1, analysis_parallelism * (chunk_parallelism if fragmented else 1))
-        parallel_gain = max(1.0, effective_parallel / max(1, analysis_parallelism))
-        base_seconds = rounds * avg_calls_per_device * seconds_per_call + seconds_per_call
-        base_seconds = base_seconds / parallel_gain
+        effective_parallel = max(1, analysis_parallelism)
+        if fragmented and device_calls_total > device_count:
+            effective_parallel = max(1, analysis_parallelism * chunk_parallelism)
+        device_rounds = math.ceil(device_calls_total / max(1, effective_parallel))
+        global_seconds = max(base_call_seconds, seconds_per_call * 0.9)
+        base_seconds = device_rounds * seconds_per_call + global_seconds
 
     retry_factor = 1.0 + (0.18 * max(0, analysis_retries))
     estimated_seconds = max(8, int(base_seconds * retry_factor))

@@ -283,9 +283,10 @@
               <select id="text_compression_strategy" style="width:220px;max-width:100%;">
                 <option value="off" {% if cfg.text_compression_strategy == 'off' %}selected{% endif %}>{{ 'off' if is_en else '关闭' }}</option>
                 <option value="group_repeats" {% if cfg.text_compression_strategy == 'group_repeats' %}selected{% endif %}>{{ 'group_repeats' if is_en else '重复归并' }}</option>
-                <option value="factor_time" {% if cfg.text_compression_strategy == 'factor_time' %}selected{% endif %}>{{ 'factor_time (recommended)' if is_en else 'factor_time（推荐）' }}</option>
+                <option value="factor_time" {% if cfg.text_compression_strategy == 'factor_time' %}selected{% endif %}>{{ 'factor_time (balanced)' if is_en else 'factor_time（平衡）' }}</option>
+                <option value="template_vars" {% if cfg.text_compression_strategy == 'template_vars' or cfg.text_compression_strategy == 'repeat_timeline' %}selected{% endif %}>{{ 'template_vars (default/recommended)' if is_en else 'template_vars（默认/推荐）' }}</option>
               </select>
-              <div class="hint" style="margin-top:6px;">{{ 'group_repeats folds repeat events. factor_time separates occurrences from stable message template.' if is_en else 'group_repeats 折叠重复事件。factor_time 将发生时间和稳定正文模板拆开。' }}</div>
+              <div class="hint" style="margin-top:6px;">{{ 'group_repeats folds repeats. factor_time keeps a balanced timeline/template view. template_vars is the default strict mode: one constant template plus variable table and timestamps only.' if is_en else 'group_repeats 折叠重复事件。factor_time 是时间线与模板的平衡模式。template_vars 是默认严格模式：只保留一条常量模板，并附变量表和时间。' }}</div>
             </div>
           </div>
           <div class="exec-field" style="align-items:flex-start;gap:12px;">
@@ -355,6 +356,7 @@
             <option value="off">off</option>
             <option value="group_repeats">group_repeats</option>
             <option value="factor_time">factor_time</option>
+            <option value="template_vars">template_vars</option>
           </select>
         </label>
         <button id="analysis-preview-refresh" class="btn" type="button">{{ 'Rebuild Preview' if is_en else '重新生成预览' }}</button>
@@ -1183,7 +1185,7 @@
       selected_device_ids: selectedDeviceIds,
       batched_analysis: !!id('batched_analysis')?.checked,
       fragmented_analysis: !!id('fragmented_analysis')?.checked,
-      text_compression_strategy: id('text_compression_strategy')?.value || 'off',
+      text_compression_strategy: id('text_compression_strategy')?.value || 'template_vars',
       sql_log_inclusion_mode: id('sql_log_inclusion_mode')?.value || 'final_only',
       analysis_parallelism: parseInt(id('analysis_parallelism')?.value || '2', 10),
       chunk_parallelism: parseInt(id('chunk_parallelism')?.value || '1', 10),
@@ -1269,7 +1271,7 @@
       selected_device_ids: selectedDeviceIds,
       batched_analysis: !!id('batched_analysis')?.checked,
       fragmented_analysis: !!id('fragmented_analysis')?.checked,
-      text_compression_strategy: id('text_compression_strategy')?.value || 'off',
+      text_compression_strategy: id('text_compression_strategy')?.value || 'template_vars',
       sql_log_inclusion_mode: id('sql_log_inclusion_mode')?.value || 'final_only',
       analysis_parallelism: parseInt(id('analysis_parallelism')?.value || '2', 10),
       chunk_parallelism: parseInt(id('chunk_parallelism')?.value || '1', 10),
@@ -1300,7 +1302,7 @@
     const sqlParts = Array.isArray(unit.attached_sql_sections) && unit.attached_sql_sections.length ? unit.attached_sql_sections.join(',') : 'none';
     id('analysis-preview-meta').textContent = [
       `${data.provider || '-'} | ${data.model_used || '-'}`,
-      `strategy=${data.compression_strategy || 'off'}`,
+      `strategy=${data.compression_strategy || 'template_vars'}`,
       `sql=${data.sql_log_inclusion_mode || 'final_only'}`,
       `sql_sections=${sqlParts}`,
       `scope=${unit.scope || '-'}`,
@@ -1340,7 +1342,7 @@
       fragmented_analysis: !!id('fragmented_analysis')?.checked,
       text_compression_strategy: (id('analysis-preview-strategy')?.value && id('analysis-preview-strategy').value !== 'use_current')
         ? id('analysis-preview-strategy').value
-        : (id('text_compression_strategy')?.value || 'off'),
+        : (id('text_compression_strategy')?.value || 'template_vars'),
       sql_log_inclusion_mode: id('sql_log_inclusion_mode')?.value || 'final_only',
       analysis_parallelism: parseInt(id('analysis_parallelism')?.value || '2', 10),
       chunk_parallelism: parseInt(id('chunk_parallelism')?.value || '1', 10),

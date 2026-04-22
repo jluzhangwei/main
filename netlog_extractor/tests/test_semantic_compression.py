@@ -5,6 +5,8 @@ def test_normalize_strategy_legacy_bool_mapping():
     assert normalize_strategy(True) == "group_repeats"
     assert normalize_strategy("1") == "group_repeats"
     assert normalize_strategy("factor_time") == "factor_time"
+    assert normalize_strategy("template_vars") == "template_vars"
+    assert normalize_strategy("repeat_timeline") == "template_vars"
     assert normalize_strategy("bad") == "off"
 
 
@@ -134,3 +136,33 @@ def test_iosxr_factor_time_keeps_same_neighbor_in_one_template():
     groups = package["index"]["groups"]
     assert len(groups) == 1
     assert groups[0]["event_code"] == "%ROUTING-BGP-5-MAXPFX"
+
+
+def test_template_vars_merges_same_template_and_moves_changes_to_variables():
+    text = "\n".join(
+        [
+            "2026-04-17 18:17:17 [sql] R1 <186>Apr 17 2026 10:17:17 R1 %%01BGP/2/bgpBackwardTransNotification(t):CID=0x80130440;The BGP FSM moves from a higher numbered state to a lower numbered state. (BgpPeerRemoteAddr=10.254.2.6, BgpPeerLastError=66, BgpPeerState=1,VpnInstance=_public_)",
+            "2026-04-17 18:17:18 [sql] R1 <186>Apr 17 2026 10:17:18 R1 %%01BGP/2/bgpBackwardTransNotification(t):CID=0x80130440;The BGP FSM moves from a higher numbered state to a lower numbered state. (BgpPeerRemoteAddr=10.254.2.12, BgpPeerLastError=66, BgpPeerState=1,VpnInstance=_public_)",
+        ]
+    )
+    package = build_semantic_package(
+        text,
+        source_name="filtered.log",
+        device_id="dev-6",
+        default_year=2026,
+        strategy="template_vars",
+        vendor="huawei",
+        os_family="huawei_sql",
+    )
+    assert package["used"] is True
+    assert package["index"]["strategy"] == "template_vars"
+    groups = package["index"]["groups"]
+    assert len(groups) == 1
+    group = groups[0]
+    assert group["event_code"] == "%%01BGP/2/bgpBackwardTransNotification"
+    assert group["occurrence_count"] == 2
+    assert "BgpPeerRemoteAddr" in group["varying_field_names"]
+    assert group["static_fields"]["BgpPeerLastError"] == "66"
+    assert group["occurrences"][0]["varying_fields"]["BgpPeerRemoteAddr"] == "10.254.2.6"
+    assert group["occurrences"][1]["varying_fields"]["BgpPeerRemoteAddr"] == "10.254.2.12"
+    assert "Template Variables View" in package["markdown"]

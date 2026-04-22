@@ -40,11 +40,18 @@ class AIAnalysisManager:
         p.mkdir(parents=True, exist_ok=True)
         return p
 
+    def _is_device_output_dir(self, path: Path) -> bool:
+        if not path.is_dir():
+            return False
+        if path.name == "ai_reports":
+            return False
+        return any((path / name).exists() for name in ("meta.json", "filtered.log", "raw.log", "filtered_sql.log", "raw_sql.log"))
+
     def _normalize_device_ids(self, task_id: str, device_ids: list[str] | None = None) -> list[str]:
         task_dir = self.output_root / task_id
         if not task_dir.exists():
             return []
-        existing = [p.name for p in sorted([x for x in task_dir.iterdir() if x.is_dir()])]
+        existing = [p.name for p in sorted([x for x in task_dir.iterdir() if self._is_device_output_dir(x)])]
         if not device_ids:
             return existing
         wanted = {str(x or "").strip() for x in device_ids if str(x or "").strip()}
@@ -239,6 +246,108 @@ class AIAnalysisManager:
             return "final_only"
         return raw
 
+    def _compact_runtime_prompt(self, base_task_prompt: str, *, scope: str, device_ip: str, device_id: str, chunk_index: int | None = None, chunk_total: int | None = None) -> str:
+        suffix_lines = [
+            "[Runtime mode]",
+            f"- Scope: {scope}",
+            f"- Device: {device_ip} ({device_id})",
+        ]
+        if chunk_index is not None and chunk_total is not None:
+            suffix_lines.append(f"- Chunk: {chunk_index}/{chunk_total}")
+        suffix_lines.extend(
+            [
+                "- Output must be compact, evidence-first, and machine-friendly.",
+                "- Return JSON only. No markdown fences.",
+                "- JSON schema: {\"verdict\":\"...\",\"anomalies\":[{\"severity\":\"...\",\"event\":\"...\",\"object\":\"...\",\"time_range\":\"...\",\"reason\":\"...\"}],\"evidence\":[\"...\"],\"actions\":[\"...\"]}",
+                "- Max anomalies: 4; max evidence: 5; max actions: 3.",
+                "- Each string should be short; do not restate benign or repetitive details.",
+                "- Include exact event code/object/time-range evidence when available.",
+            ]
+        )
+        return (base_task_prompt or "").rstrip() + "\n\n" + "\n".join(suffix_lines)
+
+    def _final_runtime_prompt(self, base_task_prompt: str) -> str:
+        suffix_lines = [
+            "[Runtime mode]",
+            "- Scope: global_summary",
+            "- Produce the final user-facing report.",
+            "- Keep the report concise and evidence-first.",
+            "- Use exactly these markdown sections: Overall Conclusion, Key Anomalies, Evidence Chain, Impact, Actions.",
+            "- Keep anomalies max 8 bullets, evidence max 8 bullets, actions max 5 bullets.",
+            "- Avoid long prose and avoid repeating the same symptom multiple times.",
+        ]
+        return (base_task_prompt or "").rstrip() + "\n\n" + "\n".join(suffix_lines)
+
+    def _parse_runtime_summary_json(self, text: str) -> dict[str, Any] | None:
+        raw = str(text or "").strip()
+        if not raw:
+            return None
+        fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", raw, flags=re.DOTALL | re.IGNORECASE)
+        candidate = fenced.group(1).strip() if fenced else raw
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if start >= 0 and end > start:
+            candidate = candidate[start : end + 1]
+        try:
+            payload = json.loads(candidate)
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _compact_global_summary_input(self, device_summaries: list[dict[str, Any]]) -> str:
+        compact_devices: list[dict[str, Any]] = []
+        for item in device_summaries:
+            compact_devices.append(
+                {
+                    "device_id": item.get("device_id", ""),
+                    "device_ip": item.get("device_ip", ""),
+                    "verdict": item.get("verdict", ""),
+                    "anomalies": list(item.get("anomalies", []) or [])[:4],
+                    "evidence": list(item.get("evidence", []) or [])[:5],
+                    "actions": list(item.get("actions", []) or [])[:3],
+                }
+            )
+        return json.dumps({"devices": compact_devices}, ensure_ascii=False, indent=2)
+
+    def _render_device_summary_appendix(self, device_summaries: list[dict[str, Any]]) -> str:
+        lines: list[str] = ["# Device Summaries"]
+        for item in device_summaries:
+            lines.append("")
+            lines.append(f"## {item.get('device_ip', '-') } ({item.get('device_id', '-')})")
+            verdict = str(item.get("verdict", "") or "").strip()
+            if verdict:
+                lines.append(f"- Verdict: {verdict}")
+            anomalies = list(item.get("anomalies", []) or [])
+            if anomalies:
+                lines.append("- Anomalies:")
+                for anomaly in anomalies[:6]:
+                    if isinstance(anomaly, dict):
+                        severity = anomaly.get("severity", "")
+                        event = anomaly.get("event", "")
+                        obj = anomaly.get("object", "")
+                        time_range = anomaly.get("time_range", "")
+                        reason = anomaly.get("reason", "")
+                        parts = [x for x in [severity, event, obj, time_range, reason] if str(x or "").strip()]
+                        lines.append(f"  - {' | '.join(str(x) for x in parts)}")
+                    else:
+                        lines.append(f"  - {anomaly}")
+            evidence = list(item.get("evidence", []) or [])
+            if evidence:
+                lines.append("- Evidence:")
+                for entry in evidence[:6]:
+                    lines.append(f"  - {entry}")
+            actions = list(item.get("actions", []) or [])
+            if actions:
+                lines.append("- Actions:")
+                for entry in actions[:5]:
+                    lines.append(f"  - {entry}")
+            fallback = str(item.get("raw_summary", "") or "").strip()
+            if not verdict and fallback:
+                lines.append("```text")
+                lines.append(self._shrink_text(fallback, max_chars=1200))
+                lines.append("```")
+        return "\n".join(lines).strip()
+
     def _sql_sections(
         self,
         *,
@@ -267,11 +376,42 @@ class AIAnalysisManager:
                 attached.append(sql_raw_path.name)
         return sections, attached
 
+    def _ai_meta_payload(self, meta_data: dict[str, Any], *, source_name: str) -> dict[str, Any]:
+        keep_keys = [
+            "device_name",
+            "vendor",
+            "os_family",
+            "model",
+            "version",
+            "log_source",
+            "sql_only_mode",
+            "sql_query_mode",
+            "reference_time",
+            "device_time",
+            "offset_seconds",
+            "device_start",
+            "device_end",
+            "log_time_min",
+            "log_time_max",
+            "hits_count",
+            "blocks_count",
+        ]
+        out: dict[str, Any] = {k: meta_data.get(k) for k in keep_keys if k in meta_data}
+        sql_meta = meta_data.get("sql_device_meta")
+        if isinstance(sql_meta, dict):
+            out["sql_device_meta"] = {
+                "device_name": sql_meta.get("device_name"),
+                "vendor": sql_meta.get("vendor"),
+                "table": sql_meta.get("table"),
+            }
+        out["evidence_source"] = source_name
+        return out
+
     def _build_device_report_text(
         self,
         task_id: str,
         device_id: str,
-        compression_strategy: str = "off",
+        compression_strategy: str = "template_vars",
         sql_log_inclusion_mode: str = "final_only",
         persist_artifacts: bool = True,
         return_details: bool = False,
@@ -287,7 +427,14 @@ class AIAnalysisManager:
         sql_filtered_path = dev_dir / "filtered_sql.log"
         sql_raw_path = dev_dir / "raw_sql.log"
         if meta_path.exists():
-            sections.append("## meta.json\n" + meta_path.read_text(encoding="utf-8"))
+            sections.append(
+                "## device_meta\n"
+                + json.dumps(
+                    self._ai_meta_payload(meta_data, source_name=source_path.name if source_path.exists() else ""),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
         if source_path.exists():
             log_text = source_path.read_text(encoding="utf-8")
             if compression_strategy != "off":
@@ -299,17 +446,19 @@ class AIAnalysisManager:
                     vendor=str(meta_data.get("vendor") or ""),
                     os_family=str(meta_data.get("os_family") or ""),
                 )
-                if package.get("used"):
+                package_markdown = str(package.get("markdown", "") or "")
+                compression_is_smaller = len(package_markdown.strip()) < len(log_text.strip())
+                if package.get("used") and compression_is_smaller:
                     if persist_artifacts:
                         (dev_dir / "semantic_index.json").write_text(
                             json.dumps(package.get("index", {}), ensure_ascii=False, indent=2),
                             encoding="utf-8",
                         )
                         (dev_dir / "semantic_compact.md").write_text(
-                            str(package.get("markdown", "") or ""),
+                            package_markdown,
                             encoding="utf-8",
                         )
-                    sections.append("## semantic_compact.md\n" + str(package.get("markdown", "") or ""))
+                    sections.append("## semantic_compact.md\n" + package_markdown)
                     sections.append(
                         "## compression_stats\n" + json.dumps(package.get("stats", {}), ensure_ascii=False, indent=2)
                     )
@@ -365,7 +514,7 @@ class AIAnalysisManager:
     def _collect_task_report_text(
         self,
         task_id: str,
-        compression_strategy: str = "off",
+        compression_strategy: str = "template_vars",
         sql_log_inclusion_mode: str = "final_only",
         persist_artifacts: bool = True,
         device_ids: list[str] | None = None,
@@ -415,8 +564,9 @@ class AIAnalysisManager:
         self,
         task_id: str,
         device_id: str,
-        compression_strategy: str = "off",
+        compression_strategy: str = "template_vars",
         sql_log_inclusion_mode: str = "final_only",
+        max_chars: int = 24000,
     ) -> str:
         text = self._build_device_report_text(
             task_id,
@@ -425,7 +575,7 @@ class AIAnalysisManager:
             sql_log_inclusion_mode=sql_log_inclusion_mode,
             persist_artifacts=True,
         )
-        return self._shrink_text(text)
+        return self._shrink_text(text, max_chars=max_chars)
 
     def _shrink_text(self, text: str, max_chars: int = 24000) -> str:
         if len(text) <= max_chars:
@@ -579,6 +729,16 @@ class AIAnalysisManager:
         est = int(18 + tokens / 220)
         return max(floor, min(ceiling, est))
 
+    def _soft_chunk_limit(self, *, provider: str, compression_strategy: str, max_tokens_per_chunk: int) -> int:
+        soft_limit = max(800, int(max_tokens_per_chunk or 4500))
+        if compression_strategy not in {"factor_time", "template_vars"}:
+            return soft_limit
+        if provider in {"deepseek", "chatgpt", "qwen", "gemini", "nvidia"}:
+            return max(soft_limit, 24000)
+        if provider in {"codex_local", "local"}:
+            return max(soft_limit, 12000)
+        return soft_limit
+
     def _effective_fragmentation(
         self,
         *,
@@ -591,9 +751,11 @@ class AIAnalysisManager:
         if not requested_fragmented:
             return False
         est_tokens = max(1, int(len(report_text) / 4))
-        soft_limit = max_tokens_per_chunk
-        if provider in {"codex_local", "local"} and compression_strategy == "factor_time":
-            soft_limit = max(soft_limit, 7000)
+        soft_limit = self._soft_chunk_limit(
+            provider=provider,
+            compression_strategy=compression_strategy,
+            max_tokens_per_chunk=max_tokens_per_chunk,
+        )
         return est_tokens > soft_limit
 
     def build_preview(
@@ -643,6 +805,11 @@ class AIAnalysisManager:
                 }
             )
         else:
+            soft_limit = self._soft_chunk_limit(
+                provider=llm_base.get("provider", ""),
+                compression_strategy=compression_strategy,
+                max_tokens_per_chunk=max_tokens_per_chunk,
+            )
             device_details = self._build_device_report_text(
                 task_id,
                 preview_id,
@@ -651,7 +818,10 @@ class AIAnalysisManager:
                 persist_artifacts=False,
                 return_details=True,
             )
-            device_text = self._shrink_text(str(device_details.get("text", "") or ""))
+            device_text = self._shrink_text(
+                str(device_details.get("text", "") or ""),
+                max_chars=max(24000, soft_limit * 4 + 2000),
+            )
             attached_sql_sections = list(device_details.get("attached_sql_sections", []) or [])
             effective_fragmented = self._effective_fragmentation(
                 requested_fragmented=fragmented,
@@ -672,8 +842,14 @@ class AIAnalysisManager:
                         {
                             "scope": "device_chunk",
                             "title": f"{preview_id} chunk {idx+1}/{len(chunks)}",
-                            "task_prompt_text": llm_base.get("task_prompt_text", "")
-                            + f"\n\n[分片任务] 设备 {preview_id} 分片 {idx+1}/{len(chunks)}，请给出该分片结论。",
+                            "task_prompt_text": self._compact_runtime_prompt(
+                                llm_base.get("task_prompt_text", ""),
+                                scope="device_chunk",
+                                device_ip=preview_id,
+                                device_id=preview_id,
+                                chunk_index=idx + 1,
+                                chunk_total=len(chunks),
+                            ),
                             "report_text": chunk,
                             "estimated_tokens": max(1, int(len(chunk) / 4)),
                             "attached_sql_sections": attached_sql_sections,
@@ -685,8 +861,12 @@ class AIAnalysisManager:
                         {
                             "scope": "device_summary",
                             "title": f"{preview_id} summary merge payload",
-                            "task_prompt_text": llm_base.get("task_prompt_text", "")
-                            + f"\n\n[设备汇总] 请汇总设备 {preview_id} 各分片结论。",
+                            "task_prompt_text": self._compact_runtime_prompt(
+                                llm_base.get("task_prompt_text", ""),
+                                scope="device_summary",
+                                device_ip=preview_id,
+                                device_id=preview_id,
+                            ),
                             "report_text": merged_text,
                             "estimated_tokens": max(1, int(len(merged_text) / 4)),
                             "attached_sql_sections": attached_sql_sections,
@@ -697,7 +877,12 @@ class AIAnalysisManager:
                     {
                         "scope": "device_single",
                         "title": f"{preview_id} device payload",
-                        "task_prompt_text": llm_base.get("task_prompt_text", ""),
+                        "task_prompt_text": self._compact_runtime_prompt(
+                            llm_base.get("task_prompt_text", ""),
+                            scope="device_single",
+                            device_ip=preview_id,
+                            device_id=preview_id,
+                        ),
                         "report_text": device_text,
                         "estimated_tokens": max(1, int(len(device_text) / 4)),
                         "attached_sql_sections": attached_sql_sections,
@@ -846,7 +1031,7 @@ class AIAnalysisManager:
                 task_dir = self.output_root / task_id
                 devices = [
                     {"device_id": p.name, "ip": p.name, "index": i + 1}
-                    for i, p in enumerate(sorted([x for x in task_dir.iterdir() if x.is_dir()]))
+                    for i, p in enumerate(sorted([x for x in task_dir.iterdir() if self._is_device_output_dir(x)]))
                 ]
             device_total = len(devices) if devices else 1
             task["device_total"] = device_total
@@ -858,11 +1043,17 @@ class AIAnalysisManager:
             if batched and devices:
                 for d in devices:
                     self._check_cancelled(task)
+                    soft_limit = self._soft_chunk_limit(
+                        provider=provider,
+                        compression_strategy=compression_strategy,
+                        max_tokens_per_chunk=max_tokens_per_chunk,
+                    )
                     dtext = self._device_text(
                         task_id,
                         str(d.get("device_id") or ""),
                         compression_strategy=compression_strategy,
                         sql_log_inclusion_mode=sql_log_inclusion_mode,
+                        max_chars=max(24000, soft_limit * 4 + 2000),
                     )
                     effective_fragmented = self._effective_fragmentation(
                         requested_fragmented=fragmented,
@@ -897,7 +1088,7 @@ class AIAnalysisManager:
             lock = asyncio.Lock()
             running_ips: set[str] = set()
             total_token_used = 0
-            device_summaries: list[str] = []
+            device_summaries: list[dict[str, Any]] = []
 
             async def update_progress(stage: str) -> None:
                 nonlocal running_ips
@@ -981,9 +1172,13 @@ class AIAnalysisManager:
 
                             async def analyze_one_chunk(i: int, chunk: str) -> tuple[int, str, int]:
                                 llm = dict(llm_base)
-                                llm["task_prompt_text"] = (
-                                    llm_base.get("task_prompt_text", "")
-                                    + f"\n\n[分片任务] 设备 {d_ip} ({d_id}) 分片 {i+1}/{len(chunks)}，请给出该分片结论。"
+                                llm["task_prompt_text"] = self._compact_runtime_prompt(
+                                    llm_base.get("task_prompt_text", ""),
+                                    scope="device_chunk",
+                                    device_ip=d_ip,
+                                    device_id=d_id,
+                                    chunk_index=i + 1,
+                                    chunk_total=len(chunks),
                                 )
                                 self._check_cancelled(task)
                                 timeout_sec = self._estimate_timeout_sec(chunk, floor=60, ceiling=max_call_timeout)
@@ -1031,9 +1226,11 @@ class AIAnalysisManager:
                                 self._check_cancelled(task)
                                 # summarize chunk results per device
                                 llm = dict(llm_base)
-                                llm["task_prompt_text"] = (
-                                    llm_base.get("task_prompt_text", "")
-                                    + f"\n\n[设备汇总] 请汇总设备 {d_ip} ({d_id}) 各分片结论。"
+                                llm["task_prompt_text"] = self._compact_runtime_prompt(
+                                    llm_base.get("task_prompt_text", ""),
+                                    scope="device_summary",
+                                    device_ip=d_ip,
+                                    device_id=d_id,
                                 )
                                 merged_text = "\n\n".join(
                                     [f"### 分片{i+1}\n{t}" for i, t in enumerate(chunk_results)]
@@ -1051,14 +1248,36 @@ class AIAnalysisManager:
                                     task["_unit_done"] += 1
                                     task["device_done"] += 1
                                     await update_progress("设备分析中")
-                                device_summaries.append(f"## 设备 {d_ip} ({d_id})\n{summary}")
+                                parsed = self._parse_runtime_summary_json(summary)
+                                device_summaries.append(
+                                    {
+                                        "device_id": d_id,
+                                        "device_ip": d_ip,
+                                        "verdict": (parsed or {}).get("verdict", ""),
+                                        "anomalies": list((parsed or {}).get("anomalies", []) or []),
+                                        "evidence": list((parsed or {}).get("evidence", []) or []),
+                                        "actions": list((parsed or {}).get("actions", []) or []),
+                                        "raw_summary": summary,
+                                    }
+                                )
                             else:
                                 # Use single chunk result directly (or non-fragmented mode).
                                 summary = chunk_results[0] if chunk_results else ""
                                 async with lock:
                                     task["device_done"] += 1
                                     await update_progress("设备分析中")
-                                device_summaries.append(f"## 设备 {d_ip} ({d_id})\n{summary}")
+                                parsed = self._parse_runtime_summary_json(summary)
+                                device_summaries.append(
+                                    {
+                                        "device_id": d_id,
+                                        "device_ip": d_ip,
+                                        "verdict": (parsed or {}).get("verdict", ""),
+                                        "anomalies": list((parsed or {}).get("anomalies", []) or []),
+                                        "evidence": list((parsed or {}).get("evidence", []) or []),
+                                        "actions": list((parsed or {}).get("actions", []) or []),
+                                        "raw_summary": summary,
+                                    }
+                                )
                         finally:
                             async with lock:
                                 running_ips.discard(d_ip)
@@ -1080,9 +1299,9 @@ class AIAnalysisManager:
                 # final global summary
                 self._check_cancelled(task)
                 self._set_progress(task, min(99, int((task["_unit_done"] / task["_unit_total"]) * 100)), self._format_healthcheck_style_progress(task, "全局汇总中"))
-                global_report = "\n\n".join(device_summaries)
+                global_report = self._compact_global_summary_input(device_summaries)
                 llm = dict(llm_base)
-                llm["task_prompt_text"] = llm_base.get("task_prompt_text", "") + "\n\n[全局汇总] 请汇总所有设备结论并给出处置优先级。"
+                llm["task_prompt_text"] = self._final_runtime_prompt(llm_base.get("task_prompt_text", ""))
                 timeout_sec = self._estimate_timeout_sec(global_report, floor=60, ceiling=max_call_timeout)
                 task["_active_call_started"] = time.monotonic()
                 task["_active_call_timeout_sec"] = float(timeout_sec)
@@ -1096,7 +1315,7 @@ class AIAnalysisManager:
                 task["device_done"] = task["device_total"]
                 task["device_running"] = 0
                 task["rounds_done"] = task["rounds_total"]
-                task["result"] = "# 全局汇总\n" + global_summary + "\n\n" + "\n\n".join(device_summaries)
+                task["result"] = "# 全局汇总\n" + global_summary + "\n\n" + self._render_device_summary_appendix(device_summaries)
 
             tokens = add_token_usage(provider, int(total_token_used))
             task["status"] = "success"

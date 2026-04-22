@@ -73,11 +73,11 @@
       <div class="device-log-sidebar-title">{{ 'Devices' if is_en else '设备列表' }}</div>
       <div class="device-log-search-box">
         <input
-          id="log-search-keyword"
+          id="device-filter-keyword"
           type="text"
-          placeholder="{{ 'Search keyword in filtered.log' if is_en else '在 filtered.log 中搜索关键字' }}"
+          placeholder="{{ 'Filter devices by name' if is_en else '按设备名称过滤' }}"
         />
-        <div id="log-search-status" class="device-log-search-status muted"></div>
+        <div id="device-filter-status" class="device-log-search-status muted"></div>
       </div>
       <div id="log-device-list" class="device-log-list">
         {% for d in task_devices_view %}
@@ -108,6 +108,14 @@
           <a id="filtered-download-link" href="#" target="_blank">{{ 'Download filtered.log' if is_en else '下载 filtered.log' }}</a>
           <a id="debug-download-link" href="#" target="_blank">{{ 'Download debug.log' if is_en else '下载 debug.log' }}</a>
         </div>
+      </div>
+      <div class="device-log-search-box device-log-inline-search">
+        <input
+          id="log-search-keyword"
+          type="text"
+          placeholder="{{ 'Search keyword in filtered.log' if is_en else '在 filtered.log 中搜索关键字' }}"
+        />
+        <div id="log-search-status" class="device-log-search-status muted"></div>
       </div>
       <div class="device-log-preset-bar">
         <div class="device-log-preset-controls">
@@ -181,6 +189,8 @@
     previewLoading: UI_LANG === 'en' ? 'Loading preview...' : '预览加载中...',
     previewFailed: UI_LANG === 'en' ? 'Preview failed' : '预览失败',
     previewNoUnits: UI_LANG === 'en' ? 'No preview units' : '没有可预览的单元',
+    deviceFilterHint: UI_LANG === 'en' ? 'Press Enter to filter device list' : '输入后回车过滤设备列表',
+    deviceFilterEmpty: UI_LANG === 'en' ? 'No matched devices' : '没有匹配的设备',
     presetLoadFailed: UI_LANG === 'en' ? 'Failed to load highlight presets' : '加载高亮预设失败',
     presetImportFailed: UI_LANG === 'en' ? 'Failed to import preset' : '导入预设失败',
     presetImportOk: UI_LANG === 'en' ? 'Preset imported' : '预设已导入',
@@ -192,6 +202,7 @@
   let selectedLogDeviceId = {% if task.devices %}"{{ task.devices[0].device_id }}"{% else %}''{% endif %};
   let analysisPreviewData = null;
   let analysisPreviewIndex = 0;
+  let deviceFilterKeyword = '';
   let logSearchKeyword = '';
   let logSearchTimer = null;
   let logSearchRequestSeq = 0;
@@ -256,13 +267,30 @@
     return matched || rows[0];
   }
 
+  function getVisibleLogDevices(devices) {
+    const rows = Array.isArray(devices) ? devices : [];
+    const keyword = String(deviceFilterKeyword || '').trim().toLowerCase();
+    if (!keyword) return rows;
+    return rows.filter((d) => String(d.device_name || '').toLowerCase().includes(keyword));
+  }
+
   function renderLogDeviceList(devices) {
     const box = document.getElementById('log-device-list');
+    const filterStatusEl = el('device-filter-status');
     if (!box) return;
     const rows = Array.isArray(devices) ? devices : [];
-    const selected = getSelectedDevice(rows);
+    const keyword = String(deviceFilterKeyword || '').trim().toLowerCase();
+    const visibleRows = getVisibleLogDevices(rows);
+    const selected = getSelectedDevice(visibleRows);
     if (selected) selectedLogDeviceId = selected.device_id;
-    box.innerHTML = rows.map((d) => {
+    else if (!visibleRows.length) selectedLogDeviceId = '';
+    if (filterStatusEl) {
+      if (!keyword) filterStatusEl.textContent = T.deviceFilterHint;
+      else filterStatusEl.textContent = visibleRows.length
+        ? (UI_LANG === 'en' ? `Visible devices: ${visibleRows.length}/${rows.length}` : `显示设备: ${visibleRows.length}/${rows.length}`)
+        : T.deviceFilterEmpty;
+    }
+    box.innerHTML = visibleRows.map((d) => {
       const title = d.device_name || d.device_ip || d.device_id;
       const sub = [d.device_id, d.device_ip, d.status || '-'].filter(Boolean).join(' | ');
       const active = d.device_id === selectedLogDeviceId ? ' active' : '';
@@ -326,7 +354,7 @@
 
   function getCurrentLogDevice() {
     const devices = (latestTask && latestTask.devices) ? latestTask.devices : ({{ task_devices_json | tojson }} || []);
-    return getSelectedDevice(devices);
+    return getSelectedDevice(getVisibleLogDevices(devices));
   }
 
   function getAutoHighlightPresetId(device) {
@@ -510,6 +538,7 @@
   async function runLogSearch() {
     const statusEl = el('log-search-status');
     const rows = (latestTask && Array.isArray(latestTask.devices)) ? latestTask.devices : [];
+    const visibleRows = getVisibleLogDevices(rows);
     const keyword = logSearchKeyword.trim();
     const requestId = ++logSearchRequestSeq;
 
@@ -526,7 +555,7 @@
       statusEl.textContent = UI_LANG === 'en' ? 'Searching...' : '搜索中...';
     }
 
-    await Promise.all(rows.map(async (dev) => {
+    await Promise.all(visibleRows.map(async (dev) => {
       try {
         const text = await fetchFilteredLogText(dev);
         const hits = countKeywordHits(text, keyword);
@@ -610,7 +639,8 @@
     const linkEl = document.getElementById('debug-download-link');
     if (!consoleEl || !linkEl || !filteredLinkEl) return;
     const devices = (latestTask && latestTask.devices) ? latestTask.devices : ({{ task_devices_json | tojson }} || []);
-    const dev = getSelectedDevice(devices);
+    const visibleDevices = getVisibleLogDevices(devices);
+    const dev = getSelectedDevice(visibleDevices);
     if (!dev) {
       selectedLogDeviceId = '';
       if (titleEl) titleEl.textContent = T.noDevice;
@@ -658,6 +688,19 @@
     }
   }
   renderLogDeviceList({{ task_devices_json | tojson }});
+  const deviceFilterInput = el('device-filter-keyword');
+  if (deviceFilterInput) {
+    const applyDeviceFilter = async () => {
+      deviceFilterKeyword = deviceFilterInput.value || '';
+      renderLogDeviceList((latestTask && latestTask.devices) ? latestTask.devices : ({{ task_devices_json | tojson }} || []));
+      await runLogSearch();
+    };
+    deviceFilterInput.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      await applyDeviceFilter();
+    });
+  }
   const logSearchInput = el('log-search-keyword');
   if (logSearchInput) {
     logSearchInput.addEventListener('input', () => {
@@ -748,7 +791,7 @@
       selected_task_prompt: val('selected_task_prompt', ''),
       batched_analysis: checked('batched_analysis'),
       fragmented_analysis: checked('fragmented_analysis'),
-      text_compression_strategy: val('text_compression_strategy', 'off'),
+      text_compression_strategy: val('text_compression_strategy', 'template_vars'),
       sql_log_inclusion_mode: val('sql_log_inclusion_mode', 'final_only'),
       analysis_parallelism: parseInt(val('analysis_parallelism', '2'), 10),
       chunk_parallelism: parseInt(val('chunk_parallelism', '1'), 10),
@@ -911,7 +954,7 @@
       selected_task_prompt: val('selected_task_prompt', ''),
       batched_analysis: checked('batched_analysis'),
       fragmented_analysis: checked('fragmented_analysis'),
-      text_compression_strategy: val('text_compression_strategy', 'off'),
+      text_compression_strategy: val('text_compression_strategy', 'template_vars'),
       sql_log_inclusion_mode: val('sql_log_inclusion_mode', 'final_only'),
       analysis_parallelism: parseInt(val('analysis_parallelism', '2'), 10),
       chunk_parallelism: parseInt(val('chunk_parallelism', '1'), 10),
@@ -958,7 +1001,7 @@
         : 'none';
       metaEl.textContent = [
         `${data.provider || '-'} | ${data.model_used || '-'}`,
-        `strategy=${data.compression_strategy || 'off'}`,
+        `strategy=${data.compression_strategy || 'template_vars'}`,
         `sql=${data.sql_log_inclusion_mode || 'final_only'}`,
         `sql_sections=${sqlParts}`,
         `scope=${unit.scope || '-'}`,
@@ -1000,7 +1043,7 @@
       selected_task_prompt: val('selected_task_prompt', ''),
       batched_analysis: checked('batched_analysis'),
       fragmented_analysis: checked('fragmented_analysis'),
-      text_compression_strategy: val('text_compression_strategy', 'off'),
+      text_compression_strategy: val('text_compression_strategy', 'template_vars'),
       sql_log_inclusion_mode: val('sql_log_inclusion_mode', 'final_only'),
       analysis_parallelism: parseInt(val('analysis_parallelism', '2'), 10),
       chunk_parallelism: parseInt(val('chunk_parallelism', '1'), 10),
@@ -1163,7 +1206,7 @@
       if (document.getElementById('batched_analysis')) document.getElementById('batched_analysis').checked = !!cfg.batched_analysis;
       if (document.getElementById('fragmented_analysis')) document.getElementById('fragmented_analysis').checked = !!cfg.fragmented_analysis;
       if (document.getElementById('text_compression_strategy')) {
-        document.getElementById('text_compression_strategy').value = cfg.text_compression_strategy || (cfg.text_compression_enabled ? 'group_repeats' : 'off');
+        document.getElementById('text_compression_strategy').value = cfg.text_compression_strategy || (cfg.text_compression_enabled ? 'group_repeats' : 'template_vars');
       }
       if (document.getElementById('sql_log_inclusion_mode')) {
         document.getElementById('sql_log_inclusion_mode').value = cfg.sql_log_inclusion_mode || 'final_only';

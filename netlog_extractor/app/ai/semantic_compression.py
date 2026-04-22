@@ -85,7 +85,9 @@ _PAIR_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9_-]{1,40})=([^,)\s;]+)")
 
 def normalize_strategy(raw: Any) -> CompressionStrategy:
     text = str(raw or "").strip().lower()
-    if text in {"group_repeats", "factor_time", "off"}:
+    if text == "repeat_timeline":
+        return "template_vars"
+    if text in {"group_repeats", "factor_time", "template_vars", "off"}:
         return text
     if text in {"1", "true", "yes", "on", "checked"}:
         return "group_repeats"
@@ -618,45 +620,61 @@ def _build_factor_time_package(
     md.append(f"- Raw non-empty lines: `{len(non_empty)}`")
     md.append(f"- Event templates: `{len(groups)}`")
     md.append("- Note: timestamps and occurrences are separated from the template body. Original evidence remains in the source log.")
+    global_sources = sorted({src for g in groups for src in g["collector_sources"]})
+    global_collector_hosts = sorted({host for g in groups for host in g["collector_hosts"]})
+    global_device_hosts = sorted({host for g in groups for host in g["device_hosts"]})
+    global_severities = sorted({sev for g in groups for sev in g["severities"]})
+    if global_sources:
+        md.append(f"- Collector sources: `{', '.join(global_sources)}`")
+    if global_collector_hosts:
+        md.append(f"- Collector hosts: `{', '.join(global_collector_hosts)}`")
+    if global_device_hosts:
+        md.append(f"- Device hosts: `{', '.join(global_device_hosts)}`")
+    if global_severities:
+        md.append(f"- Severities: `{', '.join(global_severities)}`")
     md.append("")
     md.append("## Event Templates")
+
+    def _compact_pairs_text(pairs: dict[str, str], limit: int = 10) -> str:
+        items = [f"{k}={v}" for k, v in sorted(pairs.items()) if str(v or "").strip()]
+        if len(items) > limit:
+            items = items[:limit] + [f"...(+{len(items) - limit})"]
+        return "; ".join(items)
+
+    def _occurrence_label(occ: dict[str, Any], varying_names: list[str]) -> str:
+        parts = [f"L{occ.get('line_no', '')}"]
+        if occ.get("collector_time"):
+            parts.append(f"C={occ.get('collector_time')}")
+        if occ.get("device_time"):
+            parts.append(f"D={occ.get('device_time')}")
+        varying = occ.get("varying_fields", {}) or {}
+        for name in varying_names:
+            value = str(varying.get(name, "") or "").strip()
+            if value:
+                parts.append(f"{name}={value}")
+        return " | ".join(parts)
+
     for g in groups:
         md.append(f"### {g['event_id']} | {g['event_code']} | occurrences={g['occurrence_count']}")
         md.append(f"- Template text: `{g['template_text']}`")
-        if g["collector_sources"]:
+        if g["collector_sources"] and sorted(g["collector_sources"]) != global_sources:
             md.append(f"- Collector sources: `{', '.join(g['collector_sources'])}`")
-        if g["collector_hosts"]:
+        if g["collector_hosts"] and sorted(g["collector_hosts"]) != global_collector_hosts:
             md.append(f"- Collector hosts: `{', '.join(g['collector_hosts'])}`")
-        if g["device_hosts"]:
+        if g["device_hosts"] and sorted(g["device_hosts"]) != global_device_hosts:
             md.append(f"- Device hosts: `{', '.join(g['device_hosts'])}`")
-        if g["severities"]:
+        if g["severities"] and sorted(g["severities"]) != global_severities:
             md.append(f"- Severities: `{', '.join(g['severities'])}`")
         if g["static_fields"]:
-            md.append("- Static fields:")
-            md.append("```json")
-            md.append(json.dumps(g["static_fields"], ensure_ascii=False, indent=2))
-            md.append("```")
-        if g["sample_lines"]:
-            md.append("- Sample lines:")
-            for sample in g["sample_lines"]:
-                md.append("```text")
-                md.append(sample)
-                md.append("```")
-        md.append("- Occurrences (compact):")
-        header = ["line_no", "collector_time", "device_time"] + list(g["varying_field_names"])
-        md.append("```text")
-        md.append(" | ".join(header))
-        for occ in g["occurrences"]:
-            row = [
-                str(occ.get("line_no", "")),
-                str(occ.get("collector_time", "") or ""),
-                str(occ.get("device_time", "") or ""),
-            ]
-            varying = occ.get("varying_fields", {}) or {}
-            for name in g["varying_field_names"]:
-                row.append(str(varying.get(name, "") or ""))
-            md.append(" | ".join(row))
-        md.append("```")
+            md.append(f"- Static fields: `{_compact_pairs_text(g['static_fields'])}`")
+        if g["occurrences"]:
+            if g["varying_field_names"]:
+                md.append("- Occurrences:")
+                for occ in g["occurrences"]:
+                    md.append(f"  - {_occurrence_label(occ, list(g['varying_field_names']))}")
+            else:
+                compact_timeline = "; ".join(_occurrence_label(occ, []) for occ in g["occurrences"])
+                md.append(f"- Timeline: `{compact_timeline}`")
         md.append("")
     return {
         "used": True,
@@ -666,6 +684,149 @@ def _build_factor_time_package(
             "strategy": "factor_time",
             "line_count": len(non_empty),
             "template_count": len(groups),
+        },
+    }
+
+
+def _build_template_vars_package(
+    raw_lines: list[str],
+    non_empty: list[tuple[int, str]],
+    source_name: str,
+    device_id: str,
+    default_year: int,
+    vendor_profile: str,
+) -> dict[str, Any]:
+    groups_by_sig: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for line_no, line in non_empty:
+        occ = _extract_time_factored_occurrence(line, line_no, default_year, vendor_profile)
+        sig = occ["event_code"] + "|" + occ["template_text"]
+        if sig not in groups_by_sig:
+            groups_by_sig[sig] = {
+                "event_id": f"evt-{len(order)+1:03d}",
+                "signature": sig,
+                "event_code": occ["event_code"],
+                "template_text": occ["template_text"],
+                "representative_line": occ["raw_line"],
+                "occurrences": [],
+            }
+            order.append(sig)
+        groups_by_sig[sig]["occurrences"].append(
+            {
+                "line_no": occ["line_no"],
+                "collector_time": occ["collector_time"],
+                "device_time": occ["device_time"],
+                "fields": occ["fields"],
+            }
+        )
+
+    groups: list[dict[str, Any]] = []
+    for sig in order:
+        g = groups_by_sig[sig]
+        all_field_names = sorted({k for occ in g["occurrences"] for k in occ["fields"].keys()})
+        static_fields: dict[str, str] = {}
+        varying_names: list[str] = []
+        for name in all_field_names:
+            values = {str(occ["fields"].get(name, "")) for occ in g["occurrences"]}
+            if len(values) == 1:
+                static_fields[name] = next(iter(values))
+            else:
+                varying_names.append(name)
+        normalized_occurrences: list[dict[str, Any]] = []
+        for occ in g["occurrences"]:
+            normalized_occurrences.append(
+                {
+                    "line_no": occ["line_no"],
+                    "collector_time": occ["collector_time"],
+                    "device_time": occ["device_time"],
+                    "varying_fields": {k: v for k, v in occ["fields"].items() if k in varying_names},
+                }
+            )
+        groups.append(
+            {
+                "event_id": g["event_id"],
+                "signature": g["signature"],
+                "event_code": g["event_code"],
+                "template_text": g["template_text"],
+                "representative_line": g["representative_line"],
+                "occurrence_count": len(g["occurrences"]),
+                "static_fields": static_fields,
+                "varying_field_names": varying_names,
+                "occurrences": normalized_occurrences,
+            }
+        )
+
+    groups.sort(key=lambda g: (-int(g["occurrence_count"]), str(g["event_code"]), str(g["template_text"])))
+    index = {
+        "strategy": "template_vars",
+        "device_id": device_id,
+        "source_name": source_name,
+        "used": bool(groups),
+        "line_count": len(non_empty),
+        "group_count": len(groups),
+        "groups": groups,
+    }
+    if not groups:
+        return {
+            "used": False,
+            "index": index,
+            "markdown": "",
+            "stats": {
+                "strategy": "template_vars",
+                "line_count": len(non_empty),
+                "group_count": 0,
+            },
+        }
+
+    def _compact_pairs_text(pairs: dict[str, str], limit: int = 10) -> str:
+        items = [f"{k}={v}" for k, v in sorted(pairs.items()) if str(v or "").strip()]
+        if len(items) > limit:
+            items = items[:limit] + [f"...(+{len(items) - limit})"]
+        return "; ".join(items)
+
+    md: list[str] = []
+    md.append("# Template Variables View")
+    md.append("")
+    md.append("- Strategy: `template_vars`")
+    md.append(f"- Source: `{source_name}`")
+    if device_id:
+        md.append(f"- Device: `{device_id}`")
+    md.append(f"- Raw non-empty lines: `{len(non_empty)}`")
+    md.append(f"- Templates: `{len(groups)}`")
+    md.append("- Rule: logs are grouped by constant template. Timestamps are separated, and only parsed variable fields are listed per occurrence.")
+    md.append("")
+    md.append("## Templates")
+    for g in groups:
+        md.append(f"### {g['event_id']} | {g['event_code']} | occurrences={g['occurrence_count']}")
+        md.append(f"- Template: `{g['template_text']}`")
+        md.append(f"- Representative line: `{g['representative_line']}`")
+        if g["static_fields"]:
+            md.append(f"- Static fields: `{_compact_pairs_text(g['static_fields'])}`")
+        if g["varying_field_names"]:
+            md.append(f"- Varying fields: `{', '.join(g['varying_field_names'])}`")
+        md.append("- Occurrences:")
+        for occ in g["occurrences"]:
+            bits = [f"L{occ.get('line_no', '')}"]
+            if occ.get("collector_time"):
+                bits.append(f"C={occ['collector_time']}")
+            if occ.get("device_time"):
+                bits.append(f"D={occ['device_time']}")
+            varying = occ.get("varying_fields", {}) or {}
+            for name in g["varying_field_names"]:
+                value = str(varying.get(name, "") or "").strip()
+                if value:
+                    bits.append(f"{name}={value}")
+            md.append(f"  - {' | '.join(bits)}")
+        md.append("")
+    return {
+        "used": True,
+        "index": index,
+        "markdown": "\n".join(md).strip() + "\n",
+        "stats": {
+            "strategy": "template_vars",
+            "line_count": len(non_empty),
+            "group_count": len(groups),
+            "collapsed_lines": max(0, len(non_empty) - len(groups)),
         },
     }
 
@@ -702,4 +863,6 @@ def build_semantic_package(
         }
     if strategy == "factor_time":
         return _build_factor_time_package(raw_lines, non_empty, source_name, device_id, year, vendor_profile)
+    if strategy == "template_vars":
+        return _build_template_vars_package(raw_lines, non_empty, source_name, device_id, year, vendor_profile)
     return _build_group_repeats_package(raw_lines, non_empty, source_name, device_id, year, vendor_profile)
