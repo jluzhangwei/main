@@ -4161,10 +4161,7 @@
       if (!silent) setOK('已清空过滤，全部显示。');
       return;
     }
-    const nodeHits = cy.nodes().filter(n => {
-      const label = (n.data('label') || '');
-      return matchExpressionInName(label, expr);
-    });
+    const nodeHits = findNodesByExpression(expr);
     nodeHits.addClass('filtered');
     cy.edges().forEach(e => {
       if (e.source().hasClass('filtered') || e.target().hasClass('filtered')) e.addClass('filtered');
@@ -4181,10 +4178,7 @@
       if (!silent) setOK('已取消“只显示”过滤，全部显示。');
       return;
     }
-    const hits = cy.nodes().filter(n => {
-      const label = (n.data('label') || '');
-      return matchExpressionInName(label, expr);
-    });
+    const hits = findNodesByExpression(expr);
     const hideNodes = cy.nodes().not(hits);
     hideNodes.addClass('onlyHidden');
     cy.edges().forEach(e => {
@@ -4393,6 +4387,39 @@
     return -1;
   }
 
+  function nodeMatchTexts(node) {
+    if (!node || !node.length || typeof node.data !== 'function') return [];
+    const out = [];
+    const pushText = (value) => {
+      const text = String(value || '').trim();
+      if (!text) return;
+      if (!out.includes(text)) out.push(text);
+    };
+    pushText(node.data('label'));
+    pushText(node.data('short'));
+    pushText(node.data('labelIp'));
+    const entityKey = String(node.data('entityKey') || '').trim();
+    pushText(entityKey);
+    if (entityKey.startsWith('name:')) pushText(entityKey.slice(5));
+    if (entityKey.startsWith('ip:')) pushText(entityKey.slice(3));
+    const groupLabels = Array.isArray(node.data('groupLabels')) ? node.data('groupLabels') : [];
+    groupLabels.forEach((label) => pushText(label));
+    return out;
+  }
+
+  function findNodesByExpression(expr) {
+    if (!cy) return cy ? cy.collection() : [];
+    const normalizedExpr = normalizeMatchExpression(expr);
+    return cy.nodes().filter((n) => nodeMatchesExpression(n, normalizedExpr));
+  }
+
+  function nodeMatchesExpression(node, expr) {
+    const texts = nodeMatchTexts(node);
+    if (!texts.length) return false;
+    const normalizedExpr = normalizeMatchExpression(expr);
+    return texts.some((text) => matchExpressionInName(text, normalizedExpr));
+  }
+
   function parseLayers() {
     const raw = $('layerTerms').value || '';
     return parseMatchExpression(raw);
@@ -4559,6 +4586,58 @@
     return s.split(/\s+/).filter(Boolean);
   }
 
+  function removeSharedPrefixTokens(aTokens, bTokens) {
+    const a = Array.isArray(aTokens) ? aTokens : [];
+    const b = Array.isArray(bTokens) ? bTokens : [];
+    let i = 0;
+    const max = Math.min(a.length, b.length);
+    while (i < max && a[i] === b[i]) i += 1;
+    return { a: a.slice(i), b: b.slice(i), shared: i };
+  }
+
+  function weightedOrderedTokenSimilarity(aTokens, bTokens) {
+    const a = Array.isArray(aTokens) ? aTokens : [];
+    const b = Array.isArray(bTokens) ? bTokens : [];
+    if (!a.length && !b.length) return 1;
+    const maxLen = Math.max(a.length, b.length);
+    if (!maxLen) return 0;
+    let hitWeight = 0;
+    let totalWeight = 0;
+    for (let i = 0; i < maxLen; i++) {
+      // Left-most token is more important than right-most token.
+      const weight = (maxLen - i) / maxLen;
+      totalWeight += weight;
+      if (a[i] && b[i] && a[i] === b[i]) hitWeight += weight;
+    }
+    return totalWeight > 0 ? hitWeight / totalWeight : 0;
+  }
+
+  function detectPlaneToken(tokens) {
+    const list = Array.isArray(tokens) ? tokens : [];
+    const alias = new Map([
+      ['lan', 'lan'],
+      ['wan', 'wan'],
+      ['oob', 'oob'],
+      ['mgmt', 'mgmt'],
+      ['management', 'mgmt'],
+      ['mgt', 'mgmt']
+    ]);
+    for (const token of list) {
+      const key = String(token || '').toLowerCase();
+      if (alias.has(key)) return alias.get(key);
+    }
+    return '';
+  }
+
+  function detectRingNumber(tokens) {
+    const list = Array.isArray(tokens) ? tokens : [];
+    for (const token of list) {
+      const m = String(token || '').match(/^r0*(\d{1,4})$/i);
+      if (m) return Number(m[1]);
+    }
+    return null;
+  }
+
   function commonPrefixLength(a, b) {
     const aa = String(a || '');
     const bb = String(b || '');
@@ -4576,17 +4655,30 @@
 
     const aTokens = tokenizeNameForSimilarity(a);
     const bTokens = tokenizeNameForSimilarity(b);
-    const aSet = new Set(aTokens);
-    const bSet = new Set(bTokens);
-    let inter = 0;
-    aSet.forEach((t) => { if (bSet.has(t)) inter += 1; });
-    const union = new Set([...aSet, ...bSet]).size || 1;
-    const tokenScore = inter / union;
+    const trimmed = removeSharedPrefixTokens(aTokens, bTokens);
+    const ax = trimmed.a;
+    const bx = trimmed.b;
+    let score = weightedOrderedTokenSimilarity(ax, bx);
 
-    const prefix = commonPrefixLength(a, b);
-    const prefixScore = prefix / Math.max(a.length, b.length, 1);
-    const firstTokenBonus = (aTokens[0] && bTokens[0] && aTokens[0] === bTokens[0]) ? 0.12 : 0;
-    return clamp01(tokenScore * 0.6 + prefixScore * 0.4 + firstTokenBonus);
+    const aPlane = detectPlaneToken(ax);
+    const bPlane = detectPlaneToken(bx);
+    if (aPlane && bPlane) {
+      if (aPlane === bPlane) score += 0.2;
+      else score -= 0.35;
+    }
+
+    const aRing = detectRingNumber(ax);
+    const bRing = detectRingNumber(bx);
+    if (aRing != null && bRing != null) {
+      const closeness = 1 / (1 + Math.abs(aRing - bRing));
+      score += ((aPlane && bPlane && aPlane === bPlane) ? 0.12 : 0.04) * closeness;
+    }
+
+    if (ax[0] && bx[0]) {
+      if (ax[0] === bx[0]) score += 0.08;
+      else score -= 0.08;
+    }
+    return clamp01(score);
   }
 
   function labelByIdForOrdering(nameById, id) {
@@ -11325,10 +11417,7 @@
     const expr = parseMatchExpression(e.target.value);
     if (!expr.length) return;
 
-    const hits = cy.nodes().filter(n => {
-      const label = (n.data('label') || '');
-      return matchExpressionInName(label, expr);
-    });
+    const hits = findNodesByExpression(expr);
 
     cy.elements().removeClass('hit dim');
     cy.elements().unselect();
@@ -11359,10 +11448,19 @@
   });
 $('filter').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
+    e.preventDefault();
     saveTopologyUiPrefs();
     applyFilter();
   }
 });
+  $('filter').addEventListener('change', () => {
+    saveTopologyUiPrefs();
+    applyFilter();
+  });
+  $('filter').addEventListener('blur', () => {
+    saveTopologyUiPrefs();
+    applyFilter();
+  });
   $('filter').addEventListener('input', saveTopologyUiPrefs);
 
   $('restoreDeleted').addEventListener('click', () => {
