@@ -84,6 +84,7 @@ CLI_QUERY_JOB_TTL_SEC = int(os.getenv("CLI_QUERY_JOB_TTL_SEC", "21600") or "2160
 ZABBIX_URL_DEFAULT = ""
 ZABBIX_API_TOKEN_DEFAULT = ""
 NDMP_API_URL_DEFAULT = "https://space.shopee.io/apis/ndmp/v2/device_interface/query"
+NDMP_DEVICE_API_URL_DEFAULT = "https://space.shopee.io/apis/ndmp/v2/device/query"
 
 
 class ZabbixConfigSaveRequest(BaseModel):
@@ -219,6 +220,16 @@ def zabbix_verify_ssl(verify_ssl_override: bool | None = None) -> bool:
 
 def ndmp_api_url(url_override: str | None = None) -> str:
     return str(url_override or get_env("NDMP_API_URL", NDMP_API_URL_DEFAULT)).strip()
+
+
+def ndmp_device_api_url(url_override: str | None = None) -> str:
+    raw = str(url_override or get_env("NDMP_DEVICE_API_URL", "")).strip()
+    if raw:
+        return raw
+    interface_url = ndmp_api_url()
+    if interface_url and "/device_interface/query" in interface_url:
+        return interface_url.replace("/device_interface/query", "/device/query")
+    return NDMP_DEVICE_API_URL_DEFAULT
 
 
 def ndmp_verify_ssl(verify_ssl_override: bool | None = None) -> bool:
@@ -1896,6 +1907,21 @@ class NdmpQueryRequest(BaseModel):
     verify_ssl: bool | None = None
 
 
+class DeviceDetailTarget(BaseModel):
+    hostname: str | None = None
+    ip: str | None = None
+    node_id: str | None = None
+    label: str | None = None
+
+
+class DeviceDetailsRequest(BaseModel):
+    devices: list[DeviceDetailTarget]
+    timeout_seconds: int = Field(default=20, ge=3, le=120)
+    max_workers: int = Field(default=8, ge=1, le=16)
+    ndmp_device_url: str | None = None
+    verify_ssl: bool | None = None
+
+
 class LinkUtilTarget(BaseModel):
     source_device: str
     source_interface: str
@@ -2680,6 +2706,259 @@ def _ndmp_query_json(
         return json.loads(raw_text)
     except Exception as exc:
         raise RuntimeError(f"NDMP 返回非 JSON：{exc}") from exc
+
+
+def _strip_domain_hostname(value: str) -> str:
+    text = normalize_device_id(value)
+    if not text or _looks_like_ip(text):
+        return text
+    return text.split(".", 1)[0].strip()
+
+
+def _safe_ndmp_hostname_regex(hostname: str) -> str:
+    host = normalize_device_id(hostname)
+    return f"^{re.escape(host)}$" if host else ""
+
+
+def _extract_ndmp_devices(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [x for x in payload if isinstance(x, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("devices", "rows", "items", "list", "result"):
+        val = payload.get(key)
+        if isinstance(val, list):
+            return [x for x in val if isinstance(x, dict)]
+    for key in ("data", "payload", "result"):
+        val = payload.get(key)
+        if isinstance(val, (dict, list)):
+            out = _extract_ndmp_devices(val)
+            if out:
+                return out
+    return []
+
+
+def _pick_ndmp_device(devices: list[dict[str, Any]], hostname: str, ip: str) -> dict[str, Any] | None:
+    if not devices:
+        return None
+    host = normalize_device_id(hostname).lower()
+    short = _strip_domain_hostname(hostname).lower()
+    target_ip = normalize_device_id(ip)
+
+    def score(dev: dict[str, Any]) -> tuple[int, int]:
+        dev_host = normalize_device_id(str(dev.get("hostname") or "")).lower()
+        dev_short = _strip_domain_hostname(dev_host).lower()
+        dev_ip = normalize_device_id(str(dev.get("management_ip") or ""))
+        value = 0
+        if target_ip and dev_ip == target_ip:
+            value += 100
+        if host and dev_host == host:
+            value += 80
+        if short and dev_short == short:
+            value += 60
+        if host and dev_host and (dev_host.startswith(host) or host.startswith(dev_host)):
+            value += 10
+        updated = 0
+        try:
+            updated = int(str(dev.get("updated_at") or "0").strip() or "0")
+        except Exception:
+            updated = 0
+        return (value, updated)
+
+    return sorted(devices, key=score, reverse=True)[0]
+
+
+def _flatten_ndmp_device_detail(
+    dev: dict[str, Any],
+    *,
+    target: DeviceDetailTarget,
+    query_payload: dict[str, Any],
+) -> dict[str, Any]:
+    system_info = dev.get("system_info") if isinstance(dev.get("system_info"), dict) else {}
+
+    def pick(*keys: str) -> str:
+        for key in keys:
+            val = dev.get(key)
+            if val not in (None, ""):
+                return str(val).strip()
+            val = system_info.get(key)
+            if val not in (None, ""):
+                return str(val).strip()
+        return ""
+
+    hostname = pick("hostname", "HOSTNAME")
+    management_ip = pick("management_ip", "MGMT_IPADDR")
+    if "/" in management_ip:
+        management_ip = management_ip.split("/", 1)[0].strip()
+    return {
+        "node_id": normalize_device_id(target.node_id or ""),
+        "input_label": normalize_device_id(target.label or ""),
+        "input_hostname": normalize_device_id(target.hostname or ""),
+        "input_ip": normalize_device_id(target.ip or ""),
+        "query_payload": query_payload,
+        "source": "NDMP device/query",
+        "queried_at": int(time.time()),
+        "device_id": pick("id"),
+        "hostname": hostname,
+        "management_ip": management_ip,
+        "sn": pick("sn", "SERIAL_NUMBER", "SERIAL"),
+        "manufacture": pick("manufacture"),
+        "model": pick("model", "MODEL"),
+        "platform": pick("platform"),
+        "version": pick("version", "SOFTWARE_VERSION", "VRP_VERSION"),
+        "role": pick("role"),
+        "business": pick("business"),
+        "service": pick("service"),
+        "idc": pick("idc"),
+        "hall": pick("hall"),
+        "rack": pick("rack"),
+        "area": pick("area"),
+        "location": pick("location"),
+        "az": pick("az"),
+        "status": pick("status"),
+        "is_mlag": bool(dev.get("is_mlag", False)),
+        "mlag_peer": pick("mlag_peer"),
+        "system_description": pick("system_description"),
+        "software": pick("SOFTWARE"),
+        "software_version": pick("SOFTWARE_VERSION", "version"),
+        "boot_image": pick("BOOT_IMAGE"),
+        "mgmt_interface": pick("MGMT_INTF"),
+        "mgmt_ipaddr": pick("MGMT_IPADDR"),
+        "uptime": pick("UPTIME"),
+        "asn": pick("asn"),
+        "local_asn": pick("local_asn"),
+        "created_at": pick("created_at"),
+        "updated_at": pick("updated_at"),
+    }
+
+
+def _query_ndmp_device_detail_one(
+    target: DeviceDetailTarget,
+    *,
+    ndmp_url: str,
+    timeout_seconds: int,
+    ssl_ctx: ssl.SSLContext,
+) -> dict[str, Any]:
+    hostname = normalize_device_id(target.hostname or target.label or "")
+    ip = normalize_device_id(target.ip or "")
+    if _looks_like_ip(hostname) and not ip:
+        ip = hostname
+        hostname = ""
+    hostname_candidates: list[str] = []
+    for cand in (hostname, _strip_domain_hostname(hostname)):
+        cand = normalize_device_id(cand)
+        if cand and not _looks_like_ip(cand) and cand not in hostname_candidates:
+            hostname_candidates.append(cand)
+
+    attempts: list[dict[str, Any]] = []
+    for host in hostname_candidates:
+        regex = _safe_ndmp_hostname_regex(host)
+        if regex:
+            attempts.append({"hostname": regex})
+    if _looks_like_ip(ip):
+        attempts.append({"management_ip": ip})
+    if not attempts:
+        return {
+            "status": "failed",
+            "node_id": normalize_device_id(target.node_id or ""),
+            "input_label": normalize_device_id(target.label or ""),
+            "input_hostname": normalize_device_id(target.hostname or ""),
+            "input_ip": normalize_device_id(target.ip or ""),
+            "error": "missing hostname or management_ip",
+        }
+
+    errors: list[str] = []
+    last_payload: dict[str, Any] = {}
+    for payload in attempts:
+        last_payload = payload
+        try:
+            body = _ndmp_query_json(
+                ndmp_url=ndmp_url,
+                payload=payload,
+                timeout_seconds=timeout_seconds,
+                ssl_ctx=ssl_ctx,
+            )
+        except Exception as exc:
+            errors.append(f"{payload}: {exc}")
+            continue
+        devices = _extract_ndmp_devices(body)
+        if not devices:
+            continue
+        picked = _pick_ndmp_device(devices, hostname, ip)
+        if not picked:
+            continue
+        detail = _flatten_ndmp_device_detail(picked, target=target, query_payload=payload)
+        detail["status"] = "ok"
+        return detail
+
+    return {
+        "status": "not_found" if not errors else "failed",
+        "node_id": normalize_device_id(target.node_id or ""),
+        "input_label": normalize_device_id(target.label or ""),
+        "input_hostname": normalize_device_id(target.hostname or ""),
+        "input_ip": normalize_device_id(target.ip or ""),
+        "query_payload": last_payload,
+        "source": "NDMP device/query",
+        "queried_at": int(time.time()),
+        "error": "; ".join(errors) if errors else "device not found",
+    }
+
+
+def query_ndmp_device_details(payload: DeviceDetailsRequest) -> dict[str, Any]:
+    raw_targets = payload.devices or []
+    targets: list[DeviceDetailTarget] = []
+    seen: set[str] = set()
+    for item in raw_targets:
+        hostname = normalize_device_id(item.hostname or item.label or "")
+        ip = normalize_device_id(item.ip or "")
+        node_id = normalize_device_id(item.node_id or "")
+        key = (hostname.lower(), ip, node_id)
+        key_text = "||".join(key)
+        if not hostname and not ip:
+            continue
+        if key_text in seen:
+            continue
+        seen.add(key_text)
+        targets.append(item)
+    if not targets:
+        raise RuntimeError("devices is required")
+
+    ndmp_url = ndmp_device_api_url(payload.ndmp_device_url)
+    if not ndmp_url:
+        raise RuntimeError("Missing NDMP device query URL")
+    ssl_ctx = ssl.create_default_context() if ndmp_verify_ssl(payload.verify_ssl) else ssl._create_unverified_context()
+    workers = min(max(1, int(payload.max_workers or 8)), 16, len(targets))
+    started = time.perf_counter()
+    details: list[dict[str, Any]] = []
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = [
+            pool.submit(
+                _query_ndmp_device_detail_one,
+                target,
+                ndmp_url=ndmp_url,
+                timeout_seconds=int(payload.timeout_seconds or 20),
+                ssl_ctx=ssl_ctx,
+            )
+            for target in targets
+        ]
+        for fut in as_completed(futs):
+            details.append(fut.result())
+
+    success = sum(1 for item in details if item.get("status") == "ok")
+    not_found = sum(1 for item in details if item.get("status") == "not_found")
+    failed = sum(1 for item in details if item.get("status") == "failed")
+    return {
+        "ok": True,
+        "mode": "ndmp_device_details",
+        "queried": len(targets),
+        "success": success,
+        "not_found": not_found,
+        "failed": failed,
+        "elapsed_sec": round(time.perf_counter() - started, 3),
+        "details": details,
+        "errors": [item for item in details if item.get("status") in {"failed", "not_found"}],
+    }
 
 
 def _run_ndmp_lldp_query(
@@ -5328,6 +5607,16 @@ def query_lldp_csv_via_ndmp(payload: NdmpQueryRequest) -> dict[str, Any]:
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"NDMP query failed: {exc}") from exc
+
+
+@app.post("/api/ndmp/device-details")
+def query_device_details_via_ndmp(payload: DeviceDetailsRequest) -> dict[str, Any]:
+    try:
+        return query_ndmp_device_details(payload)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"NDMP device detail query failed: {exc}") from exc
 
 
 @app.post("/api/cli/link-utilization/tasks")

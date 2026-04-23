@@ -491,7 +491,7 @@
         <datalist id="bizIsolationTermsHistory"></datalist>
         <div class="hint" id="partitionTermsHint">规则与分层一致：逗号分区，斜杠同区 OR，&需全部命中；分区先命中优先，命中后不再参与后续分区。</div>
       </div>
-      <div class="row inline">
+      <div class="row inline hidden">
         <div>
           <label>名称相似聚拢</label>
           <select id="nameClusterMode">
@@ -601,11 +601,13 @@
         <button id="exportPng">导出 PNG</button>
         <button id="exportLinkSummary">导出链路汇总</button>
         <button id="exportDrawio">导出 draw.io</button>
-        <button id="copyMermaid">复制 Mermaid</button>
+        <button id="copyMermaid">导出 Mermaid</button>
       </div>
       <div class="row inline">
         <button id="exportSession">导出 Json</button>
+        <button id="exportDeviceDetails" type="button">导出设备详情</button>
       </div>
+      <div class="hint" id="deviceDetailHint">设备详情导出：选中设备则导出选中；未选中则导出当前可见设备。导出前会自动补查缺失详情。</div>
       <div class="action-group">
         <div id="cleanupGroupTitle" class="action-group-title">清理</div>
         <div class="row inline">
@@ -641,15 +643,8 @@
           <button id="openZbxConfig" type="button">Zabbix配置</button>
         </div>
         <div>
-          <button id="downloadUtilCache" type="button">下载链路缓存CSV</button>
-        </div>
-        <div>
-          <button id="downloadUtilDebug" type="button">下载利用率调试日志</button>
-        </div>
-        <div>
           <button id="openUtilFilterModal" type="button">利用率过滤</button>
         </div>
-        <label class="check-row"><input id="utilDebugEnabled" type="checkbox" />开启调试日志</label>
         <div class="span-2">
           <select id="utilMetric">
             <option value="tx">查询口径：TX</option>
@@ -708,6 +703,7 @@
   <button id="ctxCopy">复制名称</button>
   <button id="ctxCopyIp">复制地址</button>
   <button id="ctxCopyLink">复制链路</button>
+  <button id="ctxDeviceDetail">设备详情复制</button>
   <div id="ctxSepQuery" class="ctx-sep"></div>
   <button id="ctxUtil">当前利用率</button>
   <button id="ctxUtilRange">区间利用率</button>
@@ -1082,6 +1078,19 @@
     </div>
   </div>
 </div>
+<div id="deviceDetailExportModal" class="modal-backdrop">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="deviceDetailExportTitle">
+    <div class="modal-title" id="deviceDetailExportTitle">导出设备详情</div>
+    <div class="hint" id="deviceDetailExportScopeHint">选择需要导出的字段；导出前会自动补查当前范围内缺失的设备详情。</div>
+    <div class="modal-form-grid" id="deviceDetailExportFields"></div>
+    <div class="modal-actions">
+      <button id="selectAllDeviceDetailFields" type="button">全选</button>
+      <button id="clearDeviceDetailFields" type="button">清空</button>
+      <button id="runDeviceDetailExport" class="primary" type="button">导出 CSV</button>
+      <button id="closeDeviceDetailExportModal" type="button">关闭</button>
+    </div>
+  </div>
+</div>
 <script>
   let sourceRows = [];
   let rawRows = [];
@@ -1115,6 +1124,7 @@
   let cliLldpTaskCancelling = false;
   let ctxAppendSingleHop = false;
   let utilByKey = new Map();
+  let deviceDetailByKey = new Map();
   let edgeDescByKey = new Map();
   let expandedMergedEdgePairKeys = new Set();
   let primaryCliSource = '';
@@ -1280,7 +1290,7 @@
       btn_export_png: '导出 PNG',
       btn_export_link_summary: '导出链路汇总',
       btn_export_drawio: '导出 draw.io',
-      btn_copy_mermaid: '复制 Mermaid',
+      btn_copy_mermaid: '导出 Mermaid',
       btn_export_session: '导出 Json',
       btn_import_session: 'Json 导入',
       cleanup_group_title: '清理',
@@ -1290,11 +1300,11 @@
       btn_cli_util: 'CLI 链路利用率',
       btn_zbx_util: 'Zabbix链路利用率',
       btn_zbx_config: 'Zabbix配置',
-      btn_dl_cache: '下载链路缓存CSV',
       btn_clear_cache: '删除链路缓存',
-      btn_dl_util_debug: '下载利用率调试日志',
       btn_util_filter: '利用率过滤',
       btn_clear_util_filter: '清除过滤',
+      btn_query_device_details: '设备详情查询',
+      btn_export_device_details: '导出设备详情',
       util_show_edge_desc: '显示链路描述',
       util_color_analysis: '链路拥塞分析',
       util_show_imbalance: '负载分担分析',
@@ -1323,6 +1333,7 @@
       ctx_edge_collapse: '收起链路',
       ctx_util: '当前利用率',
       ctx_util_range: '区间利用率',
+      ctx_device_detail: '设备详情复制',
       ctx_edge_desc: '添加描述',
       edge_desc_modal_title: '链路描述',
       edge_desc_target_label: '目标链路',
@@ -1440,7 +1451,7 @@
       btn_export_png: 'Export PNG',
       btn_export_link_summary: 'Export Link Summary',
       btn_export_drawio: 'Export draw.io',
-      btn_copy_mermaid: 'Copy Mermaid',
+      btn_copy_mermaid: 'Export Mermaid',
       btn_export_session: 'Export Json',
       btn_import_session: 'Json Import',
       cleanup_group_title: 'Cleanup',
@@ -1450,11 +1461,11 @@
       btn_cli_util: 'CLI Link Utilization',
       btn_zbx_util: 'Zabbix Link Utilization',
       btn_zbx_config: 'Zabbix Config',
-      btn_dl_cache: 'Download Link Cache CSV',
       btn_clear_cache: 'Clear Link Cache',
-      btn_dl_util_debug: 'Download Util Debug Log',
       btn_util_filter: 'Util Filter',
       btn_clear_util_filter: 'Clear Filter',
+      btn_query_device_details: 'Query Device Details',
+      btn_export_device_details: 'Export Device Details',
       util_show_edge_desc: 'Show Link Description',
       util_color_analysis: 'Link Congestion Analysis',
       util_show_imbalance: 'Load Balancing Analysis',
@@ -1483,6 +1494,7 @@
       ctx_edge_collapse: 'Collapse Links',
       ctx_util: 'Current Utilization',
       ctx_util_range: 'Range Utilization',
+      ctx_device_detail: 'Copy Device Details',
       ctx_edge_desc: 'Add Description',
       edge_desc_modal_title: 'Link Description',
       edge_desc_target_label: 'Target Link',
@@ -1706,11 +1718,11 @@
     setText('refreshUtilization', 'btn_cli_util');
     setText('refreshUtilizationZbx', 'btn_zbx_util');
     setText('openZbxConfig', 'btn_zbx_config');
-    setText('downloadUtilCache', 'btn_dl_cache');
     setText('clearUtilCache', 'btn_clear_cache');
-    setText('downloadUtilDebug', 'btn_dl_util_debug');
     setText('openUtilFilterModal', 'btn_util_filter');
     setText('clearUtilFilterOnly', 'btn_clear_util_filter');
+    setText('queryDeviceDetails', 'btn_query_device_details');
+    setText('exportDeviceDetails', 'btn_export_device_details');
     setText('utilShowEdgeDescLabel', 'util_show_edge_desc');
     setText('utilColorEnabledLabel', 'util_color_analysis');
     setText('utilShowImbalanceLabel', 'util_show_imbalance');
@@ -1728,6 +1740,7 @@
     setText('loadPasteModal', 'btn_load_paste');
     setText('ctxUtil', 'ctx_util');
     setText('ctxUtilRange', 'ctx_util_range');
+    setText('ctxDeviceDetail', 'ctx_device_detail');
     setText('ctxEdgeDesc', 'ctx_edge_desc');
     setText('ctxPathVia', 'ctx_path_via');
     setText('ctxNodeColor', 'ctx_node_color');
@@ -2191,6 +2204,7 @@
       manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes),
       manualNodeColors: exportManualNodeColorEntries(),
       edgeDescEntries: exportEdgeDescEntries(),
+      deviceDetailEntries: exportDeviceDetailEntries(),
       expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
       expandedMergedEdgePairKeys: Array.from(expandedMergedEdgePairKeys),
       mergedMode: !!mergedMode,
@@ -2239,6 +2253,7 @@
       importManualNodeColorEntries(snapshot.manualNodeColors || [], { overwrite: true });
       rebuildNodeKeywordColorRulesFromInput();
       importEdgeDescEntries(snapshot.edgeDescEntries || [], false);
+      importDeviceDetailEntries(snapshot.deviceDetailEntries || [], { clear: true });
       expandedManualGroupKeys = new Set((snapshot.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
       expandedMergedEdgePairKeys = new Set((snapshot.expandedMergedEdgePairKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
 
@@ -3158,6 +3173,9 @@
     const visibleExpandedManualGroupKeys = Array.from(expandedManualGroupKeys).filter((key) => (
       visibleManualGroups.some((group) => group.key === key)
     ));
+    const visibleDeviceDetails = collectDeviceDetailTargets(visibleNodes)
+      .map((target) => findDeviceDetailForTarget(target))
+      .filter(Boolean);
     return {
       headers: headers.slice(),
       rows: visibleRows.slice(),
@@ -3165,6 +3183,7 @@
       nodes: visibleNodeMeta,
       manual_canvas_nodes: cloneManualCanvasNodes(manualCanvasNodes).filter((node) => visibleNodeIds.has(node.id)),
       edge_descriptions: visibleEdgeDescEntries(visibleEdges),
+      device_details: visibleDeviceDetails,
       ui: {
         stripDomain: $('stripDomain')?.value || 'yes',
         colLocalHost: $('colLocalHost')?.value || '',
@@ -3174,6 +3193,7 @@
         nodeColorRulesText: $('nodeColorRules')?.value || '',
         manualNodeColors: exportManualNodeColorEntries(visibleNodeIds),
         edgeDescriptions: visibleEdgeDescEntries(visibleEdges),
+        deviceDetails: visibleDeviceDetails,
         manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes).filter((node) => visibleNodeIds.has(node.id)),
         manualGroups: visibleManualGroups,
         expandedManualGroupKeys: visibleExpandedManualGroupKeys
@@ -3190,6 +3210,7 @@
     clearManualCanvasState();
     clearEdgeDescState();
     clearNodeColorState({ keepRules: true });
+    clearDeviceDetailState();
     resetViewState();
     const parsed = parseCSV(text);
     headers = parsed.headers;
@@ -7148,6 +7169,442 @@
     return lines.join('\n');
   }
 
+  const DEVICE_DETAIL_EXPORT_FIELDS = [
+    { key: 'hostname', label: 'Hostname', checked: true },
+    { key: 'management_ip', label: 'Management IP', checked: true },
+    { key: 'manufacture', label: 'Vendor', checked: true },
+    { key: 'model', label: 'Model', checked: true },
+    { key: 'platform', label: 'Platform', checked: true },
+    { key: 'version', label: 'Version', checked: true },
+    { key: 'software_version', label: 'Software Version', checked: true },
+    { key: 'sn', label: 'Serial Number', checked: true },
+    { key: 'role', label: 'Role', checked: false },
+    { key: 'business', label: 'Business', checked: false },
+    { key: 'idc', label: 'IDC', checked: false },
+    { key: 'hall', label: 'Hall', checked: false },
+    { key: 'rack', label: 'Rack', checked: false },
+    { key: 'is_mlag', label: 'MLAG', checked: false },
+    { key: 'mlag_peer', label: 'MLAG Peer', checked: false },
+    { key: 'software', label: 'Software', checked: false },
+    { key: 'boot_image', label: 'Boot Image', checked: false },
+    { key: 'mgmt_interface', label: 'Mgmt Interface', checked: false },
+    { key: 'mgmt_ipaddr', label: 'Mgmt IP Raw', checked: false },
+    { key: 'uptime', label: 'Uptime', checked: false },
+    { key: 'system_description', label: 'System Description', checked: false },
+    { key: 'asn', label: 'ASN', checked: false },
+    { key: 'updated_at', label: 'Updated At', checked: false },
+    { key: 'queried_at', label: 'Queried At', checked: false },
+    { key: 'status', label: 'Query Status', checked: false },
+    { key: 'error', label: 'Error', checked: false }
+  ];
+
+  function normalizeDeviceDetailKey(hostname, ip = '', nodeId = '') {
+    const host = String(hostname || '').trim();
+    const short = stripAfterDot(host).trim();
+    if (host && !isIpv4(host)) return `name:${short.toLowerCase()}`;
+    const addr = String(ip || '').trim();
+    if (isIpv4(addr)) return `ip:${addr}`;
+    const id = String(nodeId || '').trim();
+    return id ? `node:${id}` : '';
+  }
+
+  function deviceDetailKeysForTarget(target = {}) {
+    const out = [];
+    const add = (key) => {
+      const clean = String(key || '').trim().toLowerCase();
+      if (clean && !out.includes(clean)) out.push(clean);
+    };
+    add(normalizeDeviceDetailKey(target.hostname, target.ip, target.node_id));
+    add(normalizeDeviceDetailKey(target.label, target.ip, target.node_id));
+    add(normalizeDeviceDetailKey(stripAfterDot(target.hostname || target.label || ''), target.ip, target.node_id));
+    if (isIpv4(target.ip)) add(normalizeDeviceDetailKey('', target.ip, target.node_id));
+    if (target.node_id) add(normalizeDeviceDetailKey('', '', target.node_id));
+    return out;
+  }
+
+  function deviceDetailKeysForDetail(detail = {}) {
+    return deviceDetailKeysForTarget({
+      hostname: detail.hostname || detail.input_hostname || detail.input_label,
+      label: detail.input_label || detail.hostname,
+      ip: detail.management_ip || detail.input_ip,
+      node_id: detail.node_id
+    });
+  }
+
+  function exportDeviceDetailEntries() {
+    const seen = new Set();
+    const rows = [];
+    deviceDetailByKey.forEach((value, key) => {
+      const canonical = normalizeDeviceDetailKey(value?.hostname || value?.input_hostname || value?.input_label, value?.management_ip || value?.input_ip, value?.node_id);
+      const dedupe = canonical || String(key || '').trim().toLowerCase();
+      if (!dedupe || seen.has(dedupe)) return;
+      seen.add(dedupe);
+      rows.push({ key: dedupe, ...(value && typeof value === 'object' ? value : {}) });
+    });
+    return rows;
+  }
+
+  function importDeviceDetailEntries(rows = [], opts = {}) {
+    if (opts.clear) deviceDetailByKey = new Map();
+    (Array.isArray(rows) ? rows : []).forEach((item) => {
+      if (!item || typeof item !== 'object') return;
+      const detail = { ...item };
+      const keys = deviceDetailKeysForDetail(detail);
+      if (!keys.length && item.key) keys.push(String(item.key).trim().toLowerCase());
+      keys.forEach((key) => {
+        if (key) deviceDetailByKey.set(key, detail);
+      });
+    });
+  }
+
+  function clearDeviceDetailState() {
+    deviceDetailByKey = new Map();
+    if ($('deviceDetailHint')) {
+      $('deviceDetailHint').textContent = '设备详情导出：选中设备则导出选中；未选中则导出当前可见设备。导出前会自动补查缺失详情。';
+    }
+  }
+
+  function cacheDeviceDetail(detail = {}) {
+    if (!detail || typeof detail !== 'object') return;
+    const keys = deviceDetailKeysForDetail(detail);
+    keys.forEach((key) => {
+      if (key) deviceDetailByKey.set(key, detail);
+    });
+  }
+
+  function findDeviceDetailForTarget(target = {}) {
+    const keys = deviceDetailKeysForTarget(target);
+    for (const key of keys) {
+      const hit = deviceDetailByKey.get(key);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  function nodeIpFromMaps(label) {
+    const raw = String(label || '').trim();
+    const short = stripAfterDot(raw);
+    const candidates = [
+      nodeIpMap.get(raw),
+      nodeIpMap.get(short),
+      deviceNameToIpMap.get(raw),
+      deviceNameToIpMap.get(short),
+      nodeIpMap.get(raw.toLowerCase()),
+      nodeIpMap.get(short.toLowerCase()),
+      deviceNameToIpMap.get(raw.toLowerCase()),
+      deviceNameToIpMap.get(short.toLowerCase())
+    ].filter(Boolean);
+    return candidates.find(isIpv4) || '';
+  }
+
+  function addDeviceDetailTarget(out, seen, data = {}) {
+    const label = String(data.label || data.hostname || '').trim();
+    const ip = isIpv4(data.ip) ? String(data.ip).trim() : (isIpv4(label) ? label : '');
+    const hostname = label && !isIpv4(label) ? label : '';
+    if (!hostname && !ip) return;
+    const key = `${hostname.toLowerCase()}||${ip}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({
+      node_id: String(data.node_id || '').trim(),
+      label,
+      hostname,
+      ip
+    });
+  }
+
+  function addDeviceDetailTargetFromNode(out, seen, node) {
+    if (!node || typeof node.data !== 'function') return;
+    const label = String(node.data('label') || node.id()).trim();
+    const ip = primaryIpFromList(node.data('ips') || node.data('ip'))
+      || nodeIpFromMaps(label)
+      || (isIpv4(resolveCliQueryTargetForNode(node)) ? resolveCliQueryTargetForNode(node) : '');
+    addDeviceDetailTarget(out, seen, { node_id: node.id(), label, ip });
+  }
+
+  function collectDeviceDetailTargets(nodesCollection = null, opts = {}) {
+    if (!cy) return [];
+    let nodes = nodesCollection;
+    if (!nodes || typeof nodes.filter !== 'function' || !nodes.length) {
+      nodes = opts.visibleFallback === false ? cy.collection() : cy.nodes(':visible').not('.dim');
+    }
+    const out = [];
+    const seen = new Set();
+    nodes
+      .filter((n) => n && typeof n.isNode === 'function' && n.isNode())
+      .forEach((node) => {
+        if (node.data('isGroup')) {
+          const members = Array.isArray(node.data('groupMembers')) ? node.data('groupMembers') : [];
+          const labels = Array.isArray(node.data('groupLabels')) ? node.data('groupLabels') : [];
+          members.forEach((memberId, idx) => {
+            const memberNode = cy.getElementById(String(memberId || '').trim());
+            if (memberNode && memberNode.length && !memberNode.data('isGroup')) {
+              addDeviceDetailTargetFromNode(out, seen, memberNode);
+              return;
+            }
+            const label = String(labels[idx] || memberId || '').trim();
+            addDeviceDetailTarget(out, seen, {
+              node_id: String(memberId || '').trim(),
+              label,
+              ip: nodeIpFromMaps(label)
+            });
+          });
+          return;
+        }
+        const manualType = String(node.data('manualNodeType') || 'node').trim().toLowerCase();
+        if (manualType === 'cloud') return;
+        addDeviceDetailTargetFromNode(out, seen, node);
+      });
+    return out;
+  }
+
+  function selectedOrVisibleDeviceDetailTargets() {
+    if (!cy) return [];
+    const selected = cy.nodes(':selected').filter((n) => n.visible());
+    return collectDeviceDetailTargets(selected.length ? selected : cy.nodes(':visible').not('.dim'));
+  }
+
+  async function queryDeviceDetailsForTargets(targets, opts = {}) {
+    const cleanTargets = (Array.isArray(targets) ? targets : []).filter((item) => item && (item.hostname || item.ip || item.label));
+    if (!cleanTargets.length) {
+      setErr('未找到可查询设备详情的设备。');
+      return null;
+    }
+    const scopeText = opts.scopeText || (cleanTargets.length === 1 ? cleanTargets[0].label || cleanTargets[0].hostname || cleanTargets[0].ip : `${cleanTargets.length} 台设备`);
+    setStatus('设备详情查询中...');
+    setErr('');
+    setOK(`正在查询设备详情：${scopeText}`);
+    if ($('deviceDetailHint')) $('deviceDetailHint').textContent = `设备详情查询中：${scopeText}`;
+    const base = apiBaseUrl();
+    const resp = await fetch(`${base}/api/ndmp/device-details`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        devices: cleanTargets,
+        timeout_seconds: 20,
+        max_workers: Math.min(8, Math.max(1, cleanTargets.length))
+      })
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data?.ok !== true) {
+      throw new Error(data?.detail || `HTTP ${resp.status}`);
+    }
+    const details = Array.isArray(data.details) ? data.details : [];
+    details.forEach((detail) => {
+      if (detail && detail.status === 'ok') cacheDeviceDetail(detail);
+    });
+    const success = Number(data.success || 0);
+    const notFound = Number(data.not_found || 0);
+    const failed = Number(data.failed || 0);
+    const elapsed = Number(data.elapsed_sec || 0);
+    setStatus('设备详情查询完成');
+    const msg = `设备详情已更新：查询 ${Number(data.queried || cleanTargets.length)}，成功 ${success}，未找到 ${notFound}，失败 ${failed}，耗时 ${elapsed.toFixed(1)}s，缓存 ${exportDeviceDetailEntries().length} 台。`;
+    setOK(msg);
+    if ($('deviceDetailHint')) $('deviceDetailHint').textContent = msg;
+    persistCurrentPageSession(true);
+    return data;
+  }
+
+  async function queryDeviceDetailsFromSelectionOrVisible() {
+    try {
+      const selected = cy ? cy.nodes(':selected').filter((n) => n.visible()) : null;
+      const targets = selected && selected.length
+        ? collectDeviceDetailTargets(selected)
+        : collectDeviceDetailTargets(cy ? cy.nodes(':visible').not('.dim') : null);
+      await queryDeviceDetailsForTargets(targets, { scopeText: selected && selected.length ? `选中 ${targets.length} 台` : `当前可见 ${targets.length} 台` });
+    } catch (e) {
+      setStatus('设备详情查询失败');
+      const msg = String(e && e.message ? e.message : e);
+      setErr(`设备详情查询失败：${msg}`);
+      if ($('deviceDetailHint')) $('deviceDetailHint').textContent = `设备详情查询失败：${msg}`;
+    }
+  }
+
+  function renderDeviceDetailExportFields() {
+    const box = $('deviceDetailExportFields');
+    if (!box) return;
+    box.innerHTML = DEVICE_DETAIL_EXPORT_FIELDS.map((field) => `
+      <label class="check-row">
+        <input type="checkbox" data-device-detail-field="${escapeHtml(field.key)}" ${field.checked ? 'checked' : ''} style="width:auto; margin-right:8px;" />
+        ${escapeHtml(field.label)}
+      </label>
+    `).join('');
+  }
+
+  function selectedDeviceDetailExportFields() {
+    const checked = Array.from(document.querySelectorAll('[data-device-detail-field]:checked'))
+      .map((el) => String(el.getAttribute('data-device-detail-field') || '').trim())
+      .filter(Boolean);
+    return DEVICE_DETAIL_EXPORT_FIELDS.filter((field) => checked.includes(field.key));
+  }
+
+  function currentDeviceDetailExportTargets() {
+    const selected = cy ? cy.nodes(':selected').filter((n) => n.visible()) : null;
+    const collection = selected && selected.length ? selected : (cy ? cy.nodes(':visible').not('.dim') : null);
+    return collectDeviceDetailTargets(collection);
+  }
+
+  async function openDeviceDetailExportModal() {
+    const targets = currentDeviceDetailExportTargets();
+    if (!targets.length) {
+      setErr('未找到可导出设备详情的设备。');
+      return;
+    }
+    const missingTargets = targets.filter((target) => !findDeviceDetailForTarget(target));
+    if (missingTargets.length) {
+      try {
+        await queryDeviceDetailsForTargets(missingTargets, {
+          scopeText: `导出前补查 ${missingTargets.length}/${targets.length} 台`
+        });
+      } catch (e) {
+        const msg = String(e && e.message ? e.message : e);
+        setErr(`设备详情补查失败：${msg}`);
+        if ($('deviceDetailHint')) $('deviceDetailHint').textContent = `设备详情补查失败：${msg}`;
+      }
+    }
+    renderDeviceDetailExportFields();
+    const cached = targets.filter((target) => !!findDeviceDetailForTarget(target)).length;
+    if ($('deviceDetailExportScopeHint')) {
+      const scope = cy && cy.nodes(':selected').filter((n) => n.visible()).length ? '选中设备' : '当前可见设备';
+      $('deviceDetailExportScopeHint').textContent = `导出范围：${scope}；可导出 ${cached}/${targets.length} 台已查询设备详情。`;
+    }
+    if ($('deviceDetailExportModal')) $('deviceDetailExportModal').style.display = 'flex';
+  }
+
+  function closeDeviceDetailExportModal() {
+    if ($('deviceDetailExportModal')) $('deviceDetailExportModal').style.display = 'none';
+  }
+
+  function formatDeviceDetailCsvValue(value) {
+    if (value == null) return '';
+    if (typeof value === 'boolean') return value ? 'true' : 'false';
+    if (typeof value === 'number' && Number.isFinite(value) && value > 1000000000 && value < 2000000000) {
+      return new Date(value * 1000).toISOString();
+    }
+    return String(value);
+  }
+
+  function deviceDetailCopyFields() {
+    return DEVICE_DETAIL_EXPORT_FIELDS.filter((field) => field.checked || field.key === 'status' || field.key === 'error');
+  }
+
+  function formatDeviceDetailTsvValue(value) {
+    return formatDeviceDetailCsvValue(value).replace(/\r?\n/g, ' ').replace(/\t/g, ' ').trim();
+  }
+
+  function deviceDetailFieldValue(detail = {}, target = {}, key = '') {
+    if (key === 'hostname') {
+      return detail.hostname || detail.input_hostname || target.hostname || target.label || '';
+    }
+    if (key === 'management_ip') {
+      return detail.management_ip || detail.input_ip || target.ip || '';
+    }
+    if (key === 'status') {
+      return detail.status || (detail.hostname || detail.management_ip ? 'ok' : 'missing');
+    }
+    if (key === 'error') {
+      return detail.error || '';
+    }
+    return detail[key] == null ? '' : detail[key];
+  }
+
+  function findDeviceDetailInRowsForTarget(target = {}, details = []) {
+    const targetKeys = deviceDetailKeysForTarget(target);
+    if (!targetKeys.length) return null;
+    for (const detail of (Array.isArray(details) ? details : [])) {
+      const detailKeys = deviceDetailKeysForDetail(detail);
+      if (detailKeys.some((key) => targetKeys.includes(key))) return detail;
+    }
+    return null;
+  }
+
+  async function copyDeviceDetailsForTargets(targets, opts = {}) {
+    const cleanTargets = (Array.isArray(targets) ? targets : []).filter((item) => item && (item.hostname || item.ip || item.label));
+    if (!cleanTargets.length) {
+      setErr('未找到可复制设备详情的设备。');
+      return;
+    }
+    setStatus('设备详情复制中...');
+    setErr('');
+    let freshDetails = [];
+    const missingTargets = cleanTargets.filter((target) => !findDeviceDetailForTarget(target));
+    if (missingTargets.length) {
+      const data = await queryDeviceDetailsForTargets(missingTargets, {
+        scopeText: opts.scopeText || `复制前补查 ${missingTargets.length}/${cleanTargets.length} 台`
+      });
+      freshDetails = Array.isArray(data?.details) ? data.details : [];
+    }
+    const fields = deviceDetailCopyFields();
+    const lines = [fields.map((field) => formatDeviceDetailTsvValue(field.label)).join('\t')];
+    const seen = new Set();
+    let copied = 0;
+    let notOk = 0;
+    cleanTargets.forEach((target) => {
+      const dedupeKey = deviceDetailKeysForTarget(target)[0] || `${target.label || target.hostname || ''}|${target.ip || ''}`;
+      if (dedupeKey && seen.has(dedupeKey)) return;
+      if (dedupeKey) seen.add(dedupeKey);
+      const detail = findDeviceDetailForTarget(target)
+        || findDeviceDetailInRowsForTarget(target, freshDetails)
+        || {
+          input_label: target.label || '',
+          input_hostname: target.hostname || '',
+          input_ip: target.ip || '',
+          status: 'missing',
+          error: 'device detail not found'
+        };
+      const status = String(detail.status || '').trim().toLowerCase();
+      if (status && status !== 'ok') notOk += 1;
+      lines.push(fields.map((field) => formatDeviceDetailTsvValue(deviceDetailFieldValue(detail, target, field.key))).join('\t'));
+      copied += 1;
+    });
+    if (!copied) {
+      setErr('当前选择没有可复制的设备详情。');
+      return;
+    }
+    await navigator.clipboard.writeText(lines.join('\n'));
+    setStatus('设备详情复制完成');
+    const msg = `设备详情已复制：${copied} 台${notOk ? `，${notOk} 台未完整命中（见状态/错误列）` : ''}。`;
+    setOK(msg);
+    if ($('deviceDetailHint')) $('deviceDetailHint').textContent = msg;
+  }
+
+  function exportDeviceDetailsCsv() {
+    const fields = selectedDeviceDetailExportFields();
+    if (!fields.length) {
+      setErr('请至少选择一个设备详情导出字段。');
+      return;
+    }
+    const targets = currentDeviceDetailExportTargets();
+    const rows = [];
+    const seen = new Set();
+    targets.forEach((target) => {
+      const detail = findDeviceDetailForTarget(target);
+      if (!detail) return;
+      const key = normalizeDeviceDetailKey(detail.hostname || target.hostname || target.label, detail.management_ip || target.ip, detail.node_id || target.node_id);
+      if (key && seen.has(key)) return;
+      if (key) seen.add(key);
+      rows.push(fields.map((field) => formatDeviceDetailCsvValue(detail[field.key])));
+    });
+    if (!rows.length) {
+      setErr('当前导出范围内没有已查询成功的设备详情。请先执行设备详情查询。');
+      return;
+    }
+    const scope = cy && cy.nodes(':selected').filter((n) => n.visible()).length ? 'selected' : 'current_visible';
+    const lines = [
+      ['# 数据来源', 'NDMP device/query'].map(escapeCsvCell).join(','),
+      ['# 导出范围', scope].map(escapeCsvCell).join(','),
+      ['# 查询缓存设备数', String(exportDeviceDetailEntries().length)].map(escapeCsvCell).join(','),
+      ['# 导出设备数', String(rows.length)].map(escapeCsvCell).join(','),
+      ['# 导出时间', new Date().toISOString()].map(escapeCsvCell).join(','),
+      fields.map((field) => escapeCsvCell(field.label)).join(',')
+    ];
+    rows.forEach((row) => lines.push(row.map(escapeCsvCell).join(',')));
+    const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+    download(`lldp-device-details-${ts}.csv`, lines.join('\n'), 'text/csv;charset=utf-8');
+    closeDeviceDetailExportModal();
+    setOK(`设备详情已导出：${rows.length} 台，字段 ${fields.length} 个。`);
+  }
+
   function buildRowContextIndex() {
     const strip = $('stripDomain').value === 'yes';
     const cols = {
@@ -7709,7 +8166,7 @@
     const isManualGroup = ctxGroupKind() === 'manual';
     const groupKey = ctxGroupKey();
     const canToggleGroup = !!groupKey;
-    const nodeBtnIds = ['ctxLock', 'ctxNodeColor', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc', 'ctxExitGroupView', 'ctxRemoveFromGroup'];
+    const nodeBtnIds = ['ctxLock', 'ctxNodeColor', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxDeviceDetail', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc', 'ctxExitGroupView', 'ctxRemoveFromGroup'];
     nodeBtnIds.forEach((id) => {
       const el = $(id);
       if (!el) return;
@@ -7781,7 +8238,7 @@
       { sep: 'ctxSepEdit', ids: ['ctxLock', 'ctxDelete', 'ctxDeleteLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc'] },
       { sep: 'ctxSepColor', ids: ['ctxNodeColor', 'ctxNodeColorSubmenu'] },
       { sep: 'ctxSepCopy', ids: ['ctxPathVia', 'ctxAddLink', 'ctxCreateGroup', 'ctxToggleGroup', 'ctxRemoveFromGroup', 'ctxExitGroupView', 'ctxRenameGroup'] },
-      { sep: 'ctxSepQuery', ids: ['ctxCopy', 'ctxCopyIp', 'ctxCopyLink'] },
+      { sep: 'ctxSepQuery', ids: ['ctxCopy', 'ctxCopyIp', 'ctxCopyLink', 'ctxDeviceDetail'] },
       { sep: '', ids: ['ctxUtil', 'ctxUtilRange', 'ctxAppendQuery'] }
     ];
     groups.forEach((group, idx) => {
@@ -7883,6 +8340,11 @@
         show_imbalance: !!$('utilShowImbalance')?.checked,
         filter_active: !!utilFilterState.active,
         filter_threshold: Number.isFinite(utilFilterState.threshold) ? Number(utilFilterState.threshold) : null
+      },
+      device_detail_state: {
+        rows: exportDeviceDetailEntries(),
+        data_source: 'NDMP device/query',
+        cached_at: new Date().toISOString()
       },
       edge_descriptions: exportEdgeDescEntries(),
       ui: {
@@ -8046,6 +8508,10 @@
     });
     utilByKey = utilMap;
     utilCacheLoadedAt = String(utilState.loaded_at || '').trim();
+    importDeviceDetailEntries(snapshot?.device_detail_state?.rows || snapshot?.device_details || [], { clear: true });
+    if ($('deviceDetailHint') && deviceDetailByKey.size) {
+      $('deviceDetailHint').textContent = `已从 Json 恢复设备详情缓存：${exportDeviceDetailEntries().length} 台。`;
+    }
 
     const ui = snapshot?.ui || {};
     if ($('filter') && ui.filter != null) $('filter').value = String(ui.filter);
@@ -8159,6 +8625,15 @@
       || snapshot?.edge_notes
       || [],
       true
+    );
+    importDeviceDetailEntries(
+      importedUi.deviceDetails
+      || appendPayload?.device_details
+      || appendPayload?.device_detail_state?.rows
+      || snapshot?.device_detail_state?.rows
+      || snapshot?.device_details
+      || [],
+      { clear: false }
     );
     const importedManualCanvasNodes = cloneManualCanvasNodes(importedUi.manualCanvasNodes || appendPayload?.manual_canvas_nodes || []);
     if (importedManualCanvasNodes.length) {
@@ -8778,25 +9253,6 @@
     a.click();
   }
 
-  function downloadLastUtilDebug() {
-    if (!lastUtilDebugUrl) {
-      setErr('暂无可下载的利用率调试日志，请先勾选“开启调试日志”并执行一次利用率刷新。');
-      return;
-    }
-    const a = document.createElement('a');
-    a.href = lastUtilDebugUrl;
-    a.target = '_blank';
-    a.click();
-  }
-
-  function downloadUtilCacheCsv() {
-    const base = apiBaseUrl();
-    const a = document.createElement('a');
-    a.href = `${base}/api/cli/link-utilization-cache/file`;
-    a.target = '_blank';
-    a.click();
-  }
-
   async function clearUtilCache() {
     if (!confirm('确认删除当前链路利用率缓存？')) return;
     const base = apiBaseUrl();
@@ -8829,6 +9285,7 @@
       lastUtilDebugUrl = '';
       utilByKey = new Map();
       utilCacheLoadedAt = '';
+      clearDeviceDetailState();
       clearUtilizationFromGraph();
       clearPageSessionSnapshot();
       closeStateModal();
@@ -9536,7 +9993,7 @@
       targets,
       metric,
       cli_max_workers: maxWorkers,
-      debug_enabled: !!$('utilDebugEnabled')?.checked,
+      debug_enabled: false,
       ...runtimeCfg
     };
     const base = apiBaseUrl();
@@ -10169,8 +10626,6 @@
   $('pickCsvModal').addEventListener('click', () => $('file').click());
   $('appendCsvModal').addEventListener('click', () => $('appendFile').click());
   $('downloadCliCsvModal').addEventListener('click', downloadLastSqlCsv);
-  $('downloadUtilDebug').addEventListener('click', downloadLastUtilDebug);
-  $('downloadUtilCache').addEventListener('click', downloadUtilCacheCsv);
   $('clearUtilCache').addEventListener('click', clearUtilCache);
   $('openUtilFilterModal').addEventListener('click', openUtilFilterModal);
   $('clearUtilFilterOnly').addEventListener('click', () => clearUtilFilterOnly());
@@ -10293,23 +10748,21 @@
       setErr(`导出 draw.io 失败：${String(e && e.message ? e.message : e)}`);
     }
   });
-  $('copyMermaid').addEventListener('click', async () => {
+  $('copyMermaid').addEventListener('click', () => {
     try {
       const content = buildVisibleMermaidText();
       if (!content) return;
-      if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
-        throw new Error('当前浏览器不支持剪贴板写入');
-      }
-      await navigator.clipboard.writeText(content);
+      const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+      download(`lldp-topology-${ts}.mmd`, content, 'text/plain;charset=utf-8');
       if (cy) {
         const visibleNodes = cy.nodes(':visible');
         const visibleEdges = cy.edges(':visible');
-        setOK(`Mermaid 已复制到剪贴板：节点 ${visibleNodes.length}，链路 ${visibleEdges.length}。`);
+        setOK(`Mermaid 已导出：节点 ${visibleNodes.length}，链路 ${visibleEdges.length}。`);
       } else {
-        setOK('Mermaid 已复制到剪贴板。');
+        setOK('Mermaid 已导出。');
       }
     } catch (e) {
-      setErr(`复制 Mermaid 失败：${String(e && e.message ? e.message : e)}`);
+      setErr(`导出 Mermaid 失败：${String(e && e.message ? e.message : e)}`);
     }
   });
 
@@ -10423,6 +10876,19 @@
   });
 
   $('refreshUtilization').addEventListener('click', refreshLinkUtilization);
+  if ($('queryDeviceDetails')) $('queryDeviceDetails').addEventListener('click', queryDeviceDetailsFromSelectionOrVisible);
+  $('exportDeviceDetails').addEventListener('click', openDeviceDetailExportModal);
+  $('selectAllDeviceDetailFields').addEventListener('click', () => {
+    document.querySelectorAll('[data-device-detail-field]').forEach((el) => { el.checked = true; });
+  });
+  $('clearDeviceDetailFields').addEventListener('click', () => {
+    document.querySelectorAll('[data-device-detail-field]').forEach((el) => { el.checked = false; });
+  });
+  $('runDeviceDetailExport').addEventListener('click', exportDeviceDetailsCsv);
+  $('closeDeviceDetailExportModal').addEventListener('click', closeDeviceDetailExportModal);
+  $('deviceDetailExportModal').addEventListener('click', (e) => {
+    if (e.target === $('deviceDetailExportModal')) closeDeviceDetailExportModal();
+  });
   $('openSqlConfigModal').addEventListener('click', async () => {
     await openSqlConfigModal();
   });
@@ -11119,6 +11585,20 @@
     // auto mode: keep hostname first (current UX), fallback to IP on not-found.
     return { target: host || ip, label: host, fallbackIp: ip || '', fallbackHost: host || '' };
   }
+
+  $('ctxDeviceDetail').addEventListener('click', async () => {
+    const nodes = ctxNodes().filter((n) => n && typeof n.isNode === 'function' && n.isNode());
+    const targets = collectDeviceDetailTargets(nodes);
+    hideCtx();
+    try {
+      await copyDeviceDetailsForTargets(targets, { scopeText: `复制前补查右键选择 ${targets.length} 台` });
+    } catch (e) {
+      setStatus('设备详情复制失败');
+      const msg = String(e && e.message ? e.message : e);
+      setErr(`设备详情复制失败：${msg}`);
+      if ($('deviceDetailHint')) $('deviceDetailHint').textContent = `设备详情复制失败：${msg}`;
+    }
+  });
 
   $('ctxAppendQuery').addEventListener('click', async () => {
     const nodes = ctxNodes().filter((n) => !n.data('isGroup'));
