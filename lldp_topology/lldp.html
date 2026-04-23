@@ -345,6 +345,35 @@
       font-size: 12px;
       color: #64748b;
     }
+    .result-table-wrap {
+      max-height: 260px;
+      overflow: auto;
+      border: 1px solid #dbe3ef;
+      border-radius: 10px;
+      margin-top: 8px;
+    }
+    .result-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      background: #fff;
+    }
+    .result-table th,
+    .result-table td {
+      padding: 6px 8px;
+      border-bottom: 1px solid #e5eaf3;
+      text-align: left;
+      white-space: nowrap;
+      vertical-align: top;
+    }
+    .result-table th {
+      position: sticky;
+      top: 0;
+      background: #f8fafc;
+      z-index: 1;
+      color: #334155;
+      font-weight: 700;
+    }
     .hidden { display: none !important; }
     @media (max-width: 740px) {
       .modal-form-grid { grid-template-columns: 1fr; }
@@ -640,6 +669,9 @@
           <button id="refreshUtilizationZbx" type="button">Zabbix链路利用率</button>
         </div>
         <div>
+          <button id="openZbxAlarmModal" type="button">Zabbix告警</button>
+        </div>
+        <div>
           <button id="openZbxConfig" type="button">Zabbix配置</button>
         </div>
         <div>
@@ -703,10 +735,11 @@
   <button id="ctxCopy">复制名称</button>
   <button id="ctxCopyIp">复制地址</button>
   <button id="ctxCopyLink">复制链路</button>
-  <button id="ctxDeviceDetail">设备详情复制</button>
+  <button id="ctxDeviceDetail">复制详情</button>
   <div id="ctxSepQuery" class="ctx-sep"></div>
   <button id="ctxUtil">当前利用率</button>
   <button id="ctxUtilRange">区间利用率</button>
+  <button id="ctxZbxAlarm">告警查询</button>
   <button id="ctxAppendQuery">追加查询</button>
 </div>
 <div id="importModal" class="modal-backdrop">
@@ -1064,6 +1097,51 @@
     </div>
   </div>
 </div>
+<div id="zbxAlarmModal" class="modal-backdrop">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="zbxAlarmTitle">
+    <div class="modal-title" id="zbxAlarmTitle">Zabbix 告警查询</div>
+    <div class="hint" id="zbxAlarmScopeHint">选中设备则查询选中设备；未选中则查询当前可见设备。</div>
+    <div class="modal-form-grid">
+      <div class="field span-2">
+        <label>查询模式</label>
+        <select id="zbxAlarmMode">
+          <option value="current" selected>当前未恢复告警</option>
+          <option value="history">历史告警</option>
+        </select>
+      </div>
+      <div class="field span-2" id="zbxAlarmRangeField" style="display:none;">
+        <div class="zbx-time-wrap">
+          <div class="zbx-time-left">
+            <div class="zbx-time-row">
+              <label for="zbxAlarmTimeFromExpr">From</label>
+              <input id="zbxAlarmTimeFromExpr" type="text" value="now-7d" placeholder="例如 now-7d" />
+            </div>
+            <div class="zbx-time-row">
+              <label for="zbxAlarmTimeTillExpr">To</label>
+              <input id="zbxAlarmTimeTillExpr" type="text" value="now" placeholder="例如 now" />
+            </div>
+          </div>
+          <div class="zbx-time-presets">
+            <button type="button" data-zbx-alarm-range="now-1h|now">Last 1 hour</button>
+            <button type="button" data-zbx-alarm-range="now-6h|now">Last 6 hours</button>
+            <button type="button" data-zbx-alarm-range="now-1d|now">Last 1 day</button>
+            <button type="button" data-zbx-alarm-range="now-7d|now">Last 7 days</button>
+            <button type="button" data-zbx-alarm-range="now-30d|now">Last 30 days</button>
+            <button type="button" data-zbx-alarm-range="now-3M|now">Last 3 months</button>
+          </div>
+        </div>
+        <div class="hint">历史告警使用 Zabbix event.get，支持 `now-7d`、`now-30d`、`now-3M` 等表达式。</div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button id="runZbxAlarmQuery" class="primary">查询告警</button>
+      <button id="exportZbxAlarmCsv" type="button">导出 CSV</button>
+      <button id="closeZbxAlarmModal" type="button">关闭</button>
+    </div>
+    <div class="hint" id="zbxAlarmHint">尚未查询告警。</div>
+    <div id="zbxAlarmResult"></div>
+  </div>
+</div>
 <div id="utilFilterModal" class="modal-backdrop">
   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="utilFilterTitle">
     <div class="modal-title" id="utilFilterTitle">利用率过滤</div>
@@ -1299,6 +1377,7 @@
       cleanup_hint: '删除临时数据会清空服务器上的临时 CSV、调试日志、状态快照和服务日志；删除连接配置只清空当前浏览器保存的 SQL / CLI / Zabbix 配置。',
       btn_cli_util: 'CLI 链路利用率',
       btn_zbx_util: 'Zabbix链路利用率',
+      btn_zbx_alarm: 'Zabbix告警',
       btn_zbx_config: 'Zabbix配置',
       btn_clear_cache: '删除链路缓存',
       btn_util_filter: '利用率过滤',
@@ -1333,7 +1412,8 @@
       ctx_edge_collapse: '收起链路',
       ctx_util: '当前利用率',
       ctx_util_range: '区间利用率',
-      ctx_device_detail: '设备详情复制',
+      ctx_zbx_alarm: '告警查询',
+      ctx_device_detail: '复制详情',
       ctx_edge_desc: '添加描述',
       edge_desc_modal_title: '链路描述',
       edge_desc_target_label: '目标链路',
@@ -1460,6 +1540,7 @@
       cleanup_hint: 'Delete Temp Data clears server-side temp CSV/debug/state/log files; Delete Connection Config clears only browser-stored SQL/CLI/Zabbix settings.',
       btn_cli_util: 'CLI Link Utilization',
       btn_zbx_util: 'Zabbix Link Utilization',
+      btn_zbx_alarm: 'Zabbix Alarms',
       btn_zbx_config: 'Zabbix Config',
       btn_clear_cache: 'Clear Link Cache',
       btn_util_filter: 'Util Filter',
@@ -1494,7 +1575,8 @@
       ctx_edge_collapse: 'Collapse Links',
       ctx_util: 'Current Utilization',
       ctx_util_range: 'Range Utilization',
-      ctx_device_detail: 'Copy Device Details',
+      ctx_zbx_alarm: 'Alarm Query',
+      ctx_device_detail: 'Copy Details',
       ctx_edge_desc: 'Add Description',
       edge_desc_modal_title: 'Link Description',
       edge_desc_target_label: 'Target Link',
@@ -1717,6 +1799,7 @@
     setText('cleanupHint', 'cleanup_hint');
     setText('refreshUtilization', 'btn_cli_util');
     setText('refreshUtilizationZbx', 'btn_zbx_util');
+    setText('openZbxAlarmModal', 'btn_zbx_alarm');
     setText('openZbxConfig', 'btn_zbx_config');
     setText('clearUtilCache', 'btn_clear_cache');
     setText('openUtilFilterModal', 'btn_util_filter');
@@ -1740,6 +1823,7 @@
     setText('loadPasteModal', 'btn_load_paste');
     setText('ctxUtil', 'ctx_util');
     setText('ctxUtilRange', 'ctx_util_range');
+    setText('ctxZbxAlarm', 'ctx_zbx_alarm');
     setText('ctxDeviceDetail', 'ctx_device_detail');
     setText('ctxEdgeDesc', 'ctx_edge_desc');
     setText('ctxPathVia', 'ctx_path_via');
@@ -7605,6 +7689,180 @@
     setOK(`设备详情已导出：${rows.length} 台，字段 ${fields.length} 个。`);
   }
 
+  function currentZbxAlarmTargets() {
+    if (Array.isArray(scopedZbxAlarmTargets) && scopedZbxAlarmTargets.length) {
+      return scopedZbxAlarmTargets.slice();
+    }
+    return selectedOrVisibleDeviceDetailTargets();
+  }
+
+  function zbxAlarmExportRows() {
+    const rows = Array.isArray(zbxAlarmRows) ? zbxAlarmRows.slice() : [];
+    const deviceRows = Array.isArray(zbxAlarmDeviceResults) ? zbxAlarmDeviceResults : [];
+    deviceRows.forEach((item) => {
+      const alarmCount = Number(item.alarm_count || 0);
+      if (alarmCount > 0) return;
+      rows.push({
+        target_label: item.target_label || '',
+        target_hostname: item.target_hostname || '',
+        target_ip: item.target_ip || '',
+        zabbix_hostid: item.zabbix_hostid || '',
+        zabbix_host: item.zabbix_host || '',
+        zabbix_name: item.zabbix_name || '',
+        alarm_type: zbxAlarmLastMeta?.alarm_mode || '',
+        time: '',
+        severity: '',
+        severity_text: '',
+        name: alarmCount === 0 && item.status === 'ok' ? 'No alarms' : '',
+        eventid: '',
+        acknowledged: '',
+        r_eventid: '',
+        status: item.status || 'no_alarm',
+        match_status: item.match_status || '',
+        error: item.error || ''
+      });
+    });
+    return rows;
+  }
+
+  function renderZbxAlarmResults(data = {}) {
+    const alarms = Array.isArray(data.alarms) ? data.alarms : zbxAlarmRows;
+    const deviceRows = Array.isArray(data.device_results) ? data.device_results : zbxAlarmDeviceResults;
+    const okDevices = deviceRows.filter((item) => item.status === 'ok').length;
+    const noAlarmDevices = deviceRows.filter((item) => item.status === 'ok' && Number(item.alarm_count || 0) === 0).length;
+    const notFound = deviceRows.filter((item) => item.status === 'not_found').length;
+    const failed = deviceRows.filter((item) => item.status === 'failed').length;
+    const modeText = (data.alarm_mode || zbxAlarmLastMeta?.alarm_mode) === 'history' ? '历史告警' : '当前未恢复告警';
+    const elapsed = Number(data.total_elapsed_seconds || zbxAlarmLastMeta?.elapsed || 0);
+    const hint = `${modeText}：查询设备 ${Number(data.queried || deviceRows.length || 0)}，匹配 ${okDevices}，无告警 ${noAlarmDevices}，未找到 ${notFound}，失败 ${failed}，告警 ${alarms.length}，耗时 ${elapsed.toFixed(1)}s。`;
+    if ($('zbxAlarmHint')) $('zbxAlarmHint').textContent = hint;
+    const box = $('zbxAlarmResult');
+    if (!box) return;
+    if (!alarms.length) {
+      box.innerHTML = `<div class="hint">${escapeHtml(hint)}</div>`;
+      return;
+    }
+    const preview = alarms.slice(0, 50);
+    const rows = preview.map((row) => `
+      <tr>
+        <td>${escapeHtml(row.target_label || row.target_hostname || row.target_ip || '')}</td>
+        <td>${escapeHtml(row.time || '')}</td>
+        <td>${escapeHtml(row.severity_text || row.severity || '')}</td>
+        <td>${escapeHtml(row.name || '')}</td>
+        <td>${escapeHtml(row.zabbix_host || row.zabbix_name || '')}</td>
+      </tr>
+    `).join('');
+    box.innerHTML = `
+      <div class="hint">${escapeHtml(hint)}${alarms.length > preview.length ? ` 仅预览前 ${preview.length} 条。` : ''}</div>
+      <div class="result-table-wrap">
+        <table class="result-table">
+          <thead><tr><th>设备</th><th>时间</th><th>级别</th><th>告警</th><th>Zabbix Host</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  async function queryZabbixAlarmsForTargets(targets, selection, opts = {}) {
+    const cleanTargets = (Array.isArray(targets) ? targets : []).filter((item) => item && (item.hostname || item.ip || item.label));
+    if (!cleanTargets.length) {
+      setErr('未找到可查询告警的设备。');
+      return null;
+    }
+    const zcfg = opts.zabbixConfig || readZabbixConfig();
+    if (!zcfg.url || !zcfg.token) throw new Error('未配置 Zabbix URL 或 API Token');
+    const btn = opts.buttonId ? $(opts.buttonId) : null;
+    const oldText = btn ? btn.textContent : '';
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = '查询中...';
+    }
+    setErr('');
+    setStatus('Zabbix 告警查询中...');
+    const scopeText = opts.scopeLabel || (cleanTargets.length === 1 ? cleanTargets[0].label || cleanTargets[0].hostname || cleanTargets[0].ip : `${cleanTargets.length} 台设备`);
+    if ($('zbxAlarmHint')) $('zbxAlarmHint').textContent = `正在查询 ${scopeText} 的 ${selection.hint}...`;
+    try {
+      const base = apiBaseUrl();
+      const resp = await fetch(`${base}/api/zabbix/alarms`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          devices: cleanTargets,
+          alarm_mode: selection.alarm_mode,
+          time_from: selection.time_from,
+          time_till: selection.time_till,
+          max_events_per_host: 50,
+          max_workers: Math.min(8, Math.max(1, cleanTargets.length)),
+          zabbix_url: zcfg.url || null,
+          zabbix_api_token: zcfg.token || null,
+          zabbix_verify_ssl: !!zcfg.verify_ssl
+        })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || data?.ok !== true) {
+        throw new Error(data?.detail || `HTTP ${resp.status}`);
+      }
+      zbxAlarmRows = Array.isArray(data.alarms) ? data.alarms : [];
+      zbxAlarmDeviceResults = Array.isArray(data.device_results) ? data.device_results : [];
+      zbxAlarmLastMeta = {
+        alarm_mode: data.alarm_mode || selection.alarm_mode,
+        time_from: data.time_from || selection.time_from,
+        time_till: data.time_till || selection.time_till,
+        hint: selection.hint,
+        queried_at: new Date().toISOString(),
+        elapsed: Number(data.total_elapsed_seconds || 0),
+        scope: scopeText
+      };
+      renderZbxAlarmResults(data);
+      setStatus('Zabbix 告警查询完成');
+      setOK(`Zabbix 告警已更新：${selection.hint}，设备 ${Number(data.queried || cleanTargets.length)}，告警 ${zbxAlarmRows.length}`);
+      return data;
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = oldText;
+      }
+    }
+  }
+
+  function exportZbxAlarmCsv() {
+    const rows = zbxAlarmExportRows();
+    if (!rows.length) {
+      setErr('当前没有可导出的 Zabbix 告警结果。请先查询告警。');
+      return;
+    }
+    const headersRow = ['Device', 'Hostname', 'IP', 'Zabbix Host', 'Zabbix Name', 'Mode', 'Time', 'Severity', 'Alarm', 'Event ID', 'Acknowledged', 'Recovery Event ID', 'Status', 'Match Status', 'Error'];
+    const lines = [
+      ['# 数据来源', 'Zabbix'].map(escapeCsvCell).join(','),
+      ['# 查询模式', zbxAlarmLastMeta?.hint || zbxAlarmLastMeta?.alarm_mode || ''].map(escapeCsvCell).join(','),
+      ['# 查询范围', zbxAlarmLastMeta?.scope || ''].map(escapeCsvCell).join(','),
+      ['# 导出时间', new Date().toISOString()].map(escapeCsvCell).join(','),
+      headersRow.map(escapeCsvCell).join(',')
+    ];
+    rows.forEach((row) => {
+      lines.push([
+        row.target_label || row.target_hostname || row.target_ip || '',
+        row.target_hostname || '',
+        row.target_ip || '',
+        row.zabbix_host || '',
+        row.zabbix_name || '',
+        row.alarm_type || zbxAlarmLastMeta?.alarm_mode || '',
+        row.time || '',
+        row.severity_text || row.severity || '',
+        row.name || '',
+        row.eventid || '',
+        row.acknowledged || '',
+        row.r_eventid || '',
+        row.status || '',
+        row.match_status || '',
+        row.error || ''
+      ].map(escapeCsvCell).join(','));
+    });
+    const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+    download(`lldp-zabbix-alarms-${ts}.csv`, lines.join('\n'), 'text/csv;charset=utf-8');
+    setOK(`Zabbix 告警已导出：${rows.length} 行。`);
+  }
+
   function buildRowContextIndex() {
     const strip = $('stripDomain').value === 'yes';
     const cols = {
@@ -8166,7 +8424,7 @@
     const isManualGroup = ctxGroupKind() === 'manual';
     const groupKey = ctxGroupKey();
     const canToggleGroup = !!groupKey;
-    const nodeBtnIds = ['ctxLock', 'ctxNodeColor', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxDeviceDetail', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc', 'ctxExitGroupView', 'ctxRemoveFromGroup'];
+    const nodeBtnIds = ['ctxLock', 'ctxNodeColor', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxZbxAlarm', 'ctxDeviceDetail', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc', 'ctxExitGroupView', 'ctxRemoveFromGroup'];
     nodeBtnIds.forEach((id) => {
       const el = $(id);
       if (!el) return;
@@ -8239,7 +8497,7 @@
       { sep: 'ctxSepColor', ids: ['ctxNodeColor', 'ctxNodeColorSubmenu'] },
       { sep: 'ctxSepCopy', ids: ['ctxPathVia', 'ctxAddLink', 'ctxCreateGroup', 'ctxToggleGroup', 'ctxRemoveFromGroup', 'ctxExitGroupView', 'ctxRenameGroup'] },
       { sep: 'ctxSepQuery', ids: ['ctxCopy', 'ctxCopyIp', 'ctxCopyLink', 'ctxDeviceDetail'] },
-      { sep: '', ids: ['ctxUtil', 'ctxUtilRange', 'ctxAppendQuery'] }
+      { sep: '', ids: ['ctxUtil', 'ctxUtilRange', 'ctxZbxAlarm', 'ctxAppendQuery'] }
     ];
     groups.forEach((group, idx) => {
       if (!group.sep) return;
@@ -8812,6 +9070,36 @@
     $('zbxUtilModal').style.display = 'none';
   }
 
+  function refreshZbxAlarmRangeFields() {
+    const mode = ($('zbxAlarmMode')?.value || 'current').trim();
+    const showRange = mode === 'history';
+    $('zbxAlarmRangeField').style.display = showRange ? '' : 'none';
+    if (showRange) {
+      if (!$('zbxAlarmTimeFromExpr').value) $('zbxAlarmTimeFromExpr').value = 'now-7d';
+      if (!$('zbxAlarmTimeTillExpr').value) $('zbxAlarmTimeTillExpr').value = 'now';
+    }
+  }
+
+  function openZbxAlarmModal(opts = {}) {
+    loadZbxPrefs();
+    scopedZbxAlarmTargets = Array.isArray(opts.targets) ? opts.targets.slice() : null;
+    scopedZbxAlarmScopeLabel = String(opts.scopeLabel || '').trim();
+    const mode = String(opts.alarmMode || 'current').trim().toLowerCase();
+    $('zbxAlarmMode').value = mode === 'history' ? 'history' : 'current';
+    $('zbxAlarmTimeFromExpr').value = 'now-7d';
+    $('zbxAlarmTimeTillExpr').value = 'now';
+    refreshZbxAlarmRangeFields();
+    const scopeText = scopedZbxAlarmScopeLabel || '选中设备优先；未选中则当前可见设备';
+    if ($('zbxAlarmScopeHint')) $('zbxAlarmScopeHint').textContent = `查询范围：${scopeText}`;
+    $('zbxAlarmModal').style.display = 'flex';
+  }
+
+  function closeZbxAlarmModal() {
+    scopedZbxAlarmTargets = null;
+    scopedZbxAlarmScopeLabel = '';
+    $('zbxAlarmModal').style.display = 'none';
+  }
+
   function openZbxConfigModal() {
     loadZbxPrefs(true);
     $('zbxConfigModal').style.display = 'flex';
@@ -8873,6 +9161,26 @@
       time_from,
       time_till,
       hint: `${mode === 'range_min' ? '时间段最小值' : '时间段最大值'}（${fromExpr} ~ ${tillExpr}）`
+    };
+  }
+
+  function readZbxAlarmSelection() {
+    const mode = ($('zbxAlarmMode')?.value || 'current').trim();
+    if (mode !== 'history') {
+      return { alarm_mode: 'current', time_from: null, time_till: null, hint: '当前未恢复告警' };
+    }
+    const fromExpr = $('zbxAlarmTimeFromExpr').value;
+    const tillExpr = $('zbxAlarmTimeTillExpr').value;
+    const time_from = parseZbxTimeExpr(fromExpr);
+    const time_till = parseZbxTimeExpr(tillExpr);
+    if (time_till <= time_from) {
+      throw new Error('结束时间必须大于开始时间');
+    }
+    return {
+      alarm_mode: 'history',
+      time_from,
+      time_till,
+      hint: `历史告警（${fromExpr} ~ ${tillExpr}）`
     };
   }
 
@@ -8948,6 +9256,11 @@
   const PAGE_SESSION_WINDOW_NAME_PREFIX = '__lldp_page_session__=';
   let scopedZbxTargets = null;
   let scopedZbxScopeLabel = '';
+  let scopedZbxAlarmTargets = null;
+  let scopedZbxAlarmScopeLabel = '';
+  let zbxAlarmRows = [];
+  let zbxAlarmDeviceResults = [];
+  let zbxAlarmLastMeta = null;
   let pageSessionPersistTimer = 0;
   function apiBaseUrl() {
     // If opened as file://, use local service endpoint explicitly.
@@ -10964,6 +11277,45 @@
     $('zbxTimeFromExpr').value = parts[0] || 'now-1h';
     $('zbxTimeTillExpr').value = parts[1] || 'now';
   });
+  $('openZbxAlarmModal').addEventListener('click', () => {
+    openZbxAlarmModal();
+  });
+  $('zbxAlarmMode').addEventListener('change', refreshZbxAlarmRangeFields);
+  $('closeZbxAlarmModal').addEventListener('click', closeZbxAlarmModal);
+  $('zbxAlarmModal').addEventListener('click', (e) => {
+    if (e.target === $('zbxAlarmModal')) closeZbxAlarmModal();
+  });
+  $('zbxAlarmRangeField').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-zbx-alarm-range]');
+    if (!btn) return;
+    const raw = btn.getAttribute('data-zbx-alarm-range') || '';
+    const parts = raw.split('|');
+    $('zbxAlarmTimeFromExpr').value = parts[0] || 'now-7d';
+    $('zbxAlarmTimeTillExpr').value = parts[1] || 'now';
+  });
+  $('runZbxAlarmQuery').addEventListener('click', async () => {
+    let selection = null;
+    try {
+      selection = readZbxAlarmSelection();
+    } catch (err) {
+      setErr(`Zabbix 告警时间范围无效：${String(err && err.message ? err.message : err)}`);
+      return;
+    }
+    const targets = currentZbxAlarmTargets();
+    try {
+      await queryZabbixAlarmsForTargets(targets, selection, {
+        buttonId: 'runZbxAlarmQuery',
+        zabbixConfig: readZabbixConfig(),
+        scopeLabel: scopedZbxAlarmScopeLabel || (targets.length ? `${targets.length} 台设备` : '')
+      });
+    } catch (e) {
+      const msg = String(e && e.message ? e.message : e);
+      setStatus('Zabbix 告警查询失败');
+      setErr(`Zabbix 告警查询失败：${msg}`);
+      if ($('zbxAlarmHint')) $('zbxAlarmHint').textContent = `Zabbix 告警查询失败：${msg}`;
+    }
+  });
+  $('exportZbxAlarmCsv').addEventListener('click', exportZbxAlarmCsv);
   $('runZbxUtilQuery').addEventListener('click', async () => {
     if (!cy || !rawRows.length) {
       setErr('请先生成拓扑，再刷新链路利用率');
@@ -11585,6 +11937,21 @@
     // auto mode: keep hostname first (current UX), fallback to IP on not-found.
     return { target: host || ip, label: host, fallbackIp: ip || '', fallbackHost: host || '' };
   }
+
+  $('ctxZbxAlarm').addEventListener('click', () => {
+    const nodes = ctxNodes().filter((n) => n && typeof n.isNode === 'function' && n.isNode());
+    const targets = collectDeviceDetailTargets(nodes);
+    hideCtx();
+    if (!targets.length) {
+      setErr('当前选择未找到可查询告警的设备');
+      return;
+    }
+    openZbxAlarmModal({
+      alarmMode: 'current',
+      targets,
+      scopeLabel: `右键选择 ${targets.length} 台`
+    });
+  });
 
   $('ctxDeviceDetail').addEventListener('click', async () => {
     const nodes = ctxNodes().filter((n) => n && typeof n.isNode === 'function' && n.isNode());

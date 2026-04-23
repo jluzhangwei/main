@@ -1957,6 +1957,18 @@ class ZabbixLinkUtilRequest(BaseModel):
     zabbix_verify_ssl: bool | None = None
 
 
+class ZabbixAlarmRequest(BaseModel):
+    devices: list[DeviceDetailTarget]
+    alarm_mode: str = Field(default="current")
+    time_from: int | None = None
+    time_till: int | None = None
+    max_events_per_host: int = Field(default=50, ge=1, le=200)
+    max_workers: int = Field(default=8, ge=1, le=16)
+    zabbix_url: str | None = None
+    zabbix_api_token: str | None = None
+    zabbix_verify_ssl: bool | None = None
+
+
 class StateSnapshotSaveRequest(BaseModel):
     snapshot: dict[str, Any]
     name: str | None = None
@@ -3566,6 +3578,315 @@ def _zabbix_get_host_map_by_name(
                 },
             )
     return out
+
+
+ZABBIX_SEVERITY_TEXT = {
+    "0": "Not classified",
+    "1": "Information",
+    "2": "Warning",
+    "3": "Average",
+    "4": "High",
+    "5": "Disaster",
+}
+
+
+def _zabbix_alarm_target_identity(target: DeviceDetailTarget) -> tuple[str, str, str]:
+    label = normalize_device_id(target.label or target.hostname or target.ip or "")
+    hostname = normalize_device_id(target.hostname or target.label or "")
+    ip = normalize_device_id(target.ip or "")
+    if _looks_like_ip(hostname) and not ip:
+        ip = hostname
+        hostname = ""
+    if _looks_like_ip(label) and not ip:
+        ip = label
+    if _looks_like_ip(hostname):
+        hostname = ""
+    return label, hostname, ip
+
+
+def _dedupe_zabbix_alarm_targets(devices: list[DeviceDetailTarget]) -> list[DeviceDetailTarget]:
+    out: list[DeviceDetailTarget] = []
+    seen: set[str] = set()
+    for item in devices or []:
+        label, hostname, ip = _zabbix_alarm_target_identity(item)
+        node_id = normalize_device_id(item.node_id or "")
+        if not hostname and not ip and not label:
+            continue
+        key = "||".join((hostname.lower(), ip, node_id, label.lower()))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
+def _resolve_zabbix_alarm_host(
+    target: DeviceDetailTarget,
+    ip_host_map: dict[str, dict[str, str]],
+    name_host_map: dict[str, dict[str, str]],
+) -> tuple[dict[str, str] | None, str]:
+    label, hostname, ip = _zabbix_alarm_target_identity(target)
+    if ip and ip in ip_host_map:
+        return ip_host_map[ip], "ip"
+    for name in (hostname, label):
+        if _looks_like_ip(name):
+            continue
+        for variant in _name_lookup_variants(name):
+            hit = name_host_map.get(variant)
+            if hit:
+                return hit, "name"
+    return None, ""
+
+
+def _format_zabbix_event_time(clock: Any) -> str:
+    try:
+        ts = int(clock or 0)
+    except Exception:
+        ts = 0
+    if ts <= 0:
+        return ""
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+
+
+def _zabbix_alarm_row(
+    raw: dict[str, Any],
+    *,
+    target: DeviceDetailTarget,
+    host: dict[str, str],
+    alarm_type: str,
+) -> dict[str, Any]:
+    label, hostname, ip = _zabbix_alarm_target_identity(target)
+    severity = str(raw.get("severity", "") or "")
+    return {
+        "target_label": label,
+        "target_hostname": hostname,
+        "target_ip": ip,
+        "node_id": normalize_device_id(target.node_id or ""),
+        "zabbix_hostid": str(host.get("hostid", "") or ""),
+        "zabbix_host": str(host.get("host", "") or ""),
+        "zabbix_name": str(host.get("name", "") or ""),
+        "match_status": "ok",
+        "alarm_type": alarm_type,
+        "eventid": str(raw.get("eventid", "") or ""),
+        "objectid": str(raw.get("objectid", "") or ""),
+        "clock": int(float(raw.get("clock", 0) or 0)),
+        "time": _format_zabbix_event_time(raw.get("clock")),
+        "name": str(raw.get("name", "") or ""),
+        "severity": severity,
+        "severity_text": ZABBIX_SEVERITY_TEXT.get(severity, severity),
+        "acknowledged": str(raw.get("acknowledged", "") or ""),
+        "r_eventid": str(raw.get("r_eventid", "") or ""),
+        "value": str(raw.get("value", "") or ""),
+        "status": "ok",
+        "error": "",
+    }
+
+
+def _query_zabbix_alarms_for_resolved_host(
+    target: DeviceDetailTarget,
+    host: dict[str, str],
+    *,
+    alarm_mode: str,
+    time_from: int | None,
+    time_till: int | None,
+    max_events_per_host: int,
+    url_override: str | None,
+    token_override: str | None,
+    verify_ssl_override: bool | None,
+) -> dict[str, Any]:
+    label, hostname, ip = _zabbix_alarm_target_identity(target)
+    hostid = str(host.get("hostid", "") or "").strip()
+    if not hostid:
+        return {
+            "target_label": label,
+            "target_hostname": hostname,
+            "target_ip": ip,
+            "node_id": normalize_device_id(target.node_id or ""),
+            "status": "not_found",
+            "match_status": "host_not_found",
+            "alarm_count": 0,
+            "alarms": [],
+            "error": "missing Zabbix hostid",
+        }
+    params_common = {
+        "output": ["eventid", "objectid", "clock", "name", "severity", "acknowledged", "r_eventid"],
+        "hostids": [hostid],
+        "sortfield": ["eventid"],
+        "sortorder": "DESC",
+        "limit": max_events_per_host,
+    }
+    if alarm_mode == "history":
+        params = {
+            **params_common,
+            "output": ["eventid", "objectid", "clock", "name", "severity", "acknowledged", "r_eventid", "value"],
+            "source": 0,
+            "object": 0,
+            "value": 1,
+            "sortfield": ["clock", "eventid"],
+        }
+        if time_from:
+            params["time_from"] = int(time_from)
+        if time_till:
+            params["time_till"] = int(time_till)
+        raw_rows = _zabbix_rpc(
+            "event.get",
+            params,
+            url_override=url_override,
+            token_override=token_override,
+            verify_ssl_override=verify_ssl_override,
+        ) or []
+        alarm_type = "history"
+    else:
+        raw_rows = _zabbix_rpc(
+            "problem.get",
+            params_common,
+            url_override=url_override,
+            token_override=token_override,
+            verify_ssl_override=verify_ssl_override,
+        ) or []
+        alarm_type = "current"
+    alarms = [
+        _zabbix_alarm_row(row, target=target, host=host, alarm_type=alarm_type)
+        for row in raw_rows
+        if isinstance(row, dict)
+    ]
+    return {
+        "target_label": label,
+        "target_hostname": hostname,
+        "target_ip": ip,
+        "node_id": normalize_device_id(target.node_id or ""),
+        "zabbix_hostid": hostid,
+        "zabbix_host": str(host.get("host", "") or ""),
+        "zabbix_name": str(host.get("name", "") or ""),
+        "status": "ok",
+        "match_status": "ok",
+        "alarm_count": len(alarms),
+        "alarms": alarms,
+        "error": "",
+    }
+
+
+def collect_zabbix_alarms(payload: ZabbixAlarmRequest) -> dict[str, Any]:
+    targets = _dedupe_zabbix_alarm_targets(payload.devices)
+    if not targets:
+        raise RuntimeError("devices is required")
+    alarm_mode = (payload.alarm_mode or "current").strip().lower()
+    if alarm_mode not in {"current", "history"}:
+        alarm_mode = "current"
+    if alarm_mode == "history":
+        if not payload.time_from or not payload.time_till:
+            raise RuntimeError("time_from and time_till are required for history alarms")
+        if int(payload.time_till) <= int(payload.time_from):
+            raise RuntimeError("time_till must be greater than time_from")
+
+    started = time.perf_counter()
+    target_ips: list[str] = []
+    target_names: list[str] = []
+    for target in targets:
+        label, hostname, ip = _zabbix_alarm_target_identity(target)
+        if ip:
+            target_ips.append(ip)
+        for name in (hostname, label):
+            if name and not _looks_like_ip(name):
+                target_names.append(name)
+    ip_host_map = _zabbix_get_host_map_by_ip(
+        target_ips,
+        url_override=payload.zabbix_url,
+        token_override=payload.zabbix_api_token,
+        verify_ssl_override=payload.zabbix_verify_ssl,
+    )
+    name_host_map = _zabbix_get_host_map_by_name(
+        target_names,
+        url_override=payload.zabbix_url,
+        token_override=payload.zabbix_api_token,
+        verify_ssl_override=payload.zabbix_verify_ssl,
+    )
+
+    device_results: list[dict[str, Any]] = []
+    jobs: list[tuple[DeviceDetailTarget, dict[str, str]]] = []
+    for target in targets:
+        label, hostname, ip = _zabbix_alarm_target_identity(target)
+        host, match_by = _resolve_zabbix_alarm_host(target, ip_host_map, name_host_map)
+        if not host:
+            device_results.append(
+                {
+                    "target_label": label,
+                    "target_hostname": hostname,
+                    "target_ip": ip,
+                    "node_id": normalize_device_id(target.node_id or ""),
+                    "status": "not_found",
+                    "match_status": "host_not_found",
+                    "matched_by": "",
+                    "alarm_count": 0,
+                    "alarms": [],
+                    "error": "host not found by device IP/name in Zabbix",
+                }
+            )
+            continue
+        jobs.append((target, {**host, "_matched_by": match_by}))
+
+    workers = min(max(1, int(payload.max_workers or 8)), 16, len(jobs) or 1)
+    if jobs:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = [
+                pool.submit(
+                    _query_zabbix_alarms_for_resolved_host,
+                    target,
+                    host,
+                    alarm_mode=alarm_mode,
+                    time_from=payload.time_from,
+                    time_till=payload.time_till,
+                    max_events_per_host=int(payload.max_events_per_host or 50),
+                    url_override=payload.zabbix_url,
+                    token_override=payload.zabbix_api_token,
+                    verify_ssl_override=payload.zabbix_verify_ssl,
+                )
+                for target, host in jobs
+            ]
+            job_by_future = {fut: (target, host.get("_matched_by", "")) for fut, (target, host) in zip(futs, jobs)}
+            for fut in as_completed(futs):
+                try:
+                    item = fut.result()
+                    _target, matched_by = job_by_future.get(fut, (DeviceDetailTarget(), ""))
+                    item["matched_by"] = matched_by
+                except Exception as exc:
+                    target, matched_by = job_by_future.get(fut, (DeviceDetailTarget(), ""))
+                    label, hostname, ip = _zabbix_alarm_target_identity(target)
+                    item = {
+                        "target_label": label,
+                        "target_hostname": hostname,
+                        "target_ip": ip,
+                        "node_id": normalize_device_id(target.node_id or ""),
+                        "status": "failed",
+                        "match_status": "query_failed",
+                        "alarm_count": 0,
+                        "alarms": [],
+                        "error": str(exc),
+                        "matched_by": matched_by,
+                    }
+                device_results.append(item)
+
+    alarms: list[dict[str, Any]] = []
+    for item in device_results:
+        alarms.extend([row for row in item.get("alarms", []) if isinstance(row, dict)])
+    ok_devices = sum(1 for item in device_results if item.get("status") == "ok")
+    not_found = sum(1 for item in device_results if item.get("status") == "not_found")
+    failed = sum(1 for item in device_results if item.get("status") == "failed")
+    return {
+        "ok": True,
+        "mode": "zabbix-alarms",
+        "alarm_mode": alarm_mode,
+        "time_from": payload.time_from,
+        "time_till": payload.time_till,
+        "queried": len(targets),
+        "matched_hosts": ok_devices,
+        "not_found": not_found,
+        "failed": failed,
+        "alarm_count": len(alarms),
+        "device_results": device_results,
+        "alarms": alarms,
+        "total_elapsed_seconds": round(time.perf_counter() - started, 3),
+    }
 
 
 def _zabbix_get_items_for_interface(
@@ -5773,6 +6094,16 @@ def query_zabbix_link_utilization(payload: ZabbixLinkUtilRequest) -> dict[str, A
         "cache_updates": cache_updates,
         "cache_total": cache_total,
     }
+
+
+@app.post("/api/zabbix/alarms")
+def query_zabbix_alarms(payload: ZabbixAlarmRequest) -> dict[str, Any]:
+    if not payload.devices:
+        raise HTTPException(status_code=400, detail="devices is required")
+    try:
+        return collect_zabbix_alarms(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Zabbix alarm query failed: {exc}") from exc
 
 
 @app.get("/api/cli/link-utilization-cache")
