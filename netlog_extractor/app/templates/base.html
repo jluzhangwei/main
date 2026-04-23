@@ -4,36 +4,25 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{{ title or 'AIOps - Netlog Extractor' }}</title>
-  <style>
-    @import url('/shared/header/shared-header.css');
-    :root { --bg:#f6f8fb; --card:#fff; --text:#1b2430; --line:#d6dde8; --accent:#006c9c; --brand:#111; --navbg:#ffffff; --active:#d43a2f; }
-    body { margin:0; font-family: "Segoe UI", "PingFang SC", sans-serif; background:var(--bg); color:var(--text); }
-    .wrap { max-width:980px; margin:16px auto; padding:0 14px; }
-    .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:12px; }
-    h2 { margin:4px 0 10px; font-size:21px; }
-    h3 { margin:4px 0 8px; font-size:16px; }
-    label { display:block; margin:7px 0 3px; font-weight:600; font-size:13px; }
-    input, select, textarea, button { padding:7px 9px; border:1px solid var(--line); border-radius:8px; box-sizing:border-box; font-size:14px; }
-    form input, form select { width:100%; max-width:360px; }
-    form textarea { width:100%; max-width:640px; min-height:110px; }
-    button { width:auto; min-width:150px; background:var(--accent); color:#fff; font-weight:700; cursor:pointer; }
-    table { width:100%; border-collapse:collapse; font-size:13px; }
-    th, td { border-bottom:1px solid var(--line); padding:7px; text-align:left; vertical-align:top; }
-    .row { display:grid; grid-template-columns:repeat(2,minmax(210px,1fr)); gap:8px 12px; align-items:end; }
-    .muted { color:#6a7480; font-size:12px; margin:4px 0 0; }
-    .error { color:#c72020; font-weight:700; font-size:13px; margin-bottom:8px; }
-    @media (max-width: 780px) {
-      .wrap { max-width:100%; }
-      .row { grid-template-columns:1fr; }
-      form input, form select, form textarea { max-width:100%; }
-      button { width:100%; }
-    }
-  </style>
+  <link rel="stylesheet" href="{{ request.app.state.static_asset_url('css/base.css') }}" />
+  {% block extra_head %}{% endblock %}
 </head>
-<body>
 {% set path = request.url.path if request and request.url else '/' %}
 {% set lang_raw = request.query_params.get('lang', 'zh') if request else 'zh' %}
 {% set lang = 'en' if lang_raw.lower().startswith('en') else 'zh' %}
+{% set page_class = 'page-generic' %}
+{% if path == '/' %}
+  {% set page_class = 'page-home' %}
+{% elif path == '/tasks' %}
+  {% set page_class = 'page-tasks' %}
+{% elif path.startswith('/tasks/') %}
+  {% set page_class = 'page-task-detail' %}
+{% elif path.startswith('/ai/settings') %}
+  {% set page_class = 'page-ai-settings' %}
+{% elif path.startswith('/help') %}
+  {% set page_class = 'page-help' %}
+{% endif %}
+<body class="{{ page_class }}">
 <div class="topbar">
   <div class="brand">
     <img class="infra-logo" src="/shared/header/infra-logo.png" alt="infra logo" />
@@ -56,45 +45,7 @@
 <div class="wrap">
   {% block content %}{% endblock %}
 </div>
-<script>
-  (function () {
-    const btn = document.getElementById('lang_toggle_btn');
-    if (!btn) return;
-    btn.addEventListener('click', () => {
-      const url = new URL(window.location.href);
-      const cur = (url.searchParams.get('lang') || 'zh').toLowerCase();
-      const target = cur.startsWith('en') ? 'zh' : 'en';
-      try { localStorage.setItem('netlog_ui_lang', target); } catch (e) {}
-      url.searchParams.set('lang', target);
-      window.location.href = url.toString();
-    });
-  })();
-
-  (function () {
-    const aiNav = document.getElementById('ai_log_analysis_nav');
-    if (!aiNav) return;
-    const storageKey = 'netlog.ai.last_task_id';
-    const buildAiUrl = () => {
-      const url = new URL(aiNav.href, window.location.origin);
-      const currentUrl = new URL(window.location.href);
-      const explicitTaskId = (currentUrl.searchParams.get('task_id') || '').trim();
-      let taskId = explicitTaskId;
-      if (!taskId) {
-        try {
-          taskId = (window.localStorage.getItem(storageKey) || '').trim();
-        } catch (e) {
-          taskId = '';
-        }
-      }
-      if (taskId) url.searchParams.set('task_id', taskId);
-      else url.searchParams.delete('task_id');
-      return url.toString();
-    };
-    aiNav.href = buildAiUrl();
-    aiNav.addEventListener('click', (event) => {
-      aiNav.href = buildAiUrl();
-    });
-  })();
-</script>
+<script src="{{ request.app.state.static_asset_url('js/base.js') }}" defer></script>
+{% block extra_scripts %}{% endblock %}
 </body>
 </html>

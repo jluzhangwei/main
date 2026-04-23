@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from .llm_client import model_used, run_analysis
-from .prompt_store import localized_prompt_catalog
+from .prompt_runtime import (
+    build_llm_input_from_config,
+    compact_runtime_prompt,
+    final_runtime_prompt,
+    lang_text,
+    normalize_analysis_language,
+)
 from .semantic_compression import build_semantic_package, normalize_strategy
 from .state_store import add_token_usage, load_gpt_config
 
@@ -28,10 +34,10 @@ class AIAnalysisManager:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     def _lang(self, cfg: dict[str, Any] | None = None) -> str:
-        return "en" if str((cfg or {}).get("analysis_language", "zh") or "zh").strip().lower().startswith("en") else "zh"
+        return normalize_analysis_language((cfg or {}).get("analysis_language", "zh"))
 
     def _lang_text(self, lang: str, zh: str, en: str) -> str:
-        return en if str(lang).lower().startswith("en") else zh
+        return lang_text(lang, zh, en)
 
     def _set_progress(self, task: dict[str, Any], percent: int, text: str) -> None:
         task["progress_percent"] = max(0, min(100, int(percent)))
@@ -253,64 +259,7 @@ class AIAnalysisManager:
         )
 
     def _build_llm_input(self, cfg: dict[str, Any]) -> dict[str, str]:
-        provider = str(cfg.get("provider", "chatgpt") or "chatgpt").strip().lower()
-        lang = self._lang(cfg)
-        system_prompts = localized_prompt_catalog("system", lang)
-        task_prompts = localized_prompt_catalog("task", lang)
-
-        system_key = str(cfg.get("selected_system_prompt") or "网络日志诊断专家-平衡模式")
-        task_key = str(cfg.get("selected_task_prompt") or "网络问题发现-通用分析")
-        system_base = system_prompts.get(system_key, next(iter(system_prompts.values()), ""))
-        task_base = task_prompts.get(task_key, next(iter(task_prompts.values()), ""))
-
-        system_extra = str(cfg.get("system_prompt_extra") or "").strip()
-        task_extra = str(cfg.get("task_prompt_extra") or "").strip()
-
-        extra_system_header = self._lang_text(lang, "[补充系统约束]", "[Extra System Constraints]")
-        extra_task_header = self._lang_text(lang, "[补充任务要求]", "[Extra Task Requirements]")
-        language_requirement = self._lang_text(
-            lang,
-            "输出语言必须为中文。除原始日志、命令、协议字段、设备名称、英文事件码和必要引用外，不要切换到英文。",
-            "Output language must be English. Do not switch to Chinese except when quoting raw log lines, commands, protocol fields, device names, event codes, or necessary evidence.",
-        )
-
-        system_text = system_base + (f"\n\n{extra_system_header}\n" + system_extra if system_extra else "")
-        task_text = task_base + (f"\n\n{extra_task_header}\n" + task_extra if task_extra else "")
-        system_text = system_text.rstrip() + "\n\n" + language_requirement
-
-        api_key = ""
-        if provider == "chatgpt":
-            api_key = str(cfg.get("chatgpt_api_key") or "")
-        elif provider == "deepseek":
-            api_key = str(cfg.get("deepseek_api_key") or "")
-        elif provider == "qwen":
-            api_key = str(cfg.get("qwen_api_key") or "")
-        elif provider == "gemini":
-            api_key = str(cfg.get("gemini_api_key") or "")
-        elif provider == "nvidia":
-            api_key = str(cfg.get("nvidia_api_key") or "")
-
-        return {
-            "provider": provider,
-            "api_key": api_key,
-            "chatgpt_model": str(cfg.get("chatgpt_model") or ""),
-            "codex_model": str(cfg.get("codex_model") or ""),
-            "codex_cli_path": str(cfg.get("codex_cli_path") or ""),
-            "local_base_url": str(cfg.get("local_base_url") or ""),
-            "local_model": str(cfg.get("local_model") or ""),
-            "deepseek_model": str(cfg.get("deepseek_model") or ""),
-            "qwen_model": str(cfg.get("qwen_model") or ""),
-            "qwen_base_url": str(cfg.get("qwen_base_url") or ""),
-            "gemini_model": str(cfg.get("gemini_model") or ""),
-            "nvidia_model": str(cfg.get("nvidia_model") or ""),
-            "system_prompt_text": system_text,
-            "task_prompt_text": task_text,
-            "system_prompt_key": system_key,
-            "task_prompt_key": task_key,
-            "analysis_language": lang,
-            "llm_call_timeout_sec": str(cfg.get("llm_call_timeout_sec") or ""),
-            "text_compression_strategy": str(cfg.get("text_compression_strategy") or ""),
-        }
+        return build_llm_input_from_config(cfg)
 
     def _compression_strategy(self, cfg: dict[str, Any] | None = None) -> str:
         raw = (cfg or {}).get("text_compression_strategy", "")
@@ -323,71 +272,6 @@ class AIAnalysisManager:
         if raw not in {"final_only", "with_sql_filtered", "with_sql_filtered_force", "with_sql_raw_and_filtered"}:
             return "final_only"
         return raw
-
-    def _compact_runtime_prompt(
-        self,
-        base_task_prompt: str,
-        *,
-        lang: str,
-        scope: str,
-        device_label: str,
-        device_ip: str,
-        device_id: str,
-        chunk_index: int | None = None,
-        chunk_total: int | None = None,
-    ) -> str:
-        is_en = str(lang).lower().startswith("en")
-        suffix_lines = [
-            "[Runtime mode]" if is_en else "[运行模式]",
-            (f"- Scope: {scope}" if is_en else f"- 范围: {scope}"),
-            (f"- Device: {device_label}" if is_en else f"- 设备: {device_label}"),
-        ]
-        if chunk_index is not None and chunk_total is not None:
-            suffix_lines.append(f"- Chunk: {chunk_index}/{chunk_total}" if is_en else f"- 分片: {chunk_index}/{chunk_total}")
-        suffix_lines.extend(
-            [
-                "- Output language must be English." if is_en else "- 输出语言必须为中文。",
-                "- Output must be compact, evidence-first, and machine-friendly."
-                if is_en
-                else "- 输出要紧凑、证据优先、便于后续机器汇总。",
-                "- Return JSON only. No markdown fences."
-                if is_en
-                else "- 仅返回 JSON，不要输出 markdown 代码块。",
-                "- JSON schema: {\"verdict\":\"...\",\"anomalies\":[{\"severity\":\"...\",\"event\":\"...\",\"object\":\"...\",\"time_range\":\"...\",\"reason\":\"...\"}],\"evidence\":[\"...\"],\"actions\":[\"...\"]}",
-                "- Max anomalies: 4; max evidence: 5; max actions: 3."
-                if is_en
-                else "- anomalies 最多 4 条，evidence 最多 5 条，actions 最多 3 条。",
-                "- Each string should be short; do not restate benign or repetitive details."
-                if is_en
-                else "- 每个字符串都要尽量短，不要重复描述无害或重复性细节。",
-                "- Include exact event code/object/time-range evidence when available."
-                if is_en
-                else "- 有条件时必须写出准确的事件码、对象和时间范围证据。",
-            ]
-        )
-        return (base_task_prompt or "").rstrip() + "\n\n" + "\n".join(suffix_lines)
-
-    def _final_runtime_prompt(self, base_task_prompt: str, *, lang: str) -> str:
-        is_en = str(lang).lower().startswith("en")
-        suffix_lines = [
-            "[Runtime mode]" if is_en else "[运行模式]",
-            "- Scope: global_summary" if is_en else "- 范围: global_summary",
-            "- Output language must be English." if is_en else "- 输出语言必须为中文。",
-            "- Produce the final user-facing report." if is_en else "- 生成最终面向用户的报告。",
-            "- Keep the report concise and evidence-first." if is_en else "- 报告保持简洁，证据优先。",
-            (
-                "- Use exactly these markdown sections: Overall Conclusion, Key Anomalies, Evidence Chain, Impact, Actions."
-                if is_en
-                else "- 必须严格使用这些 markdown 标题：总体结论、关键异常、证据链、影响判断、处置建议。"
-            ),
-            "- Keep anomalies max 8 bullets, evidence max 8 bullets, actions max 5 bullets."
-            if is_en
-            else "- 关键异常最多 8 条，证据链最多 8 条，处置建议最多 5 条。",
-            "- Avoid long prose and avoid repeating the same symptom multiple times."
-            if is_en
-            else "- 不要写成长篇大论，也不要多次重复同一症状。",
-        ]
-        return (base_task_prompt or "").rstrip() + "\n\n" + "\n".join(suffix_lines)
 
     def _parse_runtime_summary_json(self, text: str) -> dict[str, Any] | None:
         raw = str(text or "").strip()
@@ -470,6 +354,8 @@ class AIAnalysisManager:
         sql_filtered_path: Path,
         sql_raw_path: Path,
         sql_log_inclusion_mode: str,
+        analysis_time_start: str = "",
+        analysis_time_end: str = "",
     ) -> tuple[list[str], list[str]]:
         sections: list[str] = []
         attached: list[str] = []
@@ -480,12 +366,20 @@ class AIAnalysisManager:
         }
         force_filtered = sql_log_inclusion_mode in {"with_sql_filtered_force", "with_sql_raw_and_filtered"}
         if include_filtered and sql_filtered_path.exists():
-            sql_filtered_text = sql_filtered_path.read_text(encoding="utf-8")
+            sql_filtered_text = self._filter_log_text_by_time_range(
+                sql_filtered_path.read_text(encoding="utf-8"),
+                analysis_time_start,
+                analysis_time_end,
+            )
             if sql_filtered_text and (force_filtered or sql_filtered_text != log_text):
                 sections.append(f"## {sql_filtered_path.name}\n" + sql_filtered_text)
                 attached.append(sql_filtered_path.name)
         if sql_log_inclusion_mode == "with_sql_raw_and_filtered" and sql_raw_path.exists():
-            sql_raw_text = sql_raw_path.read_text(encoding="utf-8")
+            sql_raw_text = self._filter_log_text_by_time_range(
+                sql_raw_path.read_text(encoding="utf-8"),
+                analysis_time_start,
+                analysis_time_end,
+            )
             if sql_raw_text:
                 sections.append(f"## {sql_raw_path.name}\n" + sql_raw_text)
                 attached.append(sql_raw_path.name)
@@ -528,6 +422,8 @@ class AIAnalysisManager:
         device_id: str,
         compression_strategy: str = "template_vars",
         sql_log_inclusion_mode: str = "final_only",
+        analysis_time_start: str = "",
+        analysis_time_end: str = "",
         persist_artifacts: bool = True,
         return_details: bool = False,
     ) -> str:
@@ -543,16 +439,26 @@ class AIAnalysisManager:
         sql_filtered_path = dev_dir / "filtered_sql.log"
         sql_raw_path = dev_dir / "raw_sql.log"
         if meta_path.exists():
+            meta_payload = self._ai_meta_payload(meta_data, source_name=source_path.name if source_path.exists() else "")
+            if analysis_time_start or analysis_time_end:
+                meta_payload["analysis_time_window"] = {
+                    "start": str(analysis_time_start or "").strip(),
+                    "end": str(analysis_time_end or "").strip(),
+                }
             sections.append(
                 "## device_meta\n"
                 + json.dumps(
-                    self._ai_meta_payload(meta_data, source_name=source_path.name if source_path.exists() else ""),
+                    meta_payload,
                     ensure_ascii=False,
                     indent=2,
                 )
             )
         if source_path.exists():
-            log_text = source_path.read_text(encoding="utf-8")
+            log_text = self._filter_log_text_by_time_range(
+                source_path.read_text(encoding="utf-8"),
+                analysis_time_start,
+                analysis_time_end,
+            )
             if compression_strategy != "off":
                 package = build_semantic_package(
                     log_text,
@@ -583,6 +489,8 @@ class AIAnalysisManager:
                         sql_filtered_path=sql_filtered_path,
                         sql_raw_path=sql_raw_path,
                         sql_log_inclusion_mode=sql_log_inclusion_mode,
+                        analysis_time_start=analysis_time_start,
+                        analysis_time_end=analysis_time_end,
                     )
                     if attached_sql_sections:
                         sections.append(
@@ -608,6 +516,8 @@ class AIAnalysisManager:
                 sql_filtered_path=sql_filtered_path,
                 sql_raw_path=sql_raw_path,
                 sql_log_inclusion_mode=sql_log_inclusion_mode,
+                analysis_time_start=analysis_time_start,
+                analysis_time_end=analysis_time_end,
             )
             if attached_sql_sections:
                 sections.append(
@@ -632,6 +542,8 @@ class AIAnalysisManager:
         task_id: str,
         compression_strategy: str = "template_vars",
         sql_log_inclusion_mode: str = "final_only",
+        analysis_time_start: str = "",
+        analysis_time_end: str = "",
         persist_artifacts: bool = True,
         device_ids: list[str] | None = None,
     ) -> str:
@@ -670,6 +582,8 @@ class AIAnalysisManager:
                     dev_dir.name,
                     compression_strategy=compression_strategy,
                     sql_log_inclusion_mode=sql_log_inclusion_mode,
+                    analysis_time_start=analysis_time_start,
+                    analysis_time_end=analysis_time_end,
                     persist_artifacts=persist_artifacts,
                 )
                 + "\n"
@@ -682,6 +596,8 @@ class AIAnalysisManager:
         device_id: str,
         compression_strategy: str = "template_vars",
         sql_log_inclusion_mode: str = "final_only",
+        analysis_time_start: str = "",
+        analysis_time_end: str = "",
         max_chars: int = 24000,
     ) -> str:
         text = self._build_device_report_text(
@@ -689,6 +605,8 @@ class AIAnalysisManager:
             device_id,
             compression_strategy=compression_strategy,
             sql_log_inclusion_mode=sql_log_inclusion_mode,
+            analysis_time_start=analysis_time_start,
+            analysis_time_end=analysis_time_end,
             persist_artifacts=True,
         )
         return self._shrink_text(text, max_chars=max_chars)
@@ -699,6 +617,82 @@ class AIAnalysisManager:
         head = text[: max_chars // 2]
         tail = text[-(max_chars // 2) :]
         return head + "\n\n...[TRUNCATED]...\n\n" + tail
+
+    def _parse_analysis_time_value(self, value: str) -> datetime | None:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                return datetime.strptime(raw, fmt)
+            except Exception:
+                continue
+        return None
+
+    def _parse_log_line_dt(self, line: str) -> datetime | None:
+        text = str(line or "")
+        m = re.search(r"(?P<y>\d{4})-(?P<mo>\d{2})-(?P<d>\d{2})[ T](?P<h>\d{2}):(?P<mi>\d{2}):(?P<s>\d{2})", text)
+        if m:
+            try:
+                return datetime(
+                    int(m.group("y")),
+                    int(m.group("mo")),
+                    int(m.group("d")),
+                    int(m.group("h")),
+                    int(m.group("mi")),
+                    int(m.group("s")),
+                )
+            except Exception:
+                pass
+        for p in self._TS_PATTERNS:
+            m = p.search(text)
+            if not m:
+                continue
+            try:
+                y = int(m.groupdict().get("y") or datetime.now().year)
+                mon = self._MON.get(str(m.group("m")).lower(), 0)
+                if not mon:
+                    continue
+                d = int(m.group("d"))
+                hh = int(m.group("h"))
+                mm = int(m.group("mi"))
+                ss = int(m.group("s"))
+                return datetime(y, mon, d, hh, mm, ss)
+            except Exception:
+                continue
+        return None
+
+    def _filter_log_text_by_time_range(self, text: str, analysis_time_start: str = "", analysis_time_end: str = "") -> str:
+        start_dt = self._parse_analysis_time_value(analysis_time_start)
+        end_dt = self._parse_analysis_time_value(analysis_time_end)
+        if start_dt is None and end_dt is None:
+            return text
+        entries: list[dict[str, Any]] = []
+        current: dict[str, Any] | None = None
+        for line in str(text or "").splitlines():
+            ts = self._parse_log_line_dt(line)
+            if ts is not None:
+                if current:
+                    entries.append(current)
+                current = {"timestamp": ts, "lines": [line]}
+            elif current:
+                current["lines"].append(line)
+            else:
+                current = {"timestamp": None, "lines": [line]}
+        if current:
+            entries.append(current)
+        filtered_lines: list[str] = []
+        for entry in entries:
+            ts = entry.get("timestamp")
+            if ts is None:
+                filtered_lines.extend(entry.get("lines") or [])
+                continue
+            if start_dt is not None and ts < start_dt:
+                continue
+            if end_dt is not None and ts > end_dt:
+                continue
+            filtered_lines.extend(entry.get("lines") or [])
+        return "\n".join(filtered_lines)
 
     def _split_chunks(
         self,
@@ -888,6 +882,8 @@ class AIAnalysisManager:
         fragmented = bool(int(cfg.get("fragmented_analysis", 0) or 0))
         compression_strategy = self._compression_strategy(cfg)
         sql_log_inclusion_mode = self._sql_log_inclusion_mode(cfg)
+        analysis_time_start = str(cfg.get("analysis_time_start", "") or "").strip()
+        analysis_time_end = str(cfg.get("analysis_time_end", "") or "").strip()
         max_tokens_per_chunk = max(800, int(cfg.get("max_tokens_per_chunk", 4500) or 4500))
         max_chunks_per_device = max(
             1,
@@ -909,6 +905,8 @@ class AIAnalysisManager:
                 task_id,
                 compression_strategy=compression_strategy,
                 sql_log_inclusion_mode=sql_log_inclusion_mode,
+                analysis_time_start=analysis_time_start,
+                analysis_time_end=analysis_time_end,
                 persist_artifacts=False,
                 device_ids=selected_ids,
             )
@@ -933,6 +931,8 @@ class AIAnalysisManager:
                 preview_id,
                 compression_strategy=compression_strategy,
                 sql_log_inclusion_mode=sql_log_inclusion_mode,
+                analysis_time_start=analysis_time_start,
+                analysis_time_end=analysis_time_end,
                 persist_artifacts=False,
                 return_details=True,
             )
@@ -960,7 +960,7 @@ class AIAnalysisManager:
                         {
                             "scope": "device_chunk",
                             "title": f"{preview_identity.get('short_display', preview_id)} chunk {idx+1}/{len(chunks)}",
-                            "task_prompt_text": self._compact_runtime_prompt(
+                            "task_prompt_text": compact_runtime_prompt(
                                 llm_base.get("task_prompt_text", ""),
                                 lang=analysis_language,
                                 scope="device_chunk",
@@ -981,7 +981,7 @@ class AIAnalysisManager:
                         {
                             "scope": "device_summary",
                             "title": f"{preview_identity.get('short_display', preview_id)} summary merge payload",
-                            "task_prompt_text": self._compact_runtime_prompt(
+                            "task_prompt_text": compact_runtime_prompt(
                                 llm_base.get("task_prompt_text", ""),
                                 lang=analysis_language,
                                 scope="device_summary",
@@ -999,7 +999,7 @@ class AIAnalysisManager:
                     {
                         "scope": "device_single",
                         "title": f"{preview_identity.get('short_display', preview_id)} device payload",
-                        "task_prompt_text": self._compact_runtime_prompt(
+                        "task_prompt_text": compact_runtime_prompt(
                             llm_base.get("task_prompt_text", ""),
                             lang=analysis_language,
                             scope="device_single",
@@ -1022,6 +1022,8 @@ class AIAnalysisManager:
             "fragmented_analysis": fragmented,
             "compression_strategy": compression_strategy,
             "sql_log_inclusion_mode": sql_log_inclusion_mode,
+            "analysis_time_start": analysis_time_start,
+            "analysis_time_end": analysis_time_end,
             "units": units,
         }
 
@@ -1047,7 +1049,7 @@ class AIAnalysisManager:
         msg = str(last_exc).strip() or repr(last_exc)
         raise RuntimeError(msg)
 
-    def start(self, task_id: str, devices: list[dict[str, str]] | None = None) -> str:
+    def start(self, task_id: str, devices: list[dict[str, str]] | None = None, cfg_override: dict[str, Any] | None = None) -> str:
         active = self.get_active_by_task(task_id)
         if active:
             return active["analysis_id"]
@@ -1077,6 +1079,7 @@ class AIAnalysisManager:
             "running_device_ips": [],
             "_started_mono": time.monotonic(),
             "_devices": device_list,
+            "_cfg_override": dict(cfg_override or {}),
             "_chunk_total_by_ip": {},
             "_chunk_done_by_ip": {},
         }
@@ -1120,6 +1123,7 @@ class AIAnalysisManager:
         task = self._tasks[analysis_id]
         try:
             cfg = load_gpt_config()
+            cfg.update(dict(task.get("_cfg_override") or {}))
             llm_base = self._build_llm_input(cfg)
             provider = llm_base["provider"]
             analysis_language = llm_base.get("analysis_language", "zh")
@@ -1132,6 +1136,8 @@ class AIAnalysisManager:
             fragmented = bool(int(cfg.get("fragmented_analysis", 0) or 0))
             compression_strategy = self._compression_strategy(cfg)
             sql_log_inclusion_mode = self._sql_log_inclusion_mode(cfg)
+            analysis_time_start = str(cfg.get("analysis_time_start", "") or "").strip()
+            analysis_time_end = str(cfg.get("analysis_time_end", "") or "").strip()
             parallelism = max(1, int(cfg.get("analysis_parallelism", 2) or 2))
             retries = max(0, int(cfg.get("analysis_retries", 1) or 1))
             max_tokens_per_chunk = max(800, int(cfg.get("max_tokens_per_chunk", 4500) or 4500))
@@ -1179,6 +1185,8 @@ class AIAnalysisManager:
                         str(d.get("device_id") or ""),
                         compression_strategy=compression_strategy,
                         sql_log_inclusion_mode=sql_log_inclusion_mode,
+                        analysis_time_start=analysis_time_start,
+                        analysis_time_end=analysis_time_end,
                         max_chars=max(24000, soft_limit * 4 + 2000),
                     )
                     effective_fragmented = self._effective_fragmentation(
@@ -1248,6 +1256,8 @@ class AIAnalysisManager:
                     task_id,
                     compression_strategy=compression_strategy,
                     sql_log_inclusion_mode=sql_log_inclusion_mode,
+                    analysis_time_start=analysis_time_start,
+                    analysis_time_end=analysis_time_end,
                 )
                 self._set_progress(task, 55, self._format_healthcheck_style_progress(task, "设备分析中"))
                 timeout_sec = self._estimate_timeout_sec(report_text, floor=60, ceiling=max_call_timeout)
@@ -1299,7 +1309,7 @@ class AIAnalysisManager:
 
                             async def analyze_one_chunk(i: int, chunk: str) -> tuple[int, str, int]:
                                 llm = dict(llm_base)
-                                llm["task_prompt_text"] = self._compact_runtime_prompt(
+                                llm["task_prompt_text"] = compact_runtime_prompt(
                                     llm_base.get("task_prompt_text", ""),
                                     lang=analysis_language,
                                     scope="device_chunk",
@@ -1355,7 +1365,7 @@ class AIAnalysisManager:
                                 self._check_cancelled(task)
                                 # summarize chunk results per device
                                 llm = dict(llm_base)
-                                llm["task_prompt_text"] = self._compact_runtime_prompt(
+                                llm["task_prompt_text"] = compact_runtime_prompt(
                                     llm_base.get("task_prompt_text", ""),
                                     lang=analysis_language,
                                     scope="device_summary",
@@ -1436,7 +1446,7 @@ class AIAnalysisManager:
                 self._set_progress(task, min(99, int((task["_unit_done"] / task["_unit_total"]) * 100)), self._format_healthcheck_style_progress(task, "全局汇总中"))
                 global_report = self._compact_global_summary_input(device_summaries)
                 llm = dict(llm_base)
-                llm["task_prompt_text"] = self._final_runtime_prompt(llm_base.get("task_prompt_text", ""), lang=analysis_language)
+                llm["task_prompt_text"] = final_runtime_prompt(llm_base.get("task_prompt_text", ""), lang=analysis_language)
                 timeout_sec = self._estimate_timeout_sec(global_report, floor=60, ceiling=max_call_timeout)
                 task["_active_call_started"] = time.monotonic()
                 task["_active_call_timeout_sec"] = float(timeout_sec)

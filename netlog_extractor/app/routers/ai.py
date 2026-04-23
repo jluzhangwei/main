@@ -262,6 +262,8 @@ def _estimate_precheck(task: Any, task_id: str, request: Request, payload: dict[
         high=60,
     )
     cfg = _merge_cfg(load_gpt_config(), payload or {})
+    cfg["analysis_time_start"] = str((payload or {}).get("analysis_time_start", "") or "").strip()
+    cfg["analysis_time_end"] = str((payload or {}).get("analysis_time_end", "") or "").strip()
     provider = str(cfg.get("provider", "chatgpt") or "chatgpt").strip().lower()
     compression_strategy = normalize_strategy(
         cfg.get("text_compression_strategy", payload.get("text_compression_enabled", "template_vars") if isinstance(payload, dict) else "template_vars")
@@ -272,6 +274,8 @@ def _estimate_precheck(task: Any, task_id: str, request: Request, payload: dict[
             task_id,
             compression_strategy=compression_strategy,
             sql_log_inclusion_mode=str(cfg.get("sql_log_inclusion_mode", "final_only") or "final_only"),
+            analysis_time_start=str(cfg.get("analysis_time_start", "") or ""),
+            analysis_time_end=str(cfg.get("analysis_time_end", "") or ""),
             persist_artifacts=False,
             device_ids=selected_ids,
         )
@@ -330,6 +334,8 @@ def _estimate_precheck(task: Any, task_id: str, request: Request, payload: dict[
         "text_compression_strategy": compression_strategy,
         "sql_log_inclusion_mode": str(cfg.get("sql_log_inclusion_mode", "final_only") or "final_only"),
         "selected_device_ids": selected_ids,
+        "analysis_time_start": str(cfg.get("analysis_time_start", "") or ""),
+        "analysis_time_end": str(cfg.get("analysis_time_end", "") or ""),
     }
 
 
@@ -503,14 +509,19 @@ async def start_analysis(task_id: str, request: Request, payload: dict[str, Any]
     task = request.app.state.task_manager.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="task not found")
+    cfg_override: dict[str, Any] = {}
     if isinstance(payload, dict) and payload:
         cfg = _merge_cfg(load_gpt_config(), payload)
         save_gpt_config(cfg)
+        cfg_override = {
+            "analysis_time_start": str(payload.get("analysis_time_start", "") or "").strip(),
+            "analysis_time_end": str(payload.get("analysis_time_end", "") or "").strip(),
+        }
     selected_ids = [str(x or "").strip() for x in ((payload or {}).get("selected_device_ids") or []) if str(x or "").strip()]
     device_items = _build_device_items(task, selected_ids)
     if not device_items:
         raise HTTPException(status_code=400, detail="no devices selected")
-    analysis_id = request.app.state.ai_manager.start(task_id, devices=device_items)
+    analysis_id = request.app.state.ai_manager.start(task_id, devices=device_items, cfg_override=cfg_override)
     return {"ok": True, "analysis_id": analysis_id}
 
 
@@ -540,6 +551,8 @@ async def analysis_precheck(task_id: str, request: Request, payload: dict[str, A
             line += f" | 压缩策略: {estimation['text_compression_strategy']}"
         if str(estimation.get("sql_log_inclusion_mode", "final_only") or "final_only") != "final_only":
             line += f" | SQL附加: {estimation['sql_log_inclusion_mode']}"
+        if estimation.get("analysis_time_start") or estimation.get("analysis_time_end"):
+            line += f" | AI时间范围: {estimation.get('analysis_time_start') or '-'} ~ {estimation.get('analysis_time_end') or '-'}"
         return {"ok": True, "estimation": estimation, "line": line}
     except Exception as exc:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
@@ -551,6 +564,8 @@ async def analysis_preview(task_id: str, request: Request, payload: dict[str, An
     if not task:
         raise HTTPException(status_code=404, detail="task not found")
     cfg = _merge_cfg(load_gpt_config(), payload or {})
+    cfg["analysis_time_start"] = str((payload or {}).get("analysis_time_start", "") or "").strip()
+    cfg["analysis_time_end"] = str((payload or {}).get("analysis_time_end", "") or "").strip()
     selected_ids = [str(x or "").strip() for x in ((payload or {}).get("selected_device_ids") or []) if str(x or "").strip()]
     preview_device_id = str((payload or {}).get("preview_device_id") or "").strip()
     try:

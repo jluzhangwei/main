@@ -1,0 +1,29 @@
+    @import url('/shared/header/shared-header.css');
+    :root { --bg:#f6f8fb; --card:#fff; --text:#1b2430; --line:#d6dde8; --accent:#006c9c; --brand:#111; --navbg:#ffffff; --active:#d43a2f; }
+    body { margin:0; font-family: "Segoe UI", "PingFang SC", sans-serif; background:var(--bg); color:var(--text); }
+    .wrap { width:min(1180px, calc(100vw - 28px)); margin:18px auto; padding:0 14px; }
+    body.page-home .wrap { width:min(1240px, calc(100vw - 28px)); }
+    body.page-tasks .wrap { width:min(1360px, calc(100vw - 28px)); }
+    body.page-task-detail .wrap { width:min(1440px, calc(100vw - 28px)); }
+    body.page-ai-settings .wrap { width:min(1360px, calc(100vw - 28px)); }
+    body.page-help .wrap { width:min(1180px, calc(100vw - 28px)); }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin-bottom:14px; }
+    h2 { margin:4px 0 10px; font-size:21px; }
+    h3 { margin:4px 0 8px; font-size:16px; }
+    label { display:block; margin:7px 0 3px; font-weight:600; font-size:13px; }
+    input, select, textarea, button { padding:7px 9px; border:1px solid var(--line); border-radius:8px; box-sizing:border-box; font-size:14px; }
+    form input, form select { width:100%; max-width:360px; }
+    form textarea { width:100%; max-width:640px; min-height:110px; }
+    button { width:auto; min-width:150px; background:var(--accent); color:#fff; font-weight:700; cursor:pointer; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th, td { border-bottom:1px solid var(--line); padding:7px; text-align:left; vertical-align:top; }
+    .row { display:grid; grid-template-columns:repeat(2,minmax(210px,1fr)); gap:8px 12px; align-items:end; }
+    .muted { color:#6a7480; font-size:12px; margin:4px 0 0; }
+    .error { color:#c72020; font-weight:700; font-size:13px; margin-bottom:8px; }
+    @media (max-width: 780px) {
+      .wrap, body.page-home .wrap, body.page-tasks .wrap, body.page-task-detail .wrap, body.page-ai-settings .wrap, body.page-help .wrap { width:100%; }
+      .row { grid-template-columns:1fr; }
+      form input, form select, form textarea { max-width:100%; }
+      button { width:100%; }
+    }
+  

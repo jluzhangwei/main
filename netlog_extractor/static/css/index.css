@@ -1,0 +1,16 @@
+    .hc-head { margin-bottom: 10px; }
+    .hc-sub { margin: 0; color: #3d4b63; font-size: 15px; }
+    .hc-form .row { margin-top: 8px; align-items: start; }
+    .hc-form input, .hc-form select, .hc-form textarea { width: 100%; max-width: none; background:#fff; }
+    .hc-form .tips { color:#51617b; font-size:12px; margin-top:4px; }
+    .hc-form .actions { margin-top: 14px; }
+    .hc-form .debug-row { margin-top: 10px; }
+    .hc-form .debug-box { margin-top: 8px; padding: 10px 12px; border: 1px solid #d6dde8; border-radius: 10px; background: #fbfcfe; }
+    .hc-form .debug-box .row { margin-top: 6px; }
+    .hc-form .inline-actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px; }
+    .hc-form .inline-actions button { min-width: 140px; }
+    .hc-form .row.disabled-credential { opacity: 0.7; }
+    .hc-form .row.disabled-credential input[disabled] { background: #eef2f7; color: #7b8794; cursor: not-allowed; }
+    .hc-form .section-disabled { opacity: 0.72; }
+    .hc-form .section-disabled input[disabled], .hc-form .section-disabled select[disabled] { background: #eef2f7; color: #7b8794; cursor: not-allowed; }
+  
