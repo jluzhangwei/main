@@ -647,7 +647,7 @@ class UnifiedRunService:
         if summary.mode == "query" and summary.query_result:
             parts.append(str(summary.query_result).strip())
         elif summary.mode == "config" and summary.query_result:
-            parts.append(f"配置完成。结果: {str(summary.query_result).strip()}")
+            parts.append(f"配置分析结果: {str(summary.query_result).strip()}")
         else:
             parts.append(f"诊断完成。根因判断: {str(summary.root_cause).strip()}")
         impact = str(summary.impact_scope or "").strip()

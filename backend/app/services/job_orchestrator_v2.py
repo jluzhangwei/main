@@ -1622,6 +1622,33 @@ class JobV2Orchestrator:
     def _is_followup_request(self, job: Job) -> bool:
         return len(job.request_history) > 1 and bool(job.command_results)
 
+    def _problem_context(self, job: Job) -> dict[str, Any]:
+        turns = [str(item.content or "").strip() for item in job.request_history if str(item.content or "").strip()]
+        original_problem = turns[0] if turns else str(job.problem or "").strip()
+        latest_problem = turns[-1] if turns else str(job.problem or "").strip()
+        return {
+            "current_problem": str(job.problem or "").strip(),
+            "original_problem": original_problem,
+            "latest_request": latest_problem,
+            "request_history": turns[-6:],
+        }
+
+    def _render_problem_context(self, job: Job) -> str:
+        context = self._problem_context(job)
+        current_problem = str(context.get("current_problem") or "").strip()
+        original_problem = str(context.get("original_problem") or "").strip()
+        request_history = [str(item or "").strip() for item in context.get("request_history") or [] if str(item or "").strip()]
+        task_hosts = [str(device.host or "").strip() for device in job.devices if str(device.host or "").strip()]
+        lines = [f"当前用户问题: {current_problem}"]
+        if original_problem and original_problem != current_problem:
+            lines.append(f"原始问题: {original_problem}")
+        if task_hosts:
+            lines.append(f"当前任务设备范围: {', '.join(task_hosts)}")
+        if len(request_history) > 1:
+            lines.append("同一会话历史提问（仅作上下文，不等于当前目标）:")
+            lines.extend([f"- {item}" for item in request_history[:-1]])
+        return "\n".join(lines)
+
     def _has_continuous_followup_context(self, job: Job) -> bool:
         if not self._is_followup_request(job):
             return False
@@ -1695,14 +1722,14 @@ class JobV2Orchestrator:
         known: list[str] = []
         missing: list[str] = []
         mapping = {
-            "version": "版本事实",
-            "privilege": "权限事实",
-            "lldp_neighbors": "LLDP 邻接事实",
-            "ospf_neighbors": "OSPF 邻接事实",
-            "ospf_interface_brief": "OSPF 接口摘要事实",
-            "ospf_config": "OSPF 配置片段",
-            "bgp_summary": "BGP 邻接摘要事实",
-            "bgp_config": "BGP 配置片段",
+            "version": "版本相关回显",
+            "privilege": "权限相关回显",
+            "lldp_neighbors": "LLDP 邻居相关回显",
+            "ospf_neighbors": "OSPF 邻居相关回显",
+            "ospf_interface_brief": "OSPF 接口摘要相关回显",
+            "ospf_config": "OSPF 配置相关回显",
+            "bgp_summary": "BGP 邻居摘要相关回显",
+            "bgp_config": "BGP 配置相关回显",
         }
         for key, label in mapping.items():
             if key in categories:
@@ -1726,9 +1753,9 @@ class JobV2Orchestrator:
         known, missing = self._known_missing_facts(job, device_id=device_id)
         if not known and not missing:
             return ""
-        lines = ["当前已确认事实:"]
+        lines = ["当前已采集到的相关回显/信号类别（仅供参考，不直接等于结论）:"]
         lines.extend([f"- {item}" for item in known] or ["- 无"])
-        lines.append("当前仍缺事实:")
+        lines.append("如需继续定位，可优先补充的相关回显/信号类别:")
         lines.extend([f"- {item}" for item in missing] or ["- 无"])
         return "\n".join(lines)
 
@@ -1738,10 +1765,7 @@ class JobV2Orchestrator:
         if not self._has_continuous_followup_context(job):
             return False
         _known, missing = self._known_missing_facts(job, device_id=device_id)
-        if len(missing) == 0:
-            return True
-        deterministic = self._repair_followup_missing_fact_commands(job)
-        return any(device.id == device_id for device, _title, _command in deterministic)
+        return len(missing) == 0
 
     def _can_skip_followup_device_collect(self, job: Job, device_id: str) -> bool:
         if not self._has_continuous_followup_context(job):
@@ -1762,27 +1786,31 @@ class JobV2Orchestrator:
                 return False
         return self._can_skip_followup_llm_collect(job, device_id)
 
-    def _repair_followup_missing_fact_commands(self, job: Job) -> list[tuple[JobDevice, str, str]]:
-        if job.mode != JobMode.repair or not self._has_continuous_followup_context(job):
-            return []
-        focus = self._infer_problem_focus(job.problem)
-        plans: list[tuple[JobDevice, str, str]] = []
-        for device in job.devices:
-            _, missing = self._known_missing_facts(job, device_id=device.id)
-            missing_set = set(missing)
-            if focus == "ospf" and "OSPF 配置片段" in missing_set:
-                plans.append((device, "补采 OSPF 配置片段", "show running-config section ospf"))
-            elif focus == "bgp" and "BGP 配置片段" in missing_set:
-                plans.append((device, "补采 BGP 配置片段", "show running-config section router bgp"))
-        deduped: list[tuple[JobDevice, str, str]] = []
-        seen: set[tuple[str, str]] = set()
-        for device, title, command in plans:
-            key = (device.id, self._normalize_command_text(command))
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append((device, title, command))
-        return deduped
+    def _relationship_facts(self, job: Job) -> list[dict[str, Any]]:
+        facts: list[dict[str, Any]] = []
+        host_by_device_id = {str(device.id): str(device.host or device.id or "-") for device in job.devices}
+        for evidence in job.evidences or []:
+            parsed = evidence.parsed_data or {}
+            device_host = host_by_device_id.get(str(evidence.device_id), str(evidence.device_id))
+            if isinstance(parsed.get("neighbors"), list) and parsed.get("neighbors"):
+                facts.append(
+                    {
+                        "device_host": device_host,
+                        "fact_type": "lldp_neighbors",
+                        "neighbors": parsed.get("neighbors")[:20],
+                    }
+                )
+            if isinstance(parsed.get("ospf_interfaces"), list) and parsed.get("ospf_interfaces"):
+                facts.append(
+                    {
+                        "device_host": device_host,
+                        "fact_type": "ospf_interfaces",
+                        "ospf_interfaces": parsed.get("ospf_interfaces")[:20],
+                        "active_ospf_interfaces": parsed.get("active_ospf_interfaces") or [],
+                        "down_ospf_interfaces": parsed.get("down_ospf_interfaces") or [],
+                    }
+                )
+        return facts[:50]
 
     async def _allocate_next_step_no(self, job_id: str) -> int:
         async with self._state_lock:
@@ -1810,7 +1838,7 @@ class JobV2Orchestrator:
                 commands = self._build_llm_device_commands(job, device_id)
                 evidences = self._build_llm_device_evidences(job, device_id)
                 session = self._build_llm_device_session(job, device)
-                user_problem = f"{job.problem}\n目标设备: {device.host}"
+                user_problem = f"{self._render_problem_context(job)}\n目标设备: {device.host}"
                 sop_run_key = f"{job.id}:{device.id}"
                 sop_context = ""
                 if job.sop_enabled:
@@ -2301,8 +2329,14 @@ class JobV2Orchestrator:
         problem: str | None = None,
         max_rules: int = 8,
     ) -> str:
-        rules = self.store.list_command_capability_rules(version_signature=device.version_signature)
-        enabled_rules = [item for item in rules if bool(getattr(item, "enabled", True))]
+        host_rules = self.store.list_command_capability_rules(host=device.host)
+        version_rules = self.store.list_command_capability_rules(version_signature=device.version_signature)
+        deduped: dict[str, Any] = {}
+        for item in [*host_rules, *version_rules]:
+            rule_id = str(getattr(item, "id", "") or "")
+            key = rule_id or f"{getattr(item, 'scope_key', '')}|{getattr(item, 'command_key', '')}"
+            deduped[key] = item
+        enabled_rules = [item for item in deduped.values() if bool(getattr(item, "enabled", True))]
         if not enabled_rules:
             return ""
         focus_tokens = self._capability_focus_tokens(problem or "")
@@ -2317,7 +2351,7 @@ class JobV2Orchestrator:
 
         enabled_rules = sorted(enabled_rules, key=_priority)
         rows: list[str] = [
-            "系统已学习到当前版本的命令能力规则。下面是与当前问题最相关的已知限制/改写规则："
+            "系统已记录当前设备及其版本的命令能力规则。下面是与当前问题最相关的已知限制/改写规则："
         ]
         for rule in enabled_rules[: max(1, int(max_rules))]:
             command_text = str(rule.command_key or "").strip()
@@ -4117,6 +4151,10 @@ class JobV2Orchestrator:
                     "如果原始回显已经确认源端存在该前缀，且源端目标协议数据库/目标协议路由表中未见该前缀，"
                     "必须把这两条作为已确认事实写出；可以表述为‘当前证据未显示该前缀被目标协议发布’，"
                     "但不得把它扩写成未被原始回显直接支持的具体配置错误。"
+                    "当fact_context.relationship_facts里同时出现LLDP互联关系与OSPF/BGP/ISIS接口事实时，"
+                    "必须先比较“真实互联口”和“协议参与口”是否一致；"
+                    "如果互联口是接口X而协议只在接口Y活跃，这应优先表述为“对象不一致/配置不对称待验证”，"
+                    "不要直接把Y当成修复目标接口。"
                     "若同时还已确认源端与接收端邻接已建立、且接收端未学到该前缀，则root_cause应收敛为‘更可能是源端未通过该协议发布该前缀’，"
                     "不要再用笼统的‘证据不足’覆盖已成立的因果方向；未确认的仅是具体发布机制（如network、redistribute或策略过滤）。"
                     "输出字段: summary, recommendation, confidence, root_device_host, root_cause, impact_scope。"
@@ -4145,6 +4183,9 @@ class JobV2Orchestrator:
                     "如果原始回显已经确认源端存在该前缀，且源端目标协议数据库/目标协议路由表中未见该前缀，"
                     "必须把这两条作为已确认事实写出；可以表述为‘当前证据未显示该前缀被目标协议发布’，"
                     "但不得把它扩写成未被原始回显直接支持的具体配置错误。"
+                    "当fact_context.relationship_facts里同时出现LLDP互联关系与OSPF/BGP/ISIS接口事实时，"
+                    "必须先比较“真实互联口”和“协议参与口”是否一致；"
+                    "如果互联口是接口X而协议只在接口Y活跃，这应优先视为待验证的不对称，而不是直接把Y当作互联口或修复目标。"
                     "若同时还已确认源端与接收端邻接已建立、且接收端未学到该前缀，则root_cause应收敛为‘更可能是源端未通过该协议发布该前缀’，"
                     "不要再用笼统的‘证据不足’覆盖已成立的因果方向；未确认的仅是具体发布机制（如network、redistribute或策略过滤）。"
                     "输出字段: summary, recommendation, confidence, root_device_host, root_cause, impact_scope。"
@@ -4458,11 +4499,14 @@ class JobV2Orchestrator:
 
     def _build_llm_rca_payload(self, job: Job) -> dict[str, Any]:
         commands = sorted(job.command_results, key=lambda item: (item.step_no, item.created_at))
+        problem_context = self._problem_context(job)
+        collected_signals, candidate_missing_signals = self._known_missing_facts(job)
         return {
             "job": {
                 "id": job.id,
                 "mode": job.mode.value,
                 "problem": job.problem,
+                "problem_context": problem_context,
                 "focus": self._infer_problem_focus(job.problem),
                 "intent": self._infer_problem_intent(job.problem),
                 "max_gap_seconds": job.max_gap_seconds,
@@ -4473,14 +4517,15 @@ class JobV2Orchestrator:
                 },
             },
             "fact_context": {
-                "known_facts": self._known_missing_facts(job)[0],
-                "missing_facts": self._known_missing_facts(job)[1],
+                "collected_signals": collected_signals,
+                "candidate_missing_signals": candidate_missing_signals,
+                "relationship_facts": self._relationship_facts(job),
                 "per_device": [
                     {
                         "device_id": item.id,
                         "host": item.host,
-                        "known_facts": self._known_missing_facts(job, device_id=item.id)[0],
-                        "missing_facts": self._known_missing_facts(job, device_id=item.id)[1],
+                        "collected_signals": self._known_missing_facts(job, device_id=item.id)[0],
+                        "candidate_missing_signals": self._known_missing_facts(job, device_id=item.id)[1],
                     }
                     for item in job.devices
                 ],
@@ -4602,62 +4647,6 @@ class JobV2Orchestrator:
                         )
                     )
 
-        if not action_groups and job.mode == JobMode.repair and self._is_followup_request(job) and not self._has_repair_followup_fact_attempt(job):
-            supplement_commands = self._repair_followup_missing_fact_commands(job)
-            if supplement_commands:
-                representative = job.devices[0] if job.devices else None
-                self._append_event_with_trace(
-                    job,
-                    "repair_followup_fact_supplement_started",
-                    {"count": len(supplement_commands)},
-                    step_type="session_control",
-                    title="repair follow-up 补采最小必要事实",
-                    status="running",
-                    detail=f"count={len(supplement_commands)}",
-                    detail_payload={
-                        "count": len(supplement_commands),
-                        "commands": [
-                            {"host": device.host, "title": title, "command": command}
-                            for device, title, command in supplement_commands
-                        ],
-                    },
-                    device=representative,
-                )
-                self._save_state()
-                for device, title, command_text in supplement_commands:
-                    step_no = await self._allocate_next_step_no(job_id)
-                    await self._run_device_command(
-                        job_id,
-                        device.id,
-                        title=title,
-                        command_text=command_text,
-                        step_no=step_no,
-                        action_group_id=None,
-                        phase="collect",
-                    )
-                async with self._state_lock:
-                    job = self._jobs[job_id]
-                    representative = job.devices[0] if job.devices else None
-                    self._append_event_with_trace(
-                        job,
-                        "repair_followup_fact_supplement_completed",
-                        {"count": len(supplement_commands)},
-                        step_type="session_control",
-                        title="repair follow-up 最小事实补采完成",
-                        status="succeeded",
-                        detail=f"count={len(supplement_commands)}",
-                        detail_payload={
-                            "count": len(supplement_commands),
-                            "commands": [
-                                {"host": device.host, "title": title, "command": command}
-                                for device, title, command in supplement_commands
-                            ],
-                        },
-                        device=representative,
-                    )
-                    self._save_state()
-                    job = self._jobs[job_id]
-
         if not action_groups and job.mode == JobMode.repair:
             action_groups = await self._generate_ai_repair_action_groups(job_id)
 
@@ -4755,20 +4744,37 @@ class JobV2Orchestrator:
                 "当前任务已经明确是配置/修复意图。"
                 "请严格基于当前多设备证据，输出一个 JSON 对象："
                 "{\"plans\":[{\"device_host\":\"...\",\"title\":\"...\",\"commands\":[...],\"rollback_commands\":[...]}]}。"
-                "只在证据足以支持修复动作时输出 plans；如果证据不足以安全下发配置，则返回空数组。"
+                "应优先基于已确认事实生成修复方案；如果目标对象已锁定但参数细节不完整，允许输出明确标注假设前提的候选修复方案。"
+                "只有在修复目标对象本身仍未锁定时，才返回空数组。"
                 "每个 plan 必须至少包含一条真正的配置变更命令，不能只给 show/display 只读命令。"
                 "commands 应包含最小必要的修复命令和必要的保存命令；rollback_commands 应给出最小回退命令。"
-                "禁止编造设备、接口或配置事实；若无法确认，就返回空 plans。"
+                "禁止编造设备、接口或配置事实。"
+                "若problem_context中同时存在原始问题与后续追问，必须以最新追问作为当前目标，同时把原始问题只当作上下文参考。"
+                "若relationship_facts已明确真实互联口，而当前协议参与口与之不一致，"
+                "应先说明对象不一致，再决定是否围绕真实互联口给出候选方案；不要把非互联口直接当成默认修复目标。"
+                "若problem_context已给出当前任务设备范围，则优先围绕这些设备彼此之间的问题生成方案；"
+                "任务外邻居只能作为背景，不要直接成为当前修复对象。"
+                "如果用户问题已明确授权“你可以自己给合适方案/随机给方案/帮我修复”，则允许在真实对象已锁定的前提下给出带假设的候选修复方案；"
+                "未锁定的只能是参数，不允许是目标对象本身。"
+                "生成这类候选方案时，title 或说明中必须明确表述它是基于当前证据与合理假设的候选修复方案。"
             )
         else:
             system_prompt = (
                 "You are a network repair planning assistant. "
                 "The task intent is explicit configuration/remediation. "
                 "Return strict JSON only: {\"plans\":[{\"device_host\":\"...\",\"title\":\"...\",\"commands\":[...],\"rollback_commands\":[...]}]}. "
-                "Only emit plans when the evidence is strong enough to support a repair action. "
+                "Prefer plans grounded in confirmed facts. If the target object is locked but some parameters remain unspecified, you may still emit a clearly labeled candidate repair plan with explicit assumptions. "
+                "Return an empty plans array only when the repair target object itself is still not locked. "
                 "Each plan must contain at least one real mutating configuration command, not only show/display commands. "
                 "Include the minimal repair commands and rollback_commands. "
-                "Do not invent facts; if evidence is insufficient, return an empty plans array."
+                "Do not invent facts. "
+                "If problem_context contains both the original ask and later follow-up asks, use the latest follow-up as the current goal and treat older asks only as context. "
+                "If relationship_facts already identify the real interconnect interface while the protocol is active on a different interface, "
+                "explain that mismatch first and prefer candidate plans around the true interconnect instead of defaulting to the non-interconnect interface."
+                " If problem_context includes the current task device scope, prioritize plans around issues between those in-scope devices; treat out-of-scope neighbors as background unless they are explicitly proven relevant."
+                "If the user explicitly authorizes you to choose a reasonable scheme or fix it directly, you may generate a candidate repair plan with clearly stated assumptions once the real target object is locked."
+                "Only parameters may remain assumed; the repair target object itself must not be guessed."
+                "When you emit such a candidate plan, the title or explanation must explicitly say it is a candidate plan based on current evidence plus reasonable assumptions."
             )
 
         content = await self.deepseek_diagnoser._chat_completion(
@@ -4809,7 +4815,7 @@ class JobV2Orchestrator:
             )
         if groups:
             return groups
-        return self._generate_interface_ip_repair_fallback(job_id)
+        return []
 
     def _looks_like_mutating_repair_command(self, command: str) -> bool:
         normalized = " ".join(str(command or "").strip().lower().split())
@@ -4832,90 +4838,6 @@ class JobV2Orchestrator:
             "write memory",
         )
         return any(token in normalized for token in keywords)
-
-    def _generate_interface_ip_repair_fallback(self, job_id: str) -> list[JobActionGroup]:
-        job = self._jobs.get(job_id)
-        if job is None:
-            return []
-
-        per_device_candidates: dict[str, list[str]] = {}
-        for evidence in job.evidences or []:
-            raw = str(evidence.raw_output or "")
-            if not raw:
-                continue
-            matches = re.findall(r"Interface:\s+0\.0\.0\.0\s+\(([^)]+)\)", raw, flags=re.IGNORECASE)
-            if matches:
-                per_device_candidates.setdefault(evidence.device_id, []).extend(matches)
-                continue
-            for line in raw.splitlines():
-                text = line.strip()
-                if not text:
-                    continue
-                if "unassigned" not in text.lower():
-                    continue
-                iface_match = re.match(r"^([A-Za-z][A-Za-z0-9/.\-]+)\s+", text)
-                if iface_match:
-                    per_device_candidates.setdefault(evidence.device_id, []).append(iface_match.group(1))
-
-        if len(per_device_candidates) < 2:
-            return []
-
-        groups: list[JobActionGroup] = []
-        subnet_base = 200
-        for index, device in enumerate(job.devices, start=1):
-            candidates = per_device_candidates.get(device.id) or []
-            if not candidates:
-                continue
-            interface_name = candidates[0]
-            ip_addr = f"192.168.{subnet_base}.{index}"
-            vendor = str(device.vendor or "").strip().lower()
-            if "huawei" in vendor:
-                commands = [
-                    "system-view",
-                    f"interface {interface_name}",
-                    f"ip address {ip_addr} 255.255.255.0",
-                    "ospf enable 1 area 0.0.0.0",
-                    "return",
-                    "save",
-                ]
-                rollback_commands = [
-                    "system-view",
-                    f"interface {interface_name}",
-                    "undo ospf enable 1 area 0.0.0.0",
-                    "undo ip address",
-                    "return",
-                    "save",
-                ]
-            else:
-                commands = [
-                    "configure terminal",
-                    f"interface {interface_name}",
-                    f"ip address {ip_addr}/24",
-                    "ip ospf area 0.0.0.0",
-                    "end",
-                    "write memory",
-                ]
-                rollback_commands = [
-                    "configure terminal",
-                    f"interface {interface_name}",
-                    "no ip ospf area 0.0.0.0",
-                    "no ip address",
-                    "end",
-                    "write memory",
-                ]
-            groups.append(
-                JobActionGroup(
-                    job_id=job.id,
-                    device_id=device.id,
-                    title=f"为 {device.host} 的 {interface_name} 配置互联 IP 并启用 OSPF",
-                    commands=commands,
-                    risk_level=RiskLevel.high,
-                    requires_approval=True,
-                    rollback_commands=rollback_commands,
-                    status=JobActionGroupStatus.pending_approval,
-                )
-            )
-        return groups if len(groups) >= 2 else []
 
     async def _resume_job_execution(self, job_id: str) -> None:
         async with self._state_lock:

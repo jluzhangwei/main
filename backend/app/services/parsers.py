@@ -16,6 +16,8 @@ def parse_command_output(command: str, output: str) -> tuple[str, dict[str, Any]
 
     if "version" in cmd:
         return _parse_version(output)
+    if "lldp" in cmd and "neighbor" in cmd:
+        return _parse_lldp_neighbors(output)
     if (
         ("ospf" in cmd and ("peer" in cmd or "neighbor" in cmd or "interface brief" in cmd))
         or cmd.startswith("display ospf")
@@ -261,6 +263,7 @@ def _parse_ospf(command: str, output: str) -> tuple[str, dict[str, Any], str]:
             norm_states.append(primary)
 
     nbr_counts: list[int] = []
+    ospf_interfaces: list[dict[str, Any]] = []
     for line in output.splitlines():
         stripped = line.strip()
         lowered = stripped.lower()
@@ -272,6 +275,18 @@ def _parse_ospf(command: str, output: str) -> tuple[str, dict[str, Any], str]:
                 last = tokens[-1]
                 if last.isdigit():
                     nbr_counts.append(int(last))
+        table_match = re.match(
+            r"^(?P<intf>[A-Za-z][A-Za-z0-9/.\-]+)\s+(?P<ip>[0-9.]+)\s+\S+\s+(?P<state>[A-Za-z0-9\-./]+)\s+\d+\s+\d+\s*$",
+            stripped,
+        )
+        if table_match:
+            ospf_interfaces.append(
+                {
+                    "interface": _normalize_interface_name(table_match.group("intf")),
+                    "ip_address": table_match.group("ip"),
+                    "state": table_match.group("state"),
+                }
+            )
 
     full_count = sum(1 for item in norm_states if item == "full")
     non_full = [item for item in norm_states if item != "full"]
@@ -289,6 +304,17 @@ def _parse_ospf(command: str, output: str) -> tuple[str, dict[str, Any], str]:
         "has_down_hint": has_down_hint,
         "filtered_lookup": filtered_lookup,
         "empty_output": False,
+        "ospf_interfaces": ospf_interfaces[:50],
+        "active_ospf_interfaces": [
+            item["interface"]
+            for item in ospf_interfaces
+            if str(item.get("state") or "").strip().lower() not in {"down"}
+        ][:50],
+        "down_ospf_interfaces": [
+            item["interface"]
+            for item in ospf_interfaces
+            if str(item.get("state") or "").strip().lower() == "down"
+        ][:50],
     }
 
     if has_down_hint:
@@ -319,6 +345,51 @@ def _parse_ospf(command: str, output: str) -> tuple[str, dict[str, Any], str]:
         "protocol",
         parsed,
         f"当前 OSPF 邻居状态正常（Full={full_count}）。",
+    )
+
+
+def _parse_lldp_neighbors(output: str) -> tuple[str, dict[str, Any], str]:
+    neighbors: list[dict[str, str]] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.lower().startswith("local intf") or stripped.startswith("---"):
+            continue
+        match = re.match(
+            r"^(?P<local>[A-Za-z][A-Za-z0-9/.\-]+)\s+(?P<neighbor_dev>\S+)\s+(?P<neighbor_intf>[A-Za-z][A-Za-z0-9/.\-]+)\s+\d+\s*$",
+            stripped,
+        )
+        if not match:
+            continue
+        neighbors.append(
+            {
+                "local_interface": _normalize_interface_name(match.group("local")),
+                "neighbor_device": match.group("neighbor_dev"),
+                "neighbor_interface": _normalize_interface_name(match.group("neighbor_intf")),
+            }
+        )
+    parsed = {
+        "neighbor_count": len(neighbors),
+        "neighbors": neighbors[:50],
+        "local_interfaces": [item["local_interface"] for item in neighbors[:50]],
+    }
+    if not neighbors:
+        return (
+            "protocol",
+            parsed,
+            "未检测到 LLDP 邻居信息。",
+        )
+    preview = ", ".join(
+        [
+            f"{item['local_interface']}->{item['neighbor_device']}:{item['neighbor_interface']}"
+            for item in neighbors[:4]
+        ]
+    )
+    return (
+        "protocol",
+        parsed,
+        f"检测到 LLDP 邻接关系 {len(neighbors)} 条：{preview}",
     )
 
 

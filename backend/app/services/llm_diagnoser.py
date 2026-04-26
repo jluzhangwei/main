@@ -72,6 +72,33 @@ ACTION_MARKER_RULES = (
     "若任务已闭环且无需继续动作，follow_up_action或recommendation必须包含以下词之一：已完成、无需。"
 )
 
+INTERCONNECT_ALIGNMENT_RULES = (
+    "当证据中同时存在邻居发现关系（如LLDP/CDP）和协议接口事实（如OSPF/BGP/ISIS接口/邻居状态）时，"
+    "必须先做‘真实互联口’与‘协议参与口’的对齐判断，再决定下一步。"
+    "若LLDP明确显示本端接口X连接到对端设备，而协议当前只在接口Y上活跃，这应优先视为“接口对象不一致/配置不对称”的待验证事实，"
+    "而不是直接假设Y就是要修复的互联口。"
+    "在未核对真实互联关系前，禁止因为某接口已经启用协议，就直接把该接口当作修复目标接口。"
+    "若LLDP已经给出本端/对端互联接口，应优先围绕该互联接口补采接口状态、接口配置、协议使能与一致性证据。"
+    "当协议邻居摘要为空但接口状态/LLDP关系已知时，不要只凭空邻居摘要就放大成‘任意接口都可能有问题’；"
+    "应优先比较‘互联口是否承载协议’以及‘双方互联口配置是否对称’。"
+)
+
+TASK_SCOPE_ALIGNMENT_RULES = (
+    "当上下文已明确给出‘当前任务设备范围’时，必须优先围绕这些设备彼此之间的问题推进。"
+    "若命令回显中还出现指向任务外设备的邻居、接口或链路，它们只能视为环境背景，不应直接成为当前修复或排障目标。"
+    "只有当这些任务外对象能直接解释当前任务设备之间的问题，并且你在reason中明确说明关联链路时，才允许把它们纳入下一步。"
+)
+
+AUTHORIZED_REPAIR_PLANNING_RULES = (
+    "当用户已明确授权你“自己给合适方案/随机给方案/直接修复/帮我修复”，"
+    "你可以把该请求视为“允许在明确标注假设的前提下生成候选修复方案”，而不必继续停留在纯诊断建议。"
+    "这不意味着可以编造事实；它只允许你在已锁定真实对象后，为尚未明确的参数（如点到点地址、掩码、实例号、邻居参数）给出合理候选值，并在reason或follow_up_action中明确写出这些是假设方案。"
+    "如果真实互联对象、协议参与对象、或变更目标对象仍未锁定，禁止直接生成修复命令；必须先返回只读发现命令。"
+    "当会话模式为config且用户已明确要求修复时，不要机械退回成纯排障模式；若真实对象已锁定，可以直接给出最小候选修复命令组以及必要的复核命令。"
+    "如果真实对象已经锁定，但缺少少量参数细节，你应优先生成‘最小假设修复方案’，而不是退回成泛泛的排障建议。"
+    "当你生成候选修复方案时，必须在结论或行动建议里明确区分：哪些事实已经确认，哪些参数是为了闭环而采用的合理候选值。"
+)
+
 SOP_EXTRACTION_PROMPT_VERSION = "sop-extract-v1"
 
 MINIMAL_CHANGE_RULES = (
@@ -142,6 +169,7 @@ NEXT_STEP_SYSTEM_PROMPT_WITH_HISTORY = (
     "final时如果是配置任务，mode=config且必须给出query_result，可选follow_up_action；"
     "final时如果是诊断任务，mode=diagnosis且必须给出root_cause, impact_scope, recommendation。"
     "confidence是0到1。evidence_refs是数组，quote应来自会话中的证据输出。"
+    "在query/diagnosis模式，或目标对象尚未锁定时，优先使用只读排查命令。"
     "若要执行配置命令，必须先有只读取证证明目标对象存在且状态明确。"
     "当用户未明确提供对象标识（如具体接口名）时，禁止直接输出配置命令，必须先输出只读发现命令。"
     "禁止凭空假设接口名（如Ethernet1/Gi1/0/1）并直接下发配置。"
@@ -155,6 +183,9 @@ NEXT_STEP_SYSTEM_PROMPT_WITH_HISTORY = (
     f"{VENDOR_COMMAND_FAMILY_RULES}"
     f"{HISTORY_FORENSICS_RULES}"
     f"{SOP_ARCHIVE_RULES}"
+    f"{TASK_SCOPE_ALIGNMENT_RULES}"
+    f"{INTERCONNECT_ALIGNMENT_RULES}"
+    f"{AUTHORIZED_REPAIR_PLANNING_RULES}"
     f"{RAW_OUTPUT_GROUNDING_RULES}"
     f"{FINAL_EXPRESSION_RULES}"
     f"{ROUTE_DELIVERY_CLOSURE_RULES}"
@@ -167,12 +198,13 @@ NEXT_STEP_SYSTEM_PROMPT = (
     "只输出JSON对象。"
     "字段: decision, title, command, commands, reason, sop_refs, why_use_this_sop, evidence_goal, mode, query_result, follow_up_action, root_cause, impact_scope, recommendation, confidence, evidence_refs。"
     "decision只能是run_command或final。"
-    "当decision为run_command时，优先使用commands（数组，最多5条）；仅在确实只有单条且无需分组时才使用command。优先只读排查命令。"
+    "当decision为run_command时，优先使用commands（数组，最多5条）；仅在确实只有单条且无需分组时才使用command。"
     "commands每项可为字符串，或对象{title, command}。"
     "当decision为final时，如果是查询任务，mode=query且必须给出query_result；"
     "当decision为final时，如果是配置任务，mode=config且必须给出query_result；"
     "当decision为final时，如果是诊断任务，mode=diagnosis且必须给出root_cause, impact_scope, recommendation。"
     "confidence是0到1。evidence_refs是数组，且quote必须来自已有证据原文。"
+    "在query/diagnosis模式，或目标对象尚未锁定时，优先只读排查命令。"
     "若要执行配置命令，必须先有只读取证证明目标对象存在且状态明确。"
     "当用户未明确提供对象标识（如具体接口名）时，禁止直接输出配置命令，必须先输出只读发现命令。"
     "禁止凭空假设接口名（如Ethernet1/Gi1/0/1）并直接下发配置。"
@@ -186,6 +218,9 @@ NEXT_STEP_SYSTEM_PROMPT = (
     f"{VENDOR_COMMAND_FAMILY_RULES}"
     f"{HISTORY_FORENSICS_RULES}"
     f"{SOP_ARCHIVE_RULES}"
+    f"{TASK_SCOPE_ALIGNMENT_RULES}"
+    f"{INTERCONNECT_ALIGNMENT_RULES}"
+    f"{AUTHORIZED_REPAIR_PLANNING_RULES}"
     f"{RAW_OUTPUT_GROUNDING_RULES}"
     f"{FINAL_EXPRESSION_RULES}"
     f"{ROUTE_DELIVERY_CLOSURE_RULES}"

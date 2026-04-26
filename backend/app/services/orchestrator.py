@@ -2491,12 +2491,18 @@ class ConversationOrchestrator:
 
     def _append_capability_context_to_ai_context(self, *, session_id: str) -> None:
         session = self.store.get_session(session_id)
-        rules = self.store.list_command_capability_rules(version_signature=session.device.version_signature)
-        enabled_rules = [item for item in rules if bool(getattr(item, "enabled", True))]
+        host_rules = self.store.list_command_capability_rules(host=session.device.host)
+        version_rules = self.store.list_command_capability_rules(version_signature=session.device.version_signature)
+        deduped: dict[str, Any] = {}
+        for item in [*host_rules, *version_rules]:
+            rule_id = str(getattr(item, "id", "") or "")
+            key = rule_id or f"{getattr(item, 'scope_key', '')}|{getattr(item, 'command_key', '')}"
+            deduped[key] = item
+        enabled_rules = [item for item in deduped.values() if bool(getattr(item, "enabled", True))]
         if not enabled_rules:
             return
         lines = [
-            "系统已学习到当前版本的命令能力规则。规划下一轮命令时，优先利用这些规则，避免重复尝试已知不可用命令："
+            "系统已记录当前设备及其版本的命令能力规则。规划下一轮命令时，优先利用这些规则，避免重复尝试已知不可用命令："
         ]
         for rule in enabled_rules[:6]:
             command_text = str(rule.command_key or "").strip()
@@ -3351,7 +3357,7 @@ class ConversationOrchestrator:
         if summary.mode == "config":
             result = summary.query_result or summary.root_cause
             follow = summary.follow_up_action or summary.recommendation
-            return f"配置完成。结果: {result}。后续: {follow}"
+            return f"配置分析结果: {result}。后续: {follow}"
         if interrupted:
             return f"诊断中断。根因判断: {summary.root_cause}。影响范围: {summary.impact_scope}。建议: {summary.recommendation}"
         return f"诊断完成。根因判断: {summary.root_cause}。影响范围: {summary.impact_scope}。建议: {summary.recommendation}"

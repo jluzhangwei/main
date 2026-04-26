@@ -400,46 +400,6 @@ def test_v2_extract_rca_followup_commands_maps_recommendation_to_target_devices(
     ]
 
 
-def test_v2_generate_interface_ip_repair_fallback_builds_pending_groups():
-    job = Job(
-        id="job-repair-fallback",
-        problem="帮我在这两个设备邻居地址配置上IP，让OSPF能起来",
-        mode=JobMode.repair,
-        devices=[
-            JobDevice(id="dev-a", host="192.168.0.83", protocol="ssh", vendor="huawei"),
-            JobDevice(id="dev-b", host="192.168.0.84", protocol="ssh", vendor="huawei"),
-        ],
-        evidences=[
-            JobEvidence(
-                job_id="job-repair-fallback",
-                device_id="dev-a",
-                command_id="cmd-a",
-                category="protocol",
-                raw_output="Interface: 0.0.0.0 (Eth1/0/0)\nCost: 1 State: Down",
-                parsed_data={},
-                conclusion="interface down",
-            ),
-            JobEvidence(
-                job_id="job-repair-fallback",
-                device_id="dev-b",
-                command_id="cmd-b",
-                category="protocol",
-                raw_output="Interface: 0.0.0.0 (Eth1/0/0)\nCost: 1 State: Down",
-                parsed_data={},
-                conclusion="interface down",
-            ),
-        ],
-    )
-    routes.orchestrator_v2._jobs[job.id] = job
-
-    groups = routes.orchestrator_v2._generate_interface_ip_repair_fallback(job.id)
-
-    assert len(groups) == 2
-    assert all(item.status == JobActionGroupStatus.pending_approval for item in groups)
-    assert all(item.requires_approval for item in groups)
-    assert all("ip address" in " ; ".join(item.commands).lower() for item in groups)
-
-
 @pytest.mark.asyncio
 async def test_v2_llm_refine_rca_skips_followup_validation_for_repair_mode(monkeypatch):
     orchestrator = JobV2Orchestrator(InMemoryStore())
@@ -633,7 +593,7 @@ async def test_v2_plan_phase_supplements_missing_repair_facts_before_planning(mo
 
     await orchestrator._plan_phase(job.id)
 
-    assert executed == ["show running-config section ospf"]
+    assert executed == []
 
 
 def test_v2_can_skip_followup_llm_collect_when_repair_facts_are_complete():
@@ -660,7 +620,7 @@ def test_v2_can_skip_followup_llm_collect_when_repair_facts_are_complete():
     assert routes.orchestrator_v2._can_skip_followup_llm_collect(job, "dev-1") is True
 
 
-def test_v2_can_skip_followup_llm_collect_when_missing_facts_have_deterministic_supplement():
+def test_v2_can_skip_followup_llm_collect_is_false_when_followup_signals_are_missing():
     job = Job(
         problem="帮我完成配置，让OSPF up起来",
         mode=JobMode.repair,
@@ -680,13 +640,10 @@ def test_v2_can_skip_followup_llm_collect_when_missing_facts_have_deterministic_
         ]
     )
 
-    assert routes.orchestrator_v2._repair_followup_missing_fact_commands(job) == [
-        (job.devices[0], "补采 OSPF 配置片段", "show running-config section ospf")
-    ]
-    assert routes.orchestrator_v2._can_skip_followup_llm_collect(job, "dev-1") is True
+    assert routes.orchestrator_v2._can_skip_followup_llm_collect(job, "dev-1") is False
 
 
-def test_v2_can_skip_followup_device_collect_when_baseline_and_planning_facts_are_ready():
+def test_v2_can_skip_followup_device_collect_when_baseline_and_planning_signals_are_ready():
     job = Job(
         problem="帮我完成配置，让OSPF up起来",
         mode=JobMode.repair,
@@ -703,10 +660,53 @@ def test_v2_can_skip_followup_device_collect_when_baseline_and_planning_facts_ar
             JobCommandResult(job_id=job.id, device_id="dev-1", step_no=3, title="LLDP邻居", command="show lldp neighbors", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
             JobCommandResult(job_id=job.id, device_id="dev-1", step_no=4, title="OSPF邻居", command="show ip ospf neighbor", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
             JobCommandResult(job_id=job.id, device_id="dev-1", step_no=5, title="OSPF接口摘要", command="show ip ospf interface brief", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=6, title="OSPF配置片段", command="show running-config section ospf", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
         ]
     )
 
     assert routes.orchestrator_v2._can_skip_followup_device_collect(job, "dev-1") is True
+
+
+def test_v2_followup_fact_context_describes_collected_signals_not_confirmed_facts():
+    job = Job(
+        problem="帮我完成配置，让OSPF up起来",
+        mode=JobMode.repair,
+        request_history=[
+            JobRequestTurn(content="先检查 ospf"),
+            JobRequestTurn(content="帮我完成配置，让OSPF up起来"),
+        ],
+        devices=[JobDevice(id="dev-1", host="192.0.2.10", protocol="ssh", vendor="arista")],
+    )
+    job.command_results.extend(
+        [
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=1, title="版本探测", command="show version", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=2, title="权限探测", command="show privilege", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+        ]
+    )
+
+    context = routes.orchestrator_v2._render_followup_fact_context(job, device_id="dev-1")
+
+    assert "当前已确认事实" not in context
+    assert "仅供参考，不直接等于结论" in context
+    assert "版本相关回显" in context
+
+
+def test_v2_build_llm_rca_payload_preserves_problem_context_for_followups():
+    job = Job(
+        problem="你可以随机给出合适的方案，帮我修复一下，使ospf up",
+        mode=JobMode.repair,
+        request_history=[
+            JobRequestTurn(content="两台设备LLDP能发现对方，但是OSPF起不来，帮我看看配置"),
+            JobRequestTurn(content="你可以随机给出合适的方案，帮我修复一下，使ospf up"),
+        ],
+        devices=[JobDevice(id="dev-1", host="192.0.2.10", protocol="ssh", vendor="huawei")],
+    )
+
+    payload = routes.orchestrator_v2._build_llm_rca_payload(job)
+
+    assert payload["job"]["problem_context"]["original_problem"] == "两台设备LLDP能发现对方，但是OSPF起不来，帮我看看配置"
+    assert payload["job"]["problem_context"]["latest_request"] == "你可以随机给出合适的方案，帮我修复一下，使ospf up"
+    assert payload["fact_context"]["collected_signals"] == []
 
 
 @pytest.mark.asyncio
@@ -728,6 +728,7 @@ async def test_v2_collect_device_skips_whole_followup_collect_when_facts_are_rea
             JobCommandResult(job_id=job.id, device_id="dev-1", step_no=3, title="LLDP邻居", command="show lldp neighbors", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
             JobCommandResult(job_id=job.id, device_id="dev-1", step_no=4, title="OSPF邻居", command="show ip ospf neighbor", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
             JobCommandResult(job_id=job.id, device_id="dev-1", step_no=5, title="OSPF接口摘要", command="show ip ospf interface brief", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
+            JobCommandResult(job_id=job.id, device_id="dev-1", step_no=6, title="OSPF配置片段", command="show running-config section ospf", risk_level=RiskLevel.low, status=JobCommandStatus.succeeded),
         ]
     )
     orchestrator._jobs[job.id] = job

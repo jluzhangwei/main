@@ -372,7 +372,7 @@ class CommandCapabilityStore:
             return None
         return self.upsert_rule(
             CommandCapabilityUpsertRequest(
-                scope_type="version",
+                scope_type="device",
                 host=host,
                 protocol=protocol,
                 device_type=device_type,
@@ -404,7 +404,7 @@ class CommandCapabilityStore:
             return None
         return self.upsert_rule(
             CommandCapabilityUpsertRequest(
-                scope_type="version",
+                scope_type="device",
                 host=host,
                 protocol=protocol,
                 device_type=device_type,
@@ -459,6 +459,17 @@ class CommandCapabilityStore:
             return []
 
         candidates: list[str] = []
+        if normalized_host:
+            candidates.append(
+                self.build_scope_key(
+                    scope_type="device",
+                    host=normalized_host,
+                    protocol=protocol_text,
+                    device_type=device_text,
+                    vendor=vendor_text,
+                    version_signature=normalized_signature,
+                )
+            )
         # Try exact match first, then progressively broader partial signatures.
         # Example with 3 tokens: (a|b|c), (a|b), (a|c), (b|c), (a), (b), (c)
         for size in range(len(signature_tokens), 0, -1):
@@ -513,6 +524,8 @@ class CommandCapabilityStore:
         if version_signature:
             normalized_signature = self.normalize_version_signature(version_signature)
             for rule in self._rules_by_key.values():
+                if self.normalize_scope_type(rule.scope_type) != "version":
+                    continue
                 if self.normalize_version_signature(rule.version_signature) == normalized_signature:
                     yield rule
             return

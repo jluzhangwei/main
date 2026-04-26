@@ -5,7 +5,7 @@ import json
 import pytest
 
 from app.models.schemas import CommandExecution, CommandStatus, DeviceProtocol, DeviceTarget, Evidence, RiskLevel, Session
-from app.services.llm_diagnoser import DeepSeekDiagnoser, SOP_EXTRACTION_SYSTEM_PROMPT
+from app.services.llm_diagnoser import DeepSeekDiagnoser, SOP_EXTRACTION_SYSTEM_PROMPT, NEXT_STEP_SYSTEM_PROMPT
 from app.services.llm_planner_bridge import LLMPlannerBridge
 
 
@@ -343,6 +343,14 @@ def test_sop_extraction_prompt_discourages_single_incident_specific_objects():
     assert "fallback_commands" in SOP_EXTRACTION_SYSTEM_PROMPT
     assert "输出最终JSON前，必须进行一次自检" in SOP_EXTRACTION_SYSTEM_PROMPT
     assert "<本端设备>" in SOP_EXTRACTION_SYSTEM_PROMPT
+
+
+def test_next_step_prompt_allows_candidate_repair_plans_when_user_authorizes_scheme_choice():
+    assert "自己给合适方案/随机给方案/直接修复/帮我修复" in NEXT_STEP_SYSTEM_PROMPT
+    assert "最小假设修复方案" in NEXT_STEP_SYSTEM_PROMPT
+    assert "会话模式为config且用户已明确要求修复时，不要机械退回成纯排障模式" in NEXT_STEP_SYSTEM_PROMPT
+    assert "在query/diagnosis模式，或目标对象尚未锁定时，优先只读排查命令" in NEXT_STEP_SYSTEM_PROMPT
+    assert "当前任务设备范围" in NEXT_STEP_SYSTEM_PROMPT
 
 
 def test_next_step_payload_trims_commands_and_long_outputs():
