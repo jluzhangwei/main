@@ -17,7 +17,9 @@ from .task_manager import TaskManager
 def create_app() -> FastAPI:
     base_dir = Path(__file__).resolve().parent.parent
     output_dir = base_dir / "output"
-    shared_dir = base_dir.parent / "service_hub" / "shared"
+    local_shared_dir = base_dir / "shared"
+    legacy_shared_dir = base_dir.parent / "service_hub" / "shared"
+    shared_dir = local_shared_dir if local_shared_dir.is_dir() else legacy_shared_dir
     static_dir = base_dir / "static"
     db_path = base_dir / "tasks.db"
 
