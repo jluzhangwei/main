@@ -1,4 +1,0 @@
-Focus on routing and protocols:
-1. Assess health of BGP/OSPF/NTP/STP
-2. Identify neighbor flaps, convergence anomalies, route missing/leak risks
-3. Provide executable remediation and observability metrics

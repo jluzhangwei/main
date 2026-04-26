@@ -1,5 +1,0 @@
-Provide a full health assessment for this inspection:
-1. Summarize top high-risk issues
-2. Explain business impact for each issue
-3. Provide troubleshooting priority and execution order
-4. Provide post-fix verification items and thresholds

@@ -1,7 +1,0 @@
-.venv/
-.venv310/
-.venv311/
-logs/*.log
-state/auth_db.json
-__pycache__/
-*.pyc
