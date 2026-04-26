@@ -188,6 +188,35 @@
     #ctxMenu .ctx-submenu button {
       margin-top: 4px;
     }
+    #ctxMenu .ctx-subtitle {
+      font-size: 11px;
+      color: #64748b;
+      margin: 6px 0 4px;
+      padding-left: 2px;
+      font-weight: 600;
+    }
+    #ctxMenu .ctx-color-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-bottom: 4px;
+      max-width: 114px;
+    }
+    #ctxMenu .ctx-color-swatch {
+      width: 18px;
+      height: 18px;
+      min-width: 18px;
+      padding: 0;
+      border: 1px solid #cbd5e1;
+      border-radius: 4px;
+      background: #e5e7eb;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+    }
+    #ctxMenu .ctx-color-empty {
+      font-size: 11px;
+      color: #94a3b8;
+      margin: 2px 0 6px;
+    }
     .modal-backdrop {
       position: fixed;
       inset: 0;
@@ -466,7 +495,7 @@
         <datalist id="bizIsolationTermsHistory"></datalist>
         <div class="hint" id="partitionTermsHint">规则与分层一致：逗号分区，斜杠同区 OR，&需全部命中；分区先命中优先，命中后不再参与后续分区。</div>
       </div>
-      <div class="row inline">
+      <div class="row inline hidden">
         <div>
           <label>名称相似聚拢</label>
           <select id="nameClusterMode">
@@ -661,10 +690,23 @@
   <button id="ctxToggleEdgeExpand">展开链路</button>
   <button id="ctxEdgeDesc">添加描述</button>
   <div id="ctxSepEdit" class="ctx-sep"></div>
+  <button id="ctxNodeColor">自定义颜色 ▸</button>
+  <div id="ctxNodeColorSubmenu" class="ctx-submenu">
+    <div id="ctxNodeColorRecentTitle" class="ctx-subtitle">最近使用</div>
+    <div id="ctxNodeColorRecentPalette" class="ctx-color-grid"></div>
+    <div id="ctxNodeColorPresetTitle" class="ctx-subtitle">常用颜色</div>
+    <div id="ctxNodeColorPresetPalette" class="ctx-color-grid"></div>
+    <button id="ctxNodeColorMore">更多颜色...</button>
+    <button id="ctxNodeColorClear">清除颜色</button>
+    <input id="ctxNodeColorPicker" type="color" value="#2563eb" style="display:none;" />
+  </div>
+  <div id="ctxSepColor" class="ctx-sep"></div>
   <button id="ctxPathVia">设为必经点</button>
   <button id="ctxAddLink">增加链路</button>
   <button id="ctxCreateGroup">设备合组</button>
   <button id="ctxToggleGroup">合组展开</button>
+  <button id="ctxRemoveFromGroup">移出节点组</button>
+  <button id="ctxExitGroupView">返回主视图</button>
   <button id="ctxRenameGroup">修改组名</button>
   <div id="ctxSepCopy" class="ctx-sep"></div>
   <button id="ctxCopy">复制名称</button>
@@ -1056,6 +1098,7 @@
     groupKey: '',
     preSnapshot: null
   };
+  let viewScopePositions = { main: {}, scopes: {} };
   let manualCanvasNodes = [];
   const CLOUD_ICON_SVG_URI = 'https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/icons/cloud.svg';
   const INDEX_LITE_MODE = true;
@@ -1090,7 +1133,17 @@
   let ctxCanvasPos = null;
   let pendingAddLinkNodes = [];
   let pendingEdgeDescEdgeIds = [];
+  let nodeColorSubmenuOpen = false;
+  let nodeKeywordColorRules = [];
+  let manualNodeColorMap = new Map();
+  let nodeColorRecentColors = [];
+  let colorNormalizeCanvasCtx = null;
   let addNodeSubmenuOpen = false;
+  const NODE_COLOR_PRESET_VALUES = [
+    '#2563eb', '#0ea5e9', '#14b8a6', '#22c55e', '#84cc16', '#eab308',
+    '#f59e0b', '#f97316', '#ec4899', '#a855f7', '#6366f1', '#64748b'
+  ];
+  const NODE_COLOR_CONFLICT_VALUES = new Set(['#facc15', '#ef4444']);
   // 注册 fCoSE 扩展（兼容不同全局名），避免引用未定义导致脚本中断
 (() => {
     const extFcose = window.cytoscapeFcose || window.cytoFcose || window.fcose || window.fCoSE;
@@ -1224,6 +1277,10 @@
       search_label: '定位设备（逗号分层，斜杠同组，&需全部命中，回车多选）',
       filter_label: '不显示：逗号分层，斜杠同组，&需全部命中，命中的设备会被隐藏',
       show_only_label: '只显示：逗号分层，斜杠同组，&需全部命中，回车生效（仅显示命中的设备，其余隐藏）',
+      node_color_rules_label: '节点颜色规则（关键字:颜色，逗号或换行分隔）',
+      node_color_rules_hint: '规则按顺序匹配；右键手动颜色优先。',
+      btn_apply_node_color_rules: '应用颜色规则',
+      btn_clear_node_color_rules: '清空颜色规则',
       layer_terms_label: '分层关键字（高->低，逗号分层，斜杠同层，&需全部命中，如 EDGE&CORE,CORE,AGGR/SPINE,LEAF/tor）',
       partition_terms_label: '分区关键字（左->右分区，逗号分区，斜杠同区，&需全部命中，如 PAY/SHOP,MGMT&CORE,EDGE）',
       layer_terms_hint: '规则与分区一致：逗号分层，斜杠同层 OR，&需全部命中；若设置了分区，则每个分区内独立执行分层。',
@@ -1238,6 +1295,7 @@
       ctx_copy_link: '复制链路',
       ctx_group_expand: '合组展开',
       ctx_group_collapse: '收起合组',
+      ctx_remove_group_member: '移出节点组',
       ctx_rename_group: '修改组名',
       cluster_strength_label: '近似度强度 0~1',
       spacing_label: '分散强度',
@@ -1308,6 +1366,11 @@
       btn_append_csv: '追加 CSV',
       btn_load_paste: '从粘贴内容载入',
       ctx_path_via: '设为必经点',
+      ctx_node_color: '自定义颜色 ▸',
+      ctx_node_color_recent: '最近使用',
+      ctx_node_color_preset: '常用颜色',
+      ctx_node_color_more: '更多颜色...',
+      ctx_node_color_clear: '清除颜色',
       ctx_add_node: '添加节点 ▸',
       ctx_add_node_regular: '节点',
       ctx_add_node_cloud: 'Cloud',
@@ -1371,6 +1434,10 @@
       search_label: 'Locate Devices (comma=tier, slash=OR group, &=all terms, press Enter for multi-select)',
       filter_label: 'Hide: comma=tier, slash=OR group, &=all terms',
       show_only_label: 'Show Only: comma=tier, slash=OR group, &=all terms, press Enter to apply',
+      node_color_rules_label: 'Node Color Rules (keyword:color, split by comma or newline)',
+      node_color_rules_hint: 'Rules are matched in order; right-click manual color has higher priority.',
+      btn_apply_node_color_rules: 'Apply Color Rules',
+      btn_clear_node_color_rules: 'Clear Color Rules',
       layer_terms_label: 'Layer Keywords (high->low, comma=layer, slash=same layer, &=all terms)',
       btn_single_link: 'Single-Link Nodes',
       btn_exit_group_view: 'Back To Main View',
@@ -1387,6 +1454,7 @@
       ctx_copy_link: 'Copy Link',
       ctx_group_expand: 'Expand Group',
       ctx_group_collapse: 'Collapse Group',
+      ctx_remove_group_member: 'Remove From Group',
       ctx_rename_group: 'Rename Group',
       cluster_strength_label: 'Similarity Strength 0~1',
       spacing_label: 'Dispersion Strength',
@@ -1455,6 +1523,11 @@
       btn_append_csv: 'Append CSV',
       btn_load_paste: 'Load Pasted CSV',
       ctx_path_via: 'Set Via Point',
+      ctx_node_color: 'Custom Color ▸',
+      ctx_node_color_recent: 'Recent',
+      ctx_node_color_preset: 'Preset',
+      ctx_node_color_more: 'More Colors...',
+      ctx_node_color_clear: 'Clear Color',
       ctx_add_node: 'Add Node ▸',
       ctx_add_node_regular: 'Node',
       ctx_add_node_cloud: 'Cloud',
@@ -1629,6 +1702,10 @@
     setParentLabel('search', 'search_label');
     setParentLabel('filter', 'filter_label');
     setParentLabel('showOnly', 'show_only_label');
+    setText('nodeColorRulesLabel', 'node_color_rules_label');
+    setText('nodeColorRulesHint', 'node_color_rules_hint');
+    setText('applyNodeColorRules', 'btn_apply_node_color_rules');
+    setText('clearNodeColorRules', 'btn_clear_node_color_rules');
     setParentLabel('layerTerms', 'layer_terms_label');
     setParentLabel('bizIsolationTerms', 'partition_terms_label');
     setText('layerTermsHint', 'layer_terms_hint');
@@ -1703,6 +1780,11 @@
     setText('ctxUtilRange', 'ctx_util_range');
     setText('ctxEdgeDesc', 'ctx_edge_desc');
     setText('ctxPathVia', 'ctx_path_via');
+    setText('ctxNodeColor', 'ctx_node_color');
+    setText('ctxNodeColorRecentTitle', 'ctx_node_color_recent');
+    setText('ctxNodeColorPresetTitle', 'ctx_node_color_preset');
+    setText('ctxNodeColorMore', 'ctx_node_color_more');
+    setText('ctxNodeColorClear', 'ctx_node_color_clear');
     setText('ctxAddNode', 'ctx_add_node');
     setText('ctxAddNodeRegular', 'ctx_add_node_regular');
     setText('ctxAddNodeCloud', 'ctx_add_node_cloud');
@@ -1712,6 +1794,8 @@
     setText('ctxDeleteLink', 'ctx_delete_link');
     setText('ctxCopyLink', 'ctx_copy_link');
     setText('ctxToggleGroup', 'ctx_group_expand');
+    setText('ctxRemoveFromGroup', 'ctx_remove_group_member');
+    setText('ctxExitGroupView', 'btn_exit_group_view');
     setText('ctxRenameGroup', 'ctx_rename_group');
     setText('addLinkModalTitle', 'add_link_modal_title');
     setText('saveAddLink', 'add_link_save');
@@ -1803,6 +1887,7 @@
     expandedManualGroupKeys = new Set();
     expandedAutoGroupKeys = new Set();
     expandedMergedEdgePairKeys = new Set();
+    clearViewScopePositionState();
     if (cy) cy.elements().removeClass('groupViewHidden');
     updateGroupViewButtonState();
   }
@@ -1813,6 +1898,221 @@
 
   function clearEdgeDescState() {
     edgeDescByKey = new Map();
+  }
+
+  function clearNodeColorState(opts = {}) {
+    manualNodeColorMap = new Map();
+    if (opts.keepRules) return;
+    nodeKeywordColorRules = [];
+    if ($('nodeColorRules')) $('nodeColorRules').value = '';
+  }
+
+  function normalizeCssColorValue(raw) {
+    const value = String(raw || '').trim();
+    if (!value) return '';
+    try {
+      if (window.CSS && typeof window.CSS.supports === 'function' && window.CSS.supports('color', value)) {
+        return value;
+      }
+    } catch (_) {
+      // Ignore CSS.supports errors and fallback to regex checks.
+    }
+    if (/^#[0-9a-f]{3}$/i.test(value) || /^#[0-9a-f]{6}$/i.test(value)) return value;
+    return '';
+  }
+
+  function normalizeColorToken(raw) {
+    const color = normalizeCssColorValue(raw);
+    if (!color) return '';
+    let resolved = '';
+    try {
+      if (!colorNormalizeCanvasCtx) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 1;
+        canvas.height = 1;
+        colorNormalizeCanvasCtx = canvas.getContext('2d');
+      }
+      if (colorNormalizeCanvasCtx) {
+        colorNormalizeCanvasCtx.fillStyle = '#000000';
+        colorNormalizeCanvasCtx.fillStyle = color;
+        resolved = String(colorNormalizeCanvasCtx.fillStyle || '').toLowerCase();
+      }
+    } catch (_) {
+      resolved = '';
+    }
+    if (/^#[0-9a-f]{3}$/i.test(resolved)) {
+      return `#${resolved[1]}${resolved[1]}${resolved[2]}${resolved[2]}${resolved[3]}${resolved[3]}`.toLowerCase();
+    }
+    if (/^#[0-9a-f]{6}$/i.test(resolved)) return resolved.toLowerCase();
+    return color.toLowerCase();
+  }
+
+  function loadNodeColorRecentPrefs() {
+    try {
+      const raw = localStorage.getItem(NODE_COLOR_RECENT_KEY);
+      if (!raw) {
+        nodeColorRecentColors = [];
+        return;
+      }
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) {
+        nodeColorRecentColors = [];
+        return;
+      }
+      nodeColorRecentColors = arr
+        .map((item) => normalizeColorToken(item))
+        .filter(Boolean)
+        .slice(0, 6);
+    } catch (_) {
+      nodeColorRecentColors = [];
+    }
+  }
+
+  function saveNodeColorRecentPrefs() {
+    try {
+      localStorage.setItem(NODE_COLOR_RECENT_KEY, JSON.stringify((nodeColorRecentColors || []).slice(0, 6)));
+    } catch (_) {
+      // Ignore local storage errors.
+    }
+  }
+
+  function renderCtxColorSwatches(containerId, colors) {
+    const box = $(containerId);
+    if (!box) return;
+    box.innerHTML = '';
+    if (!Array.isArray(colors) || !colors.length) {
+      const empty = document.createElement('div');
+      empty.className = 'ctx-color-empty';
+      empty.textContent = '-';
+      box.appendChild(empty);
+      return;
+    }
+    colors.forEach((color) => {
+      const swatch = document.createElement('button');
+      swatch.type = 'button';
+      swatch.className = 'ctx-color-swatch';
+      swatch.setAttribute('data-node-color', color);
+      swatch.title = color;
+      swatch.style.background = color;
+      box.appendChild(swatch);
+    });
+  }
+
+  function renderCtxNodeColorPalette() {
+    renderCtxColorSwatches('ctxNodeColorRecentPalette', nodeColorRecentColors);
+    renderCtxColorSwatches(
+      'ctxNodeColorPresetPalette',
+      NODE_COLOR_PRESET_VALUES.map((c) => normalizeColorToken(c)).filter(Boolean)
+    );
+  }
+
+  function pushRecentNodeColor(color) {
+    const normalized = normalizeColorToken(color);
+    if (!normalized) return;
+    nodeColorRecentColors = [normalized, ...nodeColorRecentColors.filter((item) => item !== normalized)].slice(0, 6);
+    saveNodeColorRecentPrefs();
+    renderCtxNodeColorPalette();
+  }
+
+  function parseNodeKeywordColorRules(raw) {
+    const text = String(raw || '');
+    if (!text.trim()) return { rules: [], invalid: 0 };
+    const chunks = text
+      .split(/[\n,;\uff0c\uff1b]+/g)
+      .map((x) => x.trim())
+      .filter(Boolean);
+    const rules = [];
+    let invalid = 0;
+    chunks.forEach((chunk) => {
+      const m = chunk.match(/^(.+?)\s*[:=\uff1a]\s*(.+)$/);
+      if (!m) {
+        invalid += 1;
+        return;
+      }
+      const keyword = String(m[1] || '').trim();
+      const color = normalizeCssColorValue(m[2]);
+      if (!keyword || !color) {
+        invalid += 1;
+        return;
+      }
+      rules.push({ keyword, color });
+    });
+    return { rules, invalid };
+  }
+
+  function normalizeManualNodeColorEntries(input) {
+    const out = [];
+    if (Array.isArray(input)) {
+      input.forEach((item) => {
+        const id = String(item?.id || '').trim();
+        const color = normalizeCssColorValue(item?.color);
+        if (!id || !color) return;
+        out.push({ id, color });
+      });
+      return out;
+    }
+    if (input && typeof input === 'object') {
+      Object.entries(input).forEach(([idRaw, colorRaw]) => {
+        const id = String(idRaw || '').trim();
+        const color = normalizeCssColorValue(colorRaw);
+        if (!id || !color) return;
+        out.push({ id, color });
+      });
+    }
+    return out;
+  }
+
+  function exportManualNodeColorEntries(visibleNodeIds = null) {
+    const out = [];
+    manualNodeColorMap.forEach((rawColor, rawId) => {
+      const id = String(rawId || '').trim();
+      if (!id) return;
+      if (visibleNodeIds && !visibleNodeIds.has(id)) return;
+      const color = normalizeCssColorValue(rawColor);
+      if (!color) return;
+      out.push({ id, color });
+    });
+    return out;
+  }
+
+  function importManualNodeColorEntries(entries, opts = {}) {
+    const overwrite = !!opts.overwrite;
+    const cleanEntries = normalizeManualNodeColorEntries(entries);
+    cleanEntries.forEach((item) => {
+      if (!overwrite && manualNodeColorMap.has(item.id)) return;
+      manualNodeColorMap.set(item.id, item.color);
+    });
+    return cleanEntries.length;
+  }
+
+  function rebuildNodeKeywordColorRulesFromInput() {
+    const parsed = parseNodeKeywordColorRules($('nodeColorRules')?.value || '');
+    nodeKeywordColorRules = parsed.rules;
+    return parsed;
+  }
+
+  function applyNodeColorCustomizations(opts = {}) {
+    if (!cy) return;
+    const silent = !!opts.silent;
+    cy.nodes().forEach((node) => {
+      node.removeClass('keyword-color manual-color');
+      node.data('keywordColor', '');
+      node.data('manualColor', '');
+      if (node.data('isGroup')) return;
+      if (String(node.data('manualNodeType') || 'node').toLowerCase() === 'cloud') return;
+      const manualColor = normalizeCssColorValue(manualNodeColorMap.get(node.id()));
+      if (manualColor) {
+        node.data('manualColor', manualColor);
+        node.addClass('manual-color');
+      }
+    });
+    const visibleNodeIds = new Set(cy.nodes().map((n) => n.id()));
+    manualNodeColorMap.forEach((_, id) => {
+      if (!visibleNodeIds.has(id)) manualNodeColorMap.delete(id);
+    });
+    if (silent) return;
+    setErr('');
+    setOK(`节点颜色已更新：手动颜色 ${manualNodeColorMap.size} 台。`);
   }
 
   function rebuildDeletedNodeIdsFromStack() {
@@ -1917,6 +2217,7 @@
       ui: {
         filter: $('filter')?.value || '',
         showOnly: $('showOnly')?.value || '',
+        nodeColorRules: $('nodeColorRules')?.value || '',
         layerTerms: $('layerTerms')?.value || '',
         bizIsolationTerms: $('bizIsolationTerms')?.value || '',
         layoutMode: $('layoutMode')?.value || 'layer',
@@ -1937,6 +2238,7 @@
       expandedAutoGroupKeys: Array.from(expandedAutoGroupKeys),
       manualGroups: cloneManualGroups(manualGroups),
       manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes),
+      manualNodeColors: exportManualNodeColorEntries(),
       edgeDescEntries: exportEdgeDescEntries(),
       expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
       expandedMergedEdgePairKeys: Array.from(expandedMergedEdgePairKeys),
@@ -1962,6 +2264,7 @@
 
       if ($('filter')) $('filter').value = snapshot.ui?.filter || '';
       if ($('showOnly')) $('showOnly').value = snapshot.ui?.showOnly || '';
+      if ($('nodeColorRules')) $('nodeColorRules').value = snapshot.ui?.nodeColorRules || '';
       if ($('layerTerms')) $('layerTerms').value = snapshot.ui?.layerTerms || '';
       if ($('bizIsolationTerms')) $('bizIsolationTerms').value = snapshot.ui?.bizIsolationTerms || '';
       if ($('layoutMode')) $('layoutMode').value = snapshot.ui?.layoutMode || 'layer';
@@ -1981,6 +2284,9 @@
       expandedAutoGroupKeys = new Set((snapshot.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
       manualGroups = cloneManualGroups(snapshot.manualGroups || []);
       manualCanvasNodes = cloneManualCanvasNodes(snapshot.manualCanvasNodes || []);
+      manualNodeColorMap = new Map();
+      importManualNodeColorEntries(snapshot.manualNodeColors || [], { overwrite: true });
+      rebuildNodeKeywordColorRulesFromInput();
       importEdgeDescEntries(snapshot.edgeDescEntries || [], false);
       expandedManualGroupKeys = new Set((snapshot.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
       expandedMergedEdgePairKeys = new Set((snapshot.expandedMergedEdgePairKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
@@ -2207,6 +2513,13 @@
     const name = normalizeEntityName(deviceNameOrIp);
     return name ? name.toLowerCase() : '';
   }
+  function sanitizeDeviceNameToken(value) {
+    const s = String(value || '').trim();
+    if (!s) return '';
+    const low = s.toLowerCase();
+    if (['none', 'null', 'n/a', 'na', 'unknown', '-', '--'].includes(low)) return '';
+    return s;
+  }
   function buildUtilKey(deviceNameOrIp, iface, ipHint = '') {
     const ident = inferUtilIdentity(deviceNameOrIp, ipHint);
     const nif = normalizeUtilInterface(iface);
@@ -2343,7 +2656,9 @@
     };
     return {
       colLH: pick('colLocalHost', ['localhostname', 'local_host', 'src', 'from', '源设备名称']),
-      colLI: pick('colLocalIf', ['localinterface', 'local_if', 'src_if', 'from_if', '源设备端口'])
+      colLI: pick('colLocalIf', ['localinterface', 'local_if', 'src_if', 'from_if', '源设备端口']),
+      colRH: pick('colRemoteHost', ['remotehostname', 'remote_host', 'dst', 'to', '目的设备名称']),
+      colRI: pick('colRemoteIf', ['remoteinterface', 'remote_if', 'dst_if', 'to_if', '目的设备端口'])
     };
   }
 
@@ -2535,6 +2850,225 @@
     return pos;
   }
 
+  function normalizePositionMap(posMap) {
+    const out = {};
+    const src = (posMap && typeof posMap === 'object') ? posMap : {};
+    Object.entries(src).forEach(([id, p]) => {
+      const nodeId = String(id || '').trim();
+      if (!nodeId || !p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return;
+      out[nodeId] = { x: Number(p.x), y: Number(p.y) };
+    });
+    return out;
+  }
+
+  function normalizeGroupScopeKey(raw) {
+    const text = String(raw || '').trim();
+    if (!text) return '';
+    if (text.startsWith('group:')) return text.length > 6 ? text : '';
+    return `group:${text}`;
+  }
+
+  function groupScopeKey(groupKey) {
+    return normalizeGroupScopeKey(groupKey);
+  }
+
+  function setMainPositionMap(posMap) {
+    viewScopePositions.main = normalizePositionMap(posMap);
+  }
+
+  function getMainPositionMap() {
+    return normalizePositionMap(viewScopePositions?.main || {});
+  }
+
+  function getScopePositionMap(scopeKey) {
+    const key = normalizeGroupScopeKey(scopeKey);
+    if (!key) return {};
+    const scopes = (viewScopePositions?.scopes && typeof viewScopePositions.scopes === 'object') ? viewScopePositions.scopes : {};
+    return normalizePositionMap(scopes[key] || {});
+  }
+
+  function setScopePositionMap(scopeKey, posMap) {
+    const key = normalizeGroupScopeKey(scopeKey);
+    if (!key) return;
+    const scopes = (viewScopePositions?.scopes && typeof viewScopePositions.scopes === 'object') ? viewScopePositions.scopes : {};
+    const next = normalizePositionMap(posMap);
+    viewScopePositions.scopes = { ...scopes, [key]: next };
+  }
+
+  function clearViewScopePositionState() {
+    viewScopePositions = { main: {}, scopes: {} };
+  }
+
+  function exportViewScopePositions() {
+    const scopesOut = {};
+    const scopes = (viewScopePositions?.scopes && typeof viewScopePositions.scopes === 'object') ? viewScopePositions.scopes : {};
+    Object.entries(scopes).forEach(([rawKey, map]) => {
+      const key = normalizeGroupScopeKey(rawKey);
+      const normalized = normalizePositionMap(map);
+      if (!key || !Object.keys(normalized).length) return;
+      scopesOut[key] = normalized;
+    });
+    return {
+      main: getMainPositionMap(),
+      scopes: scopesOut
+    };
+  }
+
+  function importViewScopePositions(snapshot) {
+    const fallbackMain = normalizePositionMap(snapshot?.positions || {});
+    const raw = (snapshot?.view_scope_positions && typeof snapshot.view_scope_positions === 'object')
+      ? snapshot.view_scope_positions
+      : null;
+    const next = { main: fallbackMain, scopes: {} };
+    if (!raw) {
+      viewScopePositions = next;
+      return;
+    }
+    const explicitMain = normalizePositionMap(raw.main || {});
+    if (Object.keys(explicitMain).length) next.main = explicitMain;
+    const rawScopes = (raw.scopes && typeof raw.scopes === 'object') ? raw.scopes : raw;
+    Object.entries(rawScopes).forEach(([rawKey, map]) => {
+      if (rawKey === 'main' || rawKey === 'scopes') return;
+      const key = normalizeGroupScopeKey(rawKey);
+      const normalized = normalizePositionMap(map);
+      if (!key || !Object.keys(normalized).length) return;
+      next.scopes[key] = normalized;
+    });
+    viewScopePositions = next;
+  }
+
+  function pruneViewScopePositionsByManualGroups() {
+    const valid = new Set(
+      cloneManualGroups(manualGroups)
+        .map((g) => groupScopeKey(g.key))
+        .filter(Boolean)
+    );
+    const scopes = (viewScopePositions?.scopes && typeof viewScopePositions.scopes === 'object') ? viewScopePositions.scopes : {};
+    const kept = {};
+    Object.entries(scopes).forEach(([rawKey, map]) => {
+      const key = normalizeGroupScopeKey(rawKey);
+      if (!key || !valid.has(key)) return;
+      const normalized = normalizePositionMap(map);
+      if (!Object.keys(normalized).length) return;
+      kept[key] = normalized;
+    });
+    viewScopePositions.scopes = kept;
+  }
+
+  function getCurrentViewScopeKey() {
+    if (groupViewState.active && groupViewState.groupKey) {
+      return groupScopeKey(groupViewState.groupKey);
+    }
+    return 'main';
+  }
+
+  function getEffectivePositionsForScope(scopeKey) {
+    const mainPos = getMainPositionMap();
+    const key = String(scopeKey || '').trim();
+    if (!key || key === 'main') return mainPos;
+    return mergePositionMaps(mainPos, getScopePositionMap(key));
+  }
+
+  function ensureGroupScopePositionsInitialized(groupKey, nodeIds = []) {
+    const scopeKey = groupScopeKey(groupKey);
+    if (!scopeKey) return {};
+    const mainPos = getMainPositionMap();
+    const current = getScopePositionMap(scopeKey);
+    let changed = false;
+    const ids = Array.isArray(nodeIds) ? nodeIds.map((id) => String(id || '').trim()).filter(Boolean) : [];
+    ids.forEach((id) => {
+      if (current[id] || !mainPos[id]) return;
+      current[id] = { ...mainPos[id] };
+      changed = true;
+    });
+    if (changed || !Object.keys(getScopePositionMap(scopeKey)).length) {
+      setScopePositionMap(scopeKey, current);
+    }
+    return getScopePositionMap(scopeKey);
+  }
+
+  function samePositionMap(aMap, bMap) {
+    const a = normalizePositionMap(aMap || {});
+    const b = normalizePositionMap(bMap || {});
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    if (aKeys.length !== bKeys.length) return false;
+    for (const id of aKeys) {
+      const ap = a[id];
+      const bp = b[id];
+      if (!bp) return false;
+      if (Math.abs(Number(ap.x) - Number(bp.x)) > 0.01) return false;
+      if (Math.abs(Number(ap.y) - Number(bp.y)) > 0.01) return false;
+    }
+    return true;
+  }
+
+  function manualGroupMemberPositions(groupKey) {
+    const key = String(groupKey || '').trim();
+    if (!key) return {};
+    const group = cloneManualGroups(manualGroups).find((g) => String(g.key || '').trim() === key);
+    if (!group) return {};
+    return normalizePositionMap(group.memberPositions || {});
+  }
+
+  function syncManualGroupMemberPositionsFromCy(groupKey, opts = {}) {
+    if (!cy) return false;
+    const key = String(groupKey || '').trim();
+    if (!key) return false;
+    const onlyVisible = opts.onlyVisible !== false;
+    const nodeMap = {};
+    const nodes = onlyVisible ? cy.nodes(':visible') : cy.nodes();
+    nodes.forEach((n) => {
+      if (n.data('isGroup')) return;
+      const p = n.position();
+      if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return;
+      nodeMap[n.id()] = { x: Number(p.x), y: Number(p.y) };
+    });
+
+    let changed = false;
+    manualGroups = cloneManualGroups(manualGroups).map((group) => {
+      if (String(group.key || '').trim() !== key) return group;
+      const members = Array.isArray(group.members)
+        ? group.members.map((id) => String(id || '').trim()).filter(Boolean)
+        : [];
+      const prev = normalizePositionMap(group.memberPositions || {});
+      const next = {};
+      members.forEach((id) => {
+        if (nodeMap[id]) {
+          next[id] = { ...nodeMap[id] };
+        } else if (prev[id]) {
+          next[id] = { ...prev[id] };
+        }
+      });
+      if (!changed && !samePositionMap(prev, next)) changed = true;
+      return { ...group, memberPositions: next };
+    });
+    return changed;
+  }
+
+  function persistCurrentViewScopePositionsFromCy(opts = {}) {
+    if (!cy) return;
+    const forceMain = !!opts.forceMain;
+    const onlyVisible = opts.onlyVisible !== false;
+    const activeScopeKey = (!forceMain && groupViewState.active && groupViewState.groupKey)
+      ? groupScopeKey(groupViewState.groupKey)
+      : '';
+    if (!activeScopeKey) {
+      setMainPositionMap(capturePositions());
+      return;
+    }
+    const next = getScopePositionMap(activeScopeKey);
+    const nodes = onlyVisible ? cy.nodes(':visible') : cy.nodes();
+    nodes.forEach((n) => {
+      const p = n.position();
+      if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return;
+      next[n.id()] = { x: Number(p.x), y: Number(p.y) };
+    });
+    setScopePositionMap(activeScopeKey, next);
+    const activeGroupKey = String(groupViewState.groupKey || '').trim();
+    if (activeGroupKey) syncManualGroupMemberPositionsFromCy(activeGroupKey, { onlyVisible });
+  }
+
   function applyPositions(posMap, opts = {}) {
     if (!cy || !posMap) return;
     cy.nodes().forEach(n => {
@@ -2686,6 +3220,8 @@
         colRemoteHost: $('colRemoteHost')?.value || '',
         colLocalIf: $('colLocalIf')?.value || '',
         colRemoteIf: $('colRemoteIf')?.value || '',
+        nodeColorRulesText: $('nodeColorRules')?.value || '',
+        manualNodeColors: exportManualNodeColorEntries(visibleNodeIds),
         edgeDescriptions: visibleEdgeDescEntries(visibleEdges),
         manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes).filter((node) => visibleNodeIds.has(node.id)),
         manualGroups: visibleManualGroups,
@@ -2702,6 +3238,7 @@
     clearGroupState();
     clearManualCanvasState();
     clearEdgeDescState();
+    clearNodeColorState({ keepRules: true });
     resetViewState();
     const parsed = parseCSV(text);
     headers = parsed.headers;
@@ -2800,6 +3337,7 @@
       clearDeleteState();
       clearGroupState();
       clearEdgeDescState();
+      clearNodeColorState({ keepRules: true });
       resetViewState();
       headers = [];
       sourceRows = [];
@@ -2912,6 +3450,8 @@
       { selector: 'node[role = "AGGR"]', style: { 'background-color': '#2563eb' } },
       { selector: 'node[role = "TOR"]',  style: { 'background-color': '#059669' } },
       { selector: 'node[role = "OTHER"]',style: { 'background-color': '#6b7280' } },
+      { selector: 'node.keyword-color', style: { 'background-color': 'data(keywordColor)' } },
+      { selector: 'node.manual-color', style: { 'background-color': 'data(manualColor)' } },
       {
         selector: 'node.manual-group-node',
         style: {
@@ -3353,6 +3893,7 @@
       members: info.members.slice(),
       memberPositions: { ...(info.memberPositions || {}) }
     }));
+    pruneViewScopePositionsByManualGroups();
     const manualGroupKeys = new Set(manualGroups.map((g) => g.key));
     expandedManualGroupKeys = new Set(Array.from(expandedManualGroupKeys).filter((key) => manualGroupKeys.has(key)));
     nodes.forEach((n) => {
@@ -3443,6 +3984,7 @@
 
     // 根据分层关键字重新标记角色/层级
     applyLayersToNodes(cy.nodes());
+    applyNodeColorCustomizations({ silent: true });
 
     // 如果保留坐标，则先应用并锁定，布局后再解锁
     if (hasKeep) {
@@ -3668,10 +4210,7 @@
       if (!silent) setOK('已清空过滤，全部显示。');
       return;
     }
-    const nodeHits = cy.nodes().filter(n => {
-      const label = (n.data('label') || '');
-      return matchExpressionInName(label, expr);
-    });
+    const nodeHits = findNodesByExpression(expr);
     nodeHits.addClass('filtered');
     cy.edges().forEach(e => {
       if (e.source().hasClass('filtered') || e.target().hasClass('filtered')) e.addClass('filtered');
@@ -3688,10 +4227,7 @@
       if (!silent) setOK('已取消“只显示”过滤，全部显示。');
       return;
     }
-    const hits = cy.nodes().filter(n => {
-      const label = (n.data('label') || '');
-      return matchExpressionInName(label, expr);
-    });
+    const hits = findNodesByExpression(expr);
     const hideNodes = cy.nodes().not(hits);
     hideNodes.addClass('onlyHidden');
     cy.edges().forEach(e => {
@@ -3749,6 +4285,7 @@
     };
 
     const core = cy.nodes().filter(n => {
+      if (n.data('isGroup')) return false;
       const resolvedIp = resolveNodeIpv4(n);
       return resolvedIp.startsWith('172.');
     });
@@ -3756,7 +4293,7 @@
       if (!silent) setErr('未找到172地址节点');
       return;
     }
-    const hideNodes = cy.nodes().not(core);
+    const hideNodes = cy.nodes().filter((n) => !n.data('isGroup')).not(core);
     hideNodes.addClass('onlyHidden');
     cy.edges().forEach((e) => {
       const sHidden = e.source().hasClass('onlyHidden');
@@ -3764,7 +4301,7 @@
       if (sHidden || tHidden) e.addClass('onlyHidden');
       else e.removeClass('onlyHidden');
     });
-    if (!silent) setOK(`只显示172设备：${core.length} 个（192/无IP已隐藏）`);
+    if (!silent) setOK(`只显示172设备：${core.length} 个（节点组不参与，192/无IP已隐藏）`);
   }
 
   function applyFilter() {
@@ -3790,16 +4327,16 @@
 
   function parseTierExpression(raw) {
     return String(raw || '')
-      .split(/[,\uff0c]+/g)
-      .map(seg => seg.trim())
+      .split(/[,\uff0c\u3001;\uff1b]+/g)
+      .map(seg => normalizeMatchToken(seg))
       .filter(Boolean)
       .map(seg => {
         // "/" = 同组 OR；"&" = AND 都需命中
-        const clauses = seg.split(/[\/\uff0f]/g)
-          .map(part => part.trim())
+        const clauses = seg.split(/[\/\uff0f|｜]+/g)
+          .map(part => normalizeMatchToken(part))
           .filter(Boolean)
-          .map(part => part.split(/[&\uff06]/g)
-            .map(t => t.trim().toLowerCase())
+          .map(part => part.split(/[&\uff06+＋]/g)
+            .map(t => normalizeMatchToken(t))
             .filter(Boolean)
           )
           .filter(arr => arr.length);
@@ -3813,18 +4350,18 @@
     if (!Array.isArray(expr)) return [];
     return expr.map((tier) => {
       if (typeof tier === 'string') {
-        const t = tier.trim().toLowerCase();
+        const t = normalizeMatchToken(tier);
         return t ? [[t]] : [];
       }
       if (!Array.isArray(tier)) return [];
       return tier.map((clause) => {
         if (typeof clause === 'string') {
-          const t = clause.trim().toLowerCase();
+          const t = normalizeMatchToken(clause);
           return t ? [t] : [];
         }
         if (!Array.isArray(clause)) return [];
         return clause
-          .map((term) => String(term || '').trim().toLowerCase())
+          .map((term) => normalizeMatchToken(term))
           .filter(Boolean);
       }).filter((clause) => clause.length);
     }).filter((tier) => tier.length);
@@ -3850,15 +4387,39 @@
     )).join(', ');
   }
 
+  function normalizeMatchText(v) {
+    let text = String(v || '');
+    try {
+      text = text.normalize('NFKC');
+    } catch (_) {
+      // ignore
+    }
+    return text
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .replace(/[\u2010-\u2015\u2212]/g, '-')
+      .replace(/[“”]/g, '"')
+      .replace(/[‘’]/g, "'")
+      .replace(/\u3000/g, ' ')
+      .replace(/\s+/g, ' ')
+      .toLowerCase();
+  }
+
+  function normalizeMatchToken(v) {
+    return normalizeMatchText(v).trim();
+  }
+
   function compactMatchText(v) {
-    return String(v || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '');
+    const normalized = normalizeMatchText(v);
+    try {
+      return normalized.replace(new RegExp('[^\\p{L}\\p{N}]+', 'gu'), '');
+    } catch (_) {
+      return normalized.replace(/[^a-z0-9\u4e00-\u9fff]+/g, '');
+    }
   }
 
   function matchTermInName(nameText, termText) {
-    const name = String(nameText || '').toLowerCase();
-    const term = String(termText || '').toLowerCase().trim();
+    const name = normalizeMatchText(nameText);
+    const term = normalizeMatchToken(termText);
     if (!term) return false;
     if (name.includes(term)) return true;
     const cName = compactMatchText(name);
@@ -3874,6 +4435,39 @@
       if (hit) return i;
     }
     return -1;
+  }
+
+  function nodeMatchTexts(node) {
+    if (!node || !node.length || typeof node.data !== 'function') return [];
+    const out = [];
+    const pushText = (value) => {
+      const text = String(value || '').trim();
+      if (!text) return;
+      if (!out.includes(text)) out.push(text);
+    };
+    pushText(node.data('label'));
+    pushText(node.data('short'));
+    pushText(node.data('labelIp'));
+    const entityKey = String(node.data('entityKey') || '').trim();
+    pushText(entityKey);
+    if (entityKey.startsWith('name:')) pushText(entityKey.slice(5));
+    if (entityKey.startsWith('ip:')) pushText(entityKey.slice(3));
+    const groupLabels = Array.isArray(node.data('groupLabels')) ? node.data('groupLabels') : [];
+    groupLabels.forEach((label) => pushText(label));
+    return out;
+  }
+
+  function findNodesByExpression(expr) {
+    if (!cy) return cy ? cy.collection() : [];
+    const normalizedExpr = normalizeMatchExpression(expr);
+    return cy.nodes().filter((n) => nodeMatchesExpression(n, normalizedExpr));
+  }
+
+  function nodeMatchesExpression(node, expr) {
+    const texts = nodeMatchTexts(node);
+    if (!texts.length) return false;
+    const normalizedExpr = normalizeMatchExpression(expr);
+    return texts.some((text) => matchExpressionInName(text, normalizedExpr));
   }
 
   function parseLayers() {
@@ -4042,6 +4636,58 @@
     return s.split(/\s+/).filter(Boolean);
   }
 
+  function removeSharedPrefixTokens(aTokens, bTokens) {
+    const a = Array.isArray(aTokens) ? aTokens : [];
+    const b = Array.isArray(bTokens) ? bTokens : [];
+    let i = 0;
+    const max = Math.min(a.length, b.length);
+    while (i < max && a[i] === b[i]) i += 1;
+    return { a: a.slice(i), b: b.slice(i), shared: i };
+  }
+
+  function weightedOrderedTokenSimilarity(aTokens, bTokens) {
+    const a = Array.isArray(aTokens) ? aTokens : [];
+    const b = Array.isArray(bTokens) ? bTokens : [];
+    if (!a.length && !b.length) return 1;
+    const maxLen = Math.max(a.length, b.length);
+    if (!maxLen) return 0;
+    let hitWeight = 0;
+    let totalWeight = 0;
+    for (let i = 0; i < maxLen; i++) {
+      // Left-most token is more important than right-most token.
+      const weight = (maxLen - i) / maxLen;
+      totalWeight += weight;
+      if (a[i] && b[i] && a[i] === b[i]) hitWeight += weight;
+    }
+    return totalWeight > 0 ? hitWeight / totalWeight : 0;
+  }
+
+  function detectPlaneToken(tokens) {
+    const list = Array.isArray(tokens) ? tokens : [];
+    const alias = new Map([
+      ['lan', 'lan'],
+      ['wan', 'wan'],
+      ['oob', 'oob'],
+      ['mgmt', 'mgmt'],
+      ['management', 'mgmt'],
+      ['mgt', 'mgmt']
+    ]);
+    for (const token of list) {
+      const key = String(token || '').toLowerCase();
+      if (alias.has(key)) return alias.get(key);
+    }
+    return '';
+  }
+
+  function detectRingNumber(tokens) {
+    const list = Array.isArray(tokens) ? tokens : [];
+    for (const token of list) {
+      const m = String(token || '').match(/^r0*(\d{1,4})$/i);
+      if (m) return Number(m[1]);
+    }
+    return null;
+  }
+
   function commonPrefixLength(a, b) {
     const aa = String(a || '');
     const bb = String(b || '');
@@ -4059,17 +4705,30 @@
 
     const aTokens = tokenizeNameForSimilarity(a);
     const bTokens = tokenizeNameForSimilarity(b);
-    const aSet = new Set(aTokens);
-    const bSet = new Set(bTokens);
-    let inter = 0;
-    aSet.forEach((t) => { if (bSet.has(t)) inter += 1; });
-    const union = new Set([...aSet, ...bSet]).size || 1;
-    const tokenScore = inter / union;
+    const trimmed = removeSharedPrefixTokens(aTokens, bTokens);
+    const ax = trimmed.a;
+    const bx = trimmed.b;
+    let score = weightedOrderedTokenSimilarity(ax, bx);
 
-    const prefix = commonPrefixLength(a, b);
-    const prefixScore = prefix / Math.max(a.length, b.length, 1);
-    const firstTokenBonus = (aTokens[0] && bTokens[0] && aTokens[0] === bTokens[0]) ? 0.12 : 0;
-    return clamp01(tokenScore * 0.6 + prefixScore * 0.4 + firstTokenBonus);
+    const aPlane = detectPlaneToken(ax);
+    const bPlane = detectPlaneToken(bx);
+    if (aPlane && bPlane) {
+      if (aPlane === bPlane) score += 0.2;
+      else score -= 0.35;
+    }
+
+    const aRing = detectRingNumber(ax);
+    const bRing = detectRingNumber(bx);
+    if (aRing != null && bRing != null) {
+      const closeness = 1 / (1 + Math.abs(aRing - bRing));
+      score += ((aPlane && bPlane && aPlane === bPlane) ? 0.12 : 0.04) * closeness;
+    }
+
+    if (ax[0] && bx[0]) {
+      if (ax[0] === bx[0]) score += 0.08;
+      else score -= 0.08;
+    }
+    return clamp01(score);
   }
 
   function labelByIdForOrdering(nameById, id) {
@@ -4644,6 +5303,21 @@
     setOK(`已重排选中设备：${scopeNodes.length} 个（仅调整选中节点，不影响其他节点和当前数据）。`);
   }
 
+  function buildTopologyForCurrentContext() {
+    if (groupViewState.active && cy) {
+      const scopeNodes = cy.nodes(':visible');
+      if (!scopeNodes.length) {
+        setErr('当前组视图没有可重排节点。');
+        return;
+      }
+      runLayout(scopeNodes, { selectedOnly: true, adjustViewport: false });
+      setStatus('组视图内拓扑已重排');
+      setOK(`已在组视图内重排 ${scopeNodes.length} 个节点（仅组视图范围生效，不影响主视图其他节点）。`);
+      return;
+    }
+    buildGraph();
+  }
+
   function removeLinkRowsByEdgeKeys(edgeKeys) {
     const kill = new Set((edgeKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     if (!kill.size) return 0;
@@ -4689,11 +5363,12 @@
   }
 
   function captureGroupViewBaseSnapshot() {
+    persistCurrentViewScopePositionsFromCy({ forceMain: true });
     return {
       headers: headers.slice(),
       sourceRows: cloneRows(sourceRows),
       rawRows: cloneRows(rawRows),
-      positions: capturePositions(),
+      positions: getEffectivePositionsForScope('main'),
       deletedStack: deletedStack.map((x) => (Array.isArray(x) ? x.slice() : [])),
       viewState: {
         filterTerms: cloneMatchExpression(viewState.filterTerms),
@@ -4703,6 +5378,7 @@
       ui: {
         filter: $('filter')?.value || '',
         showOnly: $('showOnly')?.value || '',
+        nodeColorRulesText: $('nodeColorRules')?.value || '',
         layerTerms: $('layerTerms')?.value || '',
         bizIsolationTerms: $('bizIsolationTerms')?.value || '',
         layoutMode: $('layoutMode')?.value || 'layer',
@@ -4730,12 +5406,10 @@
   }
 
   function restoreGroupViewBaseSnapshot(snapshot) {
-    if (!snapshot || !Array.isArray(snapshot.headers)) return false;
-    headers = snapshot.headers.slice();
-    sourceRows = cloneRows(snapshot.sourceRows || []);
-    rawRows = cloneRows(snapshot.rawRows || []);
-    deletedStack = (snapshot.deletedStack || []).map((x) => (Array.isArray(x) ? x.slice() : []));
-    rebuildDeletedNodeIdsFromStack();
+    if (!snapshot) return false;
+    const snapshotPositions = normalizePositionMap(snapshot.positions || {});
+    if (Object.keys(snapshotPositions).length) setMainPositionMap(snapshotPositions);
+    const restorePositions = getEffectivePositionsForScope('main');
     viewState.filterTerms = cloneMatchExpression(snapshot.viewState?.filterTerms || []);
     viewState.onlyMode = snapshot.viewState?.onlyMode || 'none';
     viewState.onlyTerms = cloneMatchExpression(snapshot.viewState?.onlyTerms || []);
@@ -4754,7 +5428,6 @@
     if ($('autoGroupMode')) $('autoGroupMode').value = snapshot.ui?.autoGroupMode || 'off';
     if ($('nameClusterStrength')) $('nameClusterStrength').value = snapshot.ui?.nameClusterStrength || '0.6';
     expandedAutoGroupKeys = new Set((snapshot.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
-    manualGroups = cloneManualGroups(snapshot.manualGroups || []);
     expandedManualGroupKeys = new Set((snapshot.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     expandedMergedEdgePairKeys = new Set((snapshot.expandedMergedEdgePairKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     $('nRows').textContent = rawRows.length;
@@ -4769,9 +5442,8 @@
       if (snapshot.ui?.colLocalIf && headers.includes(snapshot.ui.colLocalIf)) $('colLocalIf').value = snapshot.ui.colLocalIf;
       if (snapshot.ui?.colRemoteIf && headers.includes(snapshot.ui.colRemoteIf)) $('colRemoteIf').value = snapshot.ui.colRemoteIf;
     }
-    const pos = snapshot.positions || {};
-    buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
-    applyPositions(pos);
+    buildGraph(restorePositions, { keepExactPositions: true, adjustViewport: false });
+    applyPositions(restorePositions, { fitView: false });
     if (cy && snapshot.pan && Number.isFinite(snapshot.zoom)) {
       cy.zoom(Number(snapshot.zoom));
       cy.pan(snapshot.pan);
@@ -4783,6 +5455,7 @@
         if (n && n.length) n.select();
       });
     }
+    persistCurrentViewScopePositionsFromCy({ forceMain: true });
     return true;
   }
 
@@ -4841,17 +5514,27 @@
     if (!cy) return;
     const key = String(groupKey || '').trim();
     if (!key) return;
+    if (groupViewState.active && groupViewState.groupKey && groupViewState.groupKey !== key) {
+      persistCurrentViewScopePositionsFromCy();
+    }
     if (!groupViewState.active) {
       groupViewState.preSnapshot = captureGroupViewBaseSnapshot();
     }
-    const pos = capturePositions();
+    persistCurrentViewScopePositionsFromCy({ forceMain: true });
+    const mainPositions = getEffectivePositionsForScope('main');
     expandedManualGroupKeys.add(key);
-    buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
+    buildGraph(mainPositions, { keepExactPositions: true, adjustViewport: false });
     const scope = computeManualGroupViewScope(key);
     if (!scope) {
       setErr('进入组视图失败：未找到组成员或一跳邻接。');
       return;
     }
+    ensureGroupScopePositionsInitialized(key, scope.scopeNodeIds || []);
+    const scopedPositions = mergePositionMaps(
+      getEffectivePositionsForScope(groupScopeKey(key)),
+      manualGroupMemberPositions(key)
+    );
+    applyPositions(scopedPositions, { fitView: false });
     applyGroupViewFilter(scope);
     setStatus(`已进入组视图：${scope.memberNodeIds.length} 台组内设备，${Math.max(0, scope.scopeNodeIds.length - scope.memberNodeIds.length)} 台邻接设备`);
     setOK('组视图已启用。当前工具继续作用于组内设备和其一跳邻接设备。');
@@ -4859,6 +5542,7 @@
 
   function exitGroupView() {
     if (!groupViewState.active) return;
+    persistCurrentViewScopePositionsFromCy();
     const snap = groupViewState.preSnapshot;
     groupViewState = { active: false, groupKey: '', preSnapshot: null };
     if (snap) restoreGroupViewBaseSnapshot(snap);
@@ -5083,7 +5767,7 @@
   }
 
   function normalizePathName(text) {
-    return String(text || '').trim().toLowerCase();
+    return normalizeMatchToken(text);
   }
 
   function resolvePathNodeId(name) {
@@ -5105,7 +5789,7 @@
   }
 
   function parseViaNodeNames(value) {
-    return String(value || '').split(',').map((part) => part.trim()).filter(Boolean);
+    return String(value || '').split(/[,\uff0c\u3001;\uff1b]+/g).map((part) => part.trim()).filter(Boolean);
   }
 
   function buildVisibleAdjacency() {
@@ -5358,13 +6042,47 @@
 
   // 右键菜单
   let ctxTarget = null;
+  let ctxMenuAnchor = null;
+  function positionCtxMenuFromAnchor() {
+    const menu = $('ctxMenu');
+    if (!menu) return;
+    menu.style.display = 'block';
+    if (!ctxMenuAnchor || !Number.isFinite(ctxMenuAnchor.x) || !Number.isFinite(ctxMenuAnchor.y)) {
+      menu.style.visibility = 'visible';
+      return;
+    }
+    const margin = 8;
+    menu.style.visibility = 'hidden';
+    menu.style.left = '0px';
+    menu.style.top = '0px';
+    const rect = menu.getBoundingClientRect();
+    const width = Math.max(1, Math.ceil(rect.width || 0));
+    const height = Math.max(1, Math.ceil(rect.height || 0));
+    const vw = Math.max(0, Number(window.innerWidth || document.documentElement?.clientWidth || 0));
+    const vh = Math.max(0, Number(window.innerHeight || document.documentElement?.clientHeight || 0));
+    let left = Number(ctxMenuAnchor.x);
+    let top = Number(ctxMenuAnchor.y);
+    if (left + width + margin > vw) left -= width;
+    if (top + height + margin > vh) top -= height;
+    const maxLeft = Math.max(margin, vw - width - margin);
+    const maxTop = Math.max(margin, vh - height - margin);
+    left = Math.min(Math.max(margin, left), maxLeft);
+    top = Math.min(Math.max(margin, top), maxTop);
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
+    menu.style.visibility = 'visible';
+  }
   function hideCtx() {
     const menu = $('ctxMenu');
     menu.style.display = 'none';
+    menu.style.visibility = 'visible';
     ctxTarget = null;
+    ctxMenuAnchor = null;
     ctxCanvasPos = null;
     addNodeSubmenuOpen = false;
+    nodeColorSubmenuOpen = false;
     if ($('ctxAddNodeSubmenu')) $('ctxAddNodeSubmenu').style.display = 'none';
+    if ($('ctxNodeColorSubmenu')) $('ctxNodeColorSubmenu').style.display = 'none';
   }
 
   function ctxNodes() {
@@ -5380,6 +6098,44 @@
     if (sel.length) return sel;
     if (ctxTarget && typeof ctxTarget.isEdge === 'function' && ctxTarget.isEdge()) return ctxTarget.collection();
     return cy.collection();
+  }
+
+  function ctxColorableNodes() {
+    return ctxNodes().filter((n) => !n.data('isGroup') && String(n.data('manualNodeType') || 'node').toLowerCase() !== 'cloud');
+  }
+
+  function applyCtxNodeColor(color, opts = {}) {
+    const clear = !!opts.clear;
+    const nodes = ctxColorableNodes();
+    if (!nodes.length) {
+      setOK('请先选中要着色的节点。');
+      return false;
+    }
+    const normalizedColor = clear ? '' : normalizeCssColorValue(color);
+    if (!clear && !normalizedColor) {
+      setErr('颜色格式无效，请输入 #RRGGBB、#RGB 或浏览器支持的颜色名。');
+      return false;
+    }
+    runWithRollback(() => {
+      if (clear) {
+        nodes.forEach((n) => manualNodeColorMap.delete(n.id()));
+      } else {
+        nodes.forEach((n) => manualNodeColorMap.set(n.id(), normalizedColor));
+        pushRecentNodeColor(normalizedColor);
+      }
+      applyNodeColorCustomizations({ silent: true, skipParse: true });
+      saveTopologyUiPrefs();
+      schedulePersistCurrentPageSession(120);
+      setErr('');
+      if (clear) {
+        setOK(`已清除 ${nodes.length} 台节点的手动颜色。`);
+      } else {
+        const normalizedToken = normalizeColorToken(normalizedColor);
+        const conflict = NODE_COLOR_CONFLICT_VALUES.has(normalizedToken);
+        setOK(`已为 ${nodes.length} 台节点设置颜色：${normalizedToken || normalizedColor}${conflict ? '（提示：该颜色可能与组节点/单链路节点冲突）' : ''}`);
+      }
+    }, { delayMs: 0 });
+    return true;
   }
 
   function nextManualCanvasLabel(kind = 'node') {
@@ -5452,6 +6208,93 @@
 
   function ctxDeviceNodes() {
     return ctxNodes().filter((n) => !n.data('isGroup'));
+  }
+
+  function selectedNodesForGrouping() {
+    if (!cy) {
+      return {
+        selectedCount: 0,
+        groupNodeCount: 0,
+        memberIds: [],
+        memberPositions: {},
+        preferredLabel: ''
+      };
+    }
+    const selected = ctxNodes()
+      .filter((n) => n && typeof n.isNode === 'function' && n.isNode())
+      .toArray();
+    const memberSet = new Set();
+    const memberLabels = new Map();
+    const memberPositions = {};
+    const selectedGroupNodes = [];
+
+    selected.forEach((node) => {
+      const isGroupNode = !!node.data('isGroup');
+      if (!isGroupNode) {
+        const id = String(node.id() || '').trim();
+        if (!id) return;
+        memberSet.add(id);
+        const label = String(node.data('label') || id).trim();
+        if (label) memberLabels.set(id, label);
+        const p = node.position();
+        if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) memberPositions[id] = { x: Number(p.x), y: Number(p.y) };
+        return;
+      }
+
+      selectedGroupNodes.push(node);
+      const groupMembers = (Array.isArray(node.data('groupMembers')) ? node.data('groupMembers') : [])
+        .map((id) => String(id || '').trim())
+        .filter(Boolean);
+      const groupLabels = (Array.isArray(node.data('groupLabels')) ? node.data('groupLabels') : [])
+        .map((label) => String(label || '').trim());
+      groupMembers.forEach((id, idx) => {
+        memberSet.add(id);
+        const label = groupLabels[idx];
+        if (label) memberLabels.set(id, label);
+      });
+
+      const groupKind = String(node.data('groupKind') || (node.data('isManualGroup') ? 'manual' : '') || '').trim();
+      const groupKey = String(node.data('groupKey') || node.data('manualGroupKey') || '').trim();
+      if (groupKind === 'manual' && groupKey) {
+        const group = cloneManualGroups(manualGroups).find((g) => String(g.key || '').trim() === groupKey);
+        if (group) {
+          (group.members || []).forEach((id) => {
+            const memberId = String(id || '').trim();
+            if (memberId) memberSet.add(memberId);
+          });
+          Object.entries(group.memberPositions || {}).forEach(([id, p]) => {
+            if (!memberSet.has(String(id || '').trim())) return;
+            if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) memberPositions[String(id || '').trim()] = { x: Number(p.x), y: Number(p.y) };
+          });
+        }
+      }
+    });
+
+    const memberIds = Array.from(memberSet);
+    memberIds.forEach((id) => {
+      if (memberLabels.has(id)) return;
+      const n = cy.getElementById(id);
+      if (n && n.length && !n.data('isGroup')) {
+        memberLabels.set(id, String(n.data('label') || id).trim() || id);
+      } else {
+        memberLabels.set(id, id);
+      }
+    });
+
+    const selectedGroupLabels = selectedGroupNodes
+      .map((n) => String(n.data('label') || '').trim())
+      .filter(Boolean);
+    const preferredLabel = selectedGroupLabels.length === 1
+      ? selectedGroupLabels[0]
+      : buildGroupLabelFromMany(memberIds.map((id) => memberLabels.get(id) || id));
+
+    return {
+      selectedCount: selected.length,
+      groupNodeCount: selectedGroupLabels.length,
+      memberIds,
+      memberPositions,
+      preferredLabel: String(preferredLabel || '').trim()
+    };
   }
 
   function selectedNodesForManualLink() {
@@ -5807,6 +6650,50 @@
       return { ...group, label };
     });
     return changed;
+  }
+
+  function removeNodeFromManualGroup(nodeId, groupKey = '') {
+    const cleanNodeId = String(nodeId || '').trim();
+    const cleanGroupKey = String(groupKey || '').trim();
+    if (!cleanNodeId) return null;
+    let changed = false;
+    let removedGroupKey = '';
+    let remainingMembers = 0;
+    let dissolved = false;
+    const rebuilt = [];
+    cloneManualGroups(manualGroups).forEach((group) => {
+      const key = String(group.key || '').trim();
+      const members = Array.from(new Set((group.members || []).map((id) => String(id || '').trim()).filter(Boolean)));
+      const hit = members.includes(cleanNodeId) && (!cleanGroupKey || key === cleanGroupKey);
+      if (!hit) {
+        if (members.length >= 2) rebuilt.push({ ...group, members: members.slice() });
+        return;
+      }
+      changed = true;
+      removedGroupKey = key;
+      const leftMembers = members.filter((id) => id !== cleanNodeId);
+      if (leftMembers.length >= 2) {
+        const leftPositions = {};
+        leftMembers.forEach((id) => {
+          const p = group.memberPositions && group.memberPositions[id];
+          if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) leftPositions[id] = { x: Number(p.x), y: Number(p.y) };
+        });
+        rebuilt.push({ key, label: group.label, members: leftMembers, memberPositions: leftPositions });
+        remainingMembers = leftMembers.length;
+        dissolved = false;
+      } else {
+        remainingMembers = leftMembers.length;
+        dissolved = true;
+      }
+    });
+    if (!changed) return null;
+    manualGroups = rebuilt;
+    if (removedGroupKey && dissolved) expandedManualGroupKeys.delete(removedGroupKey);
+    return {
+      groupKey: removedGroupKey,
+      remainingMembers,
+      dissolved
+    };
   }
 
   function formatEdgePortLabel(edge) {
@@ -6847,7 +7734,7 @@
     const isManualGroup = ctxGroupKind() === 'manual';
     const groupKey = ctxGroupKey();
     const canToggleGroup = !!groupKey;
-    const nodeBtnIds = ['ctxLock', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc'];
+    const nodeBtnIds = ['ctxLock', 'ctxNodeColor', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc', 'ctxExitGroupView', 'ctxRemoveFromGroup'];
     nodeBtnIds.forEach((id) => {
       const el = $(id);
       if (!el) return;
@@ -6859,7 +7746,7 @@
         el.style.display = (id === 'ctxUtil' || id === 'ctxUtilRange' || id === 'ctxEdgeDesc' || id === 'ctxToggleEdgeExpand') ? '' : 'none';
         return;
       }
-      if (isGroupNode && ['ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxEdgeDesc'].includes(id)) {
+      if (isGroupNode && ['ctxNodeColor', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxEdgeDesc'].includes(id)) {
         el.style.display = 'none';
         return;
       }
@@ -6867,9 +7754,11 @@
     });
     if ($('ctxAddNode')) $('ctxAddNode').style.display = isCanvasTarget ? '' : 'none';
     if ($('ctxAddNodeSubmenu')) $('ctxAddNodeSubmenu').style.display = (isCanvasTarget && addNodeSubmenuOpen) ? 'block' : 'none';
+    const colorableNodes = (!isCanvasTarget && !isEdgeTarget) ? ctxColorableNodes() : cy.collection();
     if ($('ctxCreateGroup')) {
-      const groupableNodes = ctxNodes().filter((n) => !n.data('isGroup'));
-      $('ctxCreateGroup').style.display = (!isCanvasTarget && !isEdgeTarget && groupableNodes.length >= 2) ? '' : 'none';
+      const grouping = selectedNodesForGrouping();
+      const canCreate = (!isCanvasTarget && !isEdgeTarget && grouping.selectedCount >= 2 && grouping.memberIds.length >= 2);
+      $('ctxCreateGroup').style.display = canCreate ? '' : 'none';
     }
     if ($('ctxAddLink')) {
       const linkableNodes = ctxNodes().filter((n) => !n.data('isGroup'));
@@ -6888,10 +7777,25 @@
       $('ctxToggleGroup').style.display = (!isEdgeTarget && canToggleGroup) ? '' : 'none';
       $('ctxToggleGroup').textContent = isGroupNode ? tr('ctx_group_expand') : tr('ctx_group_collapse');
     }
+    if ($('ctxExitGroupView')) {
+      $('ctxExitGroupView').style.display = (groupViewState.active && !isEdgeTarget && !isCanvasTarget) ? '' : 'none';
+    }
+    if ($('ctxRemoveFromGroup')) {
+      const canRemoveFromManualGroup = (!isCanvasTarget && !isEdgeTarget && !isGroupNode && isManualGroup && canToggleGroup);
+      $('ctxRemoveFromGroup').style.display = canRemoveFromManualGroup ? '' : 'none';
+    }
     if ($('ctxRenameGroup')) {
       $('ctxRenameGroup').style.display = (!isEdgeTarget && isManualGroup && canToggleGroup) ? '' : 'none';
     }
     if ($('ctxPathVia')) $('ctxPathVia').style.display = (!isEdgeTarget && !isGroupNode) ? '' : 'none';
+    if ($('ctxNodeColor')) {
+      $('ctxNodeColor').style.display = (!isCanvasTarget && !isEdgeTarget && colorableNodes.length) ? '' : 'none';
+    }
+    if ($('ctxNodeColorSubmenu')) {
+      const showColorSubmenu = (!isCanvasTarget && !isEdgeTarget && colorableNodes.length && nodeColorSubmenuOpen);
+      $('ctxNodeColorSubmenu').style.display = showColorSubmenu ? 'block' : 'none';
+      if (showColorSubmenu) renderCtxNodeColorPalette();
+    }
     if (!isEdgeTarget) {
       const nodes = ctxNodes();
       const locked = nodes.length ? nodes.every(n => n.locked()) : false;
@@ -6900,7 +7804,8 @@
     const groups = [
       { sep: 'ctxSepAdd', ids: ['ctxAddNode', 'ctxAddNodeSubmenu'] },
       { sep: 'ctxSepEdit', ids: ['ctxLock', 'ctxDelete', 'ctxDeleteLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc'] },
-      { sep: 'ctxSepCopy', ids: ['ctxPathVia', 'ctxAddLink', 'ctxCreateGroup', 'ctxToggleGroup', 'ctxRenameGroup'] },
+      { sep: 'ctxSepColor', ids: ['ctxNodeColor', 'ctxNodeColorSubmenu'] },
+      { sep: 'ctxSepCopy', ids: ['ctxPathVia', 'ctxAddLink', 'ctxCreateGroup', 'ctxToggleGroup', 'ctxRemoveFromGroup', 'ctxExitGroupView', 'ctxRenameGroup'] },
       { sep: 'ctxSepQuery', ids: ['ctxCopy', 'ctxCopyIp', 'ctxCopyLink'] },
       { sep: '', ids: ['ctxUtil', 'ctxUtilRange', 'ctxAppendQuery'] }
     ];
@@ -6919,11 +7824,10 @@
       sep.style.display = hasVisible && laterHasVisible ? 'block' : 'none';
     });
     const { clientX, clientY } = evt.originalEvent || {};
-    if (clientX !== undefined) {
-      menu.style.left = `${clientX}px`;
-      menu.style.top = `${clientY}px`;
+    if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
+      ctxMenuAnchor = { x: Number(clientX), y: Number(clientY) };
     }
-    menu.style.display = 'block';
+    positionCtxMenuFromAnchor();
   }
 
   function updateNodeLabels(mode) {
@@ -6952,6 +7856,9 @@
   }
 
   function buildSessionSnapshot() {
+    persistCurrentViewScopePositionsFromCy();
+    const scopedPositions = exportViewScopePositions();
+    const mainPositions = normalizePositionMap(scopedPositions.main || {});
     const utilRows = Array.from(utilByKey.entries()).map(([key, value]) => ({
       util_key: key,
       ...(value && typeof value === 'object' ? value : {})
@@ -6967,7 +7874,7 @@
       position: { x: Number(n.position('x')), y: Number(n.position('y')) }
     })) : [];
     return {
-      version: 1,
+      version: 2,
       exported_at: new Date().toISOString(),
       headers: headers.slice(),
       rows: rawRows.slice(),
@@ -6980,7 +7887,8 @@
         current_rows: Number(workspaceMeta.currentRows || rawRows.length || 0)
       },
       nodes: snapshotNodes,
-      positions: capturePositions(),
+      positions: mainPositions,
+      view_scope_positions: scopedPositions,
       visible_subgraph: buildVisibleSubgraphSnapshot(),
       deleted_stack: deletedStack.map((x) => (Array.isArray(x) ? x.slice() : [])),
       view_state: {
@@ -7018,6 +7926,7 @@
         expandedAutoGroupKeys: Array.from(expandedAutoGroupKeys),
         manualGroups: cloneManualGroups(manualGroups),
         manualCanvasNodes: cloneManualCanvasNodes(manualCanvasNodes),
+        manualNodeColors: exportManualNodeColorEntries(),
         expandedManualGroupKeys: Array.from(expandedManualGroupKeys),
         expandedMergedEdgePairKeys: Array.from(expandedMergedEdgePairKeys),
         mergeMode: !!mergedMode,
@@ -7166,6 +8075,7 @@
     const ui = snapshot?.ui || {};
     if ($('filter') && ui.filter != null) $('filter').value = String(ui.filter);
     if ($('showOnly') && ui.showOnly != null) $('showOnly').value = String(ui.showOnly);
+    if ($('nodeColorRules') && ui.nodeColorRulesText != null) $('nodeColorRules').value = String(ui.nodeColorRulesText);
     if ($('layerTerms') && ui.layerTerms != null) $('layerTerms').value = String(ui.layerTerms);
     if ($('stripDomain') && ui.stripDomain) $('stripDomain').value = String(ui.stripDomain);
     if ($('layoutMode') && ui.layoutMode) $('layoutMode').value = String(ui.layoutMode);
@@ -7192,7 +8102,12 @@
     if ($('nameClusterStrength') && ui.nameClusterStrength != null) $('nameClusterStrength').value = String(ui.nameClusterStrength);
     expandedAutoGroupKeys = new Set((ui.expandedAutoGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     manualGroups = cloneManualGroups(ui.manualGroups || []);
+    importViewScopePositions(snapshot || {});
+    pruneViewScopePositionsByManualGroups();
     manualCanvasNodes = cloneManualCanvasNodes(ui.manualCanvasNodes || snapshot?.manual_canvas_nodes || []);
+    manualNodeColorMap = new Map();
+    importManualNodeColorEntries(ui.manualNodeColors || {}, { overwrite: true });
+    rebuildNodeKeywordColorRulesFromInput();
     importEdgeDescEntries(ui.edgeDescriptions || snapshot?.edge_descriptions || snapshot?.edge_notes || [], false);
     expandedManualGroupKeys = new Set((ui.expandedManualGroupKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
     expandedMergedEdgePairKeys = new Set((ui.expandedMergedEdgePairKeys || []).map((x) => String(x || '').trim()).filter(Boolean));
@@ -7211,9 +8126,10 @@
     if (ui.colLocalIf && headers.includes(ui.colLocalIf)) $('colLocalIf').value = ui.colLocalIf;
     if (ui.colRemoteIf && headers.includes(ui.colRemoteIf)) $('colRemoteIf').value = ui.colRemoteIf;
 
-    const pos = (snapshot?.positions && typeof snapshot.positions === 'object') ? snapshot.positions : {};
+    const pos = getEffectivePositionsForScope('main');
     buildGraph(pos);
     applyPositions(pos);
+    persistCurrentViewScopePositionsFromCy({ forceMain: true });
     persistCurrentPageSession(true);
   }
 
@@ -7252,6 +8168,14 @@
         }).filter(Boolean)
       : [];
     const importedUi = (appendPayload?.ui && typeof appendPayload.ui === 'object') ? appendPayload.ui : {};
+    if ($('nodeColorRules')) {
+      const importedRulesText = String(importedUi.nodeColorRulesText || '').trim();
+      if (importedRulesText && !String($('nodeColorRules').value || '').trim()) {
+        $('nodeColorRules').value = importedRulesText;
+      }
+      rebuildNodeKeywordColorRulesFromInput();
+    }
+    importManualNodeColorEntries(importedUi.manualNodeColors || {}, { overwrite: false });
     importEdgeDescEntries(
       importedUi.edgeDescriptions
       || appendPayload?.edge_descriptions
@@ -7567,6 +8491,7 @@
   let importInputAction = 'import'; // import | append
   const CLI_PREF_KEY = 'lldp_cli_import_prefs_v1';
   const TOPOLOGY_UI_PREF_KEY = 'lldp_topology_ui_prefs_v1';
+  const NODE_COLOR_RECENT_KEY = 'lldp_node_color_recent_v1';
   const SQL_PREF_KEY = 'lldp_sql_prefs_v1';
   const PAGE_SESSION_KEY = 'lldp_page_session_snapshot_v1';
   const PAGE_SESSION_WINDOW_NAME_PREFIX = '__lldp_page_session__=';
@@ -8045,6 +8970,7 @@
       if (typeof p.partition_terms === 'string' && $('bizIsolationTerms')) $('bizIsolationTerms').value = p.partition_terms;
       if (typeof p.filter_terms === 'string') $('filter').value = p.filter_terms;
       if (typeof p.show_only_terms === 'string') $('showOnly').value = p.show_only_terms;
+      if (typeof p.node_color_rules === 'string' && $('nodeColorRules')) $('nodeColorRules').value = p.node_color_rules;
       if (typeof p.name_cluster_mode === 'string' && $('nameClusterMode')) {
         $('nameClusterMode').value = p.name_cluster_mode === 'off' ? 'off' : 'on';
       }
@@ -8074,6 +9000,7 @@
       }
       if (typeof p.filter_terms === 'string') viewState.filterTerms = parseMatchExpression(p.filter_terms);
       if (typeof p.show_only_terms === 'string') viewState.onlyTerms = parseMatchExpression(p.show_only_terms);
+      if ($('nodeColorRules')) rebuildNodeKeywordColorRulesFromInput();
     } catch (_) {
       // Ignore local storage errors.
     }
@@ -8086,6 +9013,7 @@
         partition_terms: ($('bizIsolationTerms')?.value || '').trim(),
         filter_terms: ($('filter')?.value || '').trim(),
         show_only_terms: ($('showOnly')?.value || '').trim(),
+        node_color_rules: ($('nodeColorRules')?.value || '').trim(),
         name_cluster_mode: ($('nameClusterMode')?.value || 'on'),
         node_label_mode: ($('nodeLabelMode')?.value || 'full'),
         auto_group_mode: ($('autoGroupMode')?.value || 'off'),
@@ -8186,30 +9114,72 @@
     const scopeEdges = (opts && opts.scopeEdges && typeof opts.scopeEdges.intersection === 'function')
       ? opts.scopeEdges
       : null;
-    const { colLH, colLI } = resolveUtilSourceColumns();
+    const { colLH, colLI, colRH, colRI } = resolveUtilSourceColumns();
     const allByUtilKey = new Map();
+    const resolveNameByIp = (ip) => {
+      const target = String(ip || '').trim();
+      if (!isIpv4(target) || !cy) return '';
+      let nameHit = '';
+      cy.nodes().some((n) => {
+        const ips = normalizeIpList(n.data('ips') || n.data('ip'));
+        if (!ips.includes(target)) return false;
+        const label = sanitizeDeviceNameToken(n.data('label'));
+        if (label && !isIpv4(label)) {
+          nameHit = label;
+          return true;
+        }
+        return false;
+      });
+      return nameHit;
+    };
+    const resolvePeerFromRow = (r) => {
+      const peerRaw = sanitizeDeviceNameToken(r[colRH]);
+      const peerIf = String(r[colRI] || '').trim();
+      const peerIpHint = rowValue(r, ['目的设备IP', '目的设备ip', 'remoteip']);
+      let peerDevice = isIpv4(peerIpHint) ? peerIpHint : peerRaw;
+      if (!isIpv4(peerDevice)) {
+        const mapHit = deviceNameToIpMap.get(peerRaw) || deviceNameToIpMap.get(stripAfterDot(peerRaw));
+        const hit1 = nodeIpMap.get(peerRaw);
+        const hit2 = nodeIpMap.get(stripAfterDot(peerRaw));
+        const cand = mapHit || hit1 || hit2;
+        if (cand && isIpv4(cand)) peerDevice = cand;
+      }
+      const peerName = (!isIpv4(peerRaw) ? peerRaw : '') || resolveNameByIp(peerDevice);
+      return {
+        peer_device: peerDevice || '',
+        peer_name: peerName || '',
+        peer_interface: peerIf || ''
+      };
+    };
     for (const r of rawRows) {
-      const srcRaw = String(r[colLH] || '').trim();
+      const srcRawBase = String(r[colLH] || '').trim();
+      const srcRaw = sanitizeDeviceNameToken(srcRawBase);
       const srcIf = String(r[colLI] || '').trim();
-      if (!srcRaw || !srcIf) continue;
       const sourceIpHint = rowValue(r, ['源设备IP', '源设备ip', 'ipaddr', 'sourceip']);
-      if (matchSource && !matchSource({ row: r, srcRaw, srcIf, sourceIpHint })) continue;
-      const utilKey = buildUtilKey(srcRaw, srcIf, sourceIpHint);
+      const srcNameOrIp = srcRaw || (isIpv4(srcRawBase) ? srcRawBase : '') || sourceIpHint;
+      if (!srcIf || !srcNameOrIp) continue;
+      if (matchSource && !matchSource({ row: r, srcRaw: srcNameOrIp, srcIf, sourceIpHint })) continue;
+      const utilKey = buildUtilKey(srcNameOrIp, srcIf, sourceIpHint);
       if (!utilKey) continue;
       const dedupeKey = utilKey;
-      let queryDevice = isIpv4(sourceIpHint) ? sourceIpHint : srcRaw;
+      let queryDevice = isIpv4(sourceIpHint) ? sourceIpHint : srcNameOrIp;
       if (!isIpv4(queryDevice)) {
-        const mapHit = deviceNameToIpMap.get(srcRaw) || deviceNameToIpMap.get(stripAfterDot(srcRaw));
-        const hit1 = nodeIpMap.get(srcRaw);
-        const hit2 = nodeIpMap.get(stripAfterDot(srcRaw));
+        const mapHit = deviceNameToIpMap.get(srcNameOrIp) || deviceNameToIpMap.get(stripAfterDot(srcNameOrIp));
+        const hit1 = nodeIpMap.get(srcNameOrIp);
+        const hit2 = nodeIpMap.get(stripAfterDot(srcNameOrIp));
         const cand = mapHit || hit1 || hit2;
         if (cand && isIpv4(cand)) queryDevice = cand;
       }
+      const sourceName = (!isIpv4(srcRaw) ? srcRaw : '') || resolveNameByIp(queryDevice);
       if (!allByUtilKey.has(utilKey)) {
+        const peer = resolvePeerFromRow(r);
         allByUtilKey.set(utilKey, {
           source_device: queryDevice,
-          source_name: srcRaw,
+          source_name: sourceName || '',
           source_interface: srcIf,
+          peer_device: peer.peer_device,
+          peer_name: peer.peer_name,
+          peer_interface: peer.peer_interface,
           util_key: utilKey,
           dedupe_key: dedupeKey
         });
@@ -9106,7 +10076,7 @@
 
   $('build').addEventListener('click', () => {
     commitKeywordHistories();
-    runWithRollback(() => buildGraph(), { delayMs: 1300 });
+    runWithRollback(() => buildTopologyForCurrentContext(), { delayMs: 1300 });
   });
   $('fit').addEventListener('click', () => cy && cy.fit({ padding: 30 }));
   $('center').addEventListener('click', () => { if (!cy) return; cy.center(); cy.zoom(1.2); });
@@ -9616,28 +10586,22 @@
   });
 
   $('ctxCreateGroup').addEventListener('click', () => {
-    const targetNodes = ctxNodes().filter((n) => !n.data('isGroup'));
+    const grouping = selectedNodesForGrouping();
     hideCtx();
-    if (!targetNodes.length || targetNodes.length < 2) {
-      setOK('请先选中至少 2 台设备后再执行设备合组。');
+    if (grouping.selectedCount < 2 || grouping.memberIds.length < 2) {
+      setOK('请先多选至少 2 个节点或节点组后再执行设备合组。');
       return;
     }
     runWithRollback(() => {
-      const memberIds = targetNodes.map((n) => n.id());
-      const labels = targetNodes.map((n) => String(n.data('label') || n.id()).trim());
-      const memberPositions = {};
-      targetNodes.forEach((n) => {
-        const p = n.position();
-        if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) memberPositions[n.id()] = { x: p.x, y: p.y };
-      });
-      const info = upsertManualGroup(memberIds, buildGroupLabelFromMany(labels), memberPositions);
+      const info = upsertManualGroup(grouping.memberIds, grouping.preferredLabel, grouping.memberPositions);
       if (!info) {
         setErr('设备合组失败：有效设备不足 2 台。');
         return;
       }
       const pos = capturePositions();
       buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
-      setOK(`已合组 ${info.members.length} 台设备，组名：${info.label}`);
+      const renameHint = grouping.groupNodeCount === 1 ? '（沿用单个节点组名称）' : '';
+      setOK(`已合组 ${info.members.length} 台设备，组名：${info.label}${renameHint}`);
     }, { delayMs: 1300 });
   });
 
@@ -9658,6 +10622,43 @@
       const pos = capturePositions();
       buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
       setOK(isCollapsedGroup ? '已展开合组。' : '已收起合组。');
+    }, { delayMs: 1300 });
+  });
+
+  $('ctxExitGroupView').addEventListener('click', () => {
+    hideCtx();
+    if (!groupViewState.active) {
+      setOK('当前不在组视图。');
+      return;
+    }
+    exitGroupView();
+  });
+
+  $('ctxRemoveFromGroup').addEventListener('click', () => {
+    const target = ctxTarget;
+    const node = (target && typeof target.isNode === 'function' && target.isNode() && !target.data('isGroup')) ? target : null;
+    const nodeId = node ? String(node.id() || '').trim() : '';
+    const nodeName = node ? String(node.data('label') || nodeId).trim() : '';
+    const groupKind = node ? String(node.data('groupKind') || '').trim() : '';
+    const groupKey = node ? String(node.data('manualGroupKey') || node.data('groupKey') || '').trim() : '';
+    hideCtx();
+    if (!node || !nodeId || groupKind !== 'manual' || !groupKey) {
+      setOK('当前设备不在手动节点组中。');
+      return;
+    }
+    runWithRollback(() => {
+      const removed = removeNodeFromManualGroup(nodeId, groupKey);
+      if (!removed) {
+        setOK('当前设备不在手动节点组中。');
+        return;
+      }
+      const pos = capturePositions();
+      buildGraph(pos, { keepExactPositions: true, adjustViewport: false });
+      if (removed.dissolved) {
+        setOK(`已将 ${nodeName || nodeId} 移出节点组；原组成员不足 2 台，已自动解散。`);
+      } else {
+        setOK(`已将 ${nodeName || nodeId} 移出节点组。`);
+      }
     }, { delayMs: 1300 });
   });
 
@@ -9770,9 +10771,58 @@
     hideCtx();
   });
 
+  $('ctxNodeColor').addEventListener('click', () => {
+    const nodes = ctxColorableNodes();
+    if (!nodes.length) {
+      hideCtx();
+      setOK('请先选中要着色的节点。');
+      return;
+    }
+    addNodeSubmenuOpen = false;
+    if ($('ctxAddNodeSubmenu')) $('ctxAddNodeSubmenu').style.display = 'none';
+    nodeColorSubmenuOpen = !nodeColorSubmenuOpen;
+    if ($('ctxNodeColorSubmenu')) {
+      $('ctxNodeColorSubmenu').style.display = nodeColorSubmenuOpen ? 'block' : 'none';
+      if (nodeColorSubmenuOpen) renderCtxNodeColorPalette();
+    }
+    positionCtxMenuFromAnchor();
+  });
+
+  $('ctxNodeColorSubmenu').addEventListener('click', (evt) => {
+    const swatch = evt.target.closest('button[data-node-color]');
+    if (swatch) {
+      evt.stopPropagation();
+      if (applyCtxNodeColor(swatch.getAttribute('data-node-color') || '')) hideCtx();
+      return;
+    }
+    const btn = evt.target.closest('button');
+    if (!btn) return;
+    evt.stopPropagation();
+    if (btn.id === 'ctxNodeColorClear') {
+      if (applyCtxNodeColor('', { clear: true })) hideCtx();
+      return;
+    }
+    if (btn.id === 'ctxNodeColorMore') {
+      const picker = $('ctxNodeColorPicker');
+      if (!picker) return;
+      const firstRecent = nodeColorRecentColors[0] || NODE_COLOR_PRESET_VALUES[0] || '#2563eb';
+      if (/^#[0-9a-f]{6}$/i.test(firstRecent)) picker.value = firstRecent;
+      picker.click();
+    }
+  });
+
+  $('ctxNodeColorPicker').addEventListener('input', (evt) => {
+    const color = String(evt.target?.value || '').trim();
+    if (!color) return;
+    if (applyCtxNodeColor(color)) hideCtx();
+  });
+
   $('ctxAddNode').addEventListener('click', () => {
+    nodeColorSubmenuOpen = false;
+    if ($('ctxNodeColorSubmenu')) $('ctxNodeColorSubmenu').style.display = 'none';
     addNodeSubmenuOpen = !addNodeSubmenuOpen;
     if ($('ctxAddNodeSubmenu')) $('ctxAddNodeSubmenu').style.display = addNodeSubmenuOpen ? 'block' : 'none';
+    positionCtxMenuFromAnchor();
   });
 
   $('ctxAddNodeRegular').addEventListener('click', () => {
@@ -10147,10 +11197,7 @@
     const expr = parseMatchExpression(e.target.value);
     if (!expr.length) return;
 
-    const hits = cy.nodes().filter(n => {
-      const label = (n.data('label') || '');
-      return matchExpressionInName(label, expr);
-    });
+    const hits = findNodesByExpression(expr);
 
     cy.elements().removeClass('hit dim');
     cy.elements().unselect();
@@ -10181,10 +11228,19 @@
   });
 $('filter').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
+    e.preventDefault();
     saveTopologyUiPrefs();
     applyFilter();
   }
 });
+  $('filter').addEventListener('change', () => {
+    saveTopologyUiPrefs();
+    applyFilter();
+  });
+  $('filter').addEventListener('blur', () => {
+    saveTopologyUiPrefs();
+    applyFilter();
+  });
   $('filter').addEventListener('input', saveTopologyUiPrefs);
 
   $('restoreDeleted').addEventListener('click', () => {
@@ -10293,6 +11349,8 @@ $('filter').addEventListener('keydown', (e) => {
   });
   window.addEventListener('pagehide', () => { persistCurrentPageSession(true); });
   window.addEventListener('beforeunload', () => { persistCurrentPageSession(true); });
+  loadNodeColorRecentPrefs();
+  renderCtxNodeColorPalette();
   initLangToggle();
   applyStaticI18n();
   applyIndexLiteMode();

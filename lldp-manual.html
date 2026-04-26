@@ -5,64 +5,348 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>LLDP 拓扑工具使用手册</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; line-height: 1.6; color: #0f172a; }
-    h1 { margin-bottom: 8px; }
-    h2 { margin-top: 22px; margin-bottom: 8px; }
-    .card { border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px 18px; box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06); max-width: 1100px; }
-    ul { padding-left: 20px; }
-    code { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-size: 90%; }
-    .badge { display: inline-block; margin-left: 6px; padding: 2px 8px; border-radius: 999px; background: #dbeafe; color: #1d4ed8; font-size: 12px; }
-    .pill { display: inline-block; margin-right: 6px; padding: 2px 8px; border-radius: 999px; background: #ecfeff; color: #0891b2; font-size: 12px; }
+    :root {
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --border: #e2e8f0;
+      --text: #0f172a;
+      --muted: #475569;
+      --link: #2563eb;
+      --pill-bg: #ecfeff;
+      --pill-fg: #0891b2;
+      --badge-bg: #dbeafe;
+      --badge-fg: #1d4ed8;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      line-height: 1.6;
+    }
+    .layout {
+      max-width: 1300px;
+      margin: 0 auto;
+      padding: 20px;
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      gap: 18px;
+      min-height: 100vh;
+    }
+    .toc {
+      position: sticky;
+      top: 16px;
+      align-self: start;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+    }
+    .toc h2 {
+      margin: 0 0 10px;
+      font-size: 16px;
+    }
+    .toc a {
+      display: block;
+      text-decoration: none;
+      color: #1e293b;
+      padding: 6px 8px;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    .toc a:hover { background: #eef2ff; color: #1d4ed8; }
+    .content {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 22px;
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+    }
+    h1 { margin: 0 0 10px; font-size: 28px; }
+    h2 { margin: 24px 0 10px; font-size: 21px; }
+    h3 { margin: 18px 0 8px; font-size: 17px; }
+    p { margin: 8px 0 12px; color: var(--muted); }
+    ul { margin: 0; padding-left: 20px; }
+    li { margin: 6px 0; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 6px;
+      font-size: 90%;
+    }
+    pre {
+      margin: 10px 0 14px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: #0f172a;
+      color: #e2e8f0;
+      overflow: auto;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .badge {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--badge-bg);
+      color: var(--badge-fg);
+      font-size: 12px;
+    }
+    .pill {
+      display: inline-block;
+      margin-right: 6px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--pill-bg);
+      color: var(--pill-fg);
+      font-size: 12px;
+    }
+    @media (max-width: 980px) {
+      .layout {
+        grid-template-columns: 1fr;
+        padding: 12px;
+      }
+      .toc { position: static; }
+      .toc .links {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 4px;
+      }
+    }
+    @media (max-width: 640px) {
+      .toc .links { grid-template-columns: 1fr; }
+      .content { padding: 14px; }
+      h1 { font-size: 24px; }
+      h2 { font-size: 19px; }
+    }
   </style>
 </head>
 <body>
-  <h1>LLDP 拓扑工具使用手册</h1>
-  <div class="card">
-    <p><strong>一句话：</strong>导入/追加 LLDP CSV，自动去重生成拓扑；支持分层/分散布局、过滤/搜索、多选/右键操作、邻接高亮；可导入导出 PNG/JSON/坐标，支持多链路合并切换。</p>
+  <div class="layout">
+    <aside class="toc">
+      <h2>目录</h2>
+      <div class="links">
+        <a href="#overview">概览</a>
+        <a href="#pages">页面分工</a>
+        <a href="#startup">启动方式</a>
+        <a href="#local">本地启动</a>
+        <a href="#docker">Docker 启动</a>
+        <a href="#import">导入模式</a>
+        <a href="#topology">拓扑生成与整理</a>
+        <a href="#interaction">视图过滤与交互</a>
+        <a href="#analysis">链路 / 告警 / 设备详情</a>
+        <a href="#export">导出与状态</a>
+        <a href="#workflow">推荐工作流</a>
+        <a href="#docs">相关文档</a>
+      </div>
+    </aside>
 
-    <h2>数据导入</h2>
-    <ul>
-      <li><span class="pill">导入</span> 选择或拖拽 CSV，或粘贴文本；自动去重（按 <code>localhostname/localinterface/remotehostname/remoteinterface</code>）。</li>
-      <li><span class="pill">列映射</span> 默认自动匹配，列名异常时展开「列映射」下拉手动调整。</li>
-      <li><span class="pill">追加</span> 使用「追加 CSV」添加新设备，保留已有节点坐标不动。</li>
-      <li><span class="pill">去后缀</span> 选项可去掉 hostname 域名后缀。</li>
-    </ul>
+    <main class="content">
+      <h1>LLDP 拓扑工具使用手册 <span class="badge">v3</span></h1>
 
-    <h2>布局与分散</h2>
-    <ul>
-      <li><span class="pill">布局模式</span> 仅强分散（默认 fCoSE）、上下分层、圆形。</li>
-      <li><span class="pill">分散强度</span> 0.1–1 滑杆，默认 0.5。</li>
-      <li><span class="pill">分层关键字</span> 逗号分层，斜杠 <code>/</code> 表示同层同义词，<code>&amp;</code> 表示同层内全部命中才算匹配。示例：<code>EDGE&amp;CORE,CORE,AGGR/SPINE,LEAF/tor</code>。</li>
-      <li><span class="pill">上下分层</span> 选择布局模式为「上下分层」或点击「应用分层」后「重新布局」。</li>
-    </ul>
+      <section id="overview">
+        <h2>概览</h2>
+        <p><strong>一句话：</strong>`lldp.html` 是完整运维页，负责把 SQL / CLI / NDMP / CSV / Json 多来源拓扑数据统一成一张可操作的图，并在同一页面完成利用率分析、Zabbix 告警、设备详情、路径查询、手工补图和多格式导出。</p>
+        <ul>
+          <li><span class="pill">采集</span> SQL、CLI、NDMP、CSV、Json 五类导入入口统一收口。</li>
+          <li><span class="pill">整理</span> 支持节点组、分层、分区、路径抽取、手工节点、Cloud 节点和手工链路。</li>
+          <li><span class="pill">分析</span> 支持链路利用率、拥塞分析、负载分担分析、告警高亮和 Netlog 跳转。</li>
+          <li><span class="pill">落地</span> 支持 PNG、draw.io、Mermaid、链路汇总 CSV、设备详情 CSV、Json 会话和服务器状态快照。</li>
+        </ul>
+      </section>
 
-    <h2>显示与交互</h2>
-    <ul>
-      <li><span class="pill">标签</span> 节点标签缩略/全名切换；端口标签可显示/隐藏。</li>
-      <li><span class="pill">过滤</span> 逗号分隔关键词，命中节点隐藏并同步隐藏相关边。</li>
-      <li><span class="pill">搜索</span> 逗号分隔关键词，回车批量选中匹配节点。</li>
-      <li><span class="pill">多选</span> Ctrl/Cmd 或 Shift；「仅显示邻接」高亮选中及其邻接并暗化其他。</li>
-      <li><span class="pill">右键菜单</span> 固定/取消固定、删除（可恢复）、复制名称。</li>
-      <li><span class="pill">删除/恢复</span> 「删除选中」移除节点及边，「恢复删除设备」撤销最近删除。</li>
-    </ul>
+      <section id="pages">
+        <h2>页面分工</h2>
+        <ul>
+          <li><span class="pill">`lldp.html`</span> 采集 + 分析 + 运维。适合实时导入、链路分析、告警查看、设备详情查询和导出结果。</li>
+          <li><span class="pill">`index.html`</span> 编辑 + 整理 + 展示。适合在已有 CSV / Json 基础上做版式整理、路径抽取、汇报图加工。</li>
+          <li><span class="pill">使用建议</span> 需要实时采集或联动外部系统时用 `lldp.html`；只想整理已有数据时用 `index.html`。</li>
+        </ul>
+      </section>
 
-    <h2>链路显示</h2>
-    <ul>
-      <li><span class="pill">多链路合并</span> 按钮「合并多条链路」可在合并/拆分模式间切换：同一对节点的多条链路合并为单条并显示计数。</li>
-    </ul>
+      <section id="startup">
+        <h2>启动方式</h2>
+        <ul>
+          <li><span class="pill">推荐入口</span> 通过服务访问：<code>http://127.0.0.1:18080/lldp.html</code>。</li>
+          <li><span class="pill">原因</span> SQL、CLI、NDMP、状态快照、临时 CSV、设备详情、Zabbix 等能力都依赖后端服务。</li>
+          <li><span class="pill">脚本能力</span> 当前启动脚本支持 <code>start</code>、<code>stop</code>、<code>status</code>、<code>restart</code>、<code>logs</code>。</li>
+          <li><span class="pill">依赖处理</span> 执行 <code>start</code> 时会自动检查并补装缺失的 <code>fastapi</code>、<code>uvicorn</code>、<code>pymysql</code>。</li>
+          <li><span class="pill">配置文件</span> SQL / CLI 默认读取 <code>.env.mysql</code>，可通过 <code>DB_ENV_FILE</code> 改指其他配置文件。</li>
+        </ul>
+      </section>
 
-    <h2>坐标与导出</h2>
-    <ul>
-      <li><span class="pill">坐标</span> 「导出坐标」保存当前节点位置 JSON；「导入坐标」直接应用到拓扑（再居中缩放）。</li>
-      <li><span class="pill">导出</span> PNG（修复空白问题，使用 blob）、JSON（当前画布状态）。</li>
-    </ul>
+      <section id="local">
+        <h2>本地启动（推荐）</h2>
+        <pre><code>python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.mysql.example .env.mysql
+./start_lldp_service.sh start</code></pre>
+        <ul>
+          <li><span class="pill">状态</span> <code>./start_lldp_service.sh status</code></li>
+          <li><span class="pill">日志</span> <code>./start_lldp_service.sh logs</code></li>
+          <li><span class="pill">重启</span> <code>./start_lldp_service.sh restart</code></li>
+          <li><span class="pill">停止</span> <code>./start_lldp_service.sh stop</code></li>
+          <li><span class="pill">访问</span> 启动后打开 <code>http://127.0.0.1:18080/lldp.html</code></li>
+        </ul>
+      </section>
 
-    <h2>常用操作流</h2>
-    <ul>
-      <li>导入或追加 CSV → 选布局模式/分层关键字 → 生成或重新布局。</li>
-      <li>调整分散强度、标签显示；用过滤/搜索快速筛选；多选 + 右键固定或删除。</li>
-      <li>需要复用位置时导出坐标，下次导入坐标；若链路过多可开启「合并多条链路」。</li>
-    </ul>
+      <section id="docker">
+        <h2>Docker 启动</h2>
+        <pre><code>cp .env.mysql.example .env.mysql
+docker compose up -d --build</code></pre>
+        <ul>
+          <li><span class="pill">日志</span> <code>docker compose logs -f</code></li>
+          <li><span class="pill">停止</span> <code>docker compose down</code></li>
+          <li><span class="pill">环境变量</span> <code>docker-compose.yml</code> 可传入数据库、Zabbix、CLI 跳板相关配置。</li>
+          <li><span class="pill">持久化</span> <code>tmp_csv/</code> 和 <code>state_snapshots/</code> 挂载为卷，便于保留状态和临时结果。</li>
+        </ul>
+      </section>
+
+      <section id="import">
+        <h2>导入模式</h2>
+
+        <h3>SQL 导入</h3>
+        <ul>
+          <li><span class="pill">入口</span> 选择 <code>SQL 导入</code>，点击「导入」或「追加」。</li>
+          <li><span class="pill">输入</span> 使用 <code>start_hostname</code> 作为起始设备名称。</li>
+          <li><span class="pill">执行方式</span> 采用异步任务模式，前端轮询任务状态，后端输出临时 CSV。</li>
+          <li><span class="pill">取消</span> 支持「取消查询」，避免长查询只能重启服务。</li>
+          <li><span class="pill">结果</span> 「导入」覆盖当前工作集；「追加」把新结果并入当前图。</li>
+        </ul>
+
+        <h3>CLI 导入</h3>
+        <ul>
+          <li><span class="pill">入口</span> 选择 <code>CLI 导入</code>，点击「导入」或「追加」。</li>
+          <li><span class="pill">关键参数</span> 起始设备地址、递归次数、并发数、SSH 用户名 / 密码、跳板地址、SSH 命令、登录超时、命令超时。</li>
+          <li><span class="pill">递归限制</span> 可勾选「只递归查询 172.* 网段」，避免把 10.* / 143.* 等地址继续扩散。</li>
+          <li><span class="pill">Ping 预检</span> 可选「先 Ping 预检（2 个包，失败即跳过）」以减少不可达设备等待。</li>
+          <li><span class="pill">任务模式</span> CLI 采用异步任务执行，页面会显示累计完成、本层设备数、并发、当前设备和已耗时。</li>
+          <li><span class="pill">取消</span> 支持「取消查询」，并在取消时尽量保留已获取的部分结果。</li>
+          <li><span class="pill">追加策略</span> 右键追加在 CLI 模式下固定只跑 1 轮，避免长时间递归。</li>
+        </ul>
+
+        <h3>NDMP 导入</h3>
+        <ul>
+          <li><span class="pill">入口</span> 选择 <code>NDMP 导入</code>，输入设备名称或 IP。</li>
+          <li><span class="pill">查询字段</span> 支持自动识别、强制按 <code>device_hostname</code>、或强制按 <code>device_ip</code>。</li>
+          <li><span class="pill">轮循次数</span> 支持 1 到 3 层。</li>
+          <li><span class="pill">状态过滤</span> 默认仅查 <code>link_status = up</code>，也可以取消勾选以查询非 up 历史状态。</li>
+          <li><span class="pill">用途</span> 适合快速从接口与邻接字段生成拓扑，而不依赖 CLI 跳板登录。</li>
+        </ul>
+
+        <h3>CSV / Json 导入</h3>
+        <ul>
+          <li><span class="pill">CSV</span> 支持文件导入、追加、以及直接粘贴 CSV 内容。</li>
+          <li><span class="pill">Json</span> 用于恢复完整前端会话，包括数据、坐标、节点组、颜色、描述和部分视图状态。</li>
+          <li><span class="pill">追加</span> 新数据尽量保留旧节点坐标，新节点按当前图继续并入。</li>
+        </ul>
+      </section>
+
+      <section id="topology">
+        <h2>拓扑生成与整理</h2>
+        <ul>
+          <li><span class="pill">生成拓扑</span> 统一把当前工作集转成节点和链路，并处理设备归一、链路去重、多链路合并和坐标继承。</li>
+          <li><span class="pill">局部操作</span> 支持「重排选中设备」，只调整选中节点，不重建整图。</li>
+          <li><span class="pill">布局与对齐</span> 支持上下分层、分区、水平对齐、垂直对齐、左右上下对齐、水平 / 垂直等间距。</li>
+          <li><span class="pill">路径查询</span> 支持源节点、目的节点、必经点、备份路径，并可只保留路径节点。</li>
+          <li><span class="pill">节点组</span> 支持多选合组、组视图、组名修改、移出节点组、返回主视图。</li>
+          <li><span class="pill">手工建模</span> 支持添加普通节点、Cloud 节点、手工链路和链路描述。</li>
+          <li><span class="pill">多链路控制</span> 可在聚合显示和逐条物理链路显示之间切换。</li>
+        </ul>
+      </section>
+
+      <section id="interaction">
+        <h2>视图过滤与交互</h2>
+        <ul>
+          <li><span class="pill">定位设备</span> 输入表达式后快速查找并选中设备。</li>
+          <li><span class="pill">不显示 / 只显示</span> 使用统一表达式语法：逗号分层、斜杠 OR、<code>&amp;</code> 全命中。</li>
+          <li><span class="pill">只显示 172 设备</span> 仅对普通节点生效，节点组不参与该判断。</li>
+          <li><span class="pill">单链路节点</span> 自动选中当前可见拓扑中只连到 1 台邻居设备的节点，并可联动标记节点组。</li>
+          <li><span class="pill">删除与恢复</span> 支持删除节点、仅保留选中、仅保留邻接节点、恢复删除设备。</li>
+          <li><span class="pill">撤销 / 恢复</span> 支持有限步数的视图级回退，用于节点移动、删除、对齐、颜色、手工补图等操作。</li>
+          <li><span class="pill">固定位置</span> 右键可固定或取消固定节点，避免整理后再次被局部操作带动。</li>
+        </ul>
+      </section>
+
+      <section id="analysis">
+        <h2>链路 / 告警 / 设备详情</h2>
+
+        <h3>链路利用率</h3>
+        <ul>
+          <li><span class="pill">查询入口</span> 支持工具区查询，也支持右键「当前利用率」和「区间利用率」。</li>
+          <li><span class="pill">数据源</span> 优先走 Zabbix；若未命中且已配置 CLI 账号密码，可回退到 CLI。</li>
+          <li><span class="pill">查询口径</span> 支持 TX、RX、双向较小值 MIN(TX,RX)、双向较大值 MAX(TX,RX)。</li>
+          <li><span class="pill">展示控制</span> 支持链路拥塞分析、负载分担分析、显示利用率标签、显示 TX/RX、显示总带宽、显示链路描述。</li>
+          <li><span class="pill">利用率过滤</span> 可按阈值只保留高于阈值的链路和相关节点。</li>
+        </ul>
+
+        <h3>Zabbix 告警</h3>
+        <ul>
+          <li><span class="pill">查询模式</span> 支持当前未恢复告警和历史告警。</li>
+          <li><span class="pill">确认状态</span> 支持全部、仅未确认、仅已确认。</li>
+          <li><span class="pill">活动告警显示</span> 勾选后，未确认活动告警设备会闪动；仅已确认告警设备不闪动，但名称文字变红并显示告警数量；无告警设备保持正常颜色。</li>
+          <li><span class="pill">时间过滤</span> 「告警时间过滤」只过滤当前图上的活动告警显示，不会重新查询 Zabbix。</li>
+          <li><span class="pill">右键</span> 支持「查看告警」和「刷新告警」，刷新只针对当前选中设备。</li>
+          <li><span class="pill">导出</span> 告警结果支持 CSV 导出。</li>
+        </ul>
+
+        <h3>Netlog 跳转</h3>
+        <ul>
+          <li><span class="pill">入口</span> 有已缓存告警的设备右键可见「查询 Log」。</li>
+          <li><span class="pill">行为</span> 不直接执行日志任务，而是打开 Netlog 创建页，并预填主机名、告警时间窗口和 SQL only 参数。</li>
+          <li><span class="pill">时间窗</span> 单设备按最近告警时间上下 15 分钟；多设备按各自最近告警的整体包络计算时间窗。</li>
+          <li><span class="pill">前提</span> 要求 Netlog 服务可访问，并且当前设备已经有已缓存告警结果。</li>
+        </ul>
+
+        <h3>设备详情</h3>
+        <ul>
+          <li><span class="pill">查询</span> 支持对选中设备或当前可见设备批量查询详情。</li>
+          <li><span class="pill">复制</span> 右键「复制详情」可将已缓存详情直接复制出来，适合贴到工单或文档。</li>
+          <li><span class="pill">导出</span> 「导出设备详情」支持字段复选，并在导出前自动补查缺失设备。</li>
+        </ul>
+      </section>
+
+      <section id="export">
+        <h2>导出与状态</h2>
+        <ul>
+          <li><span class="pill">导出 PNG</span> 适合截图、汇报和即时分享。</li>
+          <li><span class="pill">导出链路汇总</span> 会按当前显示状态导出设备级或端口级链路汇总。</li>
+          <li><span class="pill">导出 draw.io</span> 便于后续在 draw.io 继续排版。</li>
+          <li><span class="pill">导出 Mermaid</span> 当前页面导出为 <code>.mmd</code> 文件。</li>
+          <li><span class="pill">导出 Json</span> 用于恢复当前前端工作现场。</li>
+          <li><span class="pill">保存状态 / 导入状态</span> 服务端保留最近 15 个状态，适合阶段性保存和回滚。</li>
+          <li><span class="pill">清理</span> 「删除临时数据」会清理临时 CSV、状态快照和服务日志；「删除连接配置」只删除浏览器本地保存的 SQL / CLI / Zabbix 设置。</li>
+        </ul>
+      </section>
+
+      <section id="workflow">
+        <h2>推荐工作流</h2>
+        <ul>
+          <li>启动服务并打开 <code>lldp.html</code>。</li>
+          <li>先用 SQL / CLI / NDMP / CSV / Json 任一方式导入基线拓扑。</li>
+          <li>点击「生成拓扑」，再通过分层、分区、只显示 / 不显示、路径查询收口重点区域。</li>
+          <li>需要补图时，用节点组、Cloud 节点、手工链路和链路描述补充语义。</li>
+          <li>需要分析时，查询链路利用率、Zabbix 告警、设备详情，必要时从告警设备跳转到 Netlog。</li>
+          <li>阶段性成果可保存状态，最终导出 PNG / draw.io / Mermaid / Json / 链路汇总 / 设备详情。</li>
+        </ul>
+      </section>
+
+      <section id="docs">
+        <h2>相关文档</h2>
+        <ul>
+          <li><span class="pill">项目入口</span> <code>README.md</code></li>
+          <li><span class="pill">完整设计</span> <code>LLDP_TOPOLOGY_TOOL_FUNCTION_DESIGN.md</code></li>
+          <li><span class="pill">English</span> <code>LLDP_TOPOLOGY_TOOL_FUNCTION_DESIGN_EN.md</code></li>
+          <li><span class="pill">轻量页说明</span> <code>INDEX_HTML_USAGE_GUIDE.md</code></li>
+          <li><span class="pill">CSV 逻辑</span> <code>Topology_CSV_Logic.md</code></li>
+        </ul>
+      </section>
+    </main>
   </div>
 </body>
 </html>
