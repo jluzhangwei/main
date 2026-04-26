@@ -1,5 +1,6 @@
 const INDEX_BOOT = window.NETLOG_INDEX_BOOTSTRAP || {};
 const INDEX_TEXT = INDEX_BOOT.texts || {};
+const PREFILL_STATE = INDEX_BOOT.prefill || {};
 const STORAGE_KEY = "netlog_extractor_create_form_v2";
 const DEFAULT_FORM_STATE = {
   debug_mode: true,
@@ -24,11 +25,6 @@ function getPersistFields() {
     "debug_mode",
     "sql_query_mode",
     "sql_only_mode",
-    "db_host",
-    "db_port",
-    "db_user",
-    "db_password",
-    "db_name",
   ];
 }
 
@@ -73,6 +69,32 @@ function restoreFormState() {
       else el.checked = false;
     } else if (typeof payload[name] === "string" || typeof payload[name] === "number") {
       el.value = String(payload[name]);
+    }
+  }
+  delete payload.db_host;
+  delete payload.db_port;
+  delete payload.db_user;
+  delete payload.db_password;
+  delete payload.db_name;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+}
+
+function parsePrefillCheckbox(value) {
+  const raw = String(value == null ? "" : value).trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "on" || raw === "yes";
+}
+
+function applyPrefillState() {
+  const form = document.querySelector("form.hc-form");
+  if (!form || !PREFILL_STATE || typeof PREFILL_STATE !== "object") return;
+  for (const [name, value] of Object.entries(PREFILL_STATE)) {
+    if (value == null) continue;
+    const el = form.querySelector(`[name="${name}"]`);
+    if (!el) continue;
+    if (el.type === "checkbox") {
+      el.checked = parsePrefillCheckbox(value);
+    } else {
+      el.value = String(value);
     }
   }
 }
@@ -139,55 +161,19 @@ function toggleDebugExtras() {
   const sqlMode = document.getElementById("sql_query_mode");
   const sqlOnly = document.getElementById("sql_only_mode");
   const debugBox = document.getElementById("debug-options-box");
-  const sqlBox = document.getElementById("sql-config-box");
   const debugEnabled = !!(debug && debug.checked);
   const sqlEnabled = !!(sqlMode && sqlMode.checked);
   if (debugBox) debugBox.style.display = debugEnabled ? "block" : "none";
-  if (sqlBox) sqlBox.style.display = debugEnabled && sqlEnabled ? "block" : "none";
   if (sqlMode) sqlMode.disabled = !debugEnabled;
   if (sqlOnly) {
     sqlOnly.disabled = !(debugEnabled && sqlEnabled);
     if (!debugEnabled || !sqlEnabled) sqlOnly.checked = false;
   }
-  document
-    .querySelectorAll('[name="db_host"], [name="db_port"], [name="db_user"], [name="db_password"], [name="db_name"]')
-    .forEach((el) => {
-      el.disabled = !(debugEnabled && sqlEnabled);
-    });
-  const testBtn = document.getElementById("test_sql_btn");
-  if (testBtn) testBtn.disabled = !(debugEnabled && sqlEnabled);
   toggleSmc();
 }
 
-async function testSqlConnection() {
-  const resultEl = document.getElementById("sql_test_result");
-  const btn = document.getElementById("test_sql_btn");
-  if (resultEl) resultEl.textContent = INDEX_TEXT.testing_sql || "Testing SQL connection...";
-  if (btn) btn.disabled = true;
-  try {
-    const payload = {
-      db_host: document.querySelector('[name="db_host"]')?.value || "",
-      db_port: Number(document.querySelector('[name="db_port"]')?.value || "0") || 0,
-      db_user: document.querySelector('[name="db_user"]')?.value || "",
-      db_password: document.querySelector('[name="db_password"]')?.value || "",
-      db_name: document.querySelector('[name="db_name"]')?.value || "",
-    };
-    const res = await fetch("/api/sql/log-server/test", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || data.message || "SQL test failed");
-    if (resultEl) resultEl.textContent = `${data.message} | ${data.table} | columns=${data.column_count}`;
-  } catch (e) {
-    if (resultEl) resultEl.textContent = String(e && e.message ? e.message : e);
-  } finally {
-    toggleDebugExtras();
-  }
-}
-
 restoreFormState();
+applyPrefillState();
 toggleSmc();
 toggleDebugExtras();
 
@@ -200,8 +186,6 @@ if (form) {
 const debugMode = document.getElementById("debug_mode");
 const sqlQueryMode = document.getElementById("sql_query_mode");
 const sqlOnlyMode = document.getElementById("sql_only_mode");
-const testSqlBtn = document.getElementById("test_sql_btn");
 if (debugMode) debugMode.addEventListener("change", toggleDebugExtras);
 if (sqlQueryMode) sqlQueryMode.addEventListener("change", toggleDebugExtras);
 if (sqlOnlyMode) sqlOnlyMode.addEventListener("change", toggleSmc);
-if (testSqlBtn) testSqlBtn.addEventListener("click", testSqlConnection);

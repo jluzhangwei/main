@@ -286,6 +286,19 @@ def _normalize_device_names(device_name: str | None) -> list[str]:
     return sorted(v for v in values if v)
 
 
+def _looks_like_ipv4(value: str | None) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    parts = raw.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        return all(0 <= int(part) <= 255 for part in parts)
+    except ValueError:
+        return False
+
+
 def _format_sql_time_value(dt: datetime, integer_column: bool) -> Any:
     if integer_column:
         return int(dt.timestamp())
@@ -313,7 +326,7 @@ def _json_safe_value(value: Any) -> Any:
 
 
 def _lookup_ipaddresslist_device(cur: Any, device_ip: str) -> dict[str, Any]:
-    if not device_ip:
+    if not _looks_like_ipv4(device_ip):
         return {}
     try:
         cur.execute(f"SHOW COLUMNS FROM `{IPADDRESS_TABLE_NAME}`")
@@ -368,6 +381,7 @@ def query_log_server(
 ) -> dict[str, Any]:
     query_start = user_start - timedelta(minutes=max(5, int(context_lines or 0)))
     query_end = user_end + timedelta(minutes=max(5, int(context_lines or 0)))
+    query_device_ip = str(device_ip or "").strip()
     device_names = _normalize_device_names(device_name)
 
     conn = connect_db(
@@ -401,9 +415,9 @@ def query_log_server(
 
             where_parts: list[str] = []
             params: list[Any] = []
-            if ip_col and device_ip:
+            if ip_col and _looks_like_ipv4(query_device_ip):
                 where_parts.append(f"`{ip_col}` = %s")
-                params.append(device_ip)
+                params.append(query_device_ip)
             if name_col and device_names:
                 placeholders = ", ".join(["%s"] * len(device_names))
                 where_parts.append(f"`{name_col}` IN ({placeholders})")
@@ -449,7 +463,7 @@ def query_log_server(
             """
             cur.execute(sql, tuple(params))
             rows = cur.fetchall()
-            device_meta = _lookup_ipaddresslist_device(cur, device_ip)
+            device_meta = _lookup_ipaddresslist_device(cur, query_device_ip)
 
         lines: list[str] = []
         first_ts: datetime | None = None
@@ -467,7 +481,7 @@ def query_log_server(
             if row_name and not resolved_device_name:
                 resolved_device_name = row_name
             row_ip = str(row.get("device_ip_raw") or "").strip()
-            prefix = row_name or row_ip or resolved_device_name or device_ip
+            prefix = row_name or row_ip or resolved_device_name or query_device_ip
             message = str(row.get("message_raw") or "").strip()
             line = f"{ts_text} [sql] {prefix} {message}".strip()
             lines.append(line)

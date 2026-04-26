@@ -284,10 +284,57 @@
   function parseUiTimeValue(text) {
     const raw = String(text || '').trim();
     if (!raw) return null;
-    const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/);
-    if (!m) return NaN;
-    const [, y, mo, d, h, mi, s] = m;
-    return new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)).getTime();
+    const normalized = raw.replace(/\//g, '-');
+    let m = normalized.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?$/);
+    if (m) {
+      const [, y, mo, d, h, mi, s = '0'] = m;
+      return new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)).getTime();
+    }
+    m = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (m) {
+      const [, y, mo, d] = m;
+      return new Date(Number(y), Number(mo) - 1, Number(d), 0, 0, 0).getTime();
+    }
+    const parsed = Date.parse(normalized);
+    if (Number.isFinite(parsed)) return parsed;
+    const isoCandidate = normalized.includes('T') ? normalized : normalized.replace(' ', 'T');
+    const isoParsed = Date.parse(isoCandidate);
+    if (Number.isFinite(isoParsed)) return isoParsed;
+    return NaN;
+  }
+
+  function normalizeUiTimeText(text) {
+    const ms = parseUiTimeValue(text);
+    if (ms == null || !Number.isFinite(ms)) return '';
+    return formatTimestampMs(ms);
+  }
+
+  function sanitizeLogTimeRangeState() {
+    const defaultStart = normalizeUiTimeText(logTimeRangeState.defaultStart || '');
+    const defaultEnd = normalizeUiTimeText(logTimeRangeState.defaultEnd || '');
+    const currentStart = normalizeUiTimeText(logTimeRangeState.start || '');
+    const currentEnd = normalizeUiTimeText(logTimeRangeState.end || '');
+
+    logTimeRangeState.defaultStart = defaultStart;
+    logTimeRangeState.defaultEnd = defaultEnd;
+
+    if (!defaultStart || !defaultEnd) {
+      logTimeRangeState.start = currentStart || '';
+      logTimeRangeState.end = currentEnd || '';
+      return false;
+    }
+
+    const startMs = parseUiTimeValue(currentStart || defaultStart);
+    const endMs = parseUiTimeValue(currentEnd || defaultEnd);
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
+      logTimeRangeState.start = defaultStart;
+      logTimeRangeState.end = defaultEnd;
+      return true;
+    }
+
+    logTimeRangeState.start = currentStart || defaultStart;
+    logTimeRangeState.end = currentEnd || defaultEnd;
+    return false;
   }
 
   function parseLogLineTimestamp(line) {
@@ -349,6 +396,8 @@
     const scopedRows = rows.filter((d) => d && d.filtered_log_path);
     const scopeKey = scopedRows.map((d) => `${d.device_id}:1`).join('|');
     if (!force && logTimeRangeState.initialized && logTimeRangeState.scopeKey === scopeKey) {
+      sanitizeLogTimeRangeState();
+      persistDebugTimeRangeState();
       return logTimeRangeState;
     }
     let minTs = null;
@@ -365,9 +414,13 @@
     }));
     const defaultStart = minTs != null ? formatTimestampMs(minTs) : '';
     const defaultEnd = maxTs != null ? formatTimestampMs(maxTs) : '';
+    const currentStart = normalizeUiTimeText(logTimeRangeState.start || '');
+    const currentEnd = normalizeUiTimeText(logTimeRangeState.end || '');
+    const previousDefaultStart = normalizeUiTimeText(logTimeRangeState.defaultStart || '');
+    const previousDefaultEnd = normalizeUiTimeText(logTimeRangeState.defaultEnd || '');
     const hadCustom = logTimeRangeState.initialized
-      && ((logTimeRangeState.start && logTimeRangeState.start !== logTimeRangeState.defaultStart)
-        || (logTimeRangeState.end && logTimeRangeState.end !== logTimeRangeState.defaultEnd));
+      && ((currentStart && currentStart !== previousDefaultStart)
+        || (currentEnd && currentEnd !== previousDefaultEnd));
     logTimeRangeState.defaultStart = defaultStart;
     logTimeRangeState.defaultEnd = defaultEnd;
     logTimeRangeState.scopeKey = scopeKey;
@@ -376,16 +429,16 @@
       logTimeRangeState.start = defaultStart;
       logTimeRangeState.end = defaultEnd;
     } else {
-      if (!String(logTimeRangeState.start || '').trim()) logTimeRangeState.start = defaultStart;
-      if (!String(logTimeRangeState.end || '').trim()) logTimeRangeState.end = defaultEnd;
+      logTimeRangeState.start = currentStart || defaultStart;
+      logTimeRangeState.end = currentEnd || defaultEnd;
     }
     if (!hadCustom && DEBUG_TIME_RANGE_STORAGE_KEY) {
       try {
         const raw = window.localStorage.getItem(DEBUG_TIME_RANGE_STORAGE_KEY);
         if (raw) {
           const saved = JSON.parse(raw);
-          const savedStart = String(saved && saved.start || '').trim();
-          const savedEnd = String(saved && saved.end || '').trim();
+          const savedStart = normalizeUiTimeText(saved && saved.start || '');
+          const savedEnd = normalizeUiTimeText(saved && saved.end || '');
           if (savedStart) logTimeRangeState.start = savedStart;
           if (savedEnd) logTimeRangeState.end = savedEnd;
         }
@@ -393,6 +446,8 @@
         // ignore storage parse failure
       }
     }
+    sanitizeLogTimeRangeState();
+    persistDebugTimeRangeState();
     return logTimeRangeState;
   }
 
@@ -400,8 +455,8 @@
     if (!DEBUG_TIME_RANGE_STORAGE_KEY) return;
     try {
       window.localStorage.setItem(DEBUG_TIME_RANGE_STORAGE_KEY, JSON.stringify({
-        start: logTimeRangeState.start || '',
-        end: logTimeRangeState.end || '',
+        start: normalizeUiTimeText(logTimeRangeState.start || '') || '',
+        end: normalizeUiTimeText(logTimeRangeState.end || '') || '',
       }));
     } catch (e) {
       // ignore storage failures
@@ -1182,6 +1237,11 @@
     }
     summaryEl.textContent = T.trendLoading;
     await ensureGlobalTimeRangeState();
+    syncTimeRangeInputs();
+    if (!logTimeRangeState.defaultStart || !logTimeRangeState.defaultEnd) {
+      clearTrendPanel(T.timeRangeNoTimestamp);
+      return;
+    }
     const startMs = parseUiTimeValue(logTimeRangeState.start || logTimeRangeState.defaultStart || '');
     const endMs = parseUiTimeValue(logTimeRangeState.end || logTimeRangeState.defaultEnd || '');
     if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
@@ -1276,8 +1336,15 @@
     } else {
       const startInput = String(el('log-time-start')?.value || '').trim();
       const endInput = String(el('log-time-end')?.value || '').trim();
-      logTimeRangeState.start = startInput || logTimeRangeState.defaultStart || '';
-      logTimeRangeState.end = endInput || logTimeRangeState.defaultEnd || '';
+      const normalizedStart = startInput ? normalizeUiTimeText(startInput) : (logTimeRangeState.defaultStart || '');
+      const normalizedEnd = endInput ? normalizeUiTimeText(endInput) : (logTimeRangeState.defaultEnd || '');
+      if ((startInput && !normalizedStart) || (endInput && !normalizedEnd)) {
+        const statusEl = el('log-time-status');
+        if (statusEl) statusEl.textContent = T.timeRangeInvalid;
+        return;
+      }
+      logTimeRangeState.start = normalizedStart || logTimeRangeState.defaultStart || '';
+      logTimeRangeState.end = normalizedEnd || logTimeRangeState.defaultEnd || '';
     }
     syncTimeRangeInputs();
     persistDebugTimeRangeState();
@@ -1765,7 +1832,12 @@
       await applyLogTimeRange(false);
     });
     logTimeStartInput.addEventListener('blur', async () => {
-      if (String(logTimeStartInput.value || '').trim()) return;
+      const raw = String(logTimeStartInput.value || '').trim();
+      if (raw) {
+        const normalized = normalizeUiTimeText(raw);
+        if (normalized) logTimeStartInput.value = normalized;
+        return;
+      }
       await ensureGlobalTimeRangeState();
       logTimeRangeState.start = logTimeRangeState.defaultStart || '';
       logTimeStartInput.value = logTimeRangeState.start;
@@ -1779,7 +1851,12 @@
       await applyLogTimeRange(false);
     });
     logTimeEndInput.addEventListener('blur', async () => {
-      if (String(logTimeEndInput.value || '').trim()) return;
+      const raw = String(logTimeEndInput.value || '').trim();
+      if (raw) {
+        const normalized = normalizeUiTimeText(raw);
+        if (normalized) logTimeEndInput.value = normalized;
+        return;
+      }
       await ensureGlobalTimeRangeState();
       logTimeRangeState.end = logTimeRangeState.defaultEnd || '';
       logTimeEndInput.value = logTimeRangeState.end;

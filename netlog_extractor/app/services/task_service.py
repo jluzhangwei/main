@@ -8,6 +8,19 @@ from typing import Any
 from ..models import DeviceInput, TaskCreatePayload
 
 
+def _looks_like_ipv4(value: str | None) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    parts = raw.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        return all(0 <= int(part) <= 255 for part in parts)
+    except ValueError:
+        return False
+
+
 def parse_time_or_raise(value: str) -> datetime:
     raw = str(value or "").strip()
     if not raw:
@@ -67,6 +80,8 @@ def parse_devices_from_text(
             device_port = 22
 
         device_name = parts[1] if len(parts) > 1 and parts[1] else None
+        if not device_name and sql_only_mode and not _looks_like_ipv4(ip):
+            device_name = ip
         local_vendor = parts[2] if len(parts) > 2 and parts[2] else vendor_hint
 
         if require_credentials and (not default_username or not default_password):

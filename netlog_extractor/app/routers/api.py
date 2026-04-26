@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Body, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
+from ..models import TaskCreatePayload
 from ..services.log_highlight_service import (
     HighlightPresetError,
     export_preset_text,
@@ -66,6 +67,21 @@ def _augment_device_dict(data: dict) -> dict:
 async def list_tasks_api(request: Request):
     tasks = request.app.state.task_manager.list_tasks()
     return [t.model_dump() for t in tasks]
+
+
+@router.post("/tasks")
+async def create_task_api(request: Request, payload: TaskCreatePayload):
+    try:
+        task = request.app.state.task_manager.create_task(payload)
+        return {
+            "ok": True,
+            "task_id": task.task_id,
+            "task_url": f"/tasks/{task.task_id}",
+            "status": task.status,
+            "progress_total": task.progress_total,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/tasks/{task_id}")

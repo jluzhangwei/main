@@ -40,7 +40,22 @@ def _no_cache(resp: HTMLResponse):
 
 @router.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    return _no_cache(templates.TemplateResponse("index.html", {"request": request, "error": None}))
+    q = request.query_params
+    prefill = {
+        "jump_mode": str(q.get("jump_mode", "") or ""),
+        "vendor_hint": str(q.get("vendor_hint", "") or ""),
+        "batch_text": str(q.get("batch_text", "") or ""),
+        "start_time": str(q.get("start_time", "") or ""),
+        "end_time": str(q.get("end_time", "") or ""),
+        "context_lines": str(q.get("context_lines", "") or ""),
+        "concurrency": str(q.get("concurrency", "") or ""),
+        "per_device_timeout": str(q.get("per_device_timeout", "") or ""),
+        "debug_mode": str(q.get("debug_mode", "") or ""),
+        "sql_query_mode": str(q.get("sql_query_mode", "") or ""),
+        "sql_only_mode": str(q.get("sql_only_mode", "") or ""),
+        "prefill_note": str(q.get("prefill_note", "") or ""),
+    }
+    return _no_cache(templates.TemplateResponse("index.html", {"request": request, "error": None, "prefill": prefill}))
 
 
 @router.post("/tasks/create", response_class=HTMLResponse)

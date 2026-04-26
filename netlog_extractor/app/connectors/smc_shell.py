@@ -182,7 +182,9 @@ class SmcShellClient:
         if os.name == "nt":
             raise RuntimeError("SMC mode is currently supported on POSIX systems only")
 
-        cmd = self._format_smc_command(str(self.config.smc_command).strip() or "smc server toc {jump_host}")
+        cmd = self._format_smc_command(
+            str(self.config.smc_command).strip() or "smc server toc {jump_host}"
+        )
         self._dbg(f"[SMC] start jump command: {cmd}")
         self._start_pty_command(cmd)
 
@@ -219,7 +221,9 @@ class SmcShellClient:
         if os.name == "nt":
             raise RuntimeError("SMC mode is currently supported on POSIX systems only")
 
-        base_cmd = self._format_smc_command(str(self.config.smc_command).strip() or "smc pam nd ssh {device_ip}")
+        base_cmd = self._format_smc_command(
+            str(self.config.smc_command).strip() or "smc pam nd ssh {device_ip}"
+        )
         cmd = base_cmd
         used_skip_deviceauth = False
         password_attempts = 0

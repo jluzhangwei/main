@@ -5,6 +5,7 @@
 {% block content %}
 {% set lang_raw = request.query_params.get('lang', 'zh') %}
 {% set lang = 'en' if lang_raw.lower().startswith('en') else 'zh' %}
+{% set prefill_data = prefill or {} %}
 <div class="card">
   <div class="hc-head">
     <h2>NetLog Extractor Web Runner</h2>
@@ -12,6 +13,9 @@
   </div>
 
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  {% if prefill_data.get('prefill_note') %}
+  <div class="tips" style="margin:0 0 14px;">{{ prefill_data.get('prefill_note') }}</div>
+  {% endif %}
 
   <form class="hc-form" method="post" action="/tasks/create">
     <input type="hidden" name="lang" value="{{ request.query_params.get('lang', 'zh') }}" />
@@ -58,7 +62,7 @@
     <div class="row">
       <label>{{ 'Device Addresses (one per line)' if lang == 'en' else '设备地址（每行一个）' }}</label>
       <textarea name="batch_text" id="batch_text" placeholder="10.0.0.1&#10;10.0.0.2:22,core-1,cisco"></textarea>
-      <div class="tips">{{ 'Manual input format: ip[:port],device_name,vendor_hint, one per line.' if lang == 'en' else '支持手动输入。格式：`ip[:port],device_name,vendor_hint`，每行一台。' }}</div>
+      <div class="tips">{{ 'Manual input format: `ip[:port],device_name,vendor_hint` or single-column hostname in SQL only mode, one per line.' if lang == 'en' else '支持手动输入。格式：`ip[:port],device_name,vendor_hint`，或在仅 SQL 模式下直接写单列主机名，每行一台。' }}</div>
     </div>
 
     <div class="row">
@@ -90,24 +94,7 @@
             <input type="checkbox" id="sql_only_mode" name="sql_only_mode" style="width:auto;max-width:none;" checked />
             {{ 'SQL only mode (skip device login, query log server only)' if lang == 'en' else '仅 SQL 模式（跳过设备登录，只查 log server）' }}
           </label>
-          <div class="tips">{{ 'Reads log server table logmessage1. If left blank, DB values fall back to .env.mysql / environment.' if lang == 'en' else '读取 log server 的 logmessage1 表。留空时会回退到 .env.mysql / 环境变量中的 DB 配置。' }}</div>
-          <div id="sql-config-box" style="display:none;">
-            <div class="row">
-              <div><label>{{ 'DB Host' if lang == 'en' else 'DB Host' }}</label><input name="db_host" placeholder="10.73.255.35" /></div>
-              <div><label>{{ 'DB Port' if lang == 'en' else 'DB Port' }}</label><input name="db_port" type="number" value="8080" /></div>
-            </div>
-            <div class="row">
-              <div><label>{{ 'DB User' if lang == 'en' else 'DB User' }}</label><input name="db_user" placeholder="readonly" /></div>
-              <div><label>{{ 'DB Name' if lang == 'en' else 'DB Name' }}</label><input name="db_name" placeholder="monitoring" /></div>
-            </div>
-            <div class="row">
-              <div><label>{{ 'DB Password' if lang == 'en' else 'DB Password' }}</label><input name="db_password" type="password" autocomplete="off" /></div>
-            </div>
-            <div class="inline-actions">
-              <button id="test_sql_btn" type="button">{{ 'Test SQL Connection' if lang == 'en' else '测试 SQL 连接' }}</button>
-            </div>
-            <div id="sql_test_result" class="tips"></div>
-          </div>
+          <div class="tips">{{ 'Reads log server table logmessage1 and always uses the server-side DB config (.env.mysql / environment).' if lang == 'en' else '读取 log server 的 logmessage1 表，并始终使用服务器端默认 DB 配置（.env.mysql / 环境变量）。' }}</div>
         </div>
       </div>
     </div>
@@ -122,13 +109,13 @@
 <script>
 window.NETLOG_INDEX_BOOTSTRAP = {{ {
   'lang': lang,
+  'prefill': prefill | default({}, true),
   'texts': {
     'sql_only_credential_tip': 'SQL only mode skips device login, so username/password are ignored.' if lang == 'en' else '仅 SQL 模式会跳过设备登录，因此这里的用户名和密码不会生效。',
     'pam_nd_credential_tip': 'smc pam nd mode does not require device username/password input on this page.' if lang == 'en' else 'smc pam nd 模式不需要在本页面输入设备用户名和密码。',
     'sql_only_smc_tip': 'SQL only mode ignores jump/login settings and queries log server directly.' if lang == 'en' else '仅 SQL 模式会忽略跳板和登录配置，直接查询 log server。',
     'pam_nd_command_tip': 'PAM/ND mode executes a direct device-access command; supported vars: {device_ip}, {device_port}, {username}.' if lang == 'en' else 'PAM/ND 模式会直接执行设备接入命令；支持变量：{device_ip}、{device_port}、{username}。',
-    'smc_command_tip': 'SMC mode executes this command; supported vars: {jump_host}, {jump_port}.' if lang == 'en' else 'SMC 模式会执行该命令；支持变量：{jump_host}、{jump_port}。',
-    'testing_sql': 'Testing SQL connection...' if lang == 'en' else '正在测试 SQL 连接...'
+    'smc_command_tip': 'SMC mode executes this command; supported vars: {jump_host}, {jump_port}.' if lang == 'en' else 'SMC 模式会执行该命令；支持变量：{jump_host}、{jump_port}。'
   }
 } | tojson }};
 </script>
