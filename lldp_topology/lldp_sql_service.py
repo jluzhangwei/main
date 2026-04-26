@@ -1969,6 +1969,14 @@ class ZabbixAlarmRequest(BaseModel):
     zabbix_verify_ssl: bool | None = None
 
 
+class NetlogAlarmTaskRequest(BaseModel):
+    devices: list[DeviceDetailTarget]
+    alarm_clock: int = Field(ge=1)
+    alarm_name: str | None = None
+    window_minutes: int = Field(default=15, ge=1, le=1440)
+    netlog_base_url: str | None = None
+
+
 class StateSnapshotSaveRequest(BaseModel):
     snapshot: dict[str, Any]
     name: str | None = None
@@ -3886,6 +3894,118 @@ def collect_zabbix_alarms(payload: ZabbixAlarmRequest) -> dict[str, Any]:
         "device_results": device_results,
         "alarms": alarms,
         "total_elapsed_seconds": round(time.perf_counter() - started, 3),
+    }
+
+
+def _normalize_netlog_base_url(value: str | None = None) -> str:
+    raw = str(value or os.getenv("NETLOG_EXTRACTOR_URL") or "http://127.0.0.1:8000").strip()
+    if not raw:
+        raw = "http://127.0.0.1:8000"
+    if not re.match(r"^https?://", raw, re.I):
+        raw = f"http://{raw}"
+    return raw.rstrip("/")
+
+
+def _netlog_post_json(base_url: str, path: str, payload: dict[str, Any], timeout_seconds: int = 12) -> dict[str, Any]:
+    url = urllib.parse.urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=max(3, int(timeout_seconds))) as resp:
+            raw_text = resp.read().decode("utf-8", errors="ignore")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Netlog HTTP {exc.code}: {detail or exc.reason}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Netlog request failed: {exc}") from exc
+    try:
+        data = json.loads(raw_text or "{}")
+    except Exception as exc:
+        raise RuntimeError(f"Netlog returned non-JSON response: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("Netlog returned invalid response")
+    return data
+
+
+def create_netlog_task_from_alarm(payload: NetlogAlarmTaskRequest) -> dict[str, Any]:
+    devices: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in payload.devices or []:
+        label = normalize_device_id(item.label or item.hostname or item.ip or item.node_id or "")
+        hostname = normalize_device_id(item.hostname or label)
+        ip = normalize_device_id(item.ip or "")
+        target = ip or hostname or label
+        if not target:
+            continue
+        key = f"{target.lower()}|{hostname.lower()}"
+        if key in seen:
+            continue
+        seen.add(key)
+        devices.append(
+            {
+                "device_ip": target,
+                "device_port": 22,
+                "device_name": hostname or label or None,
+                "username": "",
+                "password": "",
+                "vendor_hint": None,
+                "jump_mode": "smc_pam_nd",
+                "jump_host": None,
+                "jump_port": 22,
+                "smc_command": "smc pam nd ssh {device_ip}",
+            }
+        )
+    if not devices:
+        raise RuntimeError("devices is required")
+
+    alarm_ts = int(payload.alarm_clock)
+    window_seconds = int(payload.window_minutes) * 60
+    start_ts = alarm_ts - window_seconds
+    end_ts = alarm_ts + window_seconds
+    task_payload = {
+        "start_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_ts)),
+        "end_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(end_ts)),
+        "context_lines": 5,
+        "concurrency": min(10, max(1, len(devices))),
+        "per_device_timeout": 60,
+        "default_username": None,
+        "default_password": None,
+        "default_jump_mode": "smc_pam_nd",
+        "jump_host": None,
+        "jump_port": 22,
+        "smc_command": "smc pam nd ssh {device_ip}",
+        "debug_mode": True,
+        "sql_query_mode": True,
+        "sql_only_mode": True,
+        "db_host": None,
+        "db_port": None,
+        "db_user": None,
+        "db_password": None,
+        "db_name": None,
+        "devices": devices,
+    }
+    base_url = _normalize_netlog_base_url(payload.netlog_base_url)
+    data = _netlog_post_json(base_url, "/api/tasks", task_payload)
+    if data.get("ok") is not True or not data.get("task_id"):
+        raise RuntimeError(f"Netlog task creation failed: {data}")
+    task_path = str(data.get("task_url") or f"/tasks/{data.get('task_id')}")
+    task_url = urllib.parse.urljoin(base_url.rstrip("/") + "/", task_path.lstrip("/"))
+    return {
+        "ok": True,
+        "task_id": data.get("task_id"),
+        "task_url": task_url,
+        "netlog_base_url": base_url,
+        "device_count": len(devices),
+        "alarm_clock": alarm_ts,
+        "alarm_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(alarm_ts)),
+        "window_minutes": int(payload.window_minutes),
+        "start_time": task_payload["start_time"],
+        "end_time": task_payload["end_time"],
+        "alarm_name": payload.alarm_name or "",
     }
 
 
@@ -6104,6 +6224,16 @@ def query_zabbix_alarms(payload: ZabbixAlarmRequest) -> dict[str, Any]:
         return collect_zabbix_alarms(payload)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Zabbix alarm query failed: {exc}") from exc
+
+
+@app.post("/api/netlog/alarm-task")
+def create_netlog_alarm_task(payload: NetlogAlarmTaskRequest) -> dict[str, Any]:
+    if not payload.devices:
+        raise HTTPException(status_code=400, detail="devices is required")
+    try:
+        return create_netlog_task_from_alarm(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Netlog task creation failed: {exc}") from exc
 
 
 @app.get("/api/cli/link-utilization-cache")

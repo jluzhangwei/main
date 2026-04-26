@@ -677,6 +677,9 @@
         <div>
           <button id="openUtilFilterModal" type="button">利用率过滤</button>
         </div>
+        <div>
+          <button id="openAlarmTimeFilterModal" type="button">告警时间过滤</button>
+        </div>
         <div class="span-2">
           <select id="utilMetric">
             <option value="tx">查询口径：TX</option>
@@ -690,6 +693,9 @@
         <label class="check-row"><input id="utilLabelEnabled" type="checkbox" checked />显示利用率标签</label>
         <label class="check-row"><input id="utilShowTxRx" type="checkbox" />显示TX/RX（TX按箭头方向）</label>
         <label class="check-row"><input id="utilShowBandwidth" type="checkbox" />显示总带宽</label>
+        <label class="check-row"><input id="utilShowActiveAlarms" type="checkbox" /><span id="utilShowActiveAlarmsLabel">显示活动告警</span></label>
+        <div class="hint span-2" id="utilShowActiveAlarmsHint">告警状态：无告警保持正常；已确认告警仅文字变红；未确认活动告警会闪动。</div>
+        <div class="hint span-2" id="utilAlarmTimeFilterHint">告警时间过滤：未启用，仅过滤当前图上的活动告警显示。</div>
         <label class="check-row"><input id="utilShowEdgeDesc" type="checkbox" checked /><span id="utilShowEdgeDescLabel">显示链路描述</span></label>
         <div class="hint span-2" id="utilResultHint">阈值：绿色 &lt; 40%，黄色 40-70%，红色 ≥ 70%。</div>
         <div class="hint span-2" id="utilLegendHint">颜色图例：按当前 MAX 口径，绿色 &lt; 40%，黄色 40-70%，红色 ≥ 70%，灰色表示无数据。</div>
@@ -739,7 +745,11 @@
   <div id="ctxSepQuery" class="ctx-sep"></div>
   <button id="ctxUtil">当前利用率</button>
   <button id="ctxUtilRange">区间利用率</button>
-  <button id="ctxZbxAlarm">告警查询</button>
+  <div id="ctxSepAlarm" class="ctx-sep"></div>
+  <button id="ctxZbxAlarm">查看告警</button>
+  <button id="ctxZbxAlarmRefresh">刷新告警</button>
+  <button id="ctxNetlogAlarm">查询 Log</button>
+  <div id="ctxSepAppend" class="ctx-sep"></div>
   <button id="ctxAppendQuery">追加查询</button>
 </div>
 <div id="importModal" class="modal-backdrop">
@@ -1109,6 +1119,14 @@
           <option value="history">历史告警</option>
         </select>
       </div>
+      <div class="field span-2">
+        <label>确认状态</label>
+        <select id="zbxAlarmAckFilter">
+          <option value="all" selected>全部</option>
+          <option value="unack">仅未确认</option>
+          <option value="ack">仅已确认</option>
+        </select>
+      </div>
       <div class="field span-2" id="zbxAlarmRangeField" style="display:none;">
         <div class="zbx-time-wrap">
           <div class="zbx-time-left">
@@ -1153,6 +1171,47 @@
     <div class="modal-actions">
       <button id="applyUtilFilter" class="primary">确定</button>
       <button id="closeUtilFilterModal">关闭</button>
+    </div>
+  </div>
+</div>
+<div id="alarmTimeFilterModal" class="modal-backdrop">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="alarmTimeFilterTitle">
+    <div class="modal-title" id="alarmTimeFilterTitle">告警时间过滤</div>
+    <div class="modal-form-grid">
+      <div class="field span-2">
+        <div class="zbx-time-wrap">
+          <div class="zbx-time-left">
+            <div class="zbx-time-row">
+              <label for="alarmTimeFilterFromExpr">From</label>
+              <input id="alarmTimeFilterFromExpr" type="text" value="now-15m" placeholder="例如 now-15m" />
+            </div>
+            <div class="zbx-time-row">
+              <label for="alarmTimeFilterTillExpr">To</label>
+              <input id="alarmTimeFilterTillExpr" type="text" value="now" placeholder="例如 now" />
+            </div>
+          </div>
+          <div class="zbx-time-presets">
+            <button type="button" data-alarm-display-range="now-5m|now">Last 5 minutes</button>
+            <button type="button" data-alarm-display-range="now-15m|now">Last 15 minutes</button>
+            <button type="button" data-alarm-display-range="now-30m|now">Last 30 minutes</button>
+            <button type="button" data-alarm-display-range="now-1h|now">Last 1 hour</button>
+            <button type="button" data-alarm-display-range="now-3h|now">Last 3 hours</button>
+            <button type="button" data-alarm-display-range="now-6h|now">Last 6 hours</button>
+            <button type="button" data-alarm-display-range="now-12h|now">Last 12 hours</button>
+            <button type="button" data-alarm-display-range="now-1d|now">Last 1 day</button>
+            <button type="button" data-alarm-display-range="now-7d|now">Last 7 days</button>
+            <button type="button" data-alarm-display-range="now-30d|now">Last 30 days</button>
+            <button type="button" data-alarm-display-range="now-3M|now">Last 3 months</button>
+            <button type="button" data-alarm-display-range="now-1y|now">Last 1 year</button>
+          </div>
+        </div>
+        <div class="hint" id="alarmTimeFilterModalHint">仅过滤当前图上的活动告警显示，不会重新查询 Zabbix。支持 `now-15m`、`now-1d`、`now-3M` 这类表达式。</div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button id="applyAlarmTimeFilter" class="primary" type="button">应用过滤</button>
+      <button id="clearAlarmTimeFilter" type="button">清除过滤</button>
+      <button id="closeAlarmTimeFilterModal" type="button">关闭</button>
     </div>
   </div>
 </div>
@@ -1233,6 +1292,14 @@
   const utilFilterState = {
     active: false,
     threshold: null
+  };
+  const activeAlarmTimeFilterState = {
+    active: false,
+    time_from: null,
+    time_till: null,
+    fromExpr: 'now-15m',
+    tillExpr: 'now',
+    hint: ''
   };
   const MAX_ROLLBACK_STEPS = 5;
   const rollbackState = {
@@ -1381,10 +1448,19 @@
       btn_zbx_config: 'Zabbix配置',
       btn_clear_cache: '删除链路缓存',
       btn_util_filter: '利用率过滤',
+      btn_alarm_time_filter: '告警时间过滤',
       btn_clear_util_filter: '清除过滤',
+      alarm_time_filter_title: '告警时间过滤',
+      alarm_time_filter_apply: '应用过滤',
+      alarm_time_filter_clear: '清除过滤',
+      alarm_time_filter_close: '关闭',
+      alarm_time_filter_modal_hint: '仅过滤当前图上的活动告警显示，不会重新查询 Zabbix。支持 `now-15m`、`now-1d`、`now-3M` 这类表达式。',
+      alarm_time_filter_none: '告警时间过滤：未启用，仅过滤当前图上的活动告警显示。',
+      alarm_time_filter_active: '告警时间过滤：{hint}',
       btn_query_device_details: '设备详情查询',
       btn_export_device_details: '导出设备详情',
       util_show_edge_desc: '显示链路描述',
+      util_show_active_alarms: '显示活动告警',
       util_color_analysis: '链路拥塞分析',
       util_show_imbalance: '负载分担分析',
       btn_run_sql: '执行 SQL 查询',
@@ -1412,7 +1488,9 @@
       ctx_edge_collapse: '收起链路',
       ctx_util: '当前利用率',
       ctx_util_range: '区间利用率',
-      ctx_zbx_alarm: '告警查询',
+      ctx_zbx_alarm: '查看告警',
+      ctx_zbx_alarm_refresh: '刷新告警',
+      ctx_netlog_alarm: '查询 Log',
       ctx_device_detail: '复制详情',
       ctx_edge_desc: '添加描述',
       edge_desc_modal_title: '链路描述',
@@ -1544,10 +1622,19 @@
       btn_zbx_config: 'Zabbix Config',
       btn_clear_cache: 'Clear Link Cache',
       btn_util_filter: 'Util Filter',
+      btn_alarm_time_filter: 'Alarm Time Filter',
       btn_clear_util_filter: 'Clear Filter',
+      alarm_time_filter_title: 'Alarm Time Filter',
+      alarm_time_filter_apply: 'Apply Filter',
+      alarm_time_filter_clear: 'Clear Filter',
+      alarm_time_filter_close: 'Close',
+      alarm_time_filter_modal_hint: 'Only filters active-alarm display on the current graph. It does not re-query Zabbix. Expressions like `now-15m`, `now-1d`, `now-3M` are supported.',
+      alarm_time_filter_none: 'Alarm time filter: off. It only affects active-alarm display on the current graph.',
+      alarm_time_filter_active: 'Alarm time filter: {hint}',
       btn_query_device_details: 'Query Device Details',
       btn_export_device_details: 'Export Device Details',
       util_show_edge_desc: 'Show Link Description',
+      util_show_active_alarms: 'Show Active Alarms',
       util_color_analysis: 'Link Congestion Analysis',
       util_show_imbalance: 'Load Balancing Analysis',
       btn_run_sql: 'Run SQL Query',
@@ -1575,7 +1662,9 @@
       ctx_edge_collapse: 'Collapse Links',
       ctx_util: 'Current Utilization',
       ctx_util_range: 'Range Utilization',
-      ctx_zbx_alarm: 'Alarm Query',
+      ctx_zbx_alarm: 'View Alarms',
+      ctx_zbx_alarm_refresh: 'Refresh Alarms',
+      ctx_netlog_alarm: 'Query Log',
       ctx_device_detail: 'Copy Details',
       ctx_edge_desc: 'Add Description',
       edge_desc_modal_title: 'Link Description',
@@ -1724,6 +1813,19 @@
     bar.classList.remove('hidden');
   }
 
+  function activeAlarmTimeFilterHintText() {
+    if (!activeAlarmTimeFilterState.active) return tr('alarm_time_filter_none');
+    const hint = String(activeAlarmTimeFilterState.hint || '').trim()
+      || `${activeAlarmTimeFilterState.fromExpr || 'now-15m'} ~ ${activeAlarmTimeFilterState.tillExpr || 'now'}`;
+    return trf('alarm_time_filter_active', { hint });
+  }
+
+  function updateActiveAlarmTimeFilterUi() {
+    if ($('utilAlarmTimeFilterHint')) $('utilAlarmTimeFilterHint').textContent = activeAlarmTimeFilterHintText();
+    if ($('alarmTimeFilterFromExpr')) $('alarmTimeFilterFromExpr').value = String(activeAlarmTimeFilterState.fromExpr || 'now-15m');
+    if ($('alarmTimeFilterTillExpr')) $('alarmTimeFilterTillExpr').value = String(activeAlarmTimeFilterState.tillExpr || 'now');
+  }
+
   function applyStaticI18n() {
     document.documentElement.lang = uiLang === 'en' ? 'en' : 'zh-CN';
     document.title = tr('doc_title');
@@ -1803,10 +1905,16 @@
     setText('openZbxConfig', 'btn_zbx_config');
     setText('clearUtilCache', 'btn_clear_cache');
     setText('openUtilFilterModal', 'btn_util_filter');
+    setText('openAlarmTimeFilterModal', 'btn_alarm_time_filter');
     setText('clearUtilFilterOnly', 'btn_clear_util_filter');
+    setText('alarmTimeFilterTitle', 'alarm_time_filter_title');
+    setText('applyAlarmTimeFilter', 'alarm_time_filter_apply');
+    setText('clearAlarmTimeFilter', 'alarm_time_filter_clear');
+    setText('closeAlarmTimeFilterModal', 'alarm_time_filter_close');
     setText('queryDeviceDetails', 'btn_query_device_details');
     setText('exportDeviceDetails', 'btn_export_device_details');
     setText('utilShowEdgeDescLabel', 'util_show_edge_desc');
+    setText('utilShowActiveAlarmsLabel', 'util_show_active_alarms');
     setText('utilColorEnabledLabel', 'util_color_analysis');
     setText('utilShowImbalanceLabel', 'util_show_imbalance');
     setText('runSqlGenerateModal', 'btn_run_sql');
@@ -1824,6 +1932,8 @@
     setText('ctxUtil', 'ctx_util');
     setText('ctxUtilRange', 'ctx_util_range');
     setText('ctxZbxAlarm', 'ctx_zbx_alarm');
+    setText('ctxZbxAlarmRefresh', 'ctx_zbx_alarm_refresh');
+    setText('ctxNetlogAlarm', 'ctx_netlog_alarm');
     setText('ctxDeviceDetail', 'ctx_device_detail');
     setText('ctxEdgeDesc', 'ctx_edge_desc');
     setText('ctxPathVia', 'ctx_path_via');
@@ -1869,6 +1979,8 @@
     setText('refreshStateList', 'state_refresh');
     setText('closeStateModal', 'state_close');
     setText('closeZbxConfigModal', 'state_close');
+    if ($('alarmTimeFilterModalHint')) $('alarmTimeFilterModalHint').textContent = tr('alarm_time_filter_modal_hint');
+    updateActiveAlarmTimeFilterUi();
 
     setOptionText('importMode', 'sql', 'import_mode_sql');
     setOptionText('importMode', 'cli', 'import_mode_cli');
@@ -3550,6 +3662,32 @@
           'z-index': 1100
         }
       },
+      {
+        selector: 'node.active-alarm-ack-node',
+        style: {
+          'color': '#dc2626',
+          'text-outline-color': '#ffffff',
+          'font-weight': 700
+        }
+      },
+      {
+        selector: 'node.active-alarm-node',
+        style: {
+          'border-width': 4,
+          'border-color': '#dc2626',
+          'z-index-compare': 'manual',
+          'z-index': 1250
+        }
+      },
+      {
+        selector: 'node.active-alarm-node.active-alarm-flash',
+        style: {
+          'background-color': '#ef4444',
+          'border-color': '#facc15',
+          'color': '#7f1d1d',
+          'text-outline-color': '#ffffff'
+        }
+      },
 
       {
         selector: 'edge',
@@ -4055,6 +4193,7 @@
     // 使边标签模式与当前选择同步
     updateEdgeLabels(edgeMode);
     applyUtilizationToEdges();
+    applyActiveAlarmDisplay({ silent: true });
     applyAdaptiveRenderMode();
     applyZoomAwareNodeSizing(true);
 
@@ -4341,6 +4480,7 @@
     };
 
     const core = cy.nodes().filter(n => {
+      if (n.data('isGroup')) return false;
       const resolvedIp = resolveNodeIpv4(n);
       return resolvedIp.startsWith('172.');
     });
@@ -4348,7 +4488,7 @@
       if (!silent) setErr('未找到172地址节点');
       return;
     }
-    const hideNodes = cy.nodes().not(core);
+    const hideNodes = cy.nodes().filter((n) => !n.data('isGroup')).not(core);
     hideNodes.addClass('onlyHidden');
     cy.edges().forEach((e) => {
       const sHidden = e.source().hasClass('onlyHidden');
@@ -4356,7 +4496,7 @@
       if (sHidden || tHidden) e.addClass('onlyHidden');
       else e.removeClass('onlyHidden');
     });
-    if (!silent) setOK(`只显示172设备：${core.length} 个（192/无IP已隐藏）`);
+    if (!silent) setOK(`只显示172设备：${core.length} 个（节点组不参与，192/无IP已隐藏）`);
   }
 
   function applyFilter() {
@@ -4472,11 +4612,12 @@
     }
   }
 
-  function matchTermInName(nameText, termText) {
+  function matchTermInName(nameText, termText, allowCompact = true) {
     const name = normalizeMatchText(nameText);
     const term = normalizeMatchToken(termText);
     if (!term) return false;
     if (name.includes(term)) return true;
+    if (!allowCompact) return false;
     const cName = compactMatchText(name);
     const cTerm = compactMatchText(term);
     if (!cTerm) return false;
@@ -4495,20 +4636,23 @@
   function nodeMatchTexts(node) {
     if (!node || !node.length || typeof node.data !== 'function') return [];
     const out = [];
-    const pushText = (value) => {
+    const pushText = (value, opts = {}) => {
       const text = String(value || '').trim();
       if (!text) return;
-      if (!out.includes(text)) out.push(text);
+      const fuzzy = opts.fuzzy !== false;
+      const key = `${fuzzy ? '1' : '0'}|${text}`;
+      if (out.some((item) => item.key === key)) return;
+      out.push({ key, text, fuzzy });
     };
-    pushText(node.data('label'));
-    pushText(node.data('short'));
-    pushText(node.data('labelIp'));
+    pushText(node.data('label'), { fuzzy: true });
+    pushText(node.data('short'), { fuzzy: true });
+    pushText(node.data('labelIp'), { fuzzy: false });
     const entityKey = String(node.data('entityKey') || '').trim();
-    pushText(entityKey);
-    if (entityKey.startsWith('name:')) pushText(entityKey.slice(5));
-    if (entityKey.startsWith('ip:')) pushText(entityKey.slice(3));
+    pushText(entityKey, { fuzzy: !entityKey.startsWith('ip:') });
+    if (entityKey.startsWith('name:')) pushText(entityKey.slice(5), { fuzzy: true });
+    if (entityKey.startsWith('ip:')) pushText(entityKey.slice(3), { fuzzy: false });
     const groupLabels = Array.isArray(node.data('groupLabels')) ? node.data('groupLabels') : [];
-    groupLabels.forEach((label) => pushText(label));
+    groupLabels.forEach((label) => pushText(label, { fuzzy: true }));
     return out;
   }
 
@@ -4522,7 +4666,14 @@
     const texts = nodeMatchTexts(node);
     if (!texts.length) return false;
     const normalizedExpr = normalizeMatchExpression(expr);
-    return texts.some((text) => matchExpressionInName(text, normalizedExpr));
+    return texts.some((entry) => {
+      for (let i = 0; i < normalizedExpr.length; i++) {
+        const tier = normalizedExpr[i];
+        const hit = tier.some((clause) => clause.every((term) => matchTermInName(entry.text, term, entry.fuzzy)));
+        if (hit) return true;
+      }
+      return false;
+    });
   }
 
   function parseLayers() {
@@ -7696,10 +7847,29 @@
     return selectedOrVisibleDeviceDetailTargets();
   }
 
+  function lastZbxAlarmSelection() {
+    const meta = zbxAlarmCacheMeta || zbxAlarmLastMeta || {};
+    if (String(meta.alarm_mode || '').trim() === 'history' && meta.time_from && meta.time_till) {
+      const fromExpr = String(meta.fromExpr || '').trim();
+      const tillExpr = String(meta.tillExpr || '').trim();
+      return {
+        alarm_mode: 'history',
+        time_from: Number(meta.time_from),
+        time_till: Number(meta.time_till),
+        fromExpr,
+        tillExpr,
+        hint: meta.hint || `历史告警${fromExpr || tillExpr ? `（${fromExpr || meta.time_from} ~ ${tillExpr || meta.time_till}）` : ''}`
+      };
+    }
+    return { alarm_mode: 'current', time_from: null, time_till: null, hint: '当前未恢复告警' };
+  }
+
   function zbxAlarmExportRows() {
-    const rows = Array.isArray(zbxAlarmRows) ? zbxAlarmRows.slice() : [];
+    const ackFilter = currentZbxAlarmAckFilter();
+    const rows = sortZbxAlarmRowsForDisplay(filterZbxAlarmRowsByAck(zbxAlarmRows, ackFilter));
     const deviceRows = Array.isArray(zbxAlarmDeviceResults) ? zbxAlarmDeviceResults : [];
     deviceRows.forEach((item) => {
+      if (ackFilter !== 'all') return;
       const alarmCount = Number(item.alarm_count || 0);
       if (alarmCount > 0) return;
       rows.push({
@@ -7725,8 +7895,41 @@
     return rows;
   }
 
+  function zbxAlarmIsAcknowledged(row = {}) {
+    const raw = String(row.acknowledged == null ? '' : row.acknowledged).trim().toLowerCase();
+    return raw === '1' || raw === 'true' || raw === 'yes';
+  }
+
+  function zbxAlarmAckText(row = {}) {
+    if (!row || row.status && row.status !== 'ok') return '';
+    return zbxAlarmIsAcknowledged(row) ? '已确认' : '未确认';
+  }
+
+  function currentZbxAlarmAckFilter() {
+    return String($('zbxAlarmAckFilter')?.value || 'all').trim().toLowerCase();
+  }
+
+  function filterZbxAlarmRowsByAck(rows, filter = currentZbxAlarmAckFilter()) {
+    const list = Array.isArray(rows) ? rows : [];
+    const mode = String(filter || 'all').trim().toLowerCase();
+    if (mode === 'ack') return list.filter((row) => zbxAlarmIsAcknowledged(row));
+    if (mode === 'unack') return list.filter((row) => !zbxAlarmIsAcknowledged(row));
+    return list.slice();
+  }
+
+  function sortZbxAlarmRowsForDisplay(rows) {
+    return (Array.isArray(rows) ? rows : []).slice().sort((a, b) => {
+      const ackA = zbxAlarmIsAcknowledged(a) ? 1 : 0;
+      const ackB = zbxAlarmIsAcknowledged(b) ? 1 : 0;
+      if (ackA !== ackB) return ackA - ackB;
+      return Number(b.clock || 0) - Number(a.clock || 0);
+    });
+  }
+
   function renderZbxAlarmResults(data = {}) {
-    const alarms = Array.isArray(data.alarms) ? data.alarms : zbxAlarmRows;
+    const allAlarms = Array.isArray(data.alarms) ? data.alarms : zbxAlarmRows;
+    const ackFilter = currentZbxAlarmAckFilter();
+    const alarms = sortZbxAlarmRowsForDisplay(filterZbxAlarmRowsByAck(allAlarms, ackFilter));
     const deviceRows = Array.isArray(data.device_results) ? data.device_results : zbxAlarmDeviceResults;
     const okDevices = deviceRows.filter((item) => item.status === 'ok').length;
     const noAlarmDevices = deviceRows.filter((item) => item.status === 'ok' && Number(item.alarm_count || 0) === 0).length;
@@ -7734,7 +7937,10 @@
     const failed = deviceRows.filter((item) => item.status === 'failed').length;
     const modeText = (data.alarm_mode || zbxAlarmLastMeta?.alarm_mode) === 'history' ? '历史告警' : '当前未恢复告警';
     const elapsed = Number(data.total_elapsed_seconds || zbxAlarmLastMeta?.elapsed || 0);
-    const hint = `${modeText}：查询设备 ${Number(data.queried || deviceRows.length || 0)}，匹配 ${okDevices}，无告警 ${noAlarmDevices}，未找到 ${notFound}，失败 ${failed}，告警 ${alarms.length}，耗时 ${elapsed.toFixed(1)}s。`;
+    const unackCount = allAlarms.filter((row) => !zbxAlarmIsAcknowledged(row)).length;
+    const ackCount = allAlarms.filter((row) => zbxAlarmIsAcknowledged(row)).length;
+    const filterText = ackFilter === 'unack' ? '，当前筛选：仅未确认' : (ackFilter === 'ack' ? '，当前筛选：仅已确认' : '');
+    const hint = `${modeText}：查询设备 ${Number(data.queried || deviceRows.length || 0)}，匹配 ${okDevices}，无告警 ${noAlarmDevices}，未找到 ${notFound}，失败 ${failed}，告警 ${allAlarms.length}（未确认 ${unackCount}，已确认 ${ackCount}），当前显示 ${alarms.length}${filterText}，耗时 ${elapsed.toFixed(1)}s。`;
     if ($('zbxAlarmHint')) $('zbxAlarmHint').textContent = hint;
     const box = $('zbxAlarmResult');
     if (!box) return;
@@ -7748,6 +7954,7 @@
         <td>${escapeHtml(row.target_label || row.target_hostname || row.target_ip || '')}</td>
         <td>${escapeHtml(row.time || '')}</td>
         <td>${escapeHtml(row.severity_text || row.severity || '')}</td>
+        <td><strong style="color:${zbxAlarmIsAcknowledged(row) ? '#475569' : '#dc2626'}">${escapeHtml(zbxAlarmAckText(row))}</strong></td>
         <td>${escapeHtml(row.name || '')}</td>
         <td>${escapeHtml(row.zabbix_host || row.zabbix_name || '')}</td>
       </tr>
@@ -7756,11 +7963,25 @@
       <div class="hint">${escapeHtml(hint)}${alarms.length > preview.length ? ` 仅预览前 ${preview.length} 条。` : ''}</div>
       <div class="result-table-wrap">
         <table class="result-table">
-          <thead><tr><th>设备</th><th>时间</th><th>级别</th><th>告警</th><th>Zabbix Host</th></tr></thead>
+          <thead><tr><th>设备</th><th>时间</th><th>级别</th><th>确认状态</th><th>告警</th><th>Zabbix Host</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
     `;
+  }
+
+  function filterZbxAlarmRecordsOutsideTargets(rows, targets) {
+    const list = Array.isArray(rows) ? rows : [];
+    const cleanTargets = (Array.isArray(targets) ? targets : []).filter((item) => item && (item.hostname || item.ip || item.label || item.node_id));
+    if (!cleanTargets.length) return list.slice();
+    return list.filter((row) => !alarmRecordMatchesTargets(row, cleanTargets));
+  }
+
+  function mergeZbxAlarmRecordsForTargets(existingRows, newRows, targets) {
+    return [
+      ...filterZbxAlarmRecordsOutsideTargets(existingRows, targets),
+      ...(Array.isArray(newRows) ? newRows : [])
+    ];
   }
 
   async function queryZabbixAlarmsForTargets(targets, selection, opts = {}) {
@@ -7802,18 +8023,41 @@
       if (!resp.ok || data?.ok !== true) {
         throw new Error(data?.detail || `HTTP ${resp.status}`);
       }
+      const mergeCache = !!opts.mergeCache;
       zbxAlarmRows = Array.isArray(data.alarms) ? data.alarms : [];
       zbxAlarmDeviceResults = Array.isArray(data.device_results) ? data.device_results : [];
+      if (selection.alarm_mode === 'current') {
+        if (mergeCache) {
+          zbxActiveAlarmRows = mergeZbxAlarmRecordsForTargets(zbxActiveAlarmRows, zbxAlarmRows, cleanTargets);
+          zbxActiveAlarmDeviceResults = mergeZbxAlarmRecordsForTargets(zbxActiveAlarmDeviceResults, zbxAlarmDeviceResults, cleanTargets);
+        } else {
+          zbxActiveAlarmRows = zbxAlarmRows.slice();
+          zbxActiveAlarmDeviceResults = zbxAlarmDeviceResults.slice();
+        }
+      }
       zbxAlarmLastMeta = {
         alarm_mode: data.alarm_mode || selection.alarm_mode,
         time_from: data.time_from || selection.time_from,
         time_till: data.time_till || selection.time_till,
+        fromExpr: selection.fromExpr || '',
+        tillExpr: selection.tillExpr || '',
         hint: selection.hint,
         queried_at: new Date().toISOString(),
         elapsed: Number(data.total_elapsed_seconds || 0),
         scope: scopeText
       };
+      if (mergeCache) {
+        zbxAlarmCacheRows = mergeZbxAlarmRecordsForTargets(zbxAlarmCacheRows, zbxAlarmRows, cleanTargets);
+        zbxAlarmCacheDeviceResults = mergeZbxAlarmRecordsForTargets(zbxAlarmCacheDeviceResults, zbxAlarmDeviceResults, cleanTargets);
+      } else {
+        zbxAlarmCacheRows = zbxAlarmRows.slice();
+        zbxAlarmCacheDeviceResults = zbxAlarmDeviceResults.slice();
+      }
+      zbxAlarmCacheMeta = { ...zbxAlarmLastMeta };
       renderZbxAlarmResults(data);
+      if (selection.alarm_mode === 'current' && $('utilShowActiveAlarms')?.checked) {
+        applyActiveAlarmDisplay({ silent: true });
+      }
       setStatus('Zabbix 告警查询完成');
       setOK(`Zabbix 告警已更新：${selection.hint}，设备 ${Number(data.queried || cleanTargets.length)}，告警 ${zbxAlarmRows.length}`);
       return data;
@@ -7861,6 +8105,312 @@
     const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
     download(`lldp-zabbix-alarms-${ts}.csv`, lines.join('\n'), 'text/csv;charset=utf-8');
     setOK(`Zabbix 告警已导出：${rows.length} 行。`);
+  }
+
+  function activeAlarmKeyVariants(...values) {
+    const out = new Set();
+    const addOne = (value) => {
+      const raw = String(value == null ? '' : value).trim();
+      if (!raw) return;
+      raw.split(/\s*\n+\s*/).forEach((part) => {
+        const clean = String(part || '').trim();
+        if (!clean) return;
+        out.add(clean.toLowerCase());
+        if (!isIpv4(clean)) {
+          const short = stripAfterDot(clean).trim();
+          if (short) out.add(short.toLowerCase());
+        }
+      });
+    };
+    values.forEach((value) => {
+      if (Array.isArray(value)) value.forEach(addOne);
+      else addOne(value);
+    });
+    return Array.from(out);
+  }
+
+  function nodeActiveAlarmKeys(node) {
+    if (!node || typeof node.data !== 'function') return [];
+    const data = node.data() || {};
+    const keys = activeAlarmKeyVariants(
+      node.id(),
+      data.label,
+      data.short,
+      data.labelIp,
+      data.ip,
+      data.ips,
+      data.groupMembers,
+      data.groupLabels
+    );
+    return keys;
+  }
+
+  function alarmRowActiveKeys(row = {}) {
+    return activeAlarmKeyVariants(
+      row.target_label,
+      row.target_hostname,
+      row.target_ip,
+      row.node_id,
+      row.zabbix_host,
+      row.zabbix_name
+    );
+  }
+
+  function alarmRecordMatchesTargets(record = {}, targets = []) {
+    const recordKeys = new Set(alarmRowActiveKeys(record));
+    if (!recordKeys.size) return false;
+    return (Array.isArray(targets) ? targets : []).some((target) => {
+      const targetKeys = activeAlarmKeyVariants(target.label, target.hostname, target.ip, target.node_id);
+      return targetKeys.some((key) => recordKeys.has(key));
+    });
+  }
+
+  function cachedZbxAlarmRows() {
+    const rows = [
+      ...(Array.isArray(zbxActiveAlarmRows) ? zbxActiveAlarmRows : []),
+      ...(Array.isArray(zbxAlarmCacheRows) ? zbxAlarmCacheRows : []),
+      ...(Array.isArray(zbxAlarmRows) ? zbxAlarmRows : [])
+    ];
+    const seen = new Set();
+    const out = [];
+    rows.forEach((row) => {
+      if (!row || String(row.status || 'ok') !== 'ok') return;
+      const eventId = String(row.eventid || '').trim();
+      const key = eventId
+        ? `event:${eventId}`
+        : [
+          row.target_label || row.target_hostname || row.target_ip || '',
+          row.clock || row.time || '',
+          row.name || ''
+        ].join('|').toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(row);
+    });
+    return out;
+  }
+
+  function latestZbxAlarmForTargets(targets) {
+    const cleanTargets = (Array.isArray(targets) ? targets : []).filter((item) => item && (item.hostname || item.ip || item.label));
+    if (!cleanTargets.length) return null;
+    const rows = cachedZbxAlarmRows()
+      .filter((row) => alarmRecordMatchesTargets(row, cleanTargets))
+      .filter((row) => Number(row.clock || 0) > 0)
+      .sort((a, b) => Number(b.clock || 0) - Number(a.clock || 0));
+    return rows[0] || null;
+  }
+
+  function latestZbxAlarmRowsForTargets(targets) {
+    const cleanTargets = (Array.isArray(targets) ? targets : []).filter((item) => item && (item.hostname || item.ip || item.label));
+    if (!cleanTargets.length) return [];
+    const rows = cachedZbxAlarmRows().filter((row) => Number(row.clock || 0) > 0);
+    return cleanTargets
+      .map((target) => {
+        const hit = rows
+          .filter((row) => alarmRecordMatchesTargets(row, [target]))
+          .sort((a, b) => Number(b.clock || 0) - Number(a.clock || 0))[0];
+        return hit ? { target, alarm: hit } : null;
+      })
+      .filter(Boolean);
+  }
+
+  function targetsWithCachedZbxAlarms(targets) {
+    const rows = cachedZbxAlarmRows();
+    return (Array.isArray(targets) ? targets : [])
+      .filter((target) => target && (target.hostname || target.ip || target.label))
+      .filter((target) => rows.some((row) => alarmRecordMatchesTargets(row, [target])));
+  }
+
+  function formatLocalDateTimeForNetlog(ms) {
+    const date = new Date(Number(ms) || 0);
+    if (!Number.isFinite(date.getTime())) return '';
+    const pad = (v) => String(v).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }
+
+  function netlogHostnameFromTarget(target) {
+    const raw = String(target?.hostname || target?.label || '').trim();
+    if (!raw || isIpv4(raw)) return '';
+    return raw;
+  }
+
+  function defaultNetlogBaseUrl() {
+    const protocol = String(window.location.protocol || '').toLowerCase() === 'https:' ? 'https:' : 'http:';
+    const host = String(window.location.hostname || '').trim() || '127.0.0.1';
+    return `${protocol}//${host}:8000`;
+  }
+
+  function netlogBatchLineForHostname(hostname) {
+    const raw = String(hostname || '').trim();
+    if (!raw) return '';
+    return raw;
+  }
+
+  function showCachedZbxAlarmsForTargets(targets, scopeLabel = '') {
+    const cleanTargets = (Array.isArray(targets) ? targets : []).filter((item) => item && (item.hostname || item.ip || item.label));
+    openZbxAlarmModal({
+      targets: cleanTargets,
+      scopeLabel: scopeLabel || `查看选择 ${cleanTargets.length} 台`,
+      selection: lastZbxAlarmSelection()
+    });
+    if (!cleanTargets.length) {
+      setErr('当前选择未找到可查看告警的设备');
+      return;
+    }
+    const cachedRows = Array.isArray(zbxAlarmCacheRows) ? zbxAlarmCacheRows : [];
+    const cachedDevices = Array.isArray(zbxAlarmCacheDeviceResults) ? zbxAlarmCacheDeviceResults : [];
+    if (!cachedRows.length && !cachedDevices.length) {
+      const msg = '当前没有已查询告警缓存，请先使用“刷新告警”或工具区“Zabbix告警”。';
+      if ($('zbxAlarmHint')) $('zbxAlarmHint').textContent = msg;
+      if ($('zbxAlarmResult')) $('zbxAlarmResult').innerHTML = `<div class="hint">${escapeHtml(msg)}</div>`;
+      setOK(msg);
+      return;
+    }
+    const alarms = cachedRows.filter((row) => alarmRecordMatchesTargets(row, cleanTargets));
+    const deviceResults = cachedDevices.filter((row) => alarmRecordMatchesTargets(row, cleanTargets));
+    if (!alarms.length && !deviceResults.length) {
+      const msg = '当前选择设备没有已查询告警结果，请使用“刷新告警”。';
+      if ($('zbxAlarmHint')) $('zbxAlarmHint').textContent = msg;
+      if ($('zbxAlarmResult')) $('zbxAlarmResult').innerHTML = `<div class="hint">${escapeHtml(msg)}</div>`;
+      setOK(msg);
+      return;
+    }
+    zbxAlarmRows = alarms;
+    zbxAlarmDeviceResults = deviceResults;
+    zbxAlarmLastMeta = {
+      ...(zbxAlarmCacheMeta || {}),
+      scope: scopeLabel || `查看选择 ${cleanTargets.length} 台`,
+      elapsed: 0
+    };
+    renderZbxAlarmResults({
+      alarm_mode: zbxAlarmLastMeta.alarm_mode || 'current',
+      queried: deviceResults.length,
+      alarms,
+      device_results: deviceResults,
+      total_elapsed_seconds: 0
+    });
+    setOK(`已显示缓存告警：${cleanTargets.length} 台设备，${alarms.length} 条告警。`);
+  }
+
+  function buildActiveAlarmCountMap() {
+    const counts = new Map();
+    if (!cy) return counts;
+    const nodeIndex = new Map();
+    cy.nodes().forEach((node) => {
+      nodeActiveAlarmKeys(node).forEach((key) => {
+        if (!nodeIndex.has(key)) nodeIndex.set(key, new Set());
+        nodeIndex.get(key).add(node.id());
+      });
+    });
+    const rows = filterActiveAlarmRowsByTime(zbxActiveAlarmRows || []);
+    rows.forEach((row) => {
+      if (!row || String(row.status || 'ok') !== 'ok') return;
+      const hitIds = new Set();
+      alarmRowActiveKeys(row).forEach((key) => {
+        const nodeIds = nodeIndex.get(key);
+        if (!nodeIds) return;
+        nodeIds.forEach((id) => hitIds.add(id));
+      });
+      const acknowledged = zbxAlarmIsAcknowledged(row);
+      hitIds.forEach((id) => {
+        const current = counts.get(id) || { total: 0, unack: 0 };
+        current.total += 1;
+        if (!acknowledged) current.unack += 1;
+        counts.set(id, current);
+      });
+    });
+    return counts;
+  }
+
+  function filterActiveAlarmRowsByTime(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    if (!activeAlarmTimeFilterState.active) return list.slice();
+    const from = Number(activeAlarmTimeFilterState.time_from || 0);
+    const till = Number(activeAlarmTimeFilterState.time_till || 0);
+    if (!Number.isFinite(from) || !Number.isFinite(till) || till <= from) return [];
+    return list.filter((row) => {
+      const clock = Number(row?.clock || 0);
+      return Number.isFinite(clock) && clock >= from && clock <= till;
+    });
+  }
+
+  function stopActiveAlarmFlash() {
+    if (activeAlarmFlashTimer) {
+      clearInterval(activeAlarmFlashTimer);
+      activeAlarmFlashTimer = 0;
+    }
+    activeAlarmFlashOn = false;
+    if (cy) cy.nodes().removeClass('active-alarm-flash');
+  }
+
+  function startActiveAlarmFlash() {
+    stopActiveAlarmFlash();
+    if (!cy || !cy.nodes('.active-alarm-node').length) return;
+    activeAlarmFlashTimer = setInterval(() => {
+      if (!cy || !$('utilShowActiveAlarms')?.checked) {
+        stopActiveAlarmFlash();
+        return;
+      }
+      const nodes = cy.nodes('.active-alarm-node');
+      if (!nodes.length) {
+        stopActiveAlarmFlash();
+        return;
+      }
+      activeAlarmFlashOn = !activeAlarmFlashOn;
+      if (activeAlarmFlashOn) nodes.addClass('active-alarm-flash');
+      else nodes.removeClass('active-alarm-flash');
+    }, 420);
+  }
+
+  function refreshNodeDisplayLabels() {
+    if (!cy) return;
+    const mode = String(($('nodeLabelMode')?.value || 'full')).trim();
+    cy.nodes().forEach((node) => {
+      node.data('displayLabel', nodeDisplayLabelData(node.data(), mode));
+    });
+    cy.style().selector('node').style('label', 'data(displayLabel)').update();
+  }
+
+  function applyActiveAlarmDisplay(opts = {}) {
+    if (!cy) return;
+    const enabled = !!$('utilShowActiveAlarms')?.checked;
+    const counts = enabled ? buildActiveAlarmCountMap() : new Map();
+    const filteredAlarmRows = enabled ? filterActiveAlarmRowsByTime(zbxActiveAlarmRows || []) : [];
+    const filterSuffix = activeAlarmTimeFilterState.active
+      ? `，时间过滤 ${activeAlarmTimeFilterState.hint || `${activeAlarmTimeFilterState.fromExpr} ~ ${activeAlarmTimeFilterState.tillExpr}`}`
+      : '';
+    let unackNodeCount = 0;
+    cy.batch(() => {
+      cy.nodes().forEach((node) => {
+        const manualType = String(node.data('manualNodeType') || 'node').trim().toLowerCase();
+        const item = counts.get(node.id()) || { total: 0, unack: 0 };
+        const count = manualType === 'cloud' ? 0 : Number(item.total || 0);
+        const unackCount = manualType === 'cloud' ? 0 : Number(item.unack || 0);
+        node.data('activeAlarmCount', count);
+        node.data('activeAlarmUnackCount', unackCount);
+        node.removeClass('active-alarm-node active-alarm-ack-node active-alarm-flash');
+        if (enabled && unackCount > 0) {
+          node.addClass('active-alarm-node');
+          unackNodeCount += 1;
+        } else if (enabled && count > 0) {
+          node.addClass('active-alarm-ack-node');
+        }
+      });
+    });
+    refreshNodeDisplayLabels();
+    stopActiveAlarmFlash();
+    if (enabled && unackNodeCount > 0) {
+      startActiveAlarmFlash();
+      if (!opts.silent) setOK(`已显示活动告警${filterSuffix}：命中 ${counts.size} 个节点，其中未确认告警节点 ${unackNodeCount} 个。`);
+    } else if (enabled && counts.size) {
+      if (!opts.silent) setOK(`已显示活动告警${filterSuffix}：命中 ${counts.size} 个节点，全部已确认，仅显示告警数量。`);
+    } else if (!enabled) {
+      if (!opts.silent) setOK('已关闭活动告警显示。');
+    } else if (activeAlarmTimeFilterState.active && (Array.isArray(zbxActiveAlarmRows) ? zbxActiveAlarmRows.length : 0) > 0 && filteredAlarmRows.length <= 0) {
+      if (!opts.silent) setOK(`当前活动告警在时间过滤 ${activeAlarmTimeFilterState.hint || `${activeAlarmTimeFilterState.fromExpr} ~ ${activeAlarmTimeFilterState.tillExpr}`} 下无命中。`);
+    } else if (!opts.silent) {
+      setOK('当前活动告警查询结果中没有命中图上设备。');
+    }
   }
 
   function buildRowContextIndex() {
@@ -8075,17 +8625,28 @@
     if (!nodeData) return '';
     const normalized = ['short', 'full', 'full_ip', 'none'].includes(String(mode || '')) ? String(mode) : 'full';
     const isCloudNode = !nodeData.isGroup && String(nodeData.manualNodeType || '').trim().toLowerCase() === 'cloud';
-    if (normalized === 'none') return '';
+    const alarmCount = Number(nodeData.activeAlarmCount || 0);
+    const alarmUnackCount = Number(nodeData.activeAlarmUnackCount || 0);
+    const withAlarmCount = (label) => {
+      const base = String(label || '').trim();
+      if (!alarmCount || alarmCount <= 0) return base;
+      const suffix = alarmUnackCount > 0
+        ? `告警 ${alarmCount} 未确认 ${alarmUnackCount}`
+        : `告警 ${alarmCount}`;
+      return base ? `${base}\n${suffix}` : suffix;
+    };
+    if (normalized === 'none') return withAlarmCount('');
     if (nodeData.isGroup) {
-      return (normalized === 'full' || normalized === 'full_ip')
+      const base = (normalized === 'full' || normalized === 'full_ip')
         ? String(nodeData.labelWithCount || nodeData.label || '')
         : String(nodeData.shortWithCount || nodeData.short || nodeData.label || '');
+      return withAlarmCount(base);
     }
     let base = '';
     if (normalized === 'full_ip') base = String(nodeData.labelIp || nodeData.label || '');
     else if (normalized === 'full') base = String(nodeData.label || '');
     else base = String(nodeData.short || nodeData.label || '');
-    if (!isCloudNode) return base;
+    if (!isCloudNode) return withAlarmCount(base);
     return base;
   }
 
@@ -8373,6 +8934,45 @@
     if ($('utilFilterModal')) $('utilFilterModal').style.display = 'none';
   }
 
+  function openAlarmTimeFilterModal() {
+    updateActiveAlarmTimeFilterUi();
+    if ($('alarmTimeFilterModal')) $('alarmTimeFilterModal').style.display = 'flex';
+  }
+
+  function closeAlarmTimeFilterModal() {
+    if ($('alarmTimeFilterModal')) $('alarmTimeFilterModal').style.display = 'none';
+  }
+
+  function applyActiveAlarmTimeFilterSelection(selection, opts = {}) {
+    const next = selection && typeof selection === 'object' ? selection : {};
+    activeAlarmTimeFilterState.active = !!next.active;
+    activeAlarmTimeFilterState.time_from = Number.isFinite(Number(next.time_from)) ? Number(next.time_from) : null;
+    activeAlarmTimeFilterState.time_till = Number.isFinite(Number(next.time_till)) ? Number(next.time_till) : null;
+    activeAlarmTimeFilterState.fromExpr = String(next.fromExpr || next.from_expr || activeAlarmTimeFilterState.fromExpr || 'now-15m').trim() || 'now-15m';
+    activeAlarmTimeFilterState.tillExpr = String(next.tillExpr || next.till_expr || activeAlarmTimeFilterState.tillExpr || 'now').trim() || 'now';
+    activeAlarmTimeFilterState.hint = String(next.hint || '').trim();
+    updateActiveAlarmTimeFilterUi();
+    schedulePersistCurrentPageSession(80);
+    if ($('utilShowActiveAlarms')?.checked) {
+      applyActiveAlarmDisplay({ silent: !!opts.silent });
+    } else if (!opts.silent) {
+      setOK(activeAlarmTimeFilterState.active
+        ? `已设置告警时间过滤：${activeAlarmTimeFilterState.hint || `${activeAlarmTimeFilterState.fromExpr} ~ ${activeAlarmTimeFilterState.tillExpr}`}`
+        : '已清除告警时间过滤。');
+    }
+  }
+
+  function clearActiveAlarmTimeFilter(opts = {}) {
+    applyActiveAlarmTimeFilterSelection({
+      active: false,
+      time_from: null,
+      time_till: null,
+      fromExpr: activeAlarmTimeFilterState.fromExpr || 'now-15m',
+      tillExpr: activeAlarmTimeFilterState.tillExpr || 'now',
+      hint: ''
+    }, opts);
+  }
+
   function applyUtilThresholdFilter(threshold, opts = {}) {
     if (!cy) {
       setErr('请先生成拓扑，再执行利用率过滤');
@@ -8424,7 +9024,7 @@
     const isManualGroup = ctxGroupKind() === 'manual';
     const groupKey = ctxGroupKey();
     const canToggleGroup = !!groupKey;
-    const nodeBtnIds = ['ctxLock', 'ctxNodeColor', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxZbxAlarm', 'ctxDeviceDetail', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc', 'ctxExitGroupView', 'ctxRemoveFromGroup'];
+    const nodeBtnIds = ['ctxLock', 'ctxNodeColor', 'ctxDelete', 'ctxCopy', 'ctxCopyIp', 'ctxUtil', 'ctxUtilRange', 'ctxZbxAlarm', 'ctxZbxAlarmRefresh', 'ctxNetlogAlarm', 'ctxDeviceDetail', 'ctxAppendQuery', 'ctxPathVia', 'ctxAddLink', 'ctxToggleEdgeExpand', 'ctxEdgeDesc', 'ctxExitGroupView', 'ctxRemoveFromGroup'];
     nodeBtnIds.forEach((id) => {
       const el = $(id);
       if (!el) return;
@@ -8477,6 +9077,10 @@
     if ($('ctxRenameGroup')) {
       $('ctxRenameGroup').style.display = (!isEdgeTarget && isManualGroup && canToggleGroup) ? '' : 'none';
     }
+    if ($('ctxNetlogAlarm')) {
+      const alarmTargets = (!isCanvasTarget && !isEdgeTarget) ? collectDeviceDetailTargets(ctxNodes()) : [];
+      $('ctxNetlogAlarm').style.display = latestZbxAlarmForTargets(alarmTargets) ? '' : 'none';
+    }
     if ($('ctxPathVia')) $('ctxPathVia').style.display = (!isEdgeTarget && !isGroupNode) ? '' : 'none';
     if ($('ctxNodeColor')) {
       $('ctxNodeColor').style.display = (!isCanvasTarget && !isEdgeTarget && colorableNodes.length) ? '' : 'none';
@@ -8497,7 +9101,9 @@
       { sep: 'ctxSepColor', ids: ['ctxNodeColor', 'ctxNodeColorSubmenu'] },
       { sep: 'ctxSepCopy', ids: ['ctxPathVia', 'ctxAddLink', 'ctxCreateGroup', 'ctxToggleGroup', 'ctxRemoveFromGroup', 'ctxExitGroupView', 'ctxRenameGroup'] },
       { sep: 'ctxSepQuery', ids: ['ctxCopy', 'ctxCopyIp', 'ctxCopyLink', 'ctxDeviceDetail'] },
-      { sep: '', ids: ['ctxUtil', 'ctxUtilRange', 'ctxZbxAlarm', 'ctxAppendQuery'] }
+      { sep: 'ctxSepAlarm', ids: ['ctxUtil', 'ctxUtilRange'] },
+      { sep: 'ctxSepAppend', ids: ['ctxZbxAlarm', 'ctxZbxAlarmRefresh', 'ctxNetlogAlarm'] },
+      { sep: '', ids: ['ctxAppendQuery'] }
     ];
     groups.forEach((group, idx) => {
       if (!group.sep) return;
@@ -8594,10 +9200,19 @@
         label_enabled: !!$('utilLabelEnabled')?.checked,
         show_tx_rx: !!$('utilShowTxRx')?.checked,
         show_bandwidth: !!$('utilShowBandwidth')?.checked,
+        show_active_alarms: !!$('utilShowActiveAlarms')?.checked,
         show_edge_desc: !!$('utilShowEdgeDesc')?.checked,
         show_imbalance: !!$('utilShowImbalance')?.checked,
         filter_active: !!utilFilterState.active,
-        filter_threshold: Number.isFinite(utilFilterState.threshold) ? Number(utilFilterState.threshold) : null
+        filter_threshold: Number.isFinite(utilFilterState.threshold) ? Number(utilFilterState.threshold) : null,
+        active_alarm_time_filter: {
+          active: !!activeAlarmTimeFilterState.active,
+          time_from: Number.isFinite(Number(activeAlarmTimeFilterState.time_from)) ? Number(activeAlarmTimeFilterState.time_from) : null,
+          time_till: Number.isFinite(Number(activeAlarmTimeFilterState.time_till)) ? Number(activeAlarmTimeFilterState.time_till) : null,
+          from_expr: String(activeAlarmTimeFilterState.fromExpr || 'now-15m'),
+          till_expr: String(activeAlarmTimeFilterState.tillExpr || 'now'),
+          hint: String(activeAlarmTimeFilterState.hint || '')
+        }
       },
       device_detail_state: {
         rows: exportDeviceDetailEntries(),
@@ -8789,12 +9404,23 @@
     if ($('utilLabelEnabled')) $('utilLabelEnabled').checked = (utilState.label_enabled !== false);
     if ($('utilShowTxRx')) $('utilShowTxRx').checked = !!utilState.show_tx_rx;
     if ($('utilShowBandwidth')) $('utilShowBandwidth').checked = !!utilState.show_bandwidth;
+    if ($('utilShowActiveAlarms')) $('utilShowActiveAlarms').checked = !!utilState.show_active_alarms;
     if ($('utilShowEdgeDesc')) $('utilShowEdgeDesc').checked = (utilState.show_edge_desc !== false);
     if ($('utilShowImbalance')) $('utilShowImbalance').checked = !!utilState.show_imbalance;
     normalizeUtilColorMode();
     utilFilterState.active = !!utilState.filter_active;
     utilFilterState.threshold = Number.isFinite(Number(utilState.filter_threshold)) ? Number(utilState.filter_threshold) : null;
+    const savedAlarmTimeFilter = (utilState.active_alarm_time_filter && typeof utilState.active_alarm_time_filter === 'object')
+      ? utilState.active_alarm_time_filter
+      : {};
+    activeAlarmTimeFilterState.active = !!savedAlarmTimeFilter.active;
+    activeAlarmTimeFilterState.time_from = Number.isFinite(Number(savedAlarmTimeFilter.time_from)) ? Number(savedAlarmTimeFilter.time_from) : null;
+    activeAlarmTimeFilterState.time_till = Number.isFinite(Number(savedAlarmTimeFilter.time_till)) ? Number(savedAlarmTimeFilter.time_till) : null;
+    activeAlarmTimeFilterState.fromExpr = String(savedAlarmTimeFilter.from_expr || savedAlarmTimeFilter.fromExpr || 'now-15m').trim() || 'now-15m';
+    activeAlarmTimeFilterState.tillExpr = String(savedAlarmTimeFilter.till_expr || savedAlarmTimeFilter.tillExpr || 'now').trim() || 'now';
+    activeAlarmTimeFilterState.hint = String(savedAlarmTimeFilter.hint || '').trim();
     updateUtilFilterUi();
+    updateActiveAlarmTimeFilterUi();
     if ($('bizIsolationTerms') && ui.bizIsolationTerms != null) $('bizIsolationTerms').value = String(ui.bizIsolationTerms);
     if ($('nameClusterMode') && ui.nameClusterMode) $('nameClusterMode').value = String(ui.nameClusterMode);
     if ($('autoGroupMode') && ui.autoGroupMode) $('autoGroupMode').value = String(ui.autoGroupMode);
@@ -9084,13 +9710,16 @@
     loadZbxPrefs();
     scopedZbxAlarmTargets = Array.isArray(opts.targets) ? opts.targets.slice() : null;
     scopedZbxAlarmScopeLabel = String(opts.scopeLabel || '').trim();
-    const mode = String(opts.alarmMode || 'current').trim().toLowerCase();
+    const selection = opts.selection && typeof opts.selection === 'object' ? opts.selection : null;
+    const mode = String(opts.alarmMode || selection?.alarm_mode || 'current').trim().toLowerCase();
     $('zbxAlarmMode').value = mode === 'history' ? 'history' : 'current';
-    $('zbxAlarmTimeFromExpr').value = 'now-7d';
-    $('zbxAlarmTimeTillExpr').value = 'now';
+    $('zbxAlarmTimeFromExpr').value = selection?.fromExpr || 'now-7d';
+    $('zbxAlarmTimeTillExpr').value = selection?.tillExpr || 'now';
     refreshZbxAlarmRangeFields();
     const scopeText = scopedZbxAlarmScopeLabel || '选中设备优先；未选中则当前可见设备';
     if ($('zbxAlarmScopeHint')) $('zbxAlarmScopeHint').textContent = `查询范围：${scopeText}`;
+    if ($('zbxAlarmHint')) $('zbxAlarmHint').textContent = '尚未查询告警。';
+    if ($('zbxAlarmResult')) $('zbxAlarmResult').innerHTML = '';
     $('zbxAlarmModal').style.display = 'flex';
   }
 
@@ -9180,7 +9809,27 @@
       alarm_mode: 'history',
       time_from,
       time_till,
+      fromExpr,
+      tillExpr,
       hint: `历史告警（${fromExpr} ~ ${tillExpr}）`
+    };
+  }
+
+  function readActiveAlarmTimeFilterSelection() {
+    const fromExpr = $('alarmTimeFilterFromExpr')?.value || 'now-15m';
+    const tillExpr = $('alarmTimeFilterTillExpr')?.value || 'now';
+    const time_from = parseZbxTimeExpr(fromExpr);
+    const time_till = parseZbxTimeExpr(tillExpr);
+    if (time_till <= time_from) {
+      throw new Error('结束时间必须大于开始时间');
+    }
+    return {
+      active: true,
+      time_from,
+      time_till,
+      fromExpr,
+      tillExpr,
+      hint: `${fromExpr} ~ ${tillExpr}`
     };
   }
 
@@ -9261,6 +9910,13 @@
   let zbxAlarmRows = [];
   let zbxAlarmDeviceResults = [];
   let zbxAlarmLastMeta = null;
+  let zbxAlarmCacheRows = [];
+  let zbxAlarmCacheDeviceResults = [];
+  let zbxAlarmCacheMeta = null;
+  let zbxActiveAlarmRows = [];
+  let zbxActiveAlarmDeviceResults = [];
+  let activeAlarmFlashTimer = 0;
+  let activeAlarmFlashOn = false;
   let pageSessionPersistTimer = 0;
   function apiBaseUrl() {
     // If opened as file://, use local service endpoint explicitly.
@@ -10950,6 +11606,32 @@
   $('utilFilterModal').addEventListener('click', (e) => {
     if (e.target && e.target.id === 'utilFilterModal') closeUtilFilterModal();
   });
+  $('openAlarmTimeFilterModal').addEventListener('click', openAlarmTimeFilterModal);
+  $('closeAlarmTimeFilterModal').addEventListener('click', closeAlarmTimeFilterModal);
+  $('applyAlarmTimeFilter').addEventListener('click', () => {
+    try {
+      const selection = readActiveAlarmTimeFilterSelection();
+      applyActiveAlarmTimeFilterSelection(selection);
+      closeAlarmTimeFilterModal();
+    } catch (e) {
+      setErr(`告警时间过滤无效：${String(e && e.message ? e.message : e)}`);
+    }
+  });
+  $('clearAlarmTimeFilter').addEventListener('click', () => {
+    clearActiveAlarmTimeFilter();
+    closeAlarmTimeFilterModal();
+  });
+  $('alarmTimeFilterModal').addEventListener('click', (e) => {
+    if (e.target && e.target.id === 'alarmTimeFilterModal') closeAlarmTimeFilterModal();
+  });
+  $('alarmTimeFilterModal').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-alarm-display-range]');
+    if (!btn) return;
+    const raw = btn.getAttribute('data-alarm-display-range') || '';
+    const parts = raw.split('|');
+    $('alarmTimeFilterFromExpr').value = parts[0] || 'now-15m';
+    $('alarmTimeFilterTillExpr').value = parts[1] || 'now';
+  });
   $('loadPasteModal').addEventListener('click', () => {
     const t = ($('pasteModal').value || '').trim();
     if (!t) { setErr('粘贴内容为空'); return; }
@@ -10972,6 +11654,7 @@
   if (!restoredPageSession) loadUtilCacheFromServer();
   initCollapsibleSections();
   updateUtilFilterUi();
+  updateActiveAlarmTimeFilterUi();
   updateUtilLegendHint();
 
   $('build').addEventListener('click', () => {
@@ -11281,6 +11964,9 @@
     openZbxAlarmModal();
   });
   $('zbxAlarmMode').addEventListener('change', refreshZbxAlarmRangeFields);
+  $('zbxAlarmAckFilter').addEventListener('change', () => {
+    renderZbxAlarmResults();
+  });
   $('closeZbxAlarmModal').addEventListener('click', closeZbxAlarmModal);
   $('zbxAlarmModal').addEventListener('click', (e) => {
     if (e.target === $('zbxAlarmModal')) closeZbxAlarmModal();
@@ -11302,11 +11988,14 @@
       return;
     }
     const targets = currentZbxAlarmTargets();
+    const isScopedQuery = Array.isArray(scopedZbxAlarmTargets) && scopedZbxAlarmTargets.length > 0;
+    const isSelectedQuery = !!(cy && cy.nodes(':selected').filter((n) => n.visible()).length);
     try {
       await queryZabbixAlarmsForTargets(targets, selection, {
         buttonId: 'runZbxAlarmQuery',
         zabbixConfig: readZabbixConfig(),
-        scopeLabel: scopedZbxAlarmScopeLabel || (targets.length ? `${targets.length} 台设备` : '')
+        scopeLabel: scopedZbxAlarmScopeLabel || (targets.length ? `${targets.length} 台设备` : ''),
+        mergeCache: isScopedQuery || isSelectedQuery
       });
     } catch (e) {
       const msg = String(e && e.message ? e.message : e);
@@ -11370,6 +12059,10 @@
   $('utilShowBandwidth').addEventListener('change', () => {
     refreshEdgeLabelDisplay();
     applyAdaptiveRenderMode();
+  });
+  $('utilShowActiveAlarms').addEventListener('change', () => {
+    applyActiveAlarmDisplay();
+    schedulePersistCurrentPageSession(80);
   });
   $('utilShowEdgeDesc').addEventListener('change', () => {
     refreshEdgeLabelDisplay();
@@ -11943,14 +12636,105 @@
     const targets = collectDeviceDetailTargets(nodes);
     hideCtx();
     if (!targets.length) {
-      setErr('当前选择未找到可查询告警的设备');
+      setErr('当前选择未找到可查看告警的设备');
       return;
     }
+    showCachedZbxAlarmsForTargets(targets, `右键选择 ${targets.length} 台`);
+  });
+
+  $('ctxZbxAlarmRefresh').addEventListener('click', async () => {
+    const nodes = ctxNodes().filter((n) => n && typeof n.isNode === 'function' && n.isNode());
+    const targets = collectDeviceDetailTargets(nodes);
+    hideCtx();
+    if (!targets.length) {
+      setErr('当前选择未找到可刷新告警的设备');
+      return;
+    }
+    const selection = lastZbxAlarmSelection();
     openZbxAlarmModal({
-      alarmMode: 'current',
+      selection,
       targets,
-      scopeLabel: `右键选择 ${targets.length} 台`
+      scopeLabel: `右键刷新 ${targets.length} 台`
     });
+    try {
+      await queryZabbixAlarmsForTargets(targets, selection, {
+        buttonId: 'runZbxAlarmQuery',
+        zabbixConfig: readZabbixConfig(),
+        scopeLabel: `右键刷新 ${targets.length} 台`,
+        mergeCache: true
+      });
+    } catch (e) {
+      const msg = String(e && e.message ? e.message : e);
+      setStatus('Zabbix 告警刷新失败');
+      setErr(`Zabbix 告警刷新失败：${msg}`);
+      if ($('zbxAlarmHint')) $('zbxAlarmHint').textContent = `Zabbix 告警刷新失败：${msg}`;
+    }
+  });
+
+  $('ctxNetlogAlarm').addEventListener('click', async () => {
+    const nodes = ctxNodes().filter((n) => n && typeof n.isNode === 'function' && n.isNode());
+    const targets = collectDeviceDetailTargets(nodes);
+    const alarmTargets = targetsWithCachedZbxAlarms(targets);
+    hideCtx();
+    if (!alarmTargets.length) {
+      setErr('当前选择设备没有已缓存告警，请先刷新告警。');
+      return;
+    }
+    const alarmPairs = latestZbxAlarmRowsForTargets(alarmTargets);
+    if (!alarmPairs.length) {
+      setErr('当前告警缺少有效事件时间，无法打开 Log 查询页。');
+      return;
+    }
+    const hostnames = [];
+    const seen = new Set();
+    let skipped = 0;
+    alarmTargets.forEach((target) => {
+      const hostname = netlogHostnameFromTarget(target);
+      if (!hostname) {
+        skipped += 1;
+        return;
+      }
+      const key = hostname.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      hostnames.push(hostname);
+    });
+    if (!hostnames.length) {
+      setErr('当前选择设备缺少可用主机名，无法打开 Log 查询页。');
+      return;
+    }
+    const windowMinutes = 15;
+    const clocks = alarmPairs.map((item) => Number(item.alarm.clock || 0)).filter((value) => Number.isFinite(value) && value > 0);
+    if (!clocks.length) {
+      setErr('当前告警缺少有效事件时间，无法打开 Log 查询页。');
+      return;
+    }
+    const minClock = Math.min(...clocks);
+    const maxClock = Math.max(...clocks);
+    const startTime = formatLocalDateTimeForNetlog((minClock - (windowMinutes * 60)) * 1000);
+    const endTime = formatLocalDateTimeForNetlog((maxClock + (windowMinutes * 60)) * 1000);
+    const spanText = minClock === maxClock
+      ? `告警时间 ${formatLocalDateTimeForNetlog(minClock * 1000)}`
+      : `最近告警范围 ${formatLocalDateTimeForNetlog(minClock * 1000)} ~ ${formatLocalDateTimeForNetlog(maxClock * 1000)}`;
+    const prefillNote = `来自 LLDP 告警：设备 ${hostnames.length} 台，${spanText}，默认窗口 ${startTime} ~ ${endTime}。当前按每台设备最近告警时间取整体包络，并按主机名查询。`;
+    const url = new URL('/', defaultNetlogBaseUrl());
+    url.searchParams.set('lang', String(uiLang || 'zh'));
+    url.searchParams.set('jump_mode', 'smc_pam_nd');
+    url.searchParams.set('batch_text', hostnames.map((name) => netlogBatchLineForHostname(name)).filter(Boolean).join('\n'));
+    url.searchParams.set('start_time', startTime);
+    url.searchParams.set('end_time', endTime);
+    url.searchParams.set('context_lines', '5');
+    url.searchParams.set('concurrency', String(Math.min(10, Math.max(1, hostnames.length))));
+    url.searchParams.set('per_device_timeout', '60');
+    url.searchParams.set('debug_mode', 'on');
+    url.searchParams.set('sql_query_mode', 'on');
+    url.searchParams.set('sql_only_mode', 'on');
+    url.searchParams.set('prefill_note', prefillNote);
+    window.open(url.toString(), '_blank');
+    const skipText = skipped > 0 ? `，跳过 ${skipped} 台无主机名设备` : '';
+    setStatus('已打开 Netlog 查询页');
+    setErr('');
+    setOK(`已打开 Netlog 创建页：预填 ${hostnames.length} 台设备，窗口 ${startTime} ~ ${endTime}${skipText}。`);
   });
 
   $('ctxDeviceDetail').addEventListener('click', async () => {

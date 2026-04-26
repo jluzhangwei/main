@@ -4285,6 +4285,7 @@
     };
 
     const core = cy.nodes().filter(n => {
+      if (n.data('isGroup')) return false;
       const resolvedIp = resolveNodeIpv4(n);
       return resolvedIp.startsWith('172.');
     });
@@ -4292,7 +4293,7 @@
       if (!silent) setErr('未找到172地址节点');
       return;
     }
-    const hideNodes = cy.nodes().not(core);
+    const hideNodes = cy.nodes().filter((n) => !n.data('isGroup')).not(core);
     hideNodes.addClass('onlyHidden');
     cy.edges().forEach((e) => {
       const sHidden = e.source().hasClass('onlyHidden');
@@ -4300,7 +4301,7 @@
       if (sHidden || tHidden) e.addClass('onlyHidden');
       else e.removeClass('onlyHidden');
     });
-    if (!silent) setOK(`只显示172设备：${core.length} 个（192/无IP已隐藏）`);
+    if (!silent) setOK(`只显示172设备：${core.length} 个（节点组不参与，192/无IP已隐藏）`);
   }
 
   function applyFilter() {

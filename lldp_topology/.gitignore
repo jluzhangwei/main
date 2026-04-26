@@ -10,5 +10,9 @@ tmp_csv/*
 state_snapshots/*
 !state_snapshots/.gitkeep
 .env.mysql
+zabbix_config.json
+goodindex.html
+lldp_副本.html
+cloud-node.svg
 infra-logo.png
 !shared/header/infra-logo.png
