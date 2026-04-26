@@ -9,7 +9,7 @@ from .models import TaskRecord
 
 
 class TaskDB:
-    def __init__(self, db_path: str = "./netlog_extractor/tasks.db") -> None:
+    def __init__(self, db_path: str = "./tasks.db") -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()

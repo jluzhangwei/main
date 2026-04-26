@@ -6,4 +6,3 @@ __pycache__/
 output/
 state/*.json
 tasks.db
-netlog_extractor/tasks.db

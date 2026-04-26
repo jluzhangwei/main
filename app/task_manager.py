@@ -18,7 +18,7 @@ def _now_s() -> str:
 
 
 class TaskManager:
-    def __init__(self, db: TaskDB, output_root: str = "./netlog_extractor/output") -> None:
+    def __init__(self, db: TaskDB, output_root: str = "./output") -> None:
         self.db = db
         self.output_root = Path(output_root)
         self.output_root.mkdir(parents=True, exist_ok=True)

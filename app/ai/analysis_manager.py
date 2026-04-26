@@ -23,7 +23,7 @@ from .state_store import add_token_usage, load_gpt_config
 
 
 class AIAnalysisManager:
-    def __init__(self, output_root: str = "./netlog_extractor/output") -> None:
+    def __init__(self, output_root: str = "./output") -> None:
         self.output_root = Path(output_root)
         self._tasks: dict[str, dict[str, Any]] = {}
         self._task_latest: dict[str, str] = {}

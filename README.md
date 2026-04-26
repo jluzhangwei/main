@@ -18,7 +18,6 @@
 
 ## 安装
 ```bash
-cd netlog_extractor
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
