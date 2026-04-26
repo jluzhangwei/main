@@ -17,6 +17,7 @@
 - [适用场景](#适用场景)
 - [组件总览](#组件总览)
 - [快速开始](#快速开始)
+- [新电脑部署](#新电脑部署)
 - [使用方式](#使用方式)
 - [命令过滤规则](#命令过滤规则)
 - [审计查看方式](#审计查看方式)
@@ -94,6 +95,295 @@ cd /Users/zhangwei/python
 ```
 
 `--` 后面的所有内容都会被当作原始登录命令，代理不会重写它。
+
+## 新电脑部署
+
+`ssh-proxy` 当前是纯 Python 标准库实现，不依赖第三方 Python 包。新电脑只需要有 Python 3 和仓库文件即可运行。
+
+### 方式一：一键部署
+
+在项目根目录执行：
+
+```bash
+cd /Users/zhangwei/python
+./install.sh
+```
+
+默认会完成这些动作：
+
+- 检查 `python3` 是否存在。
+- 安装命令 wrapper 到 `~/.local/bin`。
+- 创建默认审计目录 `~/.ssh_proxy/audit`。
+- 把 `~/.local/bin` 加入当前 shell 的 PATH 配置文件。
+- 运行 smoke test，确认策略、代理和审计可用。
+
+安装完成后，如果当前终端还找不到命令，执行安装脚本最后提示的 `source ...`，例如：
+
+```bash
+source ~/.zshrc
+```
+
+或者：
+
+```bash
+source ~/.bashrc
+```
+
+验证：
+
+```bash
+ssh-proxy --help
+ssh-proxy-policy list
+ssh-proxy-audit list
+```
+
+自定义安装目录和审计目录：
+
+```bash
+./install.sh --install-dir ~/bin --audit-dir ~/ssh-proxy-audit
+```
+
+只安装，不改 shell PATH：
+
+```bash
+./install.sh --install-dir ~/bin --no-path
+```
+
+跳过 smoke test：
+
+```bash
+./install.sh --no-smoke
+```
+
+### 方式二：手动部署
+
+如果不想使用一键脚本，可以按下面步骤手动安装。
+
+### 1. 准备代码
+
+方式一：从 Git 拉取完整仓库。
+
+```bash
+cd ~/python
+git clone <repo_url> python
+cd ~/python
+```
+
+如果目标机器上已经有仓库目录：
+
+```bash
+cd /Users/zhangwei/python
+git pull
+```
+
+方式二：只拷贝 SSH proxy 相关文件。
+
+最小文件集：
+
+```text
+ssh-proxy
+ssh-proxy-audit
+ssh-proxy-policy
+ssh_proxy/
+```
+
+如果还要在新电脑上跑测试，再拷贝：
+
+```text
+tests/test_ssh_proxy_*.py
+```
+
+### 2. 确认 Python 版本
+
+```bash
+python3 --version
+```
+
+建议使用 Python 3.10 或更高版本。当前代码只使用标准库，不需要 `pip install`。
+
+### 3. 设置可执行权限
+
+如果是通过 Git 拉取，权限通常已经保留。若是手工拷贝，需要执行：
+
+```bash
+chmod +x ssh-proxy ssh-proxy-audit ssh-proxy-policy
+```
+
+### 4. 加入 PATH
+
+推荐放到固定目录，例如：
+
+```bash
+mkdir -p ~/bin
+ln -sf /Users/zhangwei/python/ssh-proxy ~/bin/ssh-proxy
+ln -sf /Users/zhangwei/python/ssh-proxy-audit ~/bin/ssh-proxy-audit
+ln -sf /Users/zhangwei/python/ssh-proxy-policy ~/bin/ssh-proxy-policy
+```
+
+确认 `~/bin` 在 PATH 中：
+
+```bash
+echo "$PATH"
+```
+
+如果没有，加入 shell 配置：
+
+```bash
+echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+如果使用 bash：
+
+```bash
+echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+验证命令可用：
+
+```bash
+ssh-proxy --help
+ssh-proxy-audit --help
+ssh-proxy-policy list
+```
+
+### 5. 配置审计目录
+
+默认审计目录：
+
+```bash
+~/.ssh_proxy/audit
+```
+
+如果希望统一存到固定位置：
+
+```bash
+mkdir -p ~/ssh-proxy-audit
+echo 'export SSH_PROXY_AUDIT_DIR="$HOME/ssh-proxy-audit"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+也可以每次运行时指定：
+
+```bash
+ssh-proxy --audit-dir ~/ssh-proxy-audit -- smc pam nd ssh 10.1.1.1
+```
+
+### 6. 本地烟测
+
+先不用连真实设备，确认代理能启动子进程并写审计：
+
+```bash
+SSH_PROXY_AUDIT_DIR=/tmp/ssh-proxy-smoke ssh-proxy -- /bin/echo proxy-smoke
+ssh-proxy-audit --audit-dir /tmp/ssh-proxy-smoke list
+ssh-proxy-audit --audit-dir /tmp/ssh-proxy-smoke replay
+```
+
+预期能看到：
+
+```text
+proxy-smoke
+```
+
+### 7. 策略验证
+
+确认只读命令放行、危险命令阻断：
+
+```bash
+ssh-proxy-policy check "show version"
+ssh-proxy-policy check "display ?"
+ssh-proxy-policy check "reload"
+ssh-proxy-policy check "commit"
+```
+
+预期：
+
+```text
+show version  -> ALLOW
+display ?     -> ALLOW
+reload        -> BLOCK
+commit        -> BLOCK
+```
+
+### 8. 接入真实登录命令
+
+把原来的登录命令放到 `--` 后面：
+
+```bash
+ssh-proxy -- smc pam nd ssh 10.1.1.1
+ssh-proxy -- smc server toc jump01
+ssh-proxy -- ssh user@10.1.1.1
+```
+
+如果需要临时指定审计目录：
+
+```bash
+ssh-proxy --audit-dir ~/ssh-proxy-audit -- smc pam nd ssh 10.1.1.1
+```
+
+### 9. 跑完整测试
+
+完整测试需要 `pytest`。如果新电脑没有 pytest，可以跳过；生产运行不依赖 pytest。
+
+有 pytest 时运行：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q \
+  tests/test_ssh_proxy_policy.py \
+  tests/test_ssh_proxy_policy_cli.py \
+  tests/test_ssh_proxy_audit.py \
+  tests/test_ssh_proxy_sandbox_integration.py
+```
+
+当前预期：
+
+```text
+12 passed
+```
+
+### 10. 新电脑常见问题
+
+`ssh-proxy: command not found`
+
+检查是否已加入 PATH：
+
+```bash
+which ssh-proxy
+echo "$PATH"
+```
+
+`Permission denied`
+
+执行：
+
+```bash
+chmod +x ssh-proxy ssh-proxy-audit ssh-proxy-policy
+```
+
+审计查不到记录
+
+确认运行和查询使用同一个审计目录：
+
+```bash
+echo "$SSH_PROXY_AUDIT_DIR"
+ssh-proxy-audit list
+ssh-proxy-audit --audit-dir <实际目录> list
+```
+
+Tab 变成空格或补全不符合预期
+
+先确认使用的是最新代码：
+
+```bash
+git log -1 --oneline
+```
+
+然后用沙盒测试复现：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q tests/test_ssh_proxy_sandbox_integration.py
+```
 
 ## 使用方式
 
@@ -750,6 +1040,7 @@ find /tmp/ssh-proxy-smoke -maxdepth 2 -type f
 ## 当前文件
 
 ```text
+install.sh                         # 一键部署脚本
 ssh-proxy                         # 透明代理入口
 ssh-proxy-audit                   # 审计查询入口
 ssh-proxy-policy                  # 策略查看和离线检查入口
