@@ -1114,11 +1114,11 @@ The exported file preserves:
 
 The user can open the file in draw.io and continue editing.
 
-### 13.3 Mermaid Copy
+### 13.3 Mermaid Export
 
 Mermaid export is used for text-based topology diagrams.
 
-The copied content is based on the current visible result. The tool does not build a separate customized topology for Mermaid; it exports what the page currently shows as closely as possible.
+The exported content is based on the current visible result. The tool does not build a separate customized topology for Mermaid; it exports what the page currently shows as closely as possible. The output is downloaded as an `.mmd` file for reuse in draw.io, Markdown, or Mermaid renderers.
 
 ### 13.4 Link Summary CSV
 
